@@ -14,6 +14,8 @@
 - [x] Add JSON output + human output formatting
 - [x] Wire main CLI (config merge, commands, .codescan setup)
 - [x] Add hybrid weight knobs (CLI/config/HTTP) + tests
+- [x] Normalize hybrid weights automatically
+- [x] Add FTS5 lexical search with fallback to LIKE
 - [ ] Add tests for edge cases and filters; keep tests fast/deterministic
 - [x] Evaluate/tune weights on example repo queries
 - [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)

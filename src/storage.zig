@@ -68,6 +68,15 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	);
 	defer allocator.free(dim_sql);
 	try exec(db, dim_sql);
+
+	const fts_enabled = tryInitFts(allocator, db);
+	const fts_sql = if (fts_enabled)
+		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '1');"
+	else
+		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '0');";
+	const fts_meta = try allocator.dupeZ(u8, fts_sql);
+	defer allocator.free(fts_meta);
+	try exec(db, fts_meta);
 }
 
 pub fn resetIndex(db: Db) !void {
@@ -75,6 +84,7 @@ pub fn resetIndex(db: Db) !void {
 	const embeddings_sql: [:0]const u8 = "DELETE FROM embeddings;\x00";
 	try exec(db, symbols_sql);
 	try exec(db, embeddings_sql);
+	_ = execMaybe(db, "DELETE FROM symbols_fts;\x00");
 }
 
 pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
@@ -102,7 +112,12 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
 		return error.SqlStepFailed;
 	}
-	return c.sqlite3_last_insert_rowid(db);
+	const rowid = c.sqlite3_last_insert_rowid(db);
+	insertSymbolFts(db, symbol, rowid) catch |err| switch (err) {
+		error.SqlPrepareFailed => {},
+		else => return err,
+	};
+	return rowid;
 }
 
 pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
@@ -132,6 +147,59 @@ fn exec(db: Db, sql: [:0]const u8) !void {
 			c.sqlite3_free(err_msg);
 		}
 		return error.SqlError;
+	}
+}
+
+fn execMaybe(db: Db, sql: [:0]const u8) bool {
+	var err_msg: [*c]u8 = null;
+	const rc = c.sqlite3_exec(db, sql, null, null, &err_msg);
+	if (rc != c.SQLITE_OK) {
+		if (err_msg != null) {
+			c.sqlite3_free(err_msg);
+		}
+		return false;
+	}
+	return true;
+}
+
+fn tryInitFts(allocator: std.mem.Allocator, db: Db) bool {
+	const fts_sql: [:0]const u8 =
+		"CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(symbol_name, signature, doc_comment, file_path);\x00";
+	if (!execMaybe(db, fts_sql)) return false;
+
+	const fts_count = countRows(db, allocator, "symbols_fts") catch return true;
+	if (fts_count == 0) {
+		const rebuild_sql: [:0]const u8 =
+			"INSERT OR REPLACE INTO symbols_fts(rowid, symbol_name, signature, doc_comment, file_path) "
+			++ "SELECT id, symbol_name, signature, doc_comment, file_path FROM symbols;\x00";
+		_ = execMaybe(db, rebuild_sql);
+	}
+
+	return true;
+}
+
+fn insertSymbolFts(db: Db, symbol: model.Symbol, rowid: i64) !void {
+	const sql: [:0]const u8 =
+		"INSERT INTO symbols_fts (rowid, symbol_name, signature, doc_comment, file_path) "
+		++ "VALUES (?1, ?2, ?3, ?4, ?5);\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	_ = c.sqlite3_bind_int64(stmt.?, 1, rowid);
+	try bindText(stmt.?, 2, symbol.name);
+	try bindText(stmt.?, 3, symbol.signature);
+	if (symbol.doc_comment) |doc| {
+		try bindText(stmt.?, 4, doc);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 4);
+	}
+	try bindText(stmt.?, 5, symbol.file_path);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		return error.SqlStepFailed;
 	}
 }
 

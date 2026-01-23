@@ -42,6 +42,16 @@ pub fn search(
 	if (query.len == 0) return error.EmptyQuery;
 	if (options.top_n == 0) return allocator.alloc(Result, 0);
 
+	var weight_vector = options.weight_vector;
+	var weight_lexical = options.weight_lexical;
+	if (options.mode == .hybrid) {
+		if (weight_vector < 0 or weight_lexical < 0) return error.InvalidWeights;
+		const sum = weight_vector + weight_lexical;
+		if (sum <= 0) return error.InvalidWeights;
+		weight_vector /= sum;
+		weight_lexical /= sum;
+	}
+
 	var results = std.ArrayListUnmanaged(Result){};
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
@@ -81,7 +91,7 @@ pub fn search(
 		} else if (options.mode == .lexical) {
 			res.score = lexical;
 		} else {
-			res.score = vector_score * options.weight_vector + lexical * options.weight_lexical;
+			res.score = vector_score * weight_vector + lexical * weight_lexical;
 		}
 	}
 
@@ -172,6 +182,19 @@ fn lexicalCandidates(
 	query: []const u8,
 	limit: usize,
 ) ![]Result {
+	if (ftsAvailable(db) catch false) {
+		const fts = ftsCandidates(allocator, db, query, limit) catch null;
+		if (fts) |rows| return rows;
+	}
+	return likeCandidates(allocator, db, query, limit);
+}
+
+fn likeCandidates(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	query: []const u8,
+	limit: usize,
+) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
 	const pattern = try std.fmt.allocPrint(allocator, "%{s}%", .{query});
@@ -196,6 +219,72 @@ fn lexicalCandidates(
 
 	_ = sqlite.sqlite3_bind_text(stmt.?, 1, pattern_z.ptr, @intCast(pattern.len), null);
 	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
+
+	var results = std.ArrayListUnmanaged(Result){};
+	errdefer {
+		for (results.items) |*res| res.deinit(allocator);
+		results.deinit(allocator);
+	}
+
+	while (true) {
+		const rc = sqlite.sqlite3_step(stmt.?);
+		if (rc == sqlite.SQLITE_ROW) {
+			const res = try readResultRow(allocator, stmt.?);
+			try results.append(allocator, res);
+		} else if (rc == sqlite.SQLITE_DONE) {
+			break;
+		} else {
+			return error.SqlStepFailed;
+		}
+	}
+
+	return results.toOwnedSlice(allocator);
+}
+
+fn ftsCandidates(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	query: []const u8,
+	limit: usize,
+) ![]Result {
+	if (limit == 0) return allocator.alloc(Result, 0);
+
+	const fts_query = try buildFtsQuery(allocator, query);
+	defer allocator.free(fts_query);
+	const escaped = try escapeSqlLiteral(allocator, fts_query);
+	defer allocator.free(escaped);
+
+	const sql_ranked = try allocPrintZ(
+		allocator,
+		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.end_line, "
+		++ "symbols.symbol_name, symbols.signature, symbols.doc_comment, "
+		++ "0.0 AS distance "
+		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
+		++ "WHERE symbols_fts MATCH '{s}' "
+		++ "ORDER BY bm25(symbols_fts) "
+		++ "LIMIT {d};",
+		.{ escaped, limit },
+	);
+	defer allocator.free(sql_ranked);
+	const sql_plain = try allocPrintZ(
+		allocator,
+		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.end_line, "
+		++ "symbols.symbol_name, symbols.signature, symbols.doc_comment, "
+		++ "0.0 AS distance "
+		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
+		++ "WHERE symbols_fts MATCH '{s}' "
+		++ "LIMIT {d};",
+		.{ escaped, limit },
+	);
+	defer allocator.free(sql_plain);
+
+	var stmt: ?*sqlite.sqlite3_stmt = null;
+	if (sqlite.sqlite3_prepare_v2(db, sql_ranked, -1, &stmt, null) != sqlite.SQLITE_OK) {
+		if (sqlite.sqlite3_prepare_v2(db, sql_plain, -1, &stmt, null) != sqlite.SQLITE_OK) {
+			return error.SqlPrepareFailed;
+		}
+	}
+	defer _ = sqlite.sqlite3_finalize(stmt.?);
 
 	var results = std.ArrayListUnmanaged(Result){};
 	errdefer {
@@ -298,6 +387,66 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 
 	if (token_count == 0) return 0;
 	return @as(f32, @floatFromInt(match_count)) / @as(f32, @floatFromInt(token_count));
+}
+
+fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
+	var out = std.ArrayListUnmanaged(u8){};
+	errdefer out.deinit(allocator);
+
+	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
+	var token_count: usize = 0;
+	while (tokens.next()) |tok| {
+		if (tok.len == 0) continue;
+		if (token_count > 0) {
+			try out.appendSlice(allocator, " AND ");
+		}
+		try out.append(allocator, '"');
+		try out.appendSlice(allocator, tok);
+		try out.append(allocator, '"');
+		token_count += 1;
+	}
+
+	if (token_count == 0) {
+		try out.appendSlice(allocator, query);
+	}
+
+	return out.toOwnedSlice(allocator);
+}
+
+fn escapeSqlLiteral(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
+	var out = std.ArrayListUnmanaged(u8){};
+	errdefer out.deinit(allocator);
+
+	for (input) |ch| {
+		if (ch == '\'') {
+			try out.appendSlice(allocator, "''");
+		} else {
+			try out.append(allocator, ch);
+		}
+	}
+
+	return out.toOwnedSlice(allocator);
+}
+
+fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
+	const tmp = try std.fmt.allocPrint(allocator, fmt, args);
+	defer allocator.free(tmp);
+	return allocator.dupeZ(u8, tmp);
+}
+
+fn ftsAvailable(db: storage.Db) !bool {
+	const sql: [:0]const u8 =
+		"SELECT name FROM sqlite_master WHERE type='table' AND name='symbols_fts' LIMIT 1;\x00";
+	var stmt: ?*sqlite.sqlite3_stmt = null;
+	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = sqlite.sqlite3_finalize(stmt.?);
+
+	const step_rc = sqlite.sqlite3_step(stmt.?);
+	if (step_rc == sqlite.SQLITE_ROW) return true;
+	if (step_rc == sqlite.SQLITE_DONE) return false;
+	return error.SqlStepFailed;
 }
 
 test "lexicalScore matches query tokens" {
@@ -415,6 +564,84 @@ test "search hybrid weights influence ranking" {
 	});
 	defer freeResults(allocator, prefer_lexical);
 	try std.testing.expectEqualStrings("far_match", prefer_lexical[0].symbol.name);
+}
+
+test "search hybrid normalizes weights" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/only.zig"),
+		.name = try allocator.dupe(u8, "only"),
+		.signature = try allocator.dupe(u8, "fn only() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+
+	const id = try storage.insertSymbol(db, sym);
+	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 0.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = try search(allocator, db, fake.embedder(), "missing", .{
+		.top_n = 1,
+		.mode = .hybrid,
+		.weight_vector = 2.0,
+		.weight_lexical = 1.0,
+	});
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 1), results.len);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.6666667), results[0].score, 0.0001);
+}
+
+test "search lexical uses fts when available" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/hash.zig"),
+		.name = try allocator.dupe(u8, "crc32"),
+		.signature = try allocator.dupe(u8, "pub fn crc32(data: []const u8) u32"),
+		.doc_comment = try allocator.dupe(u8, "Hash functions for checksums"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+
+	const id = try storage.insertSymbol(db, sym);
+	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 0.0, 0.0 });
+
+	const has_fts = try ftsAvailable(db);
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	if (has_fts) {
+		const count = try storage.countRows(db, allocator, "symbols_fts");
+		try std.testing.expectEqual(@as(i64, 1), count);
+		const fts_results = try ftsCandidates(allocator, db, "functions hash", 3);
+		defer freeResults(allocator, fts_results);
+		try std.testing.expectEqual(@as(usize, 1), fts_results.len);
+	}
+	const results = try search(allocator, db, fake.embedder(), "functions hash", .{
+		.top_n = 3,
+		.mode = .lexical,
+	});
+	defer freeResults(allocator, results);
+
+	if (has_fts) {
+		try std.testing.expectEqual(@as(usize, 1), results.len);
+		try std.testing.expectEqualStrings("crc32", results[0].symbol.name);
+	} else {
+		try std.testing.expectEqual(@as(usize, 0), results.len);
+	}
 }
 
 const FakeEmbedder = struct {
