@@ -13,7 +13,7 @@
 - src/main.zig: CLI entrypoint (minimal stub)
 - src/cli.zig: CLI argument parsing types + tests
 - src/config.zig: config parsing/loading for .codescan/config + tests
-- src/storage.zig: sqlite + sqlite-vec schema init + tests
+- src/storage.zig: sqlite + sqlite-vec schema init, index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed request/response + HTTP transport + tests
 - src/model.zig: core data model for extracted symbols
 - src/plugin.zig: extractor interface, registry, and tests

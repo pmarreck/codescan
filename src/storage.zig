@@ -3,6 +3,7 @@ const std = @import("std");
 const c = @cImport({
 	@cInclude("sqlite3.h");
 });
+const model = @import("model.zig");
 
 pub const Schema = struct {
 	embedding_dim: usize,
@@ -16,23 +17,23 @@ pub fn openMemoryWithVec(allocator: std.mem.Allocator) !*c.sqlite3 {
 	const handle = db orelse return error.OpenFailed;
 	errdefer _ = c.sqlite3_close(handle);
 
-	if (c.sqlite3_enable_load_extension(handle, 1) != c.SQLITE_OK) {
-		return error.EnableExtensionFailed;
-	}
+	try loadVecExtension(allocator, handle);
 
-	const path = try std.process.getEnvVarOwned(allocator, "CODESCAN_SQLITE_VEC_PATH");
-	defer allocator.free(path);
+	return handle;
+}
+
+pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !*c.sqlite3 {
 	const path_z = try allocator.dupeZ(u8, path);
 	defer allocator.free(path_z);
 
-	var err_msg: [*c]u8 = null;
-	const rc = c.sqlite3_load_extension(handle, path_z, null, &err_msg);
-	if (rc != c.SQLITE_OK) {
-		if (err_msg != null) {
-			c.sqlite3_free(err_msg);
-		}
-		return error.LoadExtensionFailed;
+	var db: ?*c.sqlite3 = null;
+	if (c.sqlite3_open(path_z, &db) != c.SQLITE_OK) {
+		return error.OpenFailed;
 	}
+	const handle = db orelse return error.OpenFailed;
+	errdefer _ = c.sqlite3_close(handle);
+
+	try loadVecExtension(allocator, handle);
 
 	return handle;
 }
@@ -62,6 +63,60 @@ pub fn initSchema(allocator: std.mem.Allocator, db: *c.sqlite3, schema: Schema) 
 	try exec(db, dim_sql);
 }
 
+pub fn resetIndex(db: *c.sqlite3) !void {
+	const symbols_sql: [:0]const u8 = "DELETE FROM symbols;\x00";
+	const embeddings_sql: [:0]const u8 = "DELETE FROM embeddings;\x00";
+	try exec(db, symbols_sql);
+	try exec(db, embeddings_sql);
+}
+
+pub fn insertSymbol(db: *c.sqlite3, symbol: model.Symbol) !i64 {
+	const sql: [:0]const u8 =
+		"INSERT INTO symbols (lang, file_path, start_line, end_line, symbol_name, signature, doc_comment) "
+		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	try bindText(stmt.?, 1, symbol.language);
+	try bindText(stmt.?, 2, symbol.file_path);
+	try bindInt(stmt.?, 3, symbol.start_line);
+	try bindInt(stmt.?, 4, symbol.end_line);
+	try bindText(stmt.?, 5, symbol.name);
+	try bindText(stmt.?, 6, symbol.signature);
+	if (symbol.doc_comment) |doc| {
+		try bindText(stmt.?, 7, doc);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 7);
+	}
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		return error.SqlStepFailed;
+	}
+	return c.sqlite3_last_insert_rowid(db);
+}
+
+pub fn insertEmbedding(db: *c.sqlite3, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
+	const sql: [:0]const u8 = "INSERT INTO embeddings (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	const json = try vectorToJson(allocator, vector);
+	defer allocator.free(json);
+
+	_ = c.sqlite3_bind_int64(stmt.?, 1, rowid);
+	_ = c.sqlite3_bind_text(stmt.?, 2, json.ptr, @intCast(json.len), null);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		return error.SqlStepFailed;
+	}
+}
+
 fn exec(db: *c.sqlite3, sql: [:0]const u8) !void {
 	var err_msg: [*c]u8 = null;
 	const rc = c.sqlite3_exec(db, sql, null, null, &err_msg);
@@ -70,6 +125,26 @@ fn exec(db: *c.sqlite3, sql: [:0]const u8) !void {
 			c.sqlite3_free(err_msg);
 		}
 		return error.SqlError;
+	}
+}
+
+fn loadVecExtension(allocator: std.mem.Allocator, db: *c.sqlite3) !void {
+	if (c.sqlite3_enable_load_extension(db, 1) != c.SQLITE_OK) {
+		return error.EnableExtensionFailed;
+	}
+
+	const path = try std.process.getEnvVarOwned(allocator, "CODESCAN_SQLITE_VEC_PATH");
+	defer allocator.free(path);
+	const path_z = try allocator.dupeZ(u8, path);
+	defer allocator.free(path_z);
+
+	var err_msg: [*c]u8 = null;
+	const rc = c.sqlite3_load_extension(db, path_z, null, &err_msg);
+	if (rc != c.SQLITE_OK) {
+		if (err_msg != null) {
+			c.sqlite3_free(err_msg);
+		}
+		return error.LoadExtensionFailed;
 	}
 }
 
@@ -93,6 +168,51 @@ fn tableExists(db: *c.sqlite3, allocator: std.mem.Allocator, name: []const u8) !
 	return error.SqlStepFailed;
 }
 
+fn queryCount(db: *c.sqlite3, allocator: std.mem.Allocator, table: []const u8) !i64 {
+	const sql = try allocPrintZ(
+		allocator,
+		"SELECT COUNT(*) FROM {s};",
+		.{table},
+	);
+	defer allocator.free(sql);
+
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) {
+		return error.SqlStepFailed;
+	}
+	return c.sqlite3_column_int64(stmt.?, 0);
+}
+
+fn bindText(stmt: *c.sqlite3_stmt, index: c_int, text: []const u8) !void {
+	if (c.sqlite3_bind_text(stmt, index, text.ptr, @intCast(text.len), null) != c.SQLITE_OK) {
+		return error.SqlBindFailed;
+	}
+}
+
+fn bindInt(stmt: *c.sqlite3_stmt, index: c_int, value: usize) !void {
+	if (c.sqlite3_bind_int64(stmt, index, @intCast(value)) != c.SQLITE_OK) {
+		return error.SqlBindFailed;
+	}
+}
+
+fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try out.writer.writeAll("[");
+	for (vector, 0..) |value, idx| {
+		if (idx != 0) try out.writer.writeAll(",");
+		try out.writer.print("{d}", .{value});
+	}
+	try out.writer.writeAll("]");
+	return out.toOwnedSlice();
+}
+
 fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
 	const tmp = try std.fmt.allocPrint(allocator, fmt, args);
 	defer allocator.free(tmp);
@@ -109,4 +229,30 @@ test "initSchema creates tables" {
 	try std.testing.expect(try tableExists(db, allocator, "meta"));
 	try std.testing.expect(try tableExists(db, allocator, "symbols"));
 	try std.testing.expect(try tableExists(db, allocator, "embeddings"));
+}
+
+test "insertSymbol and insertEmbedding" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/main.zig"),
+		.name = try allocator.dupe(u8, "add"),
+		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 2,
+	};
+	defer symbol.deinit(allocator);
+
+	const rowid = try insertSymbol(db, symbol);
+	try std.testing.expect(rowid > 0);
+	try std.testing.expectEqual(@as(i64, 1), try queryCount(db, allocator, "symbols"));
+
+	try insertEmbedding(db, allocator, rowid, &[_]f32{ 0.1, 0.2 });
+	try std.testing.expectEqual(@as(i64, 1), try queryCount(db, allocator, "embeddings"));
 }
