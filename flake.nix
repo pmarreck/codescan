@@ -10,17 +10,19 @@
 		flake-utils.lib.eachDefaultSystem (system:
 			let
 				pkgs = import nixpkgs { inherit system; };
+				sqlite-amalgamation = pkgs.fetchzip {
+					url = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
+					sha256 = "sha256-F50oTmmcPIl0AZJbsWAR3tbNAPV3pQLf+CNITzhmXfI=";
+					stripRoot = true;
+				};
 			in {
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
 						zig_0_15
-						sqlite
-						sqlite-vec
 						pcre2
-						pkg-config
 					];
 					shellHook = ''
-						export CODESCAN_SQLITE_VEC_PATH="${pkgs.sqlite-vec}/lib/vec0.dylib"
+						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
 						export ZIG_GLOBAL_CACHE_DIR="$HOME/.cache/zig"
 						export ZIG_LOCAL_CACHE_DIR="$PWD/zig-cache"
 					'';

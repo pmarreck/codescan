@@ -1,7 +1,9 @@
 const std = @import("std");
 
 const c = @cImport({
+	@cDefine("SQLITE_VEC_STATIC", "1");
 	@cInclude("sqlite3.h");
+	@cInclude("sqlite-vec.h");
 });
 const model = @import("model.zig");
 
@@ -13,6 +15,7 @@ pub const Schema = struct {
 };
 
 pub fn openMemoryWithVec(allocator: std.mem.Allocator) !Db {
+	_ = allocator;
 	var db: ?*c.sqlite3 = null;
 	if (c.sqlite3_open(":memory:", &db) != c.SQLITE_OK) {
 		return error.OpenFailed;
@@ -20,7 +23,7 @@ pub fn openMemoryWithVec(allocator: std.mem.Allocator) !Db {
 	const handle = db orelse return error.OpenFailed;
 	errdefer _ = c.sqlite3_close(handle);
 
-	try loadVecExtension(allocator, handle);
+	try initVecStatic(handle);
 
 	return handle;
 }
@@ -40,7 +43,7 @@ pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !Db {
 	const handle = db orelse return error.OpenFailed;
 	errdefer _ = c.sqlite3_close(handle);
 
-	try loadVecExtension(allocator, handle);
+	try initVecStatic(handle);
 
 	return handle;
 }
@@ -203,18 +206,9 @@ fn insertSymbolFts(db: Db, symbol: model.Symbol, rowid: i64) !void {
 	}
 }
 
-fn loadVecExtension(allocator: std.mem.Allocator, db: Db) !void {
-	if (c.sqlite3_enable_load_extension(db, 1) != c.SQLITE_OK) {
-		return error.EnableExtensionFailed;
-	}
-
-	const path = try std.process.getEnvVarOwned(allocator, "CODESCAN_SQLITE_VEC_PATH");
-	defer allocator.free(path);
-	const path_z = try allocator.dupeZ(u8, path);
-	defer allocator.free(path_z);
-
+fn initVecStatic(db: Db) !void {
 	var err_msg: [*c]u8 = null;
-	const rc = c.sqlite3_load_extension(db, path_z, null, &err_msg);
+	const rc = c.sqlite3_vec_init(db, &err_msg, null);
 	if (rc != c.SQLITE_OK) {
 		if (err_msg != null) {
 			c.sqlite3_free(err_msg);

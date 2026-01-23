@@ -20,5 +20,8 @@
 - [x] Prefer static link for pcre2 dependency
 - [x] Add plugin-specific ignore globs with PCRE2-backed matcher
 - [x] Support ignore config overrides (global + per-language) in .codescan/config
+- [x] Replace sqlite-vec runtime extension with static init
+- [x] Add sqlite-vec git dependency (build.zig.zon)
+- [x] Fetch sqlite amalgamation via flake for sqlite-vec build
 - [x] Evaluate/tune weights on example repo queries
 - [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)
