@@ -1,5 +1,7 @@
 const std = @import("std");
 const model = @import("model.zig");
+const extract_zig = @import("extract_zig.zig");
+const extract_elixir = @import("extract_elixir.zig");
 
 pub const ExtractorFn = *const fn (
 	allocator: std.mem.Allocator,
@@ -32,12 +34,12 @@ pub fn defaultRegistry() Registry {
 			.{
 				.language = "zig",
 				.extensions = &[_][]const u8{ ".zig" },
-				.extract = zigExtract,
+				.extract = extract_zig.extract,
 			},
 			.{
 				.language = "elixir",
 				.extensions = &[_][]const u8{ ".ex", ".exs" },
-				.extract = elixirExtract,
+				.extract = extract_elixir.extract,
 			},
 		},
 	};
@@ -45,28 +47,6 @@ pub fn defaultRegistry() Registry {
 
 fn hasExtension(path: []const u8, ext: []const u8) bool {
 	return std.mem.endsWith(u8, path, ext);
-}
-
-fn zigExtract(
-	allocator: std.mem.Allocator,
-	file_path: []const u8,
-	source: []const u8,
-) anyerror![]model.Symbol {
-	_ = allocator;
-	_ = file_path;
-	_ = source;
-	return error.NotImplemented;
-}
-
-fn elixirExtract(
-	allocator: std.mem.Allocator,
-	file_path: []const u8,
-	source: []const u8,
-) anyerror![]model.Symbol {
-	_ = allocator;
-	_ = file_path;
-	_ = source;
-	return error.NotImplemented;
 }
 
 test "registry finds extractor by extension" {

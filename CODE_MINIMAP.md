@@ -17,3 +17,5 @@
 - src/ollama.zig: Ollama embed request/response + HTTP transport + tests
 - src/model.zig: core data model for extracted symbols
 - src/plugin.zig: extractor interface, registry, and tests
+- src/extract_zig.zig: Zig AST-based extractor + tests
+- src/extract_elixir.zig: Elixir extractor stub (placeholder)
