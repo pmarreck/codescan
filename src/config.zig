@@ -127,7 +127,7 @@ test "parseText errors on unknown key" {
 test "loadFromPath reads file" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile("config", "top=3\n");
+	try tmp.dir.writeFile(.{ .sub_path = "config", .data = "top=3\n" });
 	const allocator = std.testing.allocator;
 	const path = try tmp.dir.realpathAlloc(allocator, "config");
 	defer allocator.free(path);

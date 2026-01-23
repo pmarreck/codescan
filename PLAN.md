@@ -3,7 +3,7 @@
 - [x] Define CLI contract (subcommands, flags, output formats)
 - [x] Establish project scaffolding (flake.nix, build.zig, ./test)
 - [x] Implement config loading (repo-local .codescan/config)
-- [ ] Define storage schema (sqlite + sqlite-vec) and migrations
+- [x] Define storage schema (sqlite + sqlite-vec) and migrations
 - [ ] Build embedding pipeline (Ollama HTTP client, batching)
 - [ ] Implement indexing flow (scan -> extract -> embed -> store)
 - [ ] Implement search flow (query embed -> vector search -> format)
