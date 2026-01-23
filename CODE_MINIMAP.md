@@ -24,3 +24,4 @@
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
 - src/search.zig: vector/lexical/hybrid search + tests
 - src/output.zig: human/json output formatting for results + tests
+- src/server.zig: HTTP server with /health, /search, /index endpoints + tests
