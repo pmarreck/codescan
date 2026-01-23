@@ -45,6 +45,7 @@
   - Nim: `src/extract_nim.zig` (tree-sitter)
   - Bash: `src/extract_bash.zig` (tree-sitter)
   - Lua: `src/extract_lua.zig` (tree-sitter)
+  - Haskell: `src/extract_haskell.zig` (tree-sitter)
 - Plugin defaults live in `src/plugins/<lang>/mod.zig`.
 
 ## Dependencies + build notes

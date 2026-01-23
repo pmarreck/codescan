@@ -39,6 +39,7 @@
 - src/plugins/nim/mod.zig: Nim plugin defaults
 - src/plugins/bash/mod.zig: Bash plugin defaults
 - src/plugins/lua/mod.zig: Lua plugin defaults
+- src/plugins/haskell/mod.zig: Haskell plugin defaults
 - src/extract_zig.zig: Zig AST-based extractor + tests
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
 - src/extract_c.zig: C extractor using tree-sitter + tests
@@ -50,6 +51,7 @@
 - src/extract_nim.zig: Nim extractor using tree-sitter + tests
 - src/extract_bash.zig: Bash extractor using tree-sitter + tests
 - src/extract_lua.zig: Lua extractor using tree-sitter + tests
+- src/extract_haskell.zig: Haskell extractor using tree-sitter + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
@@ -69,4 +71,5 @@
 - deps/tree-sitter-nim: vendored tree-sitter Nim grammar
 - deps/tree-sitter-lean: vendored tree-sitter Lean grammar
 - deps/tree-sitter-idris2: vendored tree-sitter Idris2 grammar
+- deps/tree-sitter-haskell: vendored tree-sitter Haskell grammar
 - .codescan-fixtures/: gitignored fixture repos for integration tests

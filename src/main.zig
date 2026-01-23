@@ -396,3 +396,35 @@ test "findRepoRoot returns null when missing" {
 
 	try std.testing.expect(root == null);
 }
+
+test "resolveSettings uses discovered repo root for db path" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("repo/.codescan");
+	try tmp.dir.makePath("repo/sub/dir");
+
+	const start = try tmp.dir.realpathAlloc(allocator, "repo/sub/dir");
+	defer allocator.free(start);
+
+	const root = try findRepoRoot(allocator, start);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root != null);
+
+	const args = [_][]const u8{ "codescan", "search", "checksum" };
+	const parsed = try cli.parse(&args);
+
+	var cfg = config.Config{};
+	defer cfg.deinit(allocator);
+
+	const settings = try resolveSettings(allocator, parsed, cfg, root.?);
+	defer if (settings.db_path_owned) allocator.free(settings.db_path);
+
+	const expected_db = try std.fs.path.join(allocator, &.{ root.?, ".codescan", "index.sqlite3" });
+	defer allocator.free(expected_db);
+
+	try std.testing.expectEqualStrings(root.?, settings.root_path);
+	try std.testing.expectEqualStrings(expected_db, settings.db_path);
+}

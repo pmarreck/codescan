@@ -6,7 +6,7 @@ Semantic code search for local repositories.
 - Ollama embeddings (default: `bge-large`)
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
-- Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua via tree-sitter/best-effort)
+- Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua, Haskell via tree-sitter/best-effort)
 
 ## Build
 

@@ -11,6 +11,7 @@ const extract_nix = @import("extract_nix.zig");
 const extract_nim = @import("extract_nim.zig");
 const extract_bash = @import("extract_bash.zig");
 const extract_lua = @import("extract_lua.zig");
+const extract_haskell = @import("extract_haskell.zig");
 const zig_plugin = @import("plugins/zig/mod.zig");
 const elixir_plugin = @import("plugins/elixir/mod.zig");
 const c_plugin = @import("plugins/c/mod.zig");
@@ -22,6 +23,7 @@ const nix_plugin = @import("plugins/nix/mod.zig");
 const nim_plugin = @import("plugins/nim/mod.zig");
 const bash_plugin = @import("plugins/bash/mod.zig");
 const lua_plugin = @import("plugins/lua/mod.zig");
+const haskell_plugin = @import("plugins/haskell/mod.zig");
 
 pub const ExtractorFn = *const fn (
 	allocator: std.mem.Allocator,
@@ -117,6 +119,12 @@ pub fn defaultRegistry() Registry {
 				.extensions = lua_plugin.extensions,
 				.ignore_patterns = lua_plugin.ignore_patterns,
 				.extract = extract_lua.extract,
+			},
+			.{
+				.language = haskell_plugin.language,
+				.extensions = haskell_plugin.extensions,
+				.ignore_patterns = haskell_plugin.ignore_patterns,
+				.extract = extract_haskell.extract,
 			},
 		},
 	};

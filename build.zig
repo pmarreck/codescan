@@ -35,6 +35,7 @@ pub fn build(b: *std.Build) void {
 	const ts_nim = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nim", "deps/tree-sitter-nim/src", true);
 	const ts_lean = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lean", "deps/tree-sitter-lean/src", true);
 	const ts_idris = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_idris2", "deps/tree-sitter-idris2/src", false);
+	const ts_haskell = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_haskell", "deps/tree-sitter-haskell/src", true);
 	const ts_langs = [_]*std.Build.Step.Compile{
 		tsc_lib,
 		ts_typescript,
@@ -46,6 +47,7 @@ pub fn build(b: *std.Build) void {
 		ts_nim,
 		ts_lean,
 		ts_idris,
+		ts_haskell,
 	};
 
 	const exe = b.addExecutable(.{
@@ -273,6 +275,18 @@ pub fn build(b: *std.Build) void {
 	addPcre2Includes(extract_idris_tests.root_module, pcre2_lib);
 	linkCommon(extract_idris_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(extract_idris_tests).step);
+
+	const extract_haskell_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/extract_haskell.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, extract_haskell_tests.root_module);
+	addPcre2Includes(extract_haskell_tests.root_module, pcre2_lib);
+	linkCommon(extract_haskell_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(extract_haskell_tests).step);
 
 	const scan_tests = b.addTest(.{
 		.root_module = b.createModule(.{
