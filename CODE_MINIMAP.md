@@ -11,3 +11,4 @@
 - test: unit test runner script (wraps `zig build test` in nix dev shell)
 - src/main.zig: CLI entrypoint (minimal stub)
 - src/cli.zig: CLI argument parsing types + tests
+- src/config.zig: config parsing/loading for .codescan/config + tests

@@ -30,4 +30,12 @@ pub fn build(b: *std.Build) void {
 	});
 	main_tests.linkSystemLibrary("sqlite3");
 	test_step.dependOn(&b.addRunArtifact(main_tests).step);
+
+	const config_tests = b.addTest(.{
+		.root_source_file = .{ .path = "src/config.zig" },
+		.target = target,
+		.optimize = optimize,
+	});
+	config_tests.linkSystemLibrary("sqlite3");
+	test_step.dependOn(&b.addRunArtifact(config_tests).step);
 }
