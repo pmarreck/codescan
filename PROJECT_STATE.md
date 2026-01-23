@@ -9,15 +9,15 @@
 
 ## Run (CLI)
 - Index (creates `.codescan/index.sqlite3` under the root):
-  - `nix develop -c ./zig-out/bin/codescan index --root <path>`
+  - `./zig-out/bin/codescan index --root <path>`
 - Update (full reindex for now):
-  - `nix develop -c ./zig-out/bin/codescan update --root <path>`
+  - `./zig-out/bin/codescan update --root <path>`
 - Search:
-  - `nix develop -c ./zig-out/bin/codescan search "<query>" --root <path>`
+  - `./zig-out/bin/codescan search "<query>" --root <path>`
   - Optional knobs: `--mode <vector|lexical|hybrid>`, `--weight-vector`, `--weight-lexical`, `--top`
 
 ## Run (HTTP)
-- `nix develop -c ./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123`
+- `./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123`
 - Endpoints: `/health`, `/index`, `/search` (see `src/server.zig` for request shape)
 
 ## Config (.codescan/config)
@@ -60,4 +60,5 @@
 - GitHub Actions workflow: `.github/workflows/build.yml`
 - Builds ReleaseFast artifacts for macOS arm64, Linux x86_64 (musl), Windows x86_64.
 - Tag pushes (`v*`) create a GitHub Release with attached artifacts.
+- CI helpers: `scripts/ci-setup-nix`, `scripts/ci-build`.
 - Local CI runner: `scripts/ci-local` (uses `act`, Linux-only).

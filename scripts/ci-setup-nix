@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v nix >/dev/null 2>&1; then
+	exit 0
+fi
+
+curl -fsSL https://install.determinate.systems/nix | sh -s -- install --no-confirm
+
+if [ -n "${GITHUB_PATH:-}" ]; then
+	echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
+fi
+
+if [ -f /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh ]; then
+	# shellcheck source=/dev/null
+	source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh
+fi
+
+nix --version

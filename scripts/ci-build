@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+TARGET="${1:?target}"
+PKGDIR="${2:?pkgdir}"
+ARCHIVE="${3:?archive}"
+EXT="${4:-}"
+
+nix develop -c zig build -Doptimize=ReleaseFast -Dtarget="$TARGET"
+
+rm -rf "$PKGDIR"
+mkdir -p "$PKGDIR"
+cp -f "zig-out/bin/codescan${EXT}" "$PKGDIR/"
+cp -f README.md LICENSE "$PKGDIR/"
+
+if [[ "$ARCHIVE" == *.zip ]]; then
+	zip -rq "$ARCHIVE" "$PKGDIR"
+else
+	tar -czf "$ARCHIVE" "$PKGDIR"
+fi

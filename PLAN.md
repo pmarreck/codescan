@@ -31,3 +31,5 @@
 - [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md, PROJECT_STATE.md)
 - [x] Add min_score search threshold (CLI/config/HTTP) + tests
 - [x] Add integration test suite across Zig/Elixir/C fixture repos
+- [x] Add basic HTTP server /health test
+- [x] Update runtime CLI examples to avoid nix develop prefix

@@ -10,7 +10,8 @@
 - test-integration: end-to-end integration suite (requires Ollama + fixtures)
 - fixtures/manifest.toml: pinned fixture repos for integration tests
 - .github/workflows/build.yml: CI build + release artifacts workflow
-- scripts/ci-setup-zig: CI helper to install Zig without GitHub Actions marketplace deps
+- scripts/ci-setup-nix: CI helper to install Nix (used by GitHub Actions)
+- scripts/ci-build: CI build/package wrapper (ReleaseFast per target)
 - scripts/ci-local: run the CI build job locally via act (Linux only)
 - flake.lock: pinned Nix inputs for reproducible dev shell
 - ZIG_RECENT_API_CHANGES_2025.md: Zig 0.14–0.15 API quick reference

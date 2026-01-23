@@ -280,3 +280,69 @@ test "parseSearchRequest defaults optional fields" {
 	try std.testing.expect(req.weight_lexical == null);
 	try std.testing.expect(req.min_score == null);
 }
+
+test "handleRequest responds to /health" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	const request_bytes = "GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [512]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "Content-Type: application/json") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"status\":\"ok\"") != null);
+}
+
+const FakeEmbedder = struct {
+	pub fn embedder(self: *FakeEmbedder) embedding.Embedder {
+		return .{
+			.ctx = self,
+			.embed = embed,
+			.free = free,
+		};
+	}
+
+	fn embed(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
+		_ = ctx;
+		_ = allocator;
+		_ = inputs;
+		return error.UnexpectedEmbed;
+	}
+
+	fn free(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
+		_ = ctx;
+		_ = allocator;
+		_ = embeddings;
+	}
+};
+
+fn testSettings() Settings {
+	return .{
+		.root_path = ".",
+		.db_path = ":memory:",
+		.embedding_dim = 8,
+		.batch_size = 1,
+		.max_file_size = 1024,
+		.ollama_url = "http://localhost:11434",
+		.ollama_model = "bge-large",
+		.search_top_n = 5,
+		.search_mode = .vector,
+		.search_weight_vector = 1.0,
+		.search_weight_lexical = 0.0,
+		.search_min_score = 0.0,
+		.ignore_global = &[_][]const u8{},
+		.ignore_lang = &[_]config.IgnoreOverride{},
+		.http_host = "127.0.0.1",
+		.http_port = 0,
+	};
+}

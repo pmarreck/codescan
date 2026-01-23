@@ -37,20 +37,21 @@ nix develop -c ./test-integration
 ## Run (CLI)
 
 ```bash
+# ReleaseFast builds are self-contained; no `nix develop` prefix needed to run.
 # index
-nix develop -c ./zig-out/bin/codescan index --root <path>
+./zig-out/bin/codescan index --root <path>
 
 # update (full reindex)
-nix develop -c ./zig-out/bin/codescan update --root <path>
+./zig-out/bin/codescan update --root <path>
 
 # search
-nix develop -c ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
+./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
 ```
 
 ## Run (HTTP)
 
 ```bash
-nix develop -c ./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123
+./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123
 ```
 
 ## Config
