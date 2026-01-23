@@ -22,3 +22,4 @@
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
 - src/scan.zig: file walker for supported source files + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
+- src/search.zig: vector/lexical/hybrid search + tests

@@ -5,6 +5,7 @@ const c = @cImport({
 });
 const model = @import("model.zig");
 
+pub const sqlite = c;
 pub const Db = *c.sqlite3;
 
 pub const Schema = struct {
