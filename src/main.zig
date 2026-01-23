@@ -143,20 +143,21 @@ pub fn main() !void {
 }
 
 fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config.Config) !Settings {
+	const defaults = Defaults{};
 	var settings = Settings{
-		.output = Defaults.output,
-		.top_n = Defaults.top_n,
-		.root_path = Defaults.root_path,
-		.db_path = Defaults.db_path,
+		.output = defaults.output,
+		.top_n = defaults.top_n,
+		.root_path = defaults.root_path,
+		.db_path = defaults.db_path,
 		.db_path_owned = false,
-		.ollama_url = Defaults.ollama_url,
-		.ollama_model = Defaults.ollama_model,
-		.embedding_dim = Defaults.embedding_dim,
-		.batch_size = Defaults.batch_size,
-		.max_file_size = Defaults.max_file_size,
-		.search_mode = Defaults.search_mode,
-		.http_host = Defaults.http_host,
-		.http_port = Defaults.http_port,
+		.ollama_url = defaults.ollama_url,
+		.ollama_model = defaults.ollama_model,
+		.embedding_dim = defaults.embedding_dim,
+		.batch_size = defaults.batch_size,
+		.max_file_size = defaults.max_file_size,
+		.search_mode = defaults.search_mode,
+		.http_host = defaults.http_host,
+		.http_port = defaults.http_port,
 	};
 
 	if (cfg.output) |value| settings.output = value;

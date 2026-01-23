@@ -36,7 +36,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	};
 
 	const address = try parseAddress(settings.http_host, settings.http_port);
-	var listener = try std.net.listen(.{ .address = address, .reuse_address = true });
+	var listener = try std.net.Address.listen(address, .{ .reuse_address = true });
 	defer listener.deinit();
 
 	while (true) {
@@ -47,7 +47,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		var out_buf: [16 * 1024]u8 = undefined;
 		var in_reader = conn.stream.reader(&in_buf);
 		var out_writer = conn.stream.writer(&out_buf);
-		var http_server = std.http.Server.init(&in_reader.interface, &out_writer.interface);
+		var http_server = std.http.Server.init(in_reader.interface(), &out_writer.interface);
 
 		while (true) {
 			var req = http_server.receiveHead() catch break;
@@ -134,7 +134,7 @@ fn respondJson(req: *std.http.Server.Request, body: []const u8) !void {
 fn readBody(allocator: std.mem.Allocator, req: *std.http.Server.Request, max_size: usize) ![]u8 {
 	var buffer: [8192]u8 = undefined;
 	const reader = req.readerExpectNone(&buffer);
-	return reader.readAllAlloc(allocator, max_size);
+	return readAllAlloc(allocator, reader, max_size);
 }
 
 fn stripQuery(target: []const u8) []const u8 {
@@ -199,6 +199,21 @@ fn parseMode(value: []const u8) !search.SearchMode {
 	if (std.mem.eql(u8, value, "lexical")) return .lexical;
 	if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
 	return error.InvalidMode;
+}
+
+fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: usize) ![]u8 {
+	var out = std.ArrayListUnmanaged(u8){};
+	errdefer out.deinit(allocator);
+
+	var buf: [8192]u8 = undefined;
+	while (true) {
+		const n = try reader.readSliceShort(&buf);
+		if (n == 0) break;
+		if (out.items.len + n > max_size) return error.StreamTooLong;
+		try out.appendSlice(allocator, buf[0..n]);
+	}
+
+	return out.toOwnedSlice(allocator);
 }
 
 test "parseSearchRequest reads fields" {

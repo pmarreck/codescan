@@ -134,16 +134,33 @@ pub const StdHttpTransport = struct {
 		});
 		defer request.deinit();
 
-		try request.sendBodyComplete(req.body);
+		const payload = try allocator.dupe(u8, req.body);
+		defer allocator.free(payload);
+		try request.sendBodyComplete(payload);
 		var response = try request.receiveHead(&.{});
 
 		var buffer: [8192]u8 = undefined;
 		const reader = response.reader(&buffer);
-		const body = try reader.readAllAlloc(allocator, 1024 * 1024);
+		const body = try readAllAlloc(allocator, reader, 1024 * 1024);
 
 		return .{ .status = @intFromEnum(response.head.status), .body = body };
 	}
 };
+
+fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: usize) ![]u8 {
+	var out = std.ArrayListUnmanaged(u8){};
+	errdefer out.deinit(allocator);
+
+	var buf: [8192]u8 = undefined;
+	while (true) {
+		const n = try reader.readSliceShort(&buf);
+		if (n == 0) break;
+		if (out.items.len + n > max_size) return error.StreamTooLong;
+		try out.appendSlice(allocator, buf[0..n]);
+	}
+
+	return out.toOwnedSlice(allocator);
+}
 
 test "buildEmbedUrl handles trailing slash" {
 	const allocator = std.testing.allocator;
