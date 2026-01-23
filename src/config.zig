@@ -7,11 +7,21 @@ pub const Config = struct {
 	root_path: ?[]const u8 = null,
 	db_path: ?[]const u8 = null,
 	ollama_url: ?[]const u8 = null,
+	ollama_model: ?[]const u8 = null,
+	embedding_dim: ?usize = null,
+	batch_size: ?usize = null,
+	max_file_size: ?usize = null,
+	search_mode: ?[]const u8 = null,
+	http_host: ?[]const u8 = null,
+	http_port: ?u16 = null,
 
 	pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
 		if (self.root_path) |value| allocator.free(value);
 		if (self.db_path) |value| allocator.free(value);
 		if (self.ollama_url) |value| allocator.free(value);
+		if (self.ollama_model) |value| allocator.free(value);
+		if (self.search_mode) |value| allocator.free(value);
+		if (self.http_host) |value| allocator.free(value);
 		self.* = .{};
 	}
 };
@@ -65,6 +75,42 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
+		if (std.mem.eql(u8, key, "ollama_model")) {
+			config.ollama_model = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "embedding_dim")) {
+			config.embedding_dim = try std.fmt.parseInt(usize, value, 10);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "batch_size")) {
+			config.batch_size = try std.fmt.parseInt(usize, value, 10);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "max_file_size")) {
+			config.max_file_size = try std.fmt.parseInt(usize, value, 10);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "search_mode")) {
+			if (!validMode(value)) return error.InvalidValue;
+			config.search_mode = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "http_host")) {
+			config.http_host = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "http_port")) {
+			config.http_port = try std.fmt.parseInt(u16, value, 10);
+			continue;
+		}
+
 		return error.UnknownKey;
 	}
 
@@ -86,6 +132,10 @@ fn stripQuotes(value: []const u8) []const u8 {
 	return value;
 }
 
+fn validMode(value: []const u8) bool {
+	return std.mem.eql(u8, value, "vector") or std.mem.eql(u8, value, "lexical") or std.mem.eql(u8, value, "hybrid");
+}
+
 test "parseText empty yields defaults" {
 	const allocator = std.testing.allocator;
 	var cfg = try parseText(allocator, "\n\n# comment\n");
@@ -95,6 +145,13 @@ test "parseText empty yields defaults" {
 	try std.testing.expect(cfg.root_path == null);
 	try std.testing.expect(cfg.db_path == null);
 	try std.testing.expect(cfg.ollama_url == null);
+	try std.testing.expect(cfg.ollama_model == null);
+	try std.testing.expect(cfg.embedding_dim == null);
+	try std.testing.expect(cfg.batch_size == null);
+	try std.testing.expect(cfg.max_file_size == null);
+	try std.testing.expect(cfg.search_mode == null);
+	try std.testing.expect(cfg.http_host == null);
+	try std.testing.expect(cfg.http_port == null);
 }
 
 test "parseText reads values" {
@@ -104,7 +161,14 @@ test "parseText reads values" {
 		"top=7\n" ++
 		"root=/repo\n" ++
 		"db=.codescan/db.sqlite3\n" ++
-		"ollama_url=http://127.0.0.1:11434\n";
+		"ollama_url=http://127.0.0.1:11434\n" ++
+		"ollama_model=bge-large\n" ++
+		"embedding_dim=768\n" ++
+		"batch_size=8\n" ++
+		"max_file_size=2048\n" ++
+		"search_mode=hybrid\n" ++
+		"http_host=0.0.0.0\n" ++
+		"http_port=9001\n";
 	var cfg = try parseText(allocator, text);
 	defer cfg.deinit(allocator);
 	try std.testing.expectEqual(cli.OutputFormat.json, cfg.output.?);
@@ -112,6 +176,13 @@ test "parseText reads values" {
 	try std.testing.expectEqualStrings("/repo", cfg.root_path.?);
 	try std.testing.expectEqualStrings(".codescan/db.sqlite3", cfg.db_path.?);
 	try std.testing.expectEqualStrings("http://127.0.0.1:11434", cfg.ollama_url.?);
+	try std.testing.expectEqualStrings("bge-large", cfg.ollama_model.?);
+	try std.testing.expectEqual(@as(usize, 768), cfg.embedding_dim.?);
+	try std.testing.expectEqual(@as(usize, 8), cfg.batch_size.?);
+	try std.testing.expectEqual(@as(usize, 2048), cfg.max_file_size.?);
+	try std.testing.expectEqualStrings("hybrid", cfg.search_mode.?);
+	try std.testing.expectEqualStrings("0.0.0.0", cfg.http_host.?);
+	try std.testing.expectEqual(@as(u16, 9001), cfg.http_port.?);
 }
 
 test "parseText errors on invalid line" {

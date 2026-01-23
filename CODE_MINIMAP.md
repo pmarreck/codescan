@@ -10,7 +10,7 @@
 - flake.nix: Nix flake providing dev dependencies (zig_0_15, sqlite, sqlite-vec, pkg-config) + env vars
 - build.zig: Zig build script for CLI + unit tests
 - test: unit test runner script (wraps `zig build test` in nix dev shell)
-- src/main.zig: CLI entrypoint (minimal stub)
+- src/main.zig: CLI entrypoint wiring config, index/search, and HTTP server
 - src/cli.zig: CLI argument parsing types + tests
 - src/config.zig: config parsing/loading for .codescan/config + tests
 - src/storage.zig: sqlite + sqlite-vec schema init, index reset, insert symbol/embedding, tests
