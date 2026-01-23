@@ -48,6 +48,10 @@ pub fn indexAll(
 		batch_rowids.deinit(allocator);
 	}
 
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	const stderr = &stderr_writer.interface;
+
 	var stats = Stats{ .files = files.len, .symbols = 0 };
 	for (files) |rel_path| {
 		const extractor = registry.find(rel_path) orelse continue;
@@ -56,6 +60,17 @@ pub fn indexAll(
 
 		const file = try std.fs.cwd().openFile(full_path, .{});
 		defer file.close();
+
+		const stat = try file.stat();
+		const size = stat.size;
+		if (options.max_file_size > 0) {
+			const warn_threshold: u64 = @intCast(options.max_file_size / 4);
+			if (warn_threshold > 0 and size > warn_threshold) {
+				const skipping = size > options.max_file_size;
+				warnLargeFile(stderr, rel_path, size, warn_threshold, options.max_file_size, skipping);
+			}
+			if (size > options.max_file_size) continue;
+		}
 
 		const source = file.readToEndAlloc(allocator, options.max_file_size) catch |err| {
 			if (err == error.FileTooBig) continue;
@@ -125,6 +140,22 @@ fn flushBatch(
 	for (batch_texts.items) |text| allocator.free(text);
 	batch_texts.clearRetainingCapacity();
 	batch_rowids.clearRetainingCapacity();
+}
+
+fn warnLargeFile(
+	writer: *std.Io.Writer,
+	file_path: []const u8,
+	size: u64,
+	threshold: u64,
+	max_size: usize,
+	skipping: bool,
+) void {
+	const action = if (skipping) "skipping" else "consider refactoring";
+	_ = writer.print(
+		"codescan: warning: {s} is {d} bytes (warn>{d}, max {d}); {s} or increase --max-file-size / .codescan/config\n",
+		.{ file_path, size, threshold, max_size, action },
+	) catch {};
+	_ = writer.flush() catch {};
 }
 
 test "buildSymbolText includes name signature and doc" {
@@ -205,6 +236,19 @@ test "indexAll skips files over max_file_size" {
 	try std.testing.expectEqual(@as(usize, 1), stats.files);
 	try std.testing.expectEqual(@as(usize, 0), stats.symbols);
 	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(db, allocator, "symbols"));
+}
+
+test "warnLargeFile includes limits" {
+	const allocator = std.testing.allocator;
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	warnLargeFile(&out.writer, "src/big.zig", 600_000, 500_000, 2_000_000, false);
+	const payload = try out.toOwnedSlice();
+	defer allocator.free(payload);
+
+	try std.testing.expect(std.mem.indexOf(u8, payload, "src/big.zig") != null);
+	try std.testing.expect(std.mem.indexOf(u8, payload, "max 2000000") != null);
 }
 
 const FakeEmbedder = struct {

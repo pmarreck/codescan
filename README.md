@@ -66,6 +66,7 @@ search_mode=hybrid
 weight_vector=0.7
 weight_lexical=0.3
 min_score=0.0
+max_file_size=2097152
 
 # ignores
 ignore=**/.git/**, **/.codescan/**

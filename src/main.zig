@@ -20,7 +20,7 @@ const Defaults = struct {
 	ollama_model: []const u8 = "bge-large",
 	embedding_dim: usize = 1024,
 	batch_size: usize = 16,
-	max_file_size: usize = 1024 * 1024,
+	max_file_size: usize = 2 * 1024 * 1024,
 	search_mode: search.SearchMode = .hybrid,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
@@ -274,7 +274,7 @@ const usage =
 	\\  --ollama-model <name>   Embedding model (default bge-large)
 	\\  --embedding-dim <n>     Embedding dimension (default 1024)
 	\\  --batch <n>             Embedding batch size (default 16)
-	\\  --max-file-size <n>     Max file size bytes (default 1048576)
+	\\  --max-file-size <n>     Max file size bytes (default 2097152)
 	\\  --top <n>               Search top N (default 10)
 	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
 	\\  --weight-vector <n>     Hybrid weight for vector score (default 0.7)

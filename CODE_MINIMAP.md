@@ -35,6 +35,7 @@
 - src/extract_c.zig: C extractor using tree-sitter + tests
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
+- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), large-file warnings + tests
 - src/search.zig: vector/lexical/hybrid search + weight tuning + FTS candidates + tests
 - src/output.zig: human/json output formatting for results + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests

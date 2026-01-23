@@ -23,7 +23,7 @@
 ## Config (.codescan/config)
 - Load path: `<root>/.codescan/config`
 - Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model`, `embedding_dim`, `batch_size`,
-  `max_file_size`, `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`.
+  `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`.
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
@@ -47,6 +47,7 @@
 
 ## Known behaviors
 - Files larger than `max_file_size` are skipped during indexing (no hard error).
+- A warning is emitted when a file exceeds `max_file_size / 4`.
 - Default DB location is `.codescan/index.sqlite3` under the target root.
 - `min_score` filters low-scoring results after ranking (default `0.0`).
 

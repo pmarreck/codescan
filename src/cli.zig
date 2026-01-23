@@ -66,7 +66,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.ollama_model = "bge-large",
 			.embedding_dim = 1024,
 			.batch_size = 16,
-			.max_file_size = 1024 * 1024,
+			.max_file_size = 2 * 1024 * 1024,
 			.http_host = "127.0.0.1",
 			.http_port = 8123,
 			.search_mode = .hybrid,
@@ -87,7 +87,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.ollama_model = "bge-large",
 		.embedding_dim = 1024,
 		.batch_size = 16,
-		.max_file_size = 1024 * 1024,
+		.max_file_size = 2 * 1024 * 1024,
 		.http_host = "127.0.0.1",
 		.http_port = 8123,
 		.search_mode = .hybrid,
@@ -277,6 +277,7 @@ test "parse with no args defaults to help" {
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
 	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
 	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
+	try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), parsed.max_file_size);
 	try std.testing.expectEqual(@as(u16, 8123), parsed.http_port);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.0), parsed.min_score, 0.0001);
 	try std.testing.expect(parsed.seen.output == false);
