@@ -19,15 +19,12 @@
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
 						zig_0_15
-						pcre2
 					];
 					shellHook = ''
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
 						export ZIG_GLOBAL_CACHE_DIR="$HOME/.cache/zig"
 						export ZIG_LOCAL_CACHE_DIR="$PWD/zig-cache"
 						export NIX_CFLAGS_COMPILE=""
-						export C_INCLUDE_PATH="${pkgs.pcre2.dev}/include"
-						export LIBRARY_PATH="${pkgs.pcre2.out}/lib"
 					'';
 				};
 			}

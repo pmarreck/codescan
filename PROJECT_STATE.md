@@ -43,7 +43,7 @@
   - Static init in `src/storage.zig` calls `sqlite3_vec_init` (no runtime extension loading).
 - SQLite amalgamation path is provided via `SQLITE_VEC_SQLITE_AMALGAMATION_DIR` (set in `flake.nix`).
 - tree-sitter runtime + tree-sitter-c grammar are vendored under `deps/` and built as static libs.
-- PCRE2 is required for glob matching; `flake.nix` sets `C_INCLUDE_PATH` and `LIBRARY_PATH`.
+- PCRE2 is required for glob matching and is built as a Zig dependency (`qaptoR-support/pcre2`).
 
 ## Known behaviors
 - Files larger than `max_file_size` are skipped during indexing (no hard error).

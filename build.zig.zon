@@ -12,6 +12,10 @@
             .url = "git+https://github.com/pmarreck/sqlite-vec.git#de36aedcc8b939c0fd21e72ceb5ae536a67520b1",
             .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0HHxBAAlS2FuJ1ZvIPuxw1A6I2C37MwIgalVt8pP",
         },
+        .pcre2 = .{
+            .url = "https://github.com/qaptoR-support/pcre2/archive/refs/tags/zig0.14.tar.gz",
+            .hash = "N-V-__8AAN0G3wA6horCZYad-eyYofHQ4Q9D7m9nSWiCqbXb",
+        },
     },
     .fingerprint = 0x61f89dfe5a676f3c,
 }

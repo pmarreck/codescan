@@ -17,6 +17,13 @@ pub fn build(b: *std.Build) void {
 	});
 	const sqlite3_lib = sqlite_vec_dep.artifact("sqlite3");
 	const vec_static_lib = sqlite_vec_dep.artifact("sqlite_vec0");
+	const pcre2_dep = b.dependency("pcre2", .{
+		.target = target,
+		.optimize = optimize,
+		.linkage = .static,
+		.@"code-unit-width" = .@"8",
+	});
+	const pcre2_lib = pcre2_dep.artifact("pcre2-8");
 	const ts_lib = buildTreeSitter(b, target, optimize);
 	const tsc_lib = buildTreeSitterC(b, target, optimize);
 
@@ -24,7 +31,8 @@ pub fn build(b: *std.Build) void {
 		.name = "codescan",
 		.root_module = main_module,
 	});
-	linkCommon(exe, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(main_module, pcre2_lib);
+	linkCommon(exe, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	b.installArtifact(exe);
 
 	const test_step = b.step("test", "Run unit tests");
@@ -37,7 +45,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, cli_tests.root_module);
-	linkCommon(cli_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(cli_tests.root_module, pcre2_lib);
+	linkCommon(cli_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(cli_tests).step);
 
 	const main_tests = b.addTest(.{
@@ -48,7 +57,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, main_tests.root_module);
-	linkCommon(main_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(main_tests.root_module, pcre2_lib);
+	linkCommon(main_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(main_tests).step);
 
 	const config_tests = b.addTest(.{
@@ -59,7 +69,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, config_tests.root_module);
-	linkCommon(config_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(config_tests.root_module, pcre2_lib);
+	linkCommon(config_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(config_tests).step);
 
 	const storage_tests = b.addTest(.{
@@ -70,7 +81,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, storage_tests.root_module);
-	linkCommon(storage_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(storage_tests.root_module, pcre2_lib);
+	linkCommon(storage_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(storage_tests).step);
 
 	const ollama_tests = b.addTest(.{
@@ -81,7 +93,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, ollama_tests.root_module);
-	linkCommon(ollama_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(ollama_tests.root_module, pcre2_lib);
+	linkCommon(ollama_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(ollama_tests).step);
 
 	const plugin_tests = b.addTest(.{
@@ -92,7 +105,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, plugin_tests.root_module);
-	linkCommon(plugin_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(plugin_tests.root_module, pcre2_lib);
+	linkCommon(plugin_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(plugin_tests).step);
 
 	const extract_zig_tests = b.addTest(.{
@@ -103,7 +117,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, extract_zig_tests.root_module);
-	linkCommon(extract_zig_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(extract_zig_tests.root_module, pcre2_lib);
+	linkCommon(extract_zig_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(extract_zig_tests).step);
 
 	const extract_elixir_tests = b.addTest(.{
@@ -114,7 +129,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, extract_elixir_tests.root_module);
-	linkCommon(extract_elixir_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(extract_elixir_tests.root_module, pcre2_lib);
+	linkCommon(extract_elixir_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(extract_elixir_tests).step);
 
 	const extract_c_tests = b.addTest(.{
@@ -125,7 +141,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, extract_c_tests.root_module);
-	linkCommon(extract_c_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(extract_c_tests.root_module, pcre2_lib);
+	linkCommon(extract_c_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(extract_c_tests).step);
 
 	const scan_tests = b.addTest(.{
@@ -136,7 +153,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, scan_tests.root_module);
-	linkCommon(scan_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(scan_tests.root_module, pcre2_lib);
+	linkCommon(scan_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(scan_tests).step);
 
 	const embedding_tests = b.addTest(.{
@@ -147,7 +165,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, embedding_tests.root_module);
-	linkCommon(embedding_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(embedding_tests.root_module, pcre2_lib);
+	linkCommon(embedding_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(embedding_tests).step);
 
 	const indexer_tests = b.addTest(.{
@@ -158,7 +177,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, indexer_tests.root_module);
-	linkCommon(indexer_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(indexer_tests.root_module, pcre2_lib);
+	linkCommon(indexer_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(indexer_tests).step);
 
 	const search_tests = b.addTest(.{
@@ -169,7 +189,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, search_tests.root_module);
-	linkCommon(search_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(search_tests.root_module, pcre2_lib);
+	linkCommon(search_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(search_tests).step);
 
 	const output_tests = b.addTest(.{
@@ -180,7 +201,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, output_tests.root_module);
-	linkCommon(output_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(output_tests.root_module, pcre2_lib);
+	linkCommon(output_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(output_tests).step);
 
 	const server_tests = b.addTest(.{
@@ -191,7 +213,8 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, server_tests.root_module);
-	linkCommon(server_tests, sqlite3_lib, vec_static_lib, ts_lib, tsc_lib);
+	addPcre2Includes(server_tests.root_module, pcre2_lib);
+	linkCommon(server_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, tsc_lib);
 	test_step.dependOn(&b.addRunArtifact(server_tests).step);
 }
 
@@ -199,18 +222,23 @@ fn addTreeSitterIncludes(b: *std.Build, module: *std.Build.Module) void {
 	module.addIncludePath(b.path("deps/tree-sitter/lib/include"));
 }
 
+fn addPcre2Includes(module: *std.Build.Module, pcre2_lib: *std.Build.Step.Compile) void {
+	module.addIncludePath(pcre2_lib.getEmittedIncludeTree());
+}
+
 fn linkCommon(
 	compile: *std.Build.Step.Compile,
 	sqlite3_lib: *std.Build.Step.Compile,
 	vec_static_lib: *std.Build.Step.Compile,
+	pcre2_lib: *std.Build.Step.Compile,
 	ts_lib: *std.Build.Step.Compile,
 	tsc_lib: *std.Build.Step.Compile,
 ) void {
 	compile.linkLibrary(sqlite3_lib);
 	compile.linkLibrary(vec_static_lib);
+	compile.linkLibrary(pcre2_lib);
 	compile.linkLibrary(ts_lib);
 	compile.linkLibrary(tsc_lib);
-	compile.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 }
 
 fn buildTreeSitter(
