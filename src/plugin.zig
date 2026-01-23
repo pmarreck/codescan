@@ -2,6 +2,8 @@ const std = @import("std");
 const model = @import("model.zig");
 const extract_zig = @import("extract_zig.zig");
 const extract_elixir = @import("extract_elixir.zig");
+const zig_plugin = @import("plugins/zig/mod.zig");
+const elixir_plugin = @import("plugins/elixir/mod.zig");
 
 pub const ExtractorFn = *const fn (
 	allocator: std.mem.Allocator,
@@ -12,6 +14,7 @@ pub const ExtractorFn = *const fn (
 pub const Extractor = struct {
 	language: []const u8,
 	extensions: []const []const u8,
+	ignore_patterns: []const []const u8,
 	extract: ExtractorFn,
 };
 
@@ -32,13 +35,15 @@ pub fn defaultRegistry() Registry {
 	return .{
 		.extractors = &[_]Extractor{
 			.{
-				.language = "zig",
-				.extensions = &[_][]const u8{ ".zig" },
+				.language = zig_plugin.language,
+				.extensions = zig_plugin.extensions,
+				.ignore_patterns = zig_plugin.ignore_patterns,
 				.extract = extract_zig.extract,
 			},
 			.{
-				.language = "elixir",
-				.extensions = &[_][]const u8{ ".ex", ".exs" },
+				.language = elixir_plugin.language,
+				.extensions = elixir_plugin.extensions,
+				.ignore_patterns = elixir_plugin.ignore_patterns,
 				.extract = extract_elixir.extract,
 			},
 		},
@@ -55,11 +60,13 @@ test "registry finds extractor by extension" {
 			.{
 				.language = "zig",
 				.extensions = &[_][]const u8{ ".zig" },
+				.ignore_patterns = &[_][]const u8{},
 				.extract = dummyExtract,
 			},
 			.{
 				.language = "elixir",
 				.extensions = &[_][]const u8{ ".ex" },
+				.ignore_patterns = &[_][]const u8{},
 				.extract = dummyExtract,
 			},
 		},

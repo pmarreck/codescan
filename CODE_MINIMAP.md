@@ -18,10 +18,14 @@
 - src/embedding.zig: embedder interface + Ollama adapter + tests
 - src/model.zig: core data model for extracted symbols
 - src/plugin.zig: extractor interface, registry, and tests
+- src/plugins/zig/mod.zig: Zig plugin defaults (language, extensions, ignore globs)
+- src/plugins/elixir/mod.zig: Elixir plugin defaults (language, extensions, ignore globs)
 - src/extract_zig.zig: Zig AST-based extractor + tests
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
-- src/scan.zig: file walker for supported source files + tests
+- src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
 - src/search.zig: vector/lexical/hybrid search + weight tuning + FTS candidates + tests
 - src/output.zig: human/json output formatting for results + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests
+- src/filter.zig: glob-to-regex compiler + PCRE2 matcher for ignore patterns
+- src/pcre2.zig: minimal PCRE2 wrapper used by filter

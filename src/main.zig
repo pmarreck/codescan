@@ -9,6 +9,7 @@ const search = @import("search.zig");
 const output = @import("output.zig");
 const server = @import("server.zig");
 const plugin = @import("plugin.zig");
+const scan = @import("scan.zig");
 
 const Defaults = struct {
 	output: cli.OutputFormat = .human,
@@ -41,6 +42,8 @@ const Settings = struct {
 	search_mode: search.SearchMode,
 	weight_vector: f32,
 	weight_lexical: f32,
+	ignore_global: []const []const u8,
+	ignore_lang: []const config.IgnoreOverride,
 	http_host: []const u8,
 	http_port: u16,
 };
@@ -91,7 +94,15 @@ pub fn main() !void {
 				settings.root_path,
 				plugin.defaultRegistry(),
 				embedder_adapter.embedder(),
-				.{ .embedding_dim = settings.embedding_dim, .batch_size = settings.batch_size, .max_file_size = settings.max_file_size },
+				.{
+					.embedding_dim = settings.embedding_dim,
+					.batch_size = settings.batch_size,
+					.max_file_size = settings.max_file_size,
+					.ignore = .{
+						.global = settings.ignore_global,
+						.per_language = settings.ignore_lang,
+					},
+				},
 			);
 
 			if (settings.output == .json) {
@@ -145,6 +156,8 @@ pub fn main() !void {
 				.search_mode = settings.search_mode,
 				.search_weight_vector = settings.weight_vector,
 				.search_weight_lexical = settings.weight_lexical,
+				.ignore_global = settings.ignore_global,
+				.ignore_lang = settings.ignore_lang,
 				.http_host = settings.http_host,
 				.http_port = settings.http_port,
 			});
@@ -169,6 +182,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.search_mode = defaults.search_mode,
 		.weight_vector = defaults.weight_vector,
 		.weight_lexical = defaults.weight_lexical,
+		.ignore_global = &[_][]const u8{},
+		.ignore_lang = &[_]config.IgnoreOverride{},
 		.http_host = defaults.http_host,
 		.http_port = defaults.http_port,
 	};
@@ -185,6 +200,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.search_mode) |value| settings.search_mode = try parseMode(value);
 	if (cfg.weight_vector) |value| settings.weight_vector = value;
 	if (cfg.weight_lexical) |value| settings.weight_lexical = value;
+	settings.ignore_global = cfg.ignore_global.items;
+	settings.ignore_lang = cfg.ignore_lang.items;
 	if (cfg.http_host) |value| settings.http_host = value;
 	if (cfg.http_port) |value| settings.http_port = value;
 

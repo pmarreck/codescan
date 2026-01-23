@@ -4,11 +4,16 @@ const scan = @import("scan.zig");
 const storage = @import("storage.zig");
 const model = @import("model.zig");
 const embedding = @import("embedding.zig");
+const config = @import("config.zig");
 
 pub const Options = struct {
 	embedding_dim: usize,
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
+	ignore: scan.IgnoreConfig = .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+	},
 };
 
 pub const Stats = struct {
@@ -29,7 +34,7 @@ pub fn indexAll(
 	try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
 	try storage.resetIndex(db);
 
-	const files = try scan.findFiles(allocator, root_path, registry);
+	const files = try scan.findFiles(allocator, root_path, registry, options.ignore);
 	defer {
 		for (files) |path| allocator.free(path);
 		allocator.free(files);

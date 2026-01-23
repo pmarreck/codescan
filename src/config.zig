@@ -1,6 +1,18 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 
+pub const IgnoreOverride = struct {
+	language: []const u8,
+	patterns: std.ArrayListUnmanaged([]const u8) = .{},
+
+	pub fn deinit(self: *IgnoreOverride, allocator: std.mem.Allocator) void {
+		for (self.patterns.items) |pattern| allocator.free(pattern);
+		self.patterns.deinit(allocator);
+		allocator.free(self.language);
+		self.* = undefined;
+	}
+};
+
 pub const Config = struct {
 	output: ?cli.OutputFormat = null,
 	top_n: ?usize = null,
@@ -14,6 +26,8 @@ pub const Config = struct {
 	search_mode: ?[]const u8 = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
+	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
+	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
 	http_host: ?[]const u8 = null,
 	http_port: ?u16 = null,
 
@@ -24,6 +38,10 @@ pub const Config = struct {
 		if (self.ollama_model) |value| allocator.free(value);
 		if (self.search_mode) |value| allocator.free(value);
 		if (self.http_host) |value| allocator.free(value);
+		for (self.ignore_global.items) |pattern| allocator.free(pattern);
+		self.ignore_global.deinit(allocator);
+		for (self.ignore_lang.items) |*entry| entry.deinit(allocator);
+		self.ignore_lang.deinit(allocator);
 		self.* = .{};
 	}
 };
@@ -103,6 +121,19 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
+		if (std.mem.eql(u8, key, "ignore")) {
+			try appendPatterns(allocator, &config.ignore_global, value);
+			continue;
+		}
+
+		if (std.mem.startsWith(u8, key, "ignore.")) {
+			const lang = key["ignore.".len..];
+			if (lang.len == 0) return error.InvalidValue;
+			var entry = try getOrCreateOverride(allocator, &config.ignore_lang, lang);
+			try appendPatterns(allocator, &entry.patterns, value);
+			continue;
+		}
+
 		if (std.mem.eql(u8, key, "weight_vector")) {
 			config.weight_vector = try std.fmt.parseFloat(f32, value);
 			continue;
@@ -144,6 +175,34 @@ fn stripQuotes(value: []const u8) []const u8 {
 	return value;
 }
 
+fn appendPatterns(
+	allocator: std.mem.Allocator,
+	list: *std.ArrayListUnmanaged([]const u8),
+	value: []const u8,
+) !void {
+	var parts = std.mem.splitScalar(u8, value, ',');
+	while (parts.next()) |part| {
+		const trimmed = std.mem.trim(u8, part, " \t\r");
+		if (trimmed.len == 0) continue;
+		try list.append(allocator, try allocator.dupe(u8, trimmed));
+	}
+}
+
+fn getOrCreateOverride(
+	allocator: std.mem.Allocator,
+	list: *std.ArrayListUnmanaged(IgnoreOverride),
+	lang: []const u8,
+) !*IgnoreOverride {
+	for (list.items) |*entry| {
+		if (std.mem.eql(u8, entry.language, lang)) return entry;
+	}
+	try list.append(allocator, .{
+		.language = try allocator.dupe(u8, lang),
+		.patterns = .{},
+	});
+	return &list.items[list.items.len - 1];
+}
+
 fn validMode(value: []const u8) bool {
 	return std.mem.eql(u8, value, "vector") or std.mem.eql(u8, value, "lexical") or std.mem.eql(u8, value, "hybrid");
 }
@@ -164,6 +223,8 @@ test "parseText empty yields defaults" {
 	try std.testing.expect(cfg.search_mode == null);
 	try std.testing.expect(cfg.weight_vector == null);
 	try std.testing.expect(cfg.weight_lexical == null);
+	try std.testing.expectEqual(@as(usize, 0), cfg.ignore_global.items.len);
+	try std.testing.expectEqual(@as(usize, 0), cfg.ignore_lang.items.len);
 	try std.testing.expect(cfg.http_host == null);
 	try std.testing.expect(cfg.http_port == null);
 }
@@ -201,6 +262,25 @@ test "parseText reads values" {
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), cfg.weight_lexical.?, 0.0001);
 	try std.testing.expectEqualStrings("0.0.0.0", cfg.http_host.?);
 	try std.testing.expectEqual(@as(u16, 9001), cfg.http_port.?);
+}
+
+test "parseText reads ignore patterns" {
+	const allocator = std.testing.allocator;
+	const text =
+		"ignore=**/.git/**, **/.codescan/**\n" ++
+		"ignore.zig=**/.zig-cache/**,**/zig-out/**\n" ++
+		"ignore.elixir=**/deps/**\n";
+	var cfg = try parseText(allocator, text);
+	defer cfg.deinit(allocator);
+
+	try std.testing.expectEqual(@as(usize, 2), cfg.ignore_global.items.len);
+	try std.testing.expectEqualStrings("**/.git/**", cfg.ignore_global.items[0]);
+	try std.testing.expectEqualStrings("**/.codescan/**", cfg.ignore_global.items[1]);
+	try std.testing.expectEqual(@as(usize, 2), cfg.ignore_lang.items.len);
+	try std.testing.expectEqualStrings("zig", cfg.ignore_lang.items[0].language);
+	try std.testing.expectEqual(@as(usize, 2), cfg.ignore_lang.items[0].patterns.items.len);
+	try std.testing.expectEqualStrings("**/.zig-cache/**", cfg.ignore_lang.items[0].patterns.items[0]);
+	try std.testing.expectEqualStrings("**/zig-out/**", cfg.ignore_lang.items[0].patterns.items[1]);
 }
 
 test "parseText errors on invalid line" {

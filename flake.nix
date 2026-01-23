@@ -16,6 +16,7 @@
 						zig_0_15
 						sqlite
 						sqlite-vec
+						pcre2
 						pkg-config
 					];
 					shellHook = ''

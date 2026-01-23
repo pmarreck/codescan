@@ -6,6 +6,7 @@ const search = @import("search.zig");
 const output = @import("output.zig");
 const plugin = @import("plugin.zig");
 const ollama = @import("ollama.zig");
+const config = @import("config.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
@@ -19,6 +20,8 @@ pub const Settings = struct {
 	search_mode: search.SearchMode,
 	search_weight_vector: f32,
 	search_weight_lexical: f32,
+	ignore_global: []const []const u8,
+	ignore_lang: []const config.IgnoreOverride,
 	http_host: []const u8,
 	http_port: u16,
 };
@@ -109,7 +112,15 @@ fn handleRequest(
 			settings.root_path,
 			plugin.defaultRegistry(),
 			embedder,
-			.{ .embedding_dim = settings.embedding_dim, .batch_size = settings.batch_size, .max_file_size = settings.max_file_size },
+			.{
+				.embedding_dim = settings.embedding_dim,
+				.batch_size = settings.batch_size,
+				.max_file_size = settings.max_file_size,
+				.ignore = .{
+					.global = settings.ignore_global,
+					.per_language = settings.ignore_lang,
+				},
+			},
 		);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
