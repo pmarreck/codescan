@@ -7,7 +7,7 @@
 - [x] Build embedding pipeline (Ollama HTTP client, batching)
 - [ ] Implement indexing flow (scan -> extract -> embed -> store)
 - [ ] Implement search flow (query embed -> vector search -> format)
-- [ ] Define plugin interface + registry
+- [x] Define plugin interface + registry
 - [ ] Implement Zig extractor (function spans + comments)
 - [ ] Implement Elixir extractor (function spans + comments)
 - [ ] Add JSON output + human output formatting

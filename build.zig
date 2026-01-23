@@ -68,4 +68,14 @@ pub fn build(b: *std.Build) void {
 	});
 	ollama_tests.linkSystemLibrary("sqlite3");
 	test_step.dependOn(&b.addRunArtifact(ollama_tests).step);
+
+	const plugin_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/plugin.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	plugin_tests.linkSystemLibrary("sqlite3");
+	test_step.dependOn(&b.addRunArtifact(plugin_tests).step);
 }

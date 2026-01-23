@@ -15,3 +15,5 @@
 - src/config.zig: config parsing/loading for .codescan/config + tests
 - src/storage.zig: sqlite + sqlite-vec schema init + tests
 - src/ollama.zig: Ollama embed request/response + HTTP transport + tests
+- src/model.zig: core data model for extracted symbols
+- src/plugin.zig: extractor interface, registry, and tests
