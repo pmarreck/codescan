@@ -9,7 +9,7 @@
     },
     .dependencies = .{
         .sqlite_vec = .{
-            .url = "git+https://github.com/pmarreck/sqlite-vec.git#742ac1642cd3c1f1457a6e0de98db77b47a6fa3c",
+            .url = "git+https://github.com/pmarreck/sqlite-vec.git#742ac1607d5490c71758c9fde80820387391910d",
             .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0OvwBACYsEQvfmbSw0sUHuXhcwD5PgjGyslHXU2q",
         },
         .pcre2 = .{
