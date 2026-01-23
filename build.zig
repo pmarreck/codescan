@@ -98,4 +98,14 @@ pub fn build(b: *std.Build) void {
 	});
 	extract_elixir_tests.linkSystemLibrary("sqlite3");
 	test_step.dependOn(&b.addRunArtifact(extract_elixir_tests).step);
+
+	const scan_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/scan.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	scan_tests.linkSystemLibrary("sqlite3");
+	test_step.dependOn(&b.addRunArtifact(scan_tests).step);
 }
