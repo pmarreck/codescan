@@ -1,0 +1,238 @@
+const std = @import("std");
+const model = @import("model.zig");
+
+const ts = @cImport({
+	@cInclude("tree_sitter/api.h");
+});
+extern fn tree_sitter_c() *ts.TSLanguage;
+
+pub fn extract(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	source: []const u8,
+) ![]model.Symbol {
+	const parser = ts.ts_parser_new() orelse return error.ParseFailed;
+	defer ts.ts_parser_delete(parser);
+
+	if (!ts.ts_parser_set_language(parser, tree_sitter_c())) {
+		return error.ParseFailed;
+	}
+
+	const tree = ts.ts_parser_parse_string(
+		parser,
+		null,
+		source.ptr,
+		@intCast(source.len),
+	) orelse return error.ParseFailed;
+	defer ts.ts_tree_delete(tree);
+
+	var results = std.ArrayListUnmanaged(model.Symbol){};
+	errdefer {
+		for (results.items) |*sym| sym.deinit(allocator);
+		results.deinit(allocator);
+	}
+
+	var lines = try splitLines(allocator, source);
+	defer lines.deinit(allocator);
+
+	var cursor = ts.ts_tree_cursor_new(ts.ts_tree_root_node(tree));
+	defer ts.ts_tree_cursor_delete(&cursor);
+
+	var done = false;
+	while (!done) {
+		const node = ts.ts_tree_cursor_current_node(&cursor);
+		if (isFunctionDefinition(node)) {
+			if (try extractFunction(allocator, file_path, source, lines.items, node)) |symbol| {
+				try results.append(allocator, symbol);
+			}
+		}
+
+		if (ts.ts_tree_cursor_goto_first_child(&cursor)) continue;
+		if (ts.ts_tree_cursor_goto_next_sibling(&cursor)) continue;
+
+		while (true) {
+			if (!ts.ts_tree_cursor_goto_parent(&cursor)) {
+				done = true;
+				break;
+			}
+			if (ts.ts_tree_cursor_goto_next_sibling(&cursor)) break;
+		}
+	}
+
+	return results.toOwnedSlice(allocator);
+}
+
+fn extractFunction(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	source: []const u8,
+	lines: []const []const u8,
+	node: ts.TSNode,
+) !?model.Symbol {
+	const name_node = findIdentifierInDeclarator(node) orelse return null;
+	const name = nodeText(source, name_node);
+	if (name.len == 0) return null;
+
+	const signature = try extractSignature(allocator, source, node);
+	const doc_comment = try extractDocComment(allocator, lines, node);
+
+	const start_point = ts.ts_node_start_point(node);
+	const end_point = ts.ts_node_end_point(node);
+
+	const symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "c"),
+		.file_path = try allocator.dupe(u8, file_path),
+		.name = try allocator.dupe(u8, name),
+		.signature = signature,
+		.doc_comment = doc_comment,
+		.start_line = start_point.row + 1,
+		.end_line = end_point.row + 1,
+	};
+	return symbol;
+}
+
+fn isFunctionDefinition(node: ts.TSNode) bool {
+	const ty = std.mem.span(ts.ts_node_type(node));
+	return std.mem.eql(u8, ty, "function_definition");
+}
+
+fn findIdentifierInDeclarator(node: ts.TSNode) ?ts.TSNode {
+	const decl = ts.ts_node_child_by_field_name(node, "declarator", "declarator".len);
+	if (ts.ts_node_is_null(decl)) return null;
+	return findIdentifier(decl);
+}
+
+fn findIdentifier(root: ts.TSNode) ?ts.TSNode {
+	var cursor = ts.ts_tree_cursor_new(root);
+	defer ts.ts_tree_cursor_delete(&cursor);
+
+	var done = false;
+	while (!done) {
+		const node = ts.ts_tree_cursor_current_node(&cursor);
+		const ty = std.mem.span(ts.ts_node_type(node));
+		if (std.mem.eql(u8, ty, "identifier")) return node;
+
+		if (ts.ts_tree_cursor_goto_first_child(&cursor)) continue;
+		if (ts.ts_tree_cursor_goto_next_sibling(&cursor)) continue;
+
+		while (true) {
+			if (!ts.ts_tree_cursor_goto_parent(&cursor)) {
+				done = true;
+				break;
+			}
+			if (ts.ts_tree_cursor_goto_next_sibling(&cursor)) break;
+		}
+	}
+	return null;
+}
+
+fn extractSignature(allocator: std.mem.Allocator, source: []const u8, node: ts.TSNode) ![]const u8 {
+	const body = ts.ts_node_child_by_field_name(node, "body", "body".len);
+	if (ts.ts_node_is_null(body)) {
+		const slice = nodeText(source, node);
+		return allocator.dupe(u8, std.mem.trimRight(u8, slice, " \t\r\n"));
+	}
+	const start = @as(usize, @intCast(ts.ts_node_start_byte(node)));
+	const end = @as(usize, @intCast(ts.ts_node_start_byte(body)));
+	if (end <= start or end > source.len) {
+		const slice = nodeText(source, node);
+		return allocator.dupe(u8, std.mem.trimRight(u8, slice, " \t\r\n"));
+	}
+	const slice = std.mem.trimRight(u8, source[start..end], " \t\r\n");
+	return allocator.dupe(u8, slice);
+}
+
+fn extractDocComment(
+	allocator: std.mem.Allocator,
+	lines: []const []const u8,
+	node: ts.TSNode,
+) !?[]const u8 {
+	const start_line = @as(usize, @intCast(ts.ts_node_start_point(node).row));
+	if (start_line == 0 or start_line > lines.len) return null;
+
+	var collected = std.ArrayListUnmanaged([]const u8){};
+	defer collected.deinit(allocator);
+
+	var idx = start_line;
+	while (idx > 0) : (idx -= 1) {
+		const line = lines[idx - 1];
+		const trimmed = std.mem.trimLeft(u8, line, " \t\r");
+		if (trimmed.len == 0) break;
+		if (std.mem.startsWith(u8, trimmed, "//")) {
+			try collected.append(allocator, cleanLineComment(trimmed));
+			continue;
+		}
+		if (std.mem.startsWith(u8, trimmed, "/*")) {
+			try collected.append(allocator, cleanBlockCommentLine(trimmed));
+			break;
+		}
+		break;
+	}
+
+	if (collected.items.len == 0) return null;
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	var i: usize = collected.items.len;
+	while (i > 0) : (i -= 1) {
+		if (i != collected.items.len) try out.writer.writeAll("\n");
+		try out.writer.writeAll(collected.items[i - 1]);
+	}
+
+	const owned = try out.toOwnedSlice();
+	return @as(?[]const u8, owned);
+}
+
+fn cleanLineComment(line: []const u8) []const u8 {
+	var trimmed = line;
+	if (std.mem.startsWith(u8, trimmed, "///")) {
+		trimmed = trimmed[3..];
+	} else if (std.mem.startsWith(u8, trimmed, "//")) {
+		trimmed = trimmed[2..];
+	}
+	return std.mem.trimLeft(u8, trimmed, " \t");
+}
+
+fn cleanBlockCommentLine(line: []const u8) []const u8 {
+	var trimmed = line;
+	if (std.mem.startsWith(u8, trimmed, "/*")) trimmed = trimmed[2..];
+	if (std.mem.endsWith(u8, trimmed, "*/")) trimmed = trimmed[0 .. trimmed.len - 2];
+	return std.mem.trim(u8, trimmed, " \t\r");
+}
+
+fn nodeText(source: []const u8, node: ts.TSNode) []const u8 {
+	const start = @as(usize, @intCast(ts.ts_node_start_byte(node)));
+	const end = @as(usize, @intCast(ts.ts_node_end_byte(node)));
+	if (start >= source.len or end <= start or end > source.len) return "";
+	return source[start..end];
+}
+
+fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
+	var lines = std.ArrayListUnmanaged([]const u8){};
+	errdefer lines.deinit(allocator);
+	var it = std.mem.splitScalar(u8, source, '\n');
+	while (it.next()) |line| {
+		try lines.append(allocator, line);
+	}
+	return lines;
+}
+
+test "extract finds c functions" {
+	const allocator = std.testing.allocator;
+	const source =
+		"// Adds two ints\n" ++
+		"int add(int a, int b) { return a + b; }\n" ++
+		"\n" ++
+		"static void helper(void) {}\n";
+
+	const symbols = try extract(allocator, "src/math.c", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 2), symbols.len);
+	try std.testing.expectEqualStrings("add", symbols[0].name);
+	try std.testing.expectEqualStrings("Adds two ints", symbols[0].doc_comment.?);
+}

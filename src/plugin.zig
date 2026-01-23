@@ -2,8 +2,10 @@ const std = @import("std");
 const model = @import("model.zig");
 const extract_zig = @import("extract_zig.zig");
 const extract_elixir = @import("extract_elixir.zig");
+const extract_c = @import("extract_c.zig");
 const zig_plugin = @import("plugins/zig/mod.zig");
 const elixir_plugin = @import("plugins/elixir/mod.zig");
+const c_plugin = @import("plugins/c/mod.zig");
 
 pub const ExtractorFn = *const fn (
 	allocator: std.mem.Allocator,
@@ -45,6 +47,12 @@ pub fn defaultRegistry() Registry {
 				.extensions = elixir_plugin.extensions,
 				.ignore_patterns = elixir_plugin.ignore_patterns,
 				.extract = extract_elixir.extract,
+			},
+			.{
+				.language = c_plugin.language,
+				.extensions = c_plugin.extensions,
+				.ignore_patterns = c_plugin.ignore_patterns,
+				.extract = extract_c.extract,
 			},
 		},
 	};

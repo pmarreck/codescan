@@ -24,4 +24,8 @@
 - [x] Add sqlite-vec git dependency (build.zig.zon)
 - [x] Fetch sqlite amalgamation via flake for sqlite-vec build
 - [x] Evaluate/tune weights on example repo queries
-- [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)
+- [x] Add C plugin (tree-sitter runtime + grammar, extractor, registry wiring)
+- [x] Skip over max_file_size files during indexing (no hard error)
+- [x] Add C plugin default ignores for Zig build caches
+- [x] Ensure pcre2 headers/libs are available via flake env
+- [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md, PROJECT_STATE.md)

@@ -11,6 +11,7 @@
 - build.zig.zon: Zig package metadata + git dependency on sqlite-vec fork
 - build.zig: Zig build script for CLI + unit tests
 - test: unit test runner script (wraps `zig build test` in nix dev shell)
+- PROJECT_STATE.md: working notes for future contributors/LLMs (build/run/config details)
 - src/main.zig: CLI entrypoint wiring config, index/search, and HTTP server
 - src/cli.zig: CLI argument parsing (including hybrid weight flags) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
@@ -21,8 +22,10 @@
 - src/plugin.zig: extractor interface, registry, and tests
 - src/plugins/zig/mod.zig: Zig plugin defaults (language, extensions, ignore globs)
 - src/plugins/elixir/mod.zig: Elixir plugin defaults (language, extensions, ignore globs)
+- src/plugins/c/mod.zig: C plugin defaults (language, extensions, ignore globs)
 - src/extract_zig.zig: Zig AST-based extractor + tests
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
+- src/extract_c.zig: C extractor using tree-sitter + tests
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
 - src/search.zig: vector/lexical/hybrid search + weight tuning + FTS candidates + tests
@@ -30,3 +33,5 @@
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests
 - src/filter.zig: glob-to-regex compiler + PCRE2 matcher for ignore patterns
 - src/pcre2.zig: minimal PCRE2 wrapper used by filter
+- deps/tree-sitter: vendored tree-sitter runtime (C library + headers)
+- deps/tree-sitter-c: vendored tree-sitter C grammar (parser.c)

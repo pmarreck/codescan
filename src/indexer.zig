@@ -57,7 +57,10 @@ pub fn indexAll(
 		const file = try std.fs.cwd().openFile(full_path, .{});
 		defer file.close();
 
-		const source = try file.readToEndAlloc(allocator, options.max_file_size);
+		const source = file.readToEndAlloc(allocator, options.max_file_size) catch |err| {
+			if (err == error.FileTooBig) continue;
+			return err;
+		};
 		defer allocator.free(source);
 
 		const symbols = try extractor.extract(allocator, rel_path, source);
@@ -173,6 +176,35 @@ test "indexAll stores symbols and embeddings" {
 	try std.testing.expectEqual(@as(usize, 2), stats.symbols);
 	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "symbols"));
 	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
+}
+
+test "indexAll skips files over max_file_size" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	const source =
+		"/// Big\n" ++
+		"pub fn big() void { return; }\n";
+	try tmp.dir.writeFile(.{ .sub_path = "src/big.zig", .data = source });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+	const stats = try indexAll(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+		.max_file_size = 8,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.files);
+	try std.testing.expectEqual(@as(usize, 0), stats.symbols);
+	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(db, allocator, "symbols"));
 }
 
 const FakeEmbedder = struct {
