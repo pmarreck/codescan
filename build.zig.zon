@@ -9,8 +9,8 @@
     },
     .dependencies = .{
         .sqlite_vec = .{
-            .url = "git+https://github.com/pmarreck/sqlite-vec.git#de36aedcc8b939c0fd21e72ceb5ae536a67520b1",
-            .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0HHxBAAlS2FuJ1ZvIPuxw1A6I2C37MwIgalVt8pP",
+            .url = "git+https://github.com/pmarreck/sqlite-vec.git#742ac1642cd3c1f1457a6e0de98db77b47a6fa3c",
+            .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0OvwBACYsEQvfmbSw0sUHuXhcwD5PgjGyslHXU2q",
         },
         .pcre2 = .{
             .url = "https://github.com/qaptoR-support/pcre2/archive/refs/tags/zig0.14.tar.gz",
