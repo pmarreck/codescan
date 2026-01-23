@@ -48,6 +48,9 @@ nix develop -c ./test-integration
 ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
 ```
 
+If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
+directory and uses that as the root (otherwise it falls back to the current directory).
+
 ## Run (HTTP)
 
 ```bash

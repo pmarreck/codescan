@@ -15,6 +15,7 @@
 - Search:
   - `./zig-out/bin/codescan search "<query>" --root <path>`
   - Optional knobs: `--mode <vector|lexical|hybrid>`, `--weight-vector`, `--weight-lexical`, `--top`
+- If `--root` is omitted, codescan searches upward from the current directory for a `.codescan/` directory and uses that root (else current dir).
 
 ## Run (HTTP)
 - `./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123`

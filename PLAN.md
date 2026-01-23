@@ -33,3 +33,4 @@
 - [x] Add integration test suite across Zig/Elixir/C fixture repos
 - [x] Add basic HTTP server /health test
 - [x] Update runtime CLI examples to avoid nix develop prefix
+- [x] Default root to nearest .codescan ancestor when --root omitted

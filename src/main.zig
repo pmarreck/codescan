@@ -70,10 +70,21 @@ pub fn main() !void {
 		return;
 	}
 
-	var cfg = try loadConfig(allocator, parsed.root_path);
+	var discovered_root: ?[]u8 = null;
+	defer if (discovered_root) |path| allocator.free(path);
+
+	var config_root = parsed.root_path;
+	if (!parsed.seen.root_path) {
+		discovered_root = try findRepoRoot(allocator, parsed.root_path);
+		if (discovered_root) |root| {
+			config_root = root;
+		}
+	}
+
+	var cfg = try loadConfig(allocator, config_root);
 	defer cfg.deinit(allocator);
 
-	const settings = try resolveSettings(allocator, parsed, cfg);
+	const settings = try resolveSettings(allocator, parsed, cfg, config_root);
 	defer if (settings.db_path_owned) allocator.free(settings.db_path);
 
 	switch (parsed.command) {
@@ -170,12 +181,12 @@ pub fn main() !void {
 	}
 }
 
-fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config.Config) !Settings {
+fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config.Config, default_root: []const u8) !Settings {
 	const defaults = Defaults{};
 	var settings = Settings{
 		.output = defaults.output,
 		.top_n = defaults.top_n,
-		.root_path = defaults.root_path,
+		.root_path = default_root,
 		.db_path = defaults.db_path,
 		.db_path_owned = false,
 		.ollama_url = defaults.ollama_url,
@@ -235,6 +246,57 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	return settings;
 }
 
+fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
+	return findRepoRootUntil(allocator, start_path, null);
+}
+
+fn findRepoRootUntil(
+	allocator: std.mem.Allocator,
+	start_path: []const u8,
+	stop_at: ?[]const u8,
+) !?[]u8 {
+	const start_abs = try std.fs.cwd().realpathAlloc(allocator, start_path);
+	errdefer allocator.free(start_abs);
+
+	var stop_abs: ?[]u8 = null;
+	defer if (stop_abs) |path| allocator.free(path);
+	if (stop_at) |stop_path| {
+		stop_abs = try std.fs.cwd().realpathAlloc(allocator, stop_path);
+	}
+
+	var current = start_abs;
+	while (true) {
+		if (try hasCodescanDir(current)) {
+			return current;
+		}
+
+		if (stop_abs) |stop_path| {
+			if (std.mem.eql(u8, current, stop_path)) break;
+		}
+
+		const parent = std.fs.path.dirname(current) orelse break;
+		if (std.mem.eql(u8, parent, current)) break;
+
+		const next = try allocator.dupe(u8, parent);
+		allocator.free(current);
+		current = next;
+	}
+
+	allocator.free(current);
+	return null;
+}
+
+fn hasCodescanDir(path: []const u8) !bool {
+	var dir = try std.fs.openDirAbsolute(path, .{});
+	defer dir.close();
+	var codescan_dir = dir.openDir(".codescan", .{}) catch |err| switch (err) {
+		error.FileNotFound, error.NotDir => return false,
+		else => return err,
+	};
+	codescan_dir.close();
+	return true;
+}
+
 fn loadConfig(allocator: std.mem.Allocator, root_path: []const u8) !config.Config {
 	const path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
 	defer allocator.free(path);
@@ -268,7 +330,7 @@ const usage =
 	\\  serve             Start HTTP API server
 	\\
 	\\Options:
-	\\  --root <path>           Root path (default .)
+	\\  --root <path>           Root path (default: nearest .codescan ancestor or .)
 	\\  --db <path>             DB path (default .codescan/index.sqlite3)
 	\\  --ollama-url <url>      Ollama base URL (default http://localhost:11434)
 	\\  --ollama-model <name>   Embedding model (default bge-large)
@@ -286,3 +348,43 @@ const usage =
 	\\  -h, --help              Show help
 	\\
 ;
+
+test "findRepoRoot finds nearest .codescan ancestor" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("repo/.codescan");
+	try tmp.dir.makePath("repo/sub/dir");
+
+	const start = try tmp.dir.realpathAlloc(allocator, "repo/sub/dir");
+	defer allocator.free(start);
+
+	const expected = try tmp.dir.realpathAlloc(allocator, "repo");
+	defer allocator.free(expected);
+
+	const root = try findRepoRoot(allocator, start);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root != null);
+	try std.testing.expectEqualStrings(expected, root.?);
+}
+
+test "findRepoRoot returns null when missing" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("repo/sub/dir");
+
+	const start = try tmp.dir.realpathAlloc(allocator, "repo/sub/dir");
+	defer allocator.free(start);
+
+	const stop_at = try tmp.dir.realpathAlloc(allocator, "repo");
+	defer allocator.free(stop_at);
+
+	const root = try findRepoRootUntil(allocator, start, stop_at);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root == null);
+}

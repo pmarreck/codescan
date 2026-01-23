@@ -20,7 +20,7 @@
 - build.zig: Zig build script for CLI + unit tests
 - test: unit test runner script (wraps `zig build test` in nix dev shell)
 - PROJECT_STATE.md: working notes for future contributors/LLMs (build/run/config details)
-- src/main.zig: CLI entrypoint wiring config, index/search, and HTTP server
+- src/main.zig: CLI entrypoint wiring config, root discovery, index/search, and HTTP server
 - src/cli.zig: CLI argument parsing (including hybrid weight flags) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), index reset, insert symbol/embedding, tests
