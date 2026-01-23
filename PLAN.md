@@ -9,7 +9,7 @@
 - [ ] Implement search flow (query embed -> vector search -> format)
 - [x] Define plugin interface + registry
 - [x] Implement Zig extractor (function spans + comments)
-- [ ] Implement Elixir extractor (function spans + comments)
+- [x] Implement Elixir extractor (function spans + comments)
 - [ ] Add JSON output + human output formatting
 - [ ] Add tests for edge cases and filters; keep tests fast/deterministic
 - [ ] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)

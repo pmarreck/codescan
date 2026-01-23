@@ -18,4 +18,4 @@
 - src/model.zig: core data model for extracted symbols
 - src/plugin.zig: extractor interface, registry, and tests
 - src/extract_zig.zig: Zig AST-based extractor + tests
-- src/extract_elixir.zig: Elixir extractor stub (placeholder)
+- src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
