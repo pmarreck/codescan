@@ -15,5 +15,5 @@
 - [x] Wire main CLI (config merge, commands, .codescan setup)
 - [x] Add hybrid weight knobs (CLI/config/HTTP) + tests
 - [ ] Add tests for edge cases and filters; keep tests fast/deterministic
-- [ ] Evaluate/tune weights on example repo queries
+- [x] Evaluate/tune weights on example repo queries
 - [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)
