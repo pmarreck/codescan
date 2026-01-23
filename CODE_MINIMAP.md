@@ -7,6 +7,8 @@
 - .gitignore: ignored paths for build outputs and local indexes
 - README.md: usage, build, and configuration overview
 - LICENSE: MIT license
+- test-integration: end-to-end integration suite (requires Ollama + fixtures)
+- fixtures/manifest.toml: pinned fixture repos for integration tests
 - flake.lock: pinned Nix inputs for reproducible dev shell
 - ZIG_RECENT_API_CHANGES_2025.md: Zig 0.14–0.15 API quick reference
 - flake.nix: Nix flake providing dev dependencies (zig_0_15) + sqlite amalgamation env vars
@@ -37,3 +39,4 @@
 - src/pcre2.zig: minimal PCRE2 wrapper used by filter
 - deps/tree-sitter: vendored tree-sitter runtime (C library + headers)
 - deps/tree-sitter-c: vendored tree-sitter C grammar (parser.c)
+- .codescan-fixtures/: gitignored fixture repos for integration tests

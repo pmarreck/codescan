@@ -1,0 +1,14 @@
+[zig]
+name = "zig-clap"
+url = "https://github.com/Hejsil/zig-clap.git"
+commit = "efa85b280f66f6f8416a6ed7257d0351d9d48023"
+
+[elixir]
+name = "jason"
+url = "https://github.com/michalmuskala/jason.git"
+commit = "984bc078eb4b2084104751c7f1c5290b8338e06b"
+
+[c]
+name = "zlib"
+url = "https://github.com/madler/zlib.git"
+commit = "2209f63bda59360dd2fe765b71f89d84955ddd24"

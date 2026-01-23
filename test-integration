@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FIXTURES_DIR="$ROOT/.codescan-fixtures"
+MANIFEST="$ROOT/fixtures/manifest.toml"
+BIN="$ROOT/zig-out/bin/codescan"
+OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+MODEL_NAME="${OLLAMA_MODEL:-bge-large}"
+
+out=
+err=
+rc=
+
+fail() {
+	printf '%s\n' "error: $1" >&2
+	exit 1
+}
+
+require_tool() {
+	local tool="$1"
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		fail "missing required tool: $tool (run via 'nix develop -c ./test-integration')"
+	fi
+}
+
+toml_get() {
+	local section="$1"
+	local key="$2"
+	awk -v section="[$section]" -v key="$key" '
+		$0 == section { in_section=1; next }
+		/^\[/ { in_section=0 }
+		in_section && $1 == key { gsub(/"/, "", $3); print $3; exit }
+	' "$MANIFEST"
+}
+
+ensure_repo() {
+	local name="$1"
+	local url="$2"
+	local commit="$3"
+	local dir="$FIXTURES_DIR/$name"
+
+	if [ ! -d "$dir/.git" ]; then
+		capture git clone "$url" "$dir"
+		if [ "$rc" -ne 0 ]; then
+			printf '%s' "$err" >&2
+			fail "git clone failed for $name"
+		fi
+	fi
+
+	capture git -C "$dir" fetch --depth 1 origin "$commit"
+	if [ "$rc" -ne 0 ]; then
+		capture git -C "$dir" fetch --depth 1 origin
+		if [ "$rc" -ne 0 ]; then
+			printf '%s' "$err" >&2
+			fail "git fetch failed for $name"
+		fi
+	fi
+
+	capture git -C "$dir" checkout --detach "$commit"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "git checkout failed for $name"
+	fi
+
+	local current
+	current="$(git -C "$dir" rev-parse HEAD)"
+	if [ "$current" != "$commit" ]; then
+		fail "$name is at $current but expected $commit"
+	fi
+}
+
+reset_repo() {
+	local name="$1"
+	local commit="$2"
+	local dir="$FIXTURES_DIR/$name"
+
+	git -C "$dir" reset --hard "$commit" >/dev/null 2>&1 || true
+	git -C "$dir" clean -fdx >/dev/null 2>&1 || true
+}
+
+require_ollama() {
+	capture curl -fsS "$OLLAMA_URL/api/tags"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "Ollama not reachable at $OLLAMA_URL (ensure server is running)"
+	fi
+	if ! printf '%s' "$out" | rg -q "\"name\":\"$MODEL_NAME"; then
+		fail "Ollama model '$MODEL_NAME' not found (run: ollama pull $MODEL_NAME)"
+	fi
+}
+
+build_codescan() {
+	capture nix develop -c zig build -Doptimize=ReleaseFast
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "zig build failed"
+	fi
+	if [ ! -x "$BIN" ]; then
+		fail "codescan binary not found at $BIN"
+	fi
+}
+
+search_names() {
+	local root="$1"
+	local query="$2"
+	local min_score="$3"
+	local top_n="$4"
+
+	capture "$BIN" search "$query" --root "$root" --json --top "$top_n" --min-score "$min_score"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "search failed for $root"
+	fi
+	printf '%s' "$out" | jq -r '.results[].name'
+}
+
+search_count() {
+	local root="$1"
+	local query="$2"
+	local min_score="$3"
+
+	capture "$BIN" search "$query" --root "$root" --json --top 10 --min-score "$min_score"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "search failed for $root"
+	fi
+	printf '%s' "$out" | jq '.results | length'
+}
+
+index_repo() {
+	local root="$1"
+	capture "$BIN" index --root "$root"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "index failed for $root"
+	fi
+}
+
+append_fixture_code() {
+	local zig_dir="$FIXTURES_DIR/zig-clap"
+	cat <<'ZIG' > "$zig_dir/codescan_test.zig"
+const std = @import("std");
+
+/// A parser that uses std.fmt.parseInt to parse the string into an integer value.
+/// Near-duplicate of clap.parsers.int with an alternate name.
+pub fn int_duplicate(comptime T: type, comptime base: u8) fn ([]const u8) std.fmt.ParseIntError!T {
+	return struct {
+		pub fn parse(value: []const u8) std.fmt.ParseIntError!T {
+			return std.fmt.parseInt(T, value, base);
+		}
+	}.parse;
+}
+
+/// Parse a duration string like "5s" or "10m" into total seconds.
+pub fn parse_duration_seconds(input: []const u8) !u64 {
+	_ = input;
+	return 0;
+}
+ZIG
+
+	local ex_dir="$FIXTURES_DIR/jason"
+	cat <<'EX' > "$ex_dir/lib/codescan_test.ex"
+defmodule CodescanTest do
+  @doc "Parses a JSON value from iodata. Mirrors Jason.decode/2 semantics."
+  def decode_similar(input, opts \\ []) do
+    Jason.decode(input, opts)
+  end
+
+  @doc "Encode a list of maps into JSON Lines (one JSON object per line)."
+  def encode_jsonl(list) when is_list(list) do
+    list |> Enum.map(&Jason.encode!/1) |> Enum.join("\n")
+  end
+end
+EX
+
+	local c_dir="$FIXTURES_DIR/zlib"
+	cat <<'C' > "$c_dir/codescan_test.c"
+#include "zlib.h"
+
+// Compute CRC-32 checksum of a buffer (near-duplicate of crc32).
+uLong crc32_duplicate(uLong crc, const Bytef *buf, uInt len) {
+	return crc32(crc, buf, len);
+}
+
+// Estimate compression ratio for a buffer without compressing it.
+double estimate_compression_ratio(const Bytef *buf, uInt len) {
+	(void)buf;
+	if (len == 0) {
+		return 1.0;
+	}
+	return 1.0;
+}
+C
+}
+
+main() {
+	require_tool rg
+	require_tool jq
+	require_tool git
+	require_tool curl
+
+	require_ollama
+	build_codescan
+
+	mkdir -p "$FIXTURES_DIR"
+
+	ZIG_NAME="$(toml_get zig name)"
+	ZIG_URL="$(toml_get zig url)"
+	ZIG_COMMIT="$(toml_get zig commit)"
+
+	ELIXIR_NAME="$(toml_get elixir name)"
+	ELIXIR_URL="$(toml_get elixir url)"
+	ELIXIR_COMMIT="$(toml_get elixir commit)"
+
+	C_NAME="$(toml_get c name)"
+	C_URL="$(toml_get c url)"
+	C_COMMIT="$(toml_get c commit)"
+
+	ensure_repo "$ZIG_NAME" "$ZIG_URL" "$ZIG_COMMIT"
+	ensure_repo "$ELIXIR_NAME" "$ELIXIR_URL" "$ELIXIR_COMMIT"
+	ensure_repo "$C_NAME" "$C_URL" "$C_COMMIT"
+
+	trap 'reset_repo "$ZIG_NAME" "$ZIG_COMMIT"; reset_repo "$ELIXIR_NAME" "$ELIXIR_COMMIT"; reset_repo "$C_NAME" "$C_COMMIT"' EXIT
+
+	# Initial index + baseline searches
+	index_repo "$FIXTURES_DIR/$ZIG_NAME"
+	index_repo "$FIXTURES_DIR/$ELIXIR_NAME"
+	index_repo "$FIXTURES_DIR/$C_NAME"
+
+	# Baseline positive queries
+	zig_names=$(search_names "$FIXTURES_DIR/$ZIG_NAME" "parse integer value" 0.2 5)
+	ex_names=$(search_names "$FIXTURES_DIR/$ELIXIR_NAME" "parse json value" 0.2 5)
+	c_names=$(search_names "$FIXTURES_DIR/$C_NAME" "crc32 checksum" 0.2 5)
+
+	printf '%s\n' "$zig_names" | rg -q '^int$' || fail "zig baseline query missing 'int'"
+	printf '%s\n' "$ex_names" | rg -q '^decode$' || fail "elixir baseline query missing 'decode'"
+	printf '%s\n' "$c_names" | rg -q '^crc32$' || fail "c baseline query missing 'crc32'"
+
+	# Negative queries should return nothing above threshold
+	zig_none=$(search_count "$FIXTURES_DIR/$ZIG_NAME" "quantum entanglement telescope" 0.55)
+	ex_none=$(search_count "$FIXTURES_DIR/$ELIXIR_NAME" "quantum entanglement telescope" 0.55)
+	c_none=$(search_count "$FIXTURES_DIR/$C_NAME" "quantum entanglement telescope" 0.55)
+
+	[ "$zig_none" = "0" ] || fail "zig negative query returned results"
+	[ "$ex_none" = "0" ] || fail "elixir negative query returned results"
+	[ "$c_none" = "0" ] || fail "c negative query returned results"
+
+	# Add near-duplicate + new functions
+	append_fixture_code
+
+	# Re-index
+	index_repo "$FIXTURES_DIR/$ZIG_NAME"
+	index_repo "$FIXTURES_DIR/$ELIXIR_NAME"
+	index_repo "$FIXTURES_DIR/$C_NAME"
+
+	# Duplicate-related searches
+	zig_dupe=$(search_names "$FIXTURES_DIR/$ZIG_NAME" "parse integer value" 0.2 8)
+	ex_dupe=$(search_names "$FIXTURES_DIR/$ELIXIR_NAME" "parse json value" 0.2 8)
+	c_dupe=$(search_names "$FIXTURES_DIR/$C_NAME" "crc32 checksum" 0.2 8)
+
+	printf '%s\n' "$zig_dupe" | rg -q '^int$' || fail "zig duplicate query missing 'int'"
+	printf '%s\n' "$zig_dupe" | rg -q '^int_duplicate$' || fail "zig duplicate query missing 'int_duplicate'"
+
+	printf '%s\n' "$ex_dupe" | rg -q '^decode$' || fail "elixir duplicate query missing 'decode'"
+	printf '%s\n' "$ex_dupe" | rg -q '^decode_similar$' || fail "elixir duplicate query missing 'decode_similar'"
+
+	printf '%s\n' "$c_dupe" | rg -q '^crc32$' || fail "c duplicate query missing 'crc32'"
+	printf '%s\n' "$c_dupe" | rg -q '^crc32_duplicate$' || fail "c duplicate query missing 'crc32_duplicate'"
+
+	# New-function searches
+	zig_new=$(search_names "$FIXTURES_DIR/$ZIG_NAME" "parse duration seconds" 0.2 5 | head -n 1)
+	ex_new=$(search_names "$FIXTURES_DIR/$ELIXIR_NAME" "json lines" 0.2 5 | head -n 1)
+	c_new=$(search_names "$FIXTURES_DIR/$C_NAME" "estimate compression ratio" 0.2 5 | head -n 1)
+
+	[ "$zig_new" = "parse_duration_seconds" ] || fail "zig new function not top result"
+	[ "$ex_new" = "encode_jsonl" ] || fail "elixir new function not top result"
+	[ "$c_new" = "estimate_compression_ratio" ] || fail "c new function not top result"
+
+	printf '%s\n' "integration ok"
+}
+
+main "$@"

@@ -17,6 +17,7 @@ pub const Options = struct {
 	mode: SearchMode = .hybrid,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
+	min_score: f32 = 0.0,
 };
 
 pub const Result = struct {
@@ -95,13 +96,29 @@ pub fn search(
 		}
 	}
 
-	std.sort.heap(Result, results.items, {}, sortByScoreDesc);
+	var filtered = std.ArrayListUnmanaged(Result){};
+	errdefer {
+		for (filtered.items) |*res| res.deinit(allocator);
+		filtered.deinit(allocator);
+	}
 
-	const take = @min(results.items.len, options.top_n);
-	const out = try allocator.alloc(Result, take);
-	@memcpy(out, results.items[0..take]);
-	for (results.items[take..]) |*res| res.deinit(allocator);
+	for (results.items) |res| {
+		if (res.score >= options.min_score) {
+			try filtered.append(allocator, res);
+		} else {
+			var tmp = res;
+			tmp.deinit(allocator);
+		}
+	}
 	results.deinit(allocator);
+
+	std.sort.heap(Result, filtered.items, {}, sortByScoreDesc);
+
+	const take = @min(filtered.items.len, options.top_n);
+	const out = try allocator.alloc(Result, take);
+	@memcpy(out, filtered.items[0..take]);
+	for (filtered.items[take..]) |*res| res.deinit(allocator);
+	filtered.deinit(allocator);
 	return out;
 }
 
@@ -504,6 +521,52 @@ test "search vector mode returns nearest symbol" {
 	const results = try search(allocator, db, fake.embedder(), "query", .{
 		.top_n = 1,
 		.mode = .vector,
+	});
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 1), results.len);
+	try std.testing.expectEqualStrings("near", results[0].symbol.name);
+}
+
+test "search filters by min_score" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "near"),
+		.signature = try allocator.dupe(u8, "fn near() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "far"),
+		.signature = try allocator.dupe(u8, "fn far() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym2.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym1);
+	const id2 = try storage.insertSymbol(db, sym2);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 10.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = try search(allocator, db, fake.embedder(), "query", .{
+		.top_n = 5,
+		.mode = .vector,
+		.min_score = 0.5,
 	});
 	defer freeResults(allocator, results);
 

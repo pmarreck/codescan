@@ -29,6 +29,7 @@ pub const Seen = struct {
 	search_mode: bool = false,
 	weight_vector: bool = false,
 	weight_lexical: bool = false,
+	min_score: bool = false,
 };
 
 pub const Parsed = struct {
@@ -48,6 +49,7 @@ pub const Parsed = struct {
 	search_mode: search.SearchMode,
 	weight_vector: f32,
 	weight_lexical: f32,
+	min_score: f32,
 	seen: Seen,
 };
 
@@ -70,6 +72,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.search_mode = .hybrid,
 			.weight_vector = 0.7,
 			.weight_lexical = 0.3,
+			.min_score = 0.0,
 			.seen = .{},
 		};
 	}
@@ -90,6 +93,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.search_mode = .hybrid,
 		.weight_vector = 0.7,
 		.weight_lexical = 0.3,
+		.min_score = 0.0,
 		.seen = .{},
 	};
 
@@ -227,6 +231,14 @@ pub fn parse(args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+		if (std.mem.eql(u8, arg, "--min-score")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.min_score = try std.fmt.parseFloat(f32, args[i]);
+			parsed.seen.min_score = true;
+			i += 1;
+			continue;
+		}
 		if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
 			parsed.command = .help;
 			return parsed;
@@ -266,6 +278,7 @@ test "parse with no args defaults to help" {
 	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
 	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
 	try std.testing.expectEqual(@as(u16, 8123), parsed.http_port);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.0), parsed.min_score, 0.0001);
 	try std.testing.expect(parsed.seen.output == false);
 }
 
@@ -292,14 +305,18 @@ test "parse search with weights" {
 		"0.8",
 		"--weight-lexical",
 		"0.2",
+		"--min-score",
+		"0.4",
 	};
 	const parsed = try parse(&args);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqualStrings("checksum", parsed.query.?);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), parsed.weight_vector, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), parsed.weight_lexical, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.4), parsed.min_score, 0.0001);
 	try std.testing.expect(parsed.seen.weight_vector);
 	try std.testing.expect(parsed.seen.weight_lexical);
+	try std.testing.expect(parsed.seen.min_score);
 }
 
 test "parse search with flags" {
@@ -329,6 +346,8 @@ test "parse search with flags" {
 		"9001",
 		"--mode",
 		"vector",
+		"--min-score",
+		"0.6",
 		"hash functions",
 	};
 	const parsed = try parse(&args);
@@ -346,6 +365,7 @@ test "parse search with flags" {
 	try std.testing.expectEqualStrings("0.0.0.0", parsed.http_host);
 	try std.testing.expectEqual(@as(u16, 9001), parsed.http_port);
 	try std.testing.expect(parsed.search_mode == .vector);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.6), parsed.min_score, 0.0001);
 	try std.testing.expect(parsed.seen.http_port);
 }
 

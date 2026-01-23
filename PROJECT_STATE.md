@@ -23,7 +23,7 @@
 ## Config (.codescan/config)
 - Load path: `<root>/.codescan/config`
 - Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model`, `embedding_dim`, `batch_size`,
-  `max_file_size`, `search_mode`, `weight_vector`, `weight_lexical`, `http_host`, `http_port`.
+  `max_file_size`, `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`.
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
@@ -48,3 +48,9 @@
 ## Known behaviors
 - Files larger than `max_file_size` are skipped during indexing (no hard error).
 - Default DB location is `.codescan/index.sqlite3` under the target root.
+- `min_score` filters low-scoring results after ranking (default `0.0`).
+
+## Integration tests
+- `test-integration` runs end-to-end indexing/search against pinned fixture repos.
+- Fixture repos live in `.codescan-fixtures/` (gitignored) with pins in `fixtures/manifest.toml`.
+- Run with: `nix develop -c ./test-integration` (requires Ollama + model).

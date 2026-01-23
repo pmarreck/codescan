@@ -20,6 +20,13 @@ nix develop -c zig build -Doptimize=ReleaseFast
 ./test
 ```
 
+## Integration test
+
+```bash
+# requires Ollama running with bge-large pulled
+nix develop -c ./test-integration
+```
+
 ## Run (CLI)
 
 ```bash
@@ -30,7 +37,7 @@ nix develop -c ./zig-out/bin/codescan index --root <path>
 nix develop -c ./zig-out/bin/codescan update --root <path>
 
 # search
-nix develop -c ./zig-out/bin/codescan search "hash functions" --root <path>
+nix develop -c ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
 ```
 
 ## Run (HTTP)
@@ -51,6 +58,7 @@ output=human
 search_mode=hybrid
 weight_vector=0.7
 weight_lexical=0.3
+min_score=0.0
 
 # ignores
 ignore=**/.git/**, **/.codescan/**

@@ -20,6 +20,7 @@ pub const Settings = struct {
 	search_mode: search.SearchMode,
 	search_weight_vector: f32,
 	search_weight_lexical: f32,
+	search_min_score: f32,
 	ignore_global: []const []const u8,
 	ignore_lang: []const config.IgnoreOverride,
 	http_host: []const u8,
@@ -92,6 +93,7 @@ fn handleRequest(
 			.mode = parsed.mode orelse settings.search_mode,
 			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
 			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
+			.min_score = parsed.min_score orelse settings.search_min_score,
 		});
 		defer search.freeResults(allocator, results);
 
@@ -177,6 +179,7 @@ pub const SearchRequest = struct {
 	mode: ?search.SearchMode = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
+	min_score: ?f32 = null,
 
 	pub fn deinit(self: *SearchRequest, allocator: std.mem.Allocator) void {
 		allocator.free(self.query);
@@ -216,6 +219,10 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 		req.weight_lexical = try parseWeight(weight);
 	}
 
+	if (obj.get("min_score")) |min_score| {
+		req.min_score = try parseWeight(min_score);
+	}
+
 	return req;
 }
 
@@ -251,7 +258,7 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 
 test "parseSearchRequest reads fields" {
 	const allocator = std.testing.allocator;
-	const body = "{\"query\":\"hash functions\",\"top_n\":5,\"mode\":\"vector\",\"weight_vector\":0.8,\"weight_lexical\":0.2}";
+	const body = "{\"query\":\"hash functions\",\"top_n\":5,\"mode\":\"vector\",\"weight_vector\":0.8,\"weight_lexical\":0.2,\"min_score\":0.4}";
 	var req = try parseSearchRequest(allocator, body);
 	defer req.deinit(allocator);
 	try std.testing.expectEqualStrings("hash functions", req.query);
@@ -259,6 +266,7 @@ test "parseSearchRequest reads fields" {
 	try std.testing.expectEqual(search.SearchMode.vector, req.mode.?);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), req.weight_vector.?, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), req.weight_lexical.?, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.4), req.min_score.?, 0.0001);
 }
 
 test "parseSearchRequest defaults optional fields" {
@@ -270,4 +278,5 @@ test "parseSearchRequest defaults optional fields" {
 	try std.testing.expect(req.mode == null);
 	try std.testing.expect(req.weight_vector == null);
 	try std.testing.expect(req.weight_lexical == null);
+	try std.testing.expect(req.min_score == null);
 }

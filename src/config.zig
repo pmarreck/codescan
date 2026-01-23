@@ -26,6 +26,7 @@ pub const Config = struct {
 	search_mode: ?[]const u8 = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
+	min_score: ?f32 = null,
 	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
 	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
 	http_host: ?[]const u8 = null,
@@ -144,6 +145,11 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
+		if (std.mem.eql(u8, key, "min_score")) {
+			config.min_score = try std.fmt.parseFloat(f32, value);
+			continue;
+		}
+
 		if (std.mem.eql(u8, key, "http_host")) {
 			config.http_host = try allocator.dupe(u8, value);
 			continue;
@@ -223,6 +229,7 @@ test "parseText empty yields defaults" {
 	try std.testing.expect(cfg.search_mode == null);
 	try std.testing.expect(cfg.weight_vector == null);
 	try std.testing.expect(cfg.weight_lexical == null);
+	try std.testing.expect(cfg.min_score == null);
 	try std.testing.expectEqual(@as(usize, 0), cfg.ignore_global.items.len);
 	try std.testing.expectEqual(@as(usize, 0), cfg.ignore_lang.items.len);
 	try std.testing.expect(cfg.http_host == null);
@@ -244,6 +251,7 @@ test "parseText reads values" {
 		"search_mode=hybrid\n" ++
 		"weight_vector=0.8\n" ++
 		"weight_lexical=0.2\n" ++
+		"min_score=0.55\n" ++
 		"http_host=0.0.0.0\n" ++
 		"http_port=9001\n";
 	var cfg = try parseText(allocator, text);
@@ -260,6 +268,7 @@ test "parseText reads values" {
 	try std.testing.expectEqualStrings("hybrid", cfg.search_mode.?);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), cfg.weight_vector.?, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), cfg.weight_lexical.?, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.55), cfg.min_score.?, 0.0001);
 	try std.testing.expectEqualStrings("0.0.0.0", cfg.http_host.?);
 	try std.testing.expectEqual(@as(u16, 9001), cfg.http_port.?);
 }

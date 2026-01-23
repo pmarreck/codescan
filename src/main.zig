@@ -24,6 +24,7 @@ const Defaults = struct {
 	search_mode: search.SearchMode = .hybrid,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
+	min_score: f32 = 0.0,
 	http_host: []const u8 = "127.0.0.1",
 	http_port: u16 = 8123,
 };
@@ -42,6 +43,7 @@ const Settings = struct {
 	search_mode: search.SearchMode,
 	weight_vector: f32,
 	weight_lexical: f32,
+	min_score: f32,
 	ignore_global: []const []const u8,
 	ignore_lang: []const config.IgnoreOverride,
 	http_host: []const u8,
@@ -136,6 +138,7 @@ pub fn main() !void {
 					.mode = settings.search_mode,
 					.weight_vector = settings.weight_vector,
 					.weight_lexical = settings.weight_lexical,
+					.min_score = settings.min_score,
 				},
 			);
 			defer search.freeResults(allocator, results);
@@ -156,6 +159,7 @@ pub fn main() !void {
 				.search_mode = settings.search_mode,
 				.search_weight_vector = settings.weight_vector,
 				.search_weight_lexical = settings.weight_lexical,
+				.search_min_score = settings.min_score,
 				.ignore_global = settings.ignore_global,
 				.ignore_lang = settings.ignore_lang,
 				.http_host = settings.http_host,
@@ -182,6 +186,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.search_mode = defaults.search_mode,
 		.weight_vector = defaults.weight_vector,
 		.weight_lexical = defaults.weight_lexical,
+		.min_score = defaults.min_score,
 		.ignore_global = &[_][]const u8{},
 		.ignore_lang = &[_]config.IgnoreOverride{},
 		.http_host = defaults.http_host,
@@ -200,6 +205,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.search_mode) |value| settings.search_mode = try parseMode(value);
 	if (cfg.weight_vector) |value| settings.weight_vector = value;
 	if (cfg.weight_lexical) |value| settings.weight_lexical = value;
+	if (cfg.min_score) |value| settings.min_score = value;
 	settings.ignore_global = cfg.ignore_global.items;
 	settings.ignore_lang = cfg.ignore_lang.items;
 	if (cfg.http_host) |value| settings.http_host = value;
@@ -217,6 +223,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.search_mode) settings.search_mode = parsed.search_mode;
 	if (parsed.seen.weight_vector) settings.weight_vector = parsed.weight_vector;
 	if (parsed.seen.weight_lexical) settings.weight_lexical = parsed.weight_lexical;
+	if (parsed.seen.min_score) settings.min_score = parsed.min_score;
 	if (parsed.seen.http_host) settings.http_host = parsed.http_host;
 	if (parsed.seen.http_port) settings.http_port = parsed.http_port;
 
@@ -272,6 +279,7 @@ const usage =
 	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
 	\\  --weight-vector <n>     Hybrid weight for vector score (default 0.7)
 	\\  --weight-lexical <n>    Hybrid weight for lexical score (default 0.3)
+	\\  --min-score <n>         Minimum score threshold (default 0.0)
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
 	\\  --json                  JSON output for CLI search/index

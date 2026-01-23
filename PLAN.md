@@ -29,3 +29,5 @@
 - [x] Add C plugin default ignores for Zig build caches
 - [x] Ensure pcre2 headers/libs are available via flake env
 - [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md, PROJECT_STATE.md)
+- [x] Add min_score search threshold (CLI/config/HTTP) + tests
+- [x] Add integration test suite across Zig/Elixir/C fixture repos

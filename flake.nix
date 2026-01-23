@@ -19,6 +19,7 @@
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
 						zig_0_15
+						jq
 					];
 					shellHook = ''
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
