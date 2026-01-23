@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="${1:-0.15.2}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEST="$ROOT/.ci/zig"
+
+mkdir -p "$DEST"
+
+uname_s="$(uname -s)"
+uname_m="$(uname -m)"
+
+case "$uname_s" in
+	Linux)
+		PLATFORM="linux-x86_64"
+		EXT="tar.xz"
+		;;
+	Darwin)
+		PLATFORM="macos-aarch64"
+		EXT="tar.xz"
+		;;
+	MINGW*|MSYS*|CYGWIN*)
+		PLATFORM="windows-x86_64"
+		EXT="zip"
+		;;
+	*)
+		echo "Unsupported OS: $uname_s" >&2
+		exit 1
+		;;
+esac
+
+ARCHIVE="zig-${PLATFORM}-${VERSION}.${EXT}"
+URL="https://ziglang.org/download/${VERSION}/${ARCHIVE}"
+
+cd "$DEST"
+if [ ! -d "zig-${PLATFORM}-${VERSION}" ]; then
+	curl -fsSL "$URL" -o "$ARCHIVE"
+	if [ "$EXT" = "zip" ]; then
+		powershell.exe -NoProfile -Command "Expand-Archive -Path $ARCHIVE -DestinationPath ." >/dev/null
+	else
+		tar -xf "$ARCHIVE"
+	fi
+fi
+
+ZIG_PATH="$DEST/zig-${PLATFORM}-${VERSION}"
+
+if [ -n "${GITHUB_PATH:-}" ]; then
+	echo "$ZIG_PATH" >> "$GITHUB_PATH"
+else
+	export PATH="$ZIG_PATH:$PATH"
+	echo "Zig available at: $ZIG_PATH"
+	zig version
+fi

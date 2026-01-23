@@ -27,6 +27,13 @@ nix develop -c zig build -Doptimize=ReleaseFast
 nix develop -c ./test-integration
 ```
 
+## CI (local, Linux only)
+
+```bash
+# requires act (https://github.com/nektos/act)
+./scripts/ci-local
+```
+
 ## Run (CLI)
 
 ```bash

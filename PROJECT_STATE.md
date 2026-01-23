@@ -59,3 +59,4 @@
 - GitHub Actions workflow: `.github/workflows/build.yml`
 - Builds ReleaseFast artifacts for macOS arm64, Linux x86_64 (musl), Windows x86_64.
 - Tag pushes (`v*`) create a GitHub Release with attached artifacts.
+- Local CI runner: `scripts/ci-local` (uses `act`, Linux-only).

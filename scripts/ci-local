@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v act >/dev/null 2>&1; then
+	echo "act is required to run GitHub Actions locally (Linux only)." >&2
+	echo "Install: https://github.com/nektos/act" >&2
+	exit 1
+fi
+
+act -j build -P ubuntu-latest=ghcr.io/catthehacker/ubuntu:act-latest
