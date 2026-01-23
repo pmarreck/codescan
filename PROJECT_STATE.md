@@ -54,3 +54,8 @@
 - `test-integration` runs end-to-end indexing/search against pinned fixture repos.
 - Fixture repos live in `.codescan-fixtures/` (gitignored) with pins in `fixtures/manifest.toml`.
 - Run with: `nix develop -c ./test-integration` (requires Ollama + model).
+
+## CI / Releases
+- GitHub Actions workflow: `.github/workflows/build.yml`
+- Builds ReleaseFast artifacts for macOS arm64, Linux x86_64 (musl), Windows x86_64.
+- Tag pushes (`v*`) create a GitHub Release with attached artifacts.

@@ -1,0 +1,109 @@
+name: build
+
+on:
+  push:
+    branches: [yolo]
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-linux-musl
+            archive: tar
+            ext: ""
+            artifact: codescan-linux-x86_64.tar.gz
+            pkgdir: codescan-linux-x86_64
+          - os: macos-14
+            target: aarch64-macos
+            archive: tar
+            ext: ""
+            artifact: codescan-macos-arm64.tar.gz
+            pkgdir: codescan-macos-arm64
+          - os: windows-latest
+            target: x86_64-windows-gnu
+            archive: zip
+            ext: ".exe"
+            artifact: codescan-windows-x86_64.zip
+            pkgdir: codescan-windows-x86_64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.15.2
+
+      - name: Fetch sqlite amalgamation (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          SQLITE_URL="https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip"
+          curl -fsSL "$SQLITE_URL" -o sqlite.zip
+          unzip -q sqlite.zip -d sqlite
+          echo "SQLITE_VEC_SQLITE_AMALGAMATION_DIR=$PWD/sqlite/sqlite-amalgamation-3450300" >> "$GITHUB_ENV"
+
+      - name: Fetch sqlite amalgamation (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $sqliteUrl = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip"
+          Invoke-WebRequest -Uri $sqliteUrl -OutFile sqlite.zip
+          Expand-Archive sqlite.zip -DestinationPath sqlite
+          "SQLITE_VEC_SQLITE_AMALGAMATION_DIR=$pwd\sqlite\sqlite-amalgamation-3450300" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build ReleaseFast
+        shell: bash
+        run: |
+          set -euo pipefail
+          zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.target }}
+
+      - name: Package (tar)
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${{ matrix.pkgdir }}"
+          cp -f "zig-out/bin/codescan${{ matrix.ext }}" "${{ matrix.pkgdir }}/"
+          cp -f README.md LICENSE "${{ matrix.pkgdir }}/"
+          tar -czf "${{ matrix.artifact }}" "${{ matrix.pkgdir }}"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "${{ matrix.pkgdir }}" | Out-Null
+          Copy-Item "zig-out/bin/codescan${{ matrix.ext }}" "${{ matrix.pkgdir }}/"
+          Copy-Item README.md, LICENSE "${{ matrix.pkgdir }}/"
+          Compress-Archive -Path "${{ matrix.pkgdir }}" -DestinationPath "${{ matrix.artifact }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/**/codescan-linux-x86_64.tar.gz
+            dist/**/codescan-macos-arm64.tar.gz
+            dist/**/codescan-windows-x86_64.zip
+          generate_release_notes: true
