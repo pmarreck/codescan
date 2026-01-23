@@ -27,6 +27,8 @@ pub const Seen = struct {
 	http_host: bool = false,
 	http_port: bool = false,
 	search_mode: bool = false,
+	weight_vector: bool = false,
+	weight_lexical: bool = false,
 };
 
 pub const Parsed = struct {
@@ -44,6 +46,8 @@ pub const Parsed = struct {
 	http_host: []const u8,
 	http_port: u16,
 	search_mode: search.SearchMode,
+	weight_vector: f32,
+	weight_lexical: f32,
 	seen: Seen,
 };
 
@@ -64,6 +68,8 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.http_host = "127.0.0.1",
 			.http_port = 8123,
 			.search_mode = .hybrid,
+			.weight_vector = 0.7,
+			.weight_lexical = 0.3,
 			.seen = .{},
 		};
 	}
@@ -82,6 +88,8 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.http_host = "127.0.0.1",
 		.http_port = 8123,
 		.search_mode = .hybrid,
+		.weight_vector = 0.7,
+		.weight_lexical = 0.3,
 		.seen = .{},
 	};
 
@@ -203,6 +211,22 @@ pub fn parse(args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+		if (std.mem.eql(u8, arg, "--weight-vector")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.weight_vector = try std.fmt.parseFloat(f32, args[i]);
+			parsed.seen.weight_vector = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--weight-lexical")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.weight_lexical = try std.fmt.parseFloat(f32, args[i]);
+			parsed.seen.weight_lexical = true;
+			i += 1;
+			continue;
+		}
 		if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
 			parsed.command = .help;
 			return parsed;
@@ -257,6 +281,25 @@ test "parse search with query defaults" {
 	try std.testing.expectEqualStrings("http://localhost:11434", parsed.ollama_url);
 	try std.testing.expect(parsed.search_mode == .hybrid);
 	try std.testing.expect(parsed.seen.top_n == false);
+}
+
+test "parse search with weights" {
+	const args = [_][]const u8{
+		"codescan",
+		"search",
+		"checksum",
+		"--weight-vector",
+		"0.8",
+		"--weight-lexical",
+		"0.2",
+	};
+	const parsed = try parse(&args);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqualStrings("checksum", parsed.query.?);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.8), parsed.weight_vector, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.2), parsed.weight_lexical, 0.0001);
+	try std.testing.expect(parsed.seen.weight_vector);
+	try std.testing.expect(parsed.seen.weight_lexical);
 }
 
 test "parse search with flags" {

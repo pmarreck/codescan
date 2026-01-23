@@ -17,6 +17,8 @@ pub const Settings = struct {
 	ollama_model: []const u8,
 	search_top_n: usize,
 	search_mode: search.SearchMode,
+	search_weight_vector: f32,
+	search_weight_lexical: f32,
 	http_host: []const u8,
 	http_port: u16,
 };
@@ -85,6 +87,8 @@ fn handleRequest(
 		const results = try search.search(allocator, db, embedder, parsed.query, .{
 			.top_n = parsed.top_n orelse settings.search_top_n,
 			.mode = parsed.mode orelse settings.search_mode,
+			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
+			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
 		});
 		defer search.freeResults(allocator, results);
 
@@ -160,6 +164,8 @@ pub const SearchRequest = struct {
 	query: []const u8,
 	top_n: ?usize = null,
 	mode: ?search.SearchMode = null,
+	weight_vector: ?f32 = null,
+	weight_lexical: ?f32 = null,
 
 	pub fn deinit(self: *SearchRequest, allocator: std.mem.Allocator) void {
 		allocator.free(self.query);
@@ -191,6 +197,14 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 		req.mode = try parseMode(mode.string);
 	}
 
+	if (obj.get("weight_vector")) |weight| {
+		req.weight_vector = try parseWeight(weight);
+	}
+
+	if (obj.get("weight_lexical")) |weight| {
+		req.weight_lexical = try parseWeight(weight);
+	}
+
 	return req;
 }
 
@@ -199,6 +213,14 @@ fn parseMode(value: []const u8) !search.SearchMode {
 	if (std.mem.eql(u8, value, "lexical")) return .lexical;
 	if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
 	return error.InvalidMode;
+}
+
+fn parseWeight(value: std.json.Value) !f32 {
+	switch (value) {
+		.float => |val| return @floatCast(val),
+		.integer => |val| return @floatFromInt(val),
+		else => return error.InvalidWeight,
+	}
 }
 
 fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: usize) ![]u8 {
@@ -218,12 +240,14 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 
 test "parseSearchRequest reads fields" {
 	const allocator = std.testing.allocator;
-	const body = "{\"query\":\"hash functions\",\"top_n\":5,\"mode\":\"vector\"}";
+	const body = "{\"query\":\"hash functions\",\"top_n\":5,\"mode\":\"vector\",\"weight_vector\":0.8,\"weight_lexical\":0.2}";
 	var req = try parseSearchRequest(allocator, body);
 	defer req.deinit(allocator);
 	try std.testing.expectEqualStrings("hash functions", req.query);
 	try std.testing.expectEqual(@as(usize, 5), req.top_n.?);
 	try std.testing.expectEqual(search.SearchMode.vector, req.mode.?);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.8), req.weight_vector.?, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.2), req.weight_lexical.?, 0.0001);
 }
 
 test "parseSearchRequest defaults optional fields" {
@@ -233,4 +257,6 @@ test "parseSearchRequest defaults optional fields" {
 	defer req.deinit(allocator);
 	try std.testing.expect(req.top_n == null);
 	try std.testing.expect(req.mode == null);
+	try std.testing.expect(req.weight_vector == null);
+	try std.testing.expect(req.weight_lexical == null);
 }

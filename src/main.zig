@@ -21,6 +21,8 @@ const Defaults = struct {
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
 	search_mode: search.SearchMode = .hybrid,
+	weight_vector: f32 = 0.7,
+	weight_lexical: f32 = 0.3,
 	http_host: []const u8 = "127.0.0.1",
 	http_port: u16 = 8123,
 };
@@ -37,6 +39,8 @@ const Settings = struct {
 	batch_size: usize,
 	max_file_size: usize,
 	search_mode: search.SearchMode,
+	weight_vector: f32,
+	weight_lexical: f32,
 	http_host: []const u8,
 	http_port: u16,
 };
@@ -116,7 +120,12 @@ pub fn main() !void {
 				db,
 				embedder_adapter.embedder(),
 				query,
-				.{ .top_n = settings.top_n, .mode = settings.search_mode },
+				.{
+					.top_n = settings.top_n,
+					.mode = settings.search_mode,
+					.weight_vector = settings.weight_vector,
+					.weight_lexical = settings.weight_lexical,
+				},
 			);
 			defer search.freeResults(allocator, results);
 
@@ -134,6 +143,8 @@ pub fn main() !void {
 				.ollama_model = settings.ollama_model,
 				.search_top_n = settings.top_n,
 				.search_mode = settings.search_mode,
+				.search_weight_vector = settings.weight_vector,
+				.search_weight_lexical = settings.weight_lexical,
 				.http_host = settings.http_host,
 				.http_port = settings.http_port,
 			});
@@ -156,6 +167,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.batch_size = defaults.batch_size,
 		.max_file_size = defaults.max_file_size,
 		.search_mode = defaults.search_mode,
+		.weight_vector = defaults.weight_vector,
+		.weight_lexical = defaults.weight_lexical,
 		.http_host = defaults.http_host,
 		.http_port = defaults.http_port,
 	};
@@ -170,6 +183,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.batch_size) |value| settings.batch_size = value;
 	if (cfg.max_file_size) |value| settings.max_file_size = value;
 	if (cfg.search_mode) |value| settings.search_mode = try parseMode(value);
+	if (cfg.weight_vector) |value| settings.weight_vector = value;
+	if (cfg.weight_lexical) |value| settings.weight_lexical = value;
 	if (cfg.http_host) |value| settings.http_host = value;
 	if (cfg.http_port) |value| settings.http_port = value;
 
@@ -183,6 +198,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.batch_size) settings.batch_size = parsed.batch_size;
 	if (parsed.seen.max_file_size) settings.max_file_size = parsed.max_file_size;
 	if (parsed.seen.search_mode) settings.search_mode = parsed.search_mode;
+	if (parsed.seen.weight_vector) settings.weight_vector = parsed.weight_vector;
+	if (parsed.seen.weight_lexical) settings.weight_lexical = parsed.weight_lexical;
 	if (parsed.seen.http_host) settings.http_host = parsed.http_host;
 	if (parsed.seen.http_port) settings.http_port = parsed.http_port;
 
@@ -236,6 +253,8 @@ const usage =
 	\\  --max-file-size <n>     Max file size bytes (default 1048576)
 	\\  --top <n>               Search top N (default 10)
 	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
+	\\  --weight-vector <n>     Hybrid weight for vector score (default 0.7)
+	\\  --weight-lexical <n>    Hybrid weight for lexical score (default 0.3)
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
 	\\  --json                  JSON output for CLI search/index

@@ -13,5 +13,7 @@
 - [x] Add HTTP server + endpoints (index/update/search/health)
 - [x] Add JSON output + human output formatting
 - [x] Wire main CLI (config merge, commands, .codescan setup)
+- [x] Add hybrid weight knobs (CLI/config/HTTP) + tests
 - [ ] Add tests for edge cases and filters; keep tests fast/deterministic
-- [ ] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)
+- [ ] Evaluate/tune weights on example repo queries
+- [x] Update documentation (CODE_MINIMAP.md, PROJECT_PLAN.md)

@@ -12,6 +12,8 @@ pub const Config = struct {
 	batch_size: ?usize = null,
 	max_file_size: ?usize = null,
 	search_mode: ?[]const u8 = null,
+	weight_vector: ?f32 = null,
+	weight_lexical: ?f32 = null,
 	http_host: ?[]const u8 = null,
 	http_port: ?u16 = null,
 
@@ -101,6 +103,16 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
+		if (std.mem.eql(u8, key, "weight_vector")) {
+			config.weight_vector = try std.fmt.parseFloat(f32, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "weight_lexical")) {
+			config.weight_lexical = try std.fmt.parseFloat(f32, value);
+			continue;
+		}
+
 		if (std.mem.eql(u8, key, "http_host")) {
 			config.http_host = try allocator.dupe(u8, value);
 			continue;
@@ -150,6 +162,8 @@ test "parseText empty yields defaults" {
 	try std.testing.expect(cfg.batch_size == null);
 	try std.testing.expect(cfg.max_file_size == null);
 	try std.testing.expect(cfg.search_mode == null);
+	try std.testing.expect(cfg.weight_vector == null);
+	try std.testing.expect(cfg.weight_lexical == null);
 	try std.testing.expect(cfg.http_host == null);
 	try std.testing.expect(cfg.http_port == null);
 }
@@ -167,6 +181,8 @@ test "parseText reads values" {
 		"batch_size=8\n" ++
 		"max_file_size=2048\n" ++
 		"search_mode=hybrid\n" ++
+		"weight_vector=0.8\n" ++
+		"weight_lexical=0.2\n" ++
 		"http_host=0.0.0.0\n" ++
 		"http_port=9001\n";
 	var cfg = try parseText(allocator, text);
@@ -181,6 +197,8 @@ test "parseText reads values" {
 	try std.testing.expectEqual(@as(usize, 8), cfg.batch_size.?);
 	try std.testing.expectEqual(@as(usize, 2048), cfg.max_file_size.?);
 	try std.testing.expectEqualStrings("hybrid", cfg.search_mode.?);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.8), cfg.weight_vector.?, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.2), cfg.weight_lexical.?, 0.0001);
 	try std.testing.expectEqualStrings("0.0.0.0", cfg.http_host.?);
 	try std.testing.expectEqual(@as(u16, 9001), cfg.http_port.?);
 }

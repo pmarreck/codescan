@@ -11,8 +11,8 @@
 - build.zig: Zig build script for CLI + unit tests
 - test: unit test runner script (wraps `zig build test` in nix dev shell)
 - src/main.zig: CLI entrypoint wiring config, index/search, and HTTP server
-- src/cli.zig: CLI argument parsing types + tests
-- src/config.zig: config parsing/loading for .codescan/config + tests
+- src/cli.zig: CLI argument parsing (including hybrid weight flags) + tests
+- src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/storage.zig: sqlite + sqlite-vec schema init, index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed request/response + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests
@@ -22,6 +22,6 @@
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
 - src/scan.zig: file walker for supported source files + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
-- src/search.zig: vector/lexical/hybrid search + tests
+- src/search.zig: vector/lexical/hybrid search + weight tuning + tests
 - src/output.zig: human/json output formatting for results + tests
-- src/server.zig: HTTP server with /health, /search, /index endpoints + tests
+- src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests

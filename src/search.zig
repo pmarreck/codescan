@@ -362,6 +362,61 @@ test "search vector mode returns nearest symbol" {
 	try std.testing.expectEqualStrings("near", results[0].symbol.name);
 }
 
+test "search hybrid weights influence ranking" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/far.zig"),
+		.name = try allocator.dupe(u8, "far_match"),
+		.signature = try allocator.dupe(u8, "fn far_match() void"),
+		.doc_comment = try allocator.dupe(u8, "alpha beta"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/near.zig"),
+		.name = try allocator.dupe(u8, "near_nomatch"),
+		.signature = try allocator.dupe(u8, "fn near_nomatch() void"),
+		.doc_comment = try allocator.dupe(u8, "gamma"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym2.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym1);
+	const id2 = try storage.insertSymbol(db, sym2);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 10.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+
+	const prefer_vector = try search(allocator, db, fake.embedder(), "alpha beta", .{
+		.top_n = 1,
+		.mode = .hybrid,
+		.weight_vector = 0.9,
+		.weight_lexical = 0.1,
+	});
+	defer freeResults(allocator, prefer_vector);
+	try std.testing.expectEqualStrings("near_nomatch", prefer_vector[0].symbol.name);
+
+	const prefer_lexical = try search(allocator, db, fake.embedder(), "alpha beta", .{
+		.top_n = 1,
+		.mode = .hybrid,
+		.weight_vector = 0.1,
+		.weight_lexical = 0.9,
+	});
+	defer freeResults(allocator, prefer_lexical);
+	try std.testing.expectEqualStrings("far_match", prefer_lexical[0].symbol.name);
+}
+
 const FakeEmbedder = struct {
 	vector: []const f32,
 
