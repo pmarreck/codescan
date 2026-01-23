@@ -5,11 +5,13 @@ const c = @cImport({
 });
 const model = @import("model.zig");
 
+pub const Db = *c.sqlite3;
+
 pub const Schema = struct {
 	embedding_dim: usize,
 };
 
-pub fn openMemoryWithVec(allocator: std.mem.Allocator) !*c.sqlite3 {
+pub fn openMemoryWithVec(allocator: std.mem.Allocator) !Db {
 	var db: ?*c.sqlite3 = null;
 	if (c.sqlite3_open(":memory:", &db) != c.SQLITE_OK) {
 		return error.OpenFailed;
@@ -22,7 +24,11 @@ pub fn openMemoryWithVec(allocator: std.mem.Allocator) !*c.sqlite3 {
 	return handle;
 }
 
-pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !*c.sqlite3 {
+pub fn close(db: Db) void {
+	_ = c.sqlite3_close(db);
+}
+
+pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !Db {
 	const path_z = try allocator.dupeZ(u8, path);
 	defer allocator.free(path_z);
 
@@ -38,7 +44,7 @@ pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !*c.sqlit
 	return handle;
 }
 
-pub fn initSchema(allocator: std.mem.Allocator, db: *c.sqlite3, schema: Schema) !void {
+pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const meta_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
 	const symbols_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT);\x00";
 	try exec(db, meta_sql);
@@ -63,14 +69,14 @@ pub fn initSchema(allocator: std.mem.Allocator, db: *c.sqlite3, schema: Schema) 
 	try exec(db, dim_sql);
 }
 
-pub fn resetIndex(db: *c.sqlite3) !void {
+pub fn resetIndex(db: Db) !void {
 	const symbols_sql: [:0]const u8 = "DELETE FROM symbols;\x00";
 	const embeddings_sql: [:0]const u8 = "DELETE FROM embeddings;\x00";
 	try exec(db, symbols_sql);
 	try exec(db, embeddings_sql);
 }
 
-pub fn insertSymbol(db: *c.sqlite3, symbol: model.Symbol) !i64 {
+pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	const sql: [:0]const u8 =
 		"INSERT INTO symbols (lang, file_path, start_line, end_line, symbol_name, signature, doc_comment) "
 		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);\x00";
@@ -98,7 +104,7 @@ pub fn insertSymbol(db: *c.sqlite3, symbol: model.Symbol) !i64 {
 	return c.sqlite3_last_insert_rowid(db);
 }
 
-pub fn insertEmbedding(db: *c.sqlite3, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
+pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
 	const sql: [:0]const u8 = "INSERT INTO embeddings (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
@@ -117,7 +123,7 @@ pub fn insertEmbedding(db: *c.sqlite3, allocator: std.mem.Allocator, rowid: i64,
 	}
 }
 
-fn exec(db: *c.sqlite3, sql: [:0]const u8) !void {
+fn exec(db: Db, sql: [:0]const u8) !void {
 	var err_msg: [*c]u8 = null;
 	const rc = c.sqlite3_exec(db, sql, null, null, &err_msg);
 	if (rc != c.SQLITE_OK) {
@@ -128,7 +134,7 @@ fn exec(db: *c.sqlite3, sql: [:0]const u8) !void {
 	}
 }
 
-fn loadVecExtension(allocator: std.mem.Allocator, db: *c.sqlite3) !void {
+fn loadVecExtension(allocator: std.mem.Allocator, db: Db) !void {
 	if (c.sqlite3_enable_load_extension(db, 1) != c.SQLITE_OK) {
 		return error.EnableExtensionFailed;
 	}
@@ -148,7 +154,7 @@ fn loadVecExtension(allocator: std.mem.Allocator, db: *c.sqlite3) !void {
 	}
 }
 
-fn tableExists(db: *c.sqlite3, allocator: std.mem.Allocator, name: []const u8) !bool {
+fn tableExists(db: Db, allocator: std.mem.Allocator, name: []const u8) !bool {
 	const sql = try allocPrintZ(
 		allocator,
 		"SELECT name FROM sqlite_master WHERE type='table' AND name='{s}' LIMIT 1;",
@@ -168,7 +174,7 @@ fn tableExists(db: *c.sqlite3, allocator: std.mem.Allocator, name: []const u8) !
 	return error.SqlStepFailed;
 }
 
-fn queryCount(db: *c.sqlite3, allocator: std.mem.Allocator, table: []const u8) !i64 {
+pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
 	const sql = try allocPrintZ(
 		allocator,
 		"SELECT COUNT(*) FROM {s};",
@@ -251,8 +257,8 @@ test "insertSymbol and insertEmbedding" {
 
 	const rowid = try insertSymbol(db, symbol);
 	try std.testing.expect(rowid > 0);
-	try std.testing.expectEqual(@as(i64, 1), try queryCount(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
 
 	try insertEmbedding(db, allocator, rowid, &[_]f32{ 0.1, 0.2 });
-	try std.testing.expectEqual(@as(i64, 1), try queryCount(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
 }

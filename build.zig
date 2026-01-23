@@ -108,4 +108,24 @@ pub fn build(b: *std.Build) void {
 	});
 	scan_tests.linkSystemLibrary("sqlite3");
 	test_step.dependOn(&b.addRunArtifact(scan_tests).step);
+
+	const embedding_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/embedding.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	embedding_tests.linkSystemLibrary("sqlite3");
+	test_step.dependOn(&b.addRunArtifact(embedding_tests).step);
+
+	const indexer_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/indexer.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	indexer_tests.linkSystemLibrary("sqlite3");
+	test_step.dependOn(&b.addRunArtifact(indexer_tests).step);
 }
