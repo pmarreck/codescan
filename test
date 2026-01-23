@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+out=
+err=
+rc=
+
+capture nix develop -c zig build test
+
+printf '%s' "$out"
+printf '%s' "$err" >&2
+exit "$rc"
