@@ -23,3 +23,4 @@
 - src/scan.zig: file walker for supported source files + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
 - src/search.zig: vector/lexical/hybrid search + tests
+- src/output.zig: human/json output formatting for results + tests

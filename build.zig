@@ -138,4 +138,14 @@ pub fn build(b: *std.Build) void {
 	});
 	search_tests.linkSystemLibrary("sqlite3");
 	test_step.dependOn(&b.addRunArtifact(search_tests).step);
+
+	const output_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/output.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	output_tests.linkSystemLibrary("sqlite3");
+	test_step.dependOn(&b.addRunArtifact(output_tests).step);
 }
