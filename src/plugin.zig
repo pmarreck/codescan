@@ -3,9 +3,25 @@ const model = @import("model.zig");
 const extract_zig = @import("extract_zig.zig");
 const extract_elixir = @import("extract_elixir.zig");
 const extract_c = @import("extract_c.zig");
+const extract_typescript = @import("extract_typescript.zig");
+const extract_rust = @import("extract_rust.zig");
+const extract_lean = @import("extract_lean.zig");
+const extract_idris = @import("extract_idris.zig");
+const extract_nix = @import("extract_nix.zig");
+const extract_nim = @import("extract_nim.zig");
+const extract_bash = @import("extract_bash.zig");
+const extract_lua = @import("extract_lua.zig");
 const zig_plugin = @import("plugins/zig/mod.zig");
 const elixir_plugin = @import("plugins/elixir/mod.zig");
 const c_plugin = @import("plugins/c/mod.zig");
+const typescript_plugin = @import("plugins/typescript/mod.zig");
+const rust_plugin = @import("plugins/rust/mod.zig");
+const lean_plugin = @import("plugins/lean/mod.zig");
+const idris_plugin = @import("plugins/idris/mod.zig");
+const nix_plugin = @import("plugins/nix/mod.zig");
+const nim_plugin = @import("plugins/nim/mod.zig");
+const bash_plugin = @import("plugins/bash/mod.zig");
+const lua_plugin = @import("plugins/lua/mod.zig");
 
 pub const ExtractorFn = *const fn (
 	allocator: std.mem.Allocator,
@@ -53,6 +69,54 @@ pub fn defaultRegistry() Registry {
 				.extensions = c_plugin.extensions,
 				.ignore_patterns = c_plugin.ignore_patterns,
 				.extract = extract_c.extract,
+			},
+			.{
+				.language = typescript_plugin.language,
+				.extensions = typescript_plugin.extensions,
+				.ignore_patterns = typescript_plugin.ignore_patterns,
+				.extract = extract_typescript.extract,
+			},
+			.{
+				.language = rust_plugin.language,
+				.extensions = rust_plugin.extensions,
+				.ignore_patterns = rust_plugin.ignore_patterns,
+				.extract = extract_rust.extract,
+			},
+			.{
+				.language = lean_plugin.language,
+				.extensions = lean_plugin.extensions,
+				.ignore_patterns = lean_plugin.ignore_patterns,
+				.extract = extract_lean.extract,
+			},
+			.{
+				.language = idris_plugin.language,
+				.extensions = idris_plugin.extensions,
+				.ignore_patterns = idris_plugin.ignore_patterns,
+				.extract = extract_idris.extract,
+			},
+			.{
+				.language = nix_plugin.language,
+				.extensions = nix_plugin.extensions,
+				.ignore_patterns = nix_plugin.ignore_patterns,
+				.extract = extract_nix.extract,
+			},
+			.{
+				.language = nim_plugin.language,
+				.extensions = nim_plugin.extensions,
+				.ignore_patterns = nim_plugin.ignore_patterns,
+				.extract = extract_nim.extract,
+			},
+			.{
+				.language = bash_plugin.language,
+				.extensions = bash_plugin.extensions,
+				.ignore_patterns = bash_plugin.ignore_patterns,
+				.extract = extract_bash.extract,
+			},
+			.{
+				.language = lua_plugin.language,
+				.extensions = lua_plugin.extensions,
+				.ignore_patterns = lua_plugin.ignore_patterns,
+				.extract = extract_lua.extract,
 			},
 		},
 	};

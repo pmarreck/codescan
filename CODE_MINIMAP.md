@@ -31,9 +31,26 @@
 - src/plugins/zig/mod.zig: Zig plugin defaults (language, extensions, ignore globs)
 - src/plugins/elixir/mod.zig: Elixir plugin defaults (language, extensions, ignore globs)
 - src/plugins/c/mod.zig: C plugin defaults (language, extensions, ignore globs)
+- src/plugins/typescript/mod.zig: TypeScript plugin defaults
+- src/plugins/rust/mod.zig: Rust plugin defaults
+- src/plugins/lean/mod.zig: Lean plugin defaults
+- src/plugins/idris/mod.zig: Idris plugin defaults
+- src/plugins/nix/mod.zig: Nix plugin defaults
+- src/plugins/nim/mod.zig: Nim plugin defaults
+- src/plugins/bash/mod.zig: Bash plugin defaults
+- src/plugins/lua/mod.zig: Lua plugin defaults
 - src/extract_zig.zig: Zig AST-based extractor + tests
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
 - src/extract_c.zig: C extractor using tree-sitter + tests
+- src/extract_typescript.zig: TypeScript/TSX extractor using tree-sitter + tests
+- src/extract_rust.zig: Rust extractor using tree-sitter + tests
+- src/extract_lean.zig: Lean4 extractor using tree-sitter + tests
+- src/extract_idris.zig: Idris2 extractor (line-based fallback) + tests
+- src/extract_nix.zig: Nix extractor using tree-sitter + tests
+- src/extract_nim.zig: Nim extractor using tree-sitter + tests
+- src/extract_bash.zig: Bash extractor using tree-sitter + tests
+- src/extract_lua.zig: Lua extractor using tree-sitter + tests
+- src/extract_util.zig: shared helpers for doc comments + line splitting
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), large-file warnings + tests
@@ -44,4 +61,12 @@
 - src/pcre2.zig: minimal PCRE2 wrapper used by filter
 - deps/tree-sitter: vendored tree-sitter runtime (C library + headers)
 - deps/tree-sitter-c: vendored tree-sitter C grammar (parser.c)
+- deps/tree-sitter-typescript: vendored tree-sitter TypeScript/TSX grammar
+- deps/tree-sitter-rust: vendored tree-sitter Rust grammar
+- deps/tree-sitter-bash: vendored tree-sitter Bash grammar
+- deps/tree-sitter-lua: vendored tree-sitter Lua grammar
+- deps/tree-sitter-nix: vendored tree-sitter Nix grammar
+- deps/tree-sitter-nim: vendored tree-sitter Nim grammar
+- deps/tree-sitter-lean: vendored tree-sitter Lean grammar
+- deps/tree-sitter-idris2: vendored tree-sitter Idris2 grammar
 - .codescan-fixtures/: gitignored fixture repos for integration tests

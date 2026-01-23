@@ -1,0 +1,251 @@
+[
+  {
+    "type": "char",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "expression",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "char",
+          "named": true
+        },
+        {
+          "type": "double",
+          "named": true
+        },
+        {
+          "type": "integer",
+          "named": true
+        },
+        {
+          "type": "string",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "identifier",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "integer",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "module",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "statement",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "statement",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": false,
+      "required": true,
+      "types": [
+        {
+          "type": "expression",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "string",
+    "named": true,
+    "fields": {}
+  },
+  {
+    "type": "\"",
+    "named": false
+  },
+  {
+    "type": "'",
+    "named": false
+  },
+  {
+    "type": ".",
+    "named": false
+  },
+  {
+    "type": "ACK",
+    "named": false
+  },
+  {
+    "type": "BEL",
+    "named": false
+  },
+  {
+    "type": "BS",
+    "named": false
+  },
+  {
+    "type": "CAN",
+    "named": false
+  },
+  {
+    "type": "CR",
+    "named": false
+  },
+  {
+    "type": "DC1",
+    "named": false
+  },
+  {
+    "type": "DC2",
+    "named": false
+  },
+  {
+    "type": "DC3",
+    "named": false
+  },
+  {
+    "type": "DC4",
+    "named": false
+  },
+  {
+    "type": "DEL",
+    "named": false
+  },
+  {
+    "type": "DLE",
+    "named": false
+  },
+  {
+    "type": "EM",
+    "named": false
+  },
+  {
+    "type": "ENQ",
+    "named": false
+  },
+  {
+    "type": "EOT",
+    "named": false
+  },
+  {
+    "type": "ESC",
+    "named": false
+  },
+  {
+    "type": "ETB",
+    "named": false
+  },
+  {
+    "type": "ETX",
+    "named": false
+  },
+  {
+    "type": "FF",
+    "named": false
+  },
+  {
+    "type": "FS",
+    "named": false
+  },
+  {
+    "type": "GS",
+    "named": false
+  },
+  {
+    "type": "HT",
+    "named": false
+  },
+  {
+    "type": "LF",
+    "named": false
+  },
+  {
+    "type": "NAK",
+    "named": false
+  },
+  {
+    "type": "NUL",
+    "named": false
+  },
+  {
+    "type": "RS",
+    "named": false
+  },
+  {
+    "type": "SI",
+    "named": false
+  },
+  {
+    "type": "SO",
+    "named": false
+  },
+  {
+    "type": "SOH",
+    "named": false
+  },
+  {
+    "type": "SP",
+    "named": false
+  },
+  {
+    "type": "STX",
+    "named": false
+  },
+  {
+    "type": "SUB",
+    "named": false
+  },
+  {
+    "type": "SYN",
+    "named": false
+  },
+  {
+    "type": "US",
+    "named": false
+  },
+  {
+    "type": "VT",
+    "named": false
+  },
+  {
+    "type": "\\",
+    "named": false
+  },
+  {
+    "type": "\\\\",
+    "named": false
+  },
+  {
+    "type": "\\{",
+    "named": false
+  },
+  {
+    "type": "_",
+    "named": false
+  },
+  {
+    "type": "double",
+    "named": true
+  },
+  {
+    "type": "}",
+    "named": false
+  }
+]

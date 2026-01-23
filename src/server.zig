@@ -99,7 +99,10 @@ fn handleRequest(
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		try output.writeResults(allocator, &out.writer, .json, results);
+		try output.writeResults(allocator, &out.writer, .json, results, .{
+			.show_comments = false,
+			.use_color = false,
+		});
 		const payload = try out.toOwnedSlice();
 		defer allocator.free(payload);
 

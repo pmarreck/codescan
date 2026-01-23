@@ -6,7 +6,7 @@ Semantic code search for local repositories.
 - Ollama embeddings (default: `bge-large`)
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
-- Language plugins (Zig, Elixir, C via tree-sitter)
+- Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua via tree-sitter/best-effort)
 
 ## Build
 
@@ -46,10 +46,14 @@ nix develop -c ./test-integration
 
 # search
 ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
+# show doc comments in human output
+./zig-out/bin/codescan search "hash functions" --root <path> --comments
 ```
 
 If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
 directory and uses that as the root (otherwise it falls back to the current directory).
+
+Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 
 ## Run (HTTP)
 

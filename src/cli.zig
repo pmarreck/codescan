@@ -16,6 +16,7 @@ pub const CommandTag = enum {
 
 pub const Seen = struct {
 	output: bool = false,
+	show_comments: bool = false,
 	top_n: bool = false,
 	root_path: bool = false,
 	db_path: bool = false,
@@ -35,6 +36,7 @@ pub const Seen = struct {
 pub const Parsed = struct {
 	command: CommandTag,
 	output: OutputFormat,
+	show_comments: bool,
 	query: ?[]const u8,
 	top_n: usize,
 	root_path: []const u8,
@@ -58,6 +60,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 		return Parsed{
 			.command = .help,
 			.output = .human,
+			.show_comments = false,
 			.query = null,
 			.top_n = 10,
 			.root_path = ".",
@@ -79,6 +82,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 	var parsed = Parsed{
 		.command = .help,
 		.output = .human,
+		.show_comments = false,
 		.query = null,
 		.top_n = 10,
 		.root_path = ".",
@@ -124,6 +128,12 @@ pub fn parse(args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--json")) {
 			parsed.output = .json;
 			parsed.seen.output = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--comments") or std.mem.eql(u8, arg, "--verbose")) {
+			parsed.show_comments = true;
+			parsed.seen.show_comments = true;
 			i += 1;
 			continue;
 		}
@@ -275,6 +285,7 @@ test "parse with no args defaults to help" {
 	const parsed = try parse(&args);
 	try std.testing.expectEqual(CommandTag.help, parsed.command);
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
+	try std.testing.expect(parsed.show_comments == false);
 	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
 	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
 	try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), parsed.max_file_size);
@@ -288,6 +299,7 @@ test "parse search with query defaults" {
 	const parsed = try parse(&args);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
+	try std.testing.expect(parsed.show_comments == false);
 	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
 	try std.testing.expectEqual(@as(usize, 10), parsed.top_n);
 	try std.testing.expectEqualStrings(".", parsed.root_path);
@@ -312,6 +324,7 @@ test "parse search with weights" {
 	const parsed = try parse(&args);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqualStrings("checksum", parsed.query.?);
+	try std.testing.expect(parsed.show_comments == false);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), parsed.weight_vector, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), parsed.weight_lexical, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.4), parsed.min_score, 0.0001);
@@ -324,6 +337,7 @@ test "parse search with flags" {
 	const args = [_][]const u8{
 		"codescan",
 		"search",
+		"--comments",
 		"--json",
 		"--top",
 		"5",
@@ -354,6 +368,7 @@ test "parse search with flags" {
 	const parsed = try parse(&args);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(OutputFormat.json, parsed.output);
+	try std.testing.expect(parsed.show_comments);
 	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
 	try std.testing.expectEqual(@as(usize, 5), parsed.top_n);
 	try std.testing.expectEqualStrings("/repo", parsed.root_path);
@@ -368,6 +383,19 @@ test "parse search with flags" {
 	try std.testing.expect(parsed.search_mode == .vector);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.6), parsed.min_score, 0.0001);
 	try std.testing.expect(parsed.seen.http_port);
+}
+
+test "parse search with verbose alias" {
+	const args = [_][]const u8{
+		"codescan",
+		"search",
+		"--verbose",
+		"hash",
+	};
+	const parsed = try parse(&args);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.show_comments);
+	try std.testing.expect(parsed.seen.show_comments);
 }
 
 test "parse search missing query errors" {

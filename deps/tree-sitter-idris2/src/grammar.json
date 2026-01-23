@@ -1,0 +1,441 @@
+{
+  "name": "idris2",
+  "rules": {
+    "module": {
+      "type": "REPEAT",
+      "content": {
+        "type": "SYMBOL",
+        "name": "statement"
+      }
+    },
+    "statement": {
+      "type": "SYMBOL",
+      "name": "expression"
+    },
+    "expression": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_text"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_number"
+        }
+      ]
+    },
+    "_identifierHeadLower": {
+      "type": "PATTERN",
+      "value": "a-z"
+    },
+    "_identifierHeadUpper": {
+      "type": "PATTERN",
+      "value": "A-Z"
+    },
+    "_identifierRest": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "_"
+        },
+        {
+          "type": "STRING",
+          "value": "\\"
+        },
+        {
+          "type": "PATTERN",
+          "value": "[A-Za-z]"
+        }
+      ]
+    },
+    "_identifierUpper": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_identifierHeadUpper"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_identifierRest"
+          }
+        }
+      ]
+    },
+    "_identifierLower": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_identifierHeadLower"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SYMBOL",
+            "name": "_identifierRest"
+          }
+        }
+      ]
+    },
+    "identifier": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_identifierUpper"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_identifierLower"
+        }
+      ]
+    },
+    "identifierDotted": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "identifier"
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "SEQ",
+            "members": [
+              {
+                "type": "STRING",
+                "value": "."
+              },
+              {
+                "type": "SYMBOL",
+                "name": "identifier"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "_integerDecimal": {
+      "type": "PATTERN",
+      "value": "[0-9]+(?:_[0-9]+)*"
+    },
+    "_integerHexadecimal": {
+      "type": "PATTERN",
+      "value": "0x[0-9A-Fa-f]+(?:_[0-9A-Fa-f]+)*"
+    },
+    "_integerOctal": {
+      "type": "PATTERN",
+      "value": "0o[0-7]+(?:_[0-7]+)*"
+    },
+    "_integerBinary": {
+      "type": "PATTERN",
+      "value": "0b[01]+(?:_[01]+)*"
+    },
+    "integer": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "_integerDecimal"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_integerHexadecimal"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_integerOctal"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "_integerBinary"
+        }
+      ]
+    },
+    "double": {
+      "type": "PATTERN",
+      "value": "[0-9]+\\.[0-9]+(?:[eE][-+]?[0-9]+)"
+    },
+    "_number": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "integer"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "double"
+        }
+      ]
+    },
+    "char": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "'"
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SEQ",
+              "members": [
+                {
+                  "type": "STRING",
+                  "value": "\\"
+                },
+                {
+                  "type": "CHOICE",
+                  "members": [
+                    {
+                      "type": "STRING",
+                      "value": "NUL"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "SOH"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "STX"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "ETX"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "EOT"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "ENQ"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "ACK"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "BEL"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "BS"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "HT"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "LF"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "VT"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "FF"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "CR"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "SO"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "SI"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "DLE"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "DC1"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "DC2"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "DC3"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "DC4"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "NAK"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "SYN"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "ETB"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "CAN"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "EM"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "SUB"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "ESC"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "FS"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "GS"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "RS"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "US"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "SP"
+                    },
+                    {
+                      "type": "STRING",
+                      "value": "DEL"
+                    },
+                    {
+                      "type": "PATTERN",
+                      "value": "o[0-7]+"
+                    },
+                    {
+                      "type": "PATTERN",
+                      "value": "x[0-9A-Fa-f]+"
+                    },
+                    {
+                      "type": "PATTERN",
+                      "value": "[0-9]+"
+                    },
+                    {
+                      "type": "PATTERN",
+                      "value": "."
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "type": "PATTERN",
+              "value": "[^'\\\\]"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": "'"
+        }
+      ]
+    },
+    "string": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "\""
+        },
+        {
+          "type": "REPEAT",
+          "content": {
+            "type": "CHOICE",
+            "members": [
+              {
+                "type": "SEQ",
+                "members": [
+                  {
+                    "type": "STRING",
+                    "value": "\\{"
+                  },
+                  {
+                    "type": "PATTERN",
+                    "value": "[^\\}]+"
+                  },
+                  {
+                    "type": "STRING",
+                    "value": "}"
+                  }
+                ]
+              },
+              {
+                "type": "STRING",
+                "value": "\\\\"
+              },
+              {
+                "type": "PATTERN",
+                "value": "\\\\."
+              },
+              {
+                "type": "PATTERN",
+                "value": "[^\"\\n\\r]+"
+              }
+            ]
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "\""
+        }
+      ]
+    },
+    "_text": {
+      "type": "CHOICE",
+      "members": [
+        {
+          "type": "SYMBOL",
+          "name": "char"
+        },
+        {
+          "type": "SYMBOL",
+          "name": "string"
+        }
+      ]
+    }
+  },
+  "extras": [
+    {
+      "type": "PATTERN",
+      "value": "\\s"
+    }
+  ],
+  "conflicts": [],
+  "precedences": [],
+  "externals": [],
+  "inline": [],
+  "supertypes": []
+}
+

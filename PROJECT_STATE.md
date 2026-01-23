@@ -37,6 +37,14 @@
   - Zig: `src/extract_zig.zig` (AST)
   - Elixir: `src/extract_elixir.zig`
   - C: `src/extract_c.zig` (tree-sitter)
+  - TypeScript: `src/extract_typescript.zig` (tree-sitter)
+  - Rust: `src/extract_rust.zig` (tree-sitter)
+  - Lean: `src/extract_lean.zig` (tree-sitter)
+  - Idris2: `src/extract_idris.zig` (line-based fallback)
+  - Nix: `src/extract_nix.zig` (tree-sitter)
+  - Nim: `src/extract_nim.zig` (tree-sitter)
+  - Bash: `src/extract_bash.zig` (tree-sitter)
+  - Lua: `src/extract_lua.zig` (tree-sitter)
 - Plugin defaults live in `src/plugins/<lang>/mod.zig`.
 
 ## Dependencies + build notes
@@ -44,6 +52,7 @@
   - Static init in `src/storage.zig` calls `sqlite3_vec_init` (no runtime extension loading).
 - SQLite amalgamation path is provided via `SQLITE_VEC_SQLITE_AMALGAMATION_DIR` (set in `flake.nix`).
 - tree-sitter runtime + tree-sitter-c grammar are vendored under `deps/` and built as static libs.
+- tree-sitter grammars for new languages are vendored under `deps/` (see CODE_MINIMAP). `deps/tree-sitter-nim/src/scanner.c` includes a null-buffer guard for Zig's runtime checks.
 - PCRE2 is required for glob matching and is built as a Zig dependency (`qaptoR-support/pcre2`).
 
 ## Known behaviors
@@ -51,6 +60,8 @@
 - A warning is emitted when a file exceeds `max_file_size / 4`.
 - Default DB location is `.codescan/index.sqlite3` under the target root.
 - `min_score` filters low-scoring results after ranking (default `0.0`).
+- `--comments` / `--verbose` shows doc comments in human output (hidden by default).
+- `NO_COLOR=1` disables ANSI colors in human output.
 
 ## Integration tests
 - `test-integration` runs end-to-end indexing/search against pinned fixture repos.

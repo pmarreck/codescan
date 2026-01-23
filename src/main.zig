@@ -31,6 +31,7 @@ const Defaults = struct {
 
 const Settings = struct {
 	output: cli.OutputFormat,
+	show_comments: bool,
 	top_n: usize,
 	root_path: []const u8,
 	db_path: []const u8,
@@ -154,7 +155,11 @@ pub fn main() !void {
 			);
 			defer search.freeResults(allocator, results);
 
-			try output.writeResults(allocator, stdout, settings.output, results);
+			const use_color = settings.output == .human and !std.process.hasEnvVarConstant("NO_COLOR");
+			try output.writeResults(allocator, stdout, settings.output, results, .{
+				.show_comments = settings.show_comments,
+				.use_color = use_color,
+			});
 			try stdout.flush();
 		},
 		.serve => {
@@ -185,6 +190,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	const defaults = Defaults{};
 	var settings = Settings{
 		.output = defaults.output,
+		.show_comments = false,
 		.top_n = defaults.top_n,
 		.root_path = default_root,
 		.db_path = defaults.db_path,
@@ -223,6 +229,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.http_port) |value| settings.http_port = value;
 
 	if (parsed.seen.output) settings.output = parsed.output;
+	if (parsed.seen.show_comments) settings.show_comments = parsed.show_comments;
 	if (parsed.seen.top_n) settings.top_n = parsed.top_n;
 	if (parsed.seen.root_path) settings.root_path = parsed.root_path;
 	if (parsed.seen.db_path) settings.db_path = parsed.db_path;
@@ -344,6 +351,7 @@ const usage =
 	\\  --min-score <n>         Minimum score threshold (default 0.0)
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
+	\\  --comments, --verbose   Show doc comments in human output
 	\\  --json                  JSON output for CLI search/index
 	\\  -h, --help              Show help
 	\\

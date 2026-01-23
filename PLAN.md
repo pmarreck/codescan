@@ -34,3 +34,6 @@
 - [x] Add basic HTTP server /health test
 - [x] Update runtime CLI examples to avoid nix develop prefix
 - [x] Default root to nearest .codescan ancestor when --root omitted
+- [x] Add new language plugins (TypeScript, Rust, Lean4, Idris2, Nix, Nim, Bash, LuaJIT)
+- [x] Vendor or fetch tree-sitter grammars for new languages (best-effort AST)
+- [x] Improve human output formatting (alignment + colors) and doc-comment gating (--verbose/--comments)
