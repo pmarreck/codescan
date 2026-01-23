@@ -5,6 +5,8 @@
 - PROJECT_PLAN.md: high-level milestones and objective
 - CODE_MINIMAP.md: overview of important files and their purpose
 - .gitignore: ignored paths for build outputs and local indexes
+- README.md: usage, build, and configuration overview
+- LICENSE: MIT license
 - flake.lock: pinned Nix inputs for reproducible dev shell
 - ZIG_RECENT_API_CHANGES_2025.md: Zig 0.14–0.15 API quick reference
 - flake.nix: Nix flake providing dev dependencies (zig_0_15) + sqlite amalgamation env vars
