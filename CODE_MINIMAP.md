@@ -14,3 +14,4 @@
 - src/cli.zig: CLI argument parsing types + tests
 - src/config.zig: config parsing/loading for .codescan/config + tests
 - src/storage.zig: sqlite + sqlite-vec schema init + tests
+- src/ollama.zig: Ollama embed request/response + HTTP transport + tests

@@ -4,7 +4,7 @@
 - [x] Establish project scaffolding (flake.nix, build.zig, ./test)
 - [x] Implement config loading (repo-local .codescan/config)
 - [x] Define storage schema (sqlite + sqlite-vec) and migrations
-- [ ] Build embedding pipeline (Ollama HTTP client, batching)
+- [x] Build embedding pipeline (Ollama HTTP client, batching)
 - [ ] Implement indexing flow (scan -> extract -> embed -> store)
 - [ ] Implement search flow (query embed -> vector search -> format)
 - [ ] Define plugin interface + registry
