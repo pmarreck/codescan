@@ -14,8 +14,8 @@ pub fn build(b: *std.Build) void {
 		.name = "codescan",
 		.root_module = main_module,
 	});
-	exe.linkSystemLibrary("sqlite3");
-	exe.linkSystemLibrary("pcre2-8");
+	exe.root_module.linkSystemLibrary("sqlite3", .{});
+	exe.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	b.installArtifact(exe);
 
 	const test_step = b.step("test", "Run unit tests");
@@ -27,8 +27,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	cli_tests.linkSystemLibrary("sqlite3");
-	cli_tests.linkSystemLibrary("pcre2-8");
+	cli_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	cli_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(cli_tests).step);
 
 	const main_tests = b.addTest(.{
@@ -38,8 +38,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	main_tests.linkSystemLibrary("sqlite3");
-	main_tests.linkSystemLibrary("pcre2-8");
+	main_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	main_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(main_tests).step);
 
 	const config_tests = b.addTest(.{
@@ -49,8 +49,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	config_tests.linkSystemLibrary("sqlite3");
-	config_tests.linkSystemLibrary("pcre2-8");
+	config_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	config_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(config_tests).step);
 
 	const storage_tests = b.addTest(.{
@@ -60,8 +60,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	storage_tests.linkSystemLibrary("sqlite3");
-	storage_tests.linkSystemLibrary("pcre2-8");
+	storage_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	storage_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(storage_tests).step);
 
 	const ollama_tests = b.addTest(.{
@@ -71,8 +71,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	ollama_tests.linkSystemLibrary("sqlite3");
-	ollama_tests.linkSystemLibrary("pcre2-8");
+	ollama_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	ollama_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(ollama_tests).step);
 
 	const plugin_tests = b.addTest(.{
@@ -82,8 +82,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	plugin_tests.linkSystemLibrary("sqlite3");
-	plugin_tests.linkSystemLibrary("pcre2-8");
+	plugin_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	plugin_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(plugin_tests).step);
 
 	const extract_zig_tests = b.addTest(.{
@@ -93,8 +93,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	extract_zig_tests.linkSystemLibrary("sqlite3");
-	extract_zig_tests.linkSystemLibrary("pcre2-8");
+	extract_zig_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	extract_zig_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(extract_zig_tests).step);
 
 	const extract_elixir_tests = b.addTest(.{
@@ -104,8 +104,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	extract_elixir_tests.linkSystemLibrary("sqlite3");
-	extract_elixir_tests.linkSystemLibrary("pcre2-8");
+	extract_elixir_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	extract_elixir_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(extract_elixir_tests).step);
 
 	const scan_tests = b.addTest(.{
@@ -115,8 +115,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	scan_tests.linkSystemLibrary("sqlite3");
-	scan_tests.linkSystemLibrary("pcre2-8");
+	scan_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	scan_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(scan_tests).step);
 
 	const embedding_tests = b.addTest(.{
@@ -126,8 +126,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	embedding_tests.linkSystemLibrary("sqlite3");
-	embedding_tests.linkSystemLibrary("pcre2-8");
+	embedding_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	embedding_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(embedding_tests).step);
 
 	const indexer_tests = b.addTest(.{
@@ -137,8 +137,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	indexer_tests.linkSystemLibrary("sqlite3");
-	indexer_tests.linkSystemLibrary("pcre2-8");
+	indexer_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	indexer_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(indexer_tests).step);
 
 	const search_tests = b.addTest(.{
@@ -148,8 +148,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	search_tests.linkSystemLibrary("sqlite3");
-	search_tests.linkSystemLibrary("pcre2-8");
+	search_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	search_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(search_tests).step);
 
 	const output_tests = b.addTest(.{
@@ -159,8 +159,8 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	output_tests.linkSystemLibrary("sqlite3");
-	output_tests.linkSystemLibrary("pcre2-8");
+	output_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	output_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(output_tests).step);
 
 	const server_tests = b.addTest(.{
@@ -170,7 +170,7 @@ pub fn build(b: *std.Build) void {
 			.optimize = optimize,
 		}),
 	});
-	server_tests.linkSystemLibrary("sqlite3");
-	server_tests.linkSystemLibrary("pcre2-8");
+	server_tests.root_module.linkSystemLibrary("sqlite3", .{});
+	server_tests.root_module.linkSystemLibrary("pcre2-8", .{ .preferred_link_mode = .static });
 	test_step.dependOn(&b.addRunArtifact(server_tests).step);
 }

@@ -17,6 +17,7 @@
 - [x] Normalize hybrid weights automatically
 - [x] Add FTS5 lexical search with fallback to LIKE
 - [ ] Add tests for edge cases and filters; keep tests fast/deterministic
+- [x] Prefer static link for pcre2 dependency
 - [x] Add plugin-specific ignore globs with PCRE2-backed matcher
 - [x] Support ignore config overrides (global + per-language) in .codescan/config
 - [x] Evaluate/tune weights on example repo queries
