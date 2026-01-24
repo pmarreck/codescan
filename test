@@ -9,6 +9,12 @@ rc=
 
 capture nix develop -c zig build test
 
-printf '%s' "$out"
+if [ "$rc" -eq 0 ]; then
+	printf '\033[32mPASS\033[0m unit\n'
+	exit 0
+fi
+
+printf '\033[31mFAIL\033[0m unit\n' >&2
+printf '%s' "$out" >&2
 printf '%s' "$err" >&2
 exit "$rc"
