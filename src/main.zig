@@ -80,7 +80,8 @@ pub fn main() !void {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
-			_ = stderr.writeAll(usage) catch {};
+			_ = stderr.print("error: {s}\n\n", .{usageErrorMessage(err)}) catch {};
+			_ = printUsage(stderr) catch {};
 			_ = stderr.flush() catch {};
 			std.process.exit(64);
 		}
@@ -88,7 +89,7 @@ pub fn main() !void {
 	};
 
 	if (parsed.command == .help) {
-		try stdout.writeAll(usage);
+		try printUsage(stdout);
 		try stdout.flush();
 		return;
 	}
@@ -460,6 +461,20 @@ fn isUsageError(err: anyerror) bool {
 		err == error.InvalidMode or
 		err == error.UnexpectedArg or
 		err == error.TooManyArgs;
+}
+
+fn usageErrorMessage(err: anyerror) []const u8 {
+	if (err == error.MissingQuery) return "missing search query";
+	if (err == error.UnknownCommand) return "unknown command";
+	if (err == error.MissingValue) return "missing required value";
+	if (err == error.InvalidMode) return "invalid mode";
+	if (err == error.UnexpectedArg) return "unexpected argument";
+	if (err == error.TooManyArgs) return "too many arguments";
+	return "invalid usage";
+}
+
+fn printUsage(writer: *std.Io.Writer) !void {
+	try writer.writeAll(usage);
 }
 
 test "findRepoRoot finds nearest .codescan ancestor" {
