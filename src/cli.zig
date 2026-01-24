@@ -18,6 +18,7 @@ pub const Seen = struct {
 	output: bool = false,
 	show_comments: bool = false,
 	include_docs: bool = false,
+	docs_only: bool = false,
 	top_n: bool = false,
 	root_path: bool = false,
 	db_path: bool = false,
@@ -42,6 +43,7 @@ pub const Parsed = struct {
 	output: OutputFormat,
 	show_comments: bool,
 	include_docs: bool,
+	docs_only: bool,
 	query: ?[]const u8,
 	top_n: usize,
 	root_path: []const u8,
@@ -70,6 +72,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.output = .human,
 			.show_comments = false,
 			.include_docs = false,
+			.docs_only = false,
 			.query = null,
 			.top_n = 10,
 			.root_path = ".",
@@ -96,6 +99,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.output = .human,
 		.show_comments = false,
 		.include_docs = false,
+		.docs_only = false,
 		.query = null,
 		.top_n = 10,
 		.root_path = ".",
@@ -156,6 +160,12 @@ pub fn parse(args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--include-docs")) {
 			parsed.include_docs = true;
 			parsed.seen.include_docs = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--docs")) {
+			parsed.docs_only = true;
+			parsed.seen.docs_only = true;
 			i += 1;
 			continue;
 		}
@@ -333,6 +343,7 @@ test "parse with no args defaults to help" {
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
 	try std.testing.expect(parsed.show_comments == false);
 	try std.testing.expect(parsed.include_docs == false);
+	try std.testing.expect(parsed.docs_only == false);
 	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
 	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
 	try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), parsed.max_file_size);
@@ -424,6 +435,7 @@ test "parse search with flags" {
 	try std.testing.expectEqual(OutputFormat.json, parsed.output);
 	try std.testing.expect(parsed.show_comments);
 	try std.testing.expect(parsed.include_docs);
+	try std.testing.expect(parsed.docs_only == false);
 	try std.testing.expectEqualStrings("zig,md", parsed.ext_filter.?);
 	try std.testing.expectEqualStrings("code,doc", parsed.type_filter.?);
 	try std.testing.expectEqualStrings("zig", parsed.lang_filter.?);
@@ -454,6 +466,20 @@ test "parse search with verbose alias" {
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expect(parsed.show_comments);
 	try std.testing.expect(parsed.seen.show_comments);
+}
+
+test "parse search with docs flag" {
+	const args = [_][]const u8{
+		"codescan",
+		"search",
+		"--docs",
+		"design doc",
+	};
+	const parsed = try parse(&args);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.docs_only);
+	try std.testing.expect(parsed.seen.docs_only);
+	try std.testing.expectEqualStrings("design doc", parsed.query.?);
 }
 
 test "parse search missing query errors" {

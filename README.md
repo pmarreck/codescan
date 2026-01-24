@@ -51,6 +51,8 @@ nix develop -c ./test-integration
 ./zig-out/bin/codescan search "hash functions" --root <path> --comments
 # include markdown/README when using default search scope
 ./zig-out/bin/codescan search "design doc" --include-docs
+# only markdown/README results
+./zig-out/bin/codescan search "design doc" --docs
 # restrict by extension/type/language
 ./zig-out/bin/codescan search "checksum" --ext md,zig
 ./zig-out/bin/codescan search "checksum" --type code,doc
@@ -61,6 +63,7 @@ If `--root` is omitted, `codescan` searches upward from the current directory fo
 directory and uses that as the root (otherwise it falls back to the current directory).
 
 Search defaults to the primary code language by file count unless a filter is supplied.
+`--include-docs` adds markdown/README; `--docs` restricts results to markdown/README only.
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 

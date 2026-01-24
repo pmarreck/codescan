@@ -49,6 +49,7 @@ const Settings = struct {
 	weight_lexical: f32,
 	min_score: f32,
 	include_docs: bool,
+	docs_only: bool,
 	index_ext: ?[]const u8,
 	index_type: ?[]const u8,
 	search_ext: ?[]const u8,
@@ -227,6 +228,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.weight_lexical = defaults.weight_lexical,
 		.min_score = defaults.min_score,
 		.include_docs = defaults.include_docs,
+		.docs_only = false,
 		.index_ext = null,
 		.index_type = null,
 		.search_ext = null,
@@ -279,6 +281,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.weight_lexical) settings.weight_lexical = parsed.weight_lexical;
 	if (parsed.seen.min_score) settings.min_score = parsed.min_score;
 	if (parsed.seen.include_docs) settings.include_docs = parsed.include_docs;
+	if (parsed.seen.docs_only) settings.docs_only = parsed.docs_only;
 	if (parsed.seen.ext_filter) {
 		if (parsed.command == .index or parsed.command == .update) {
 			settings.index_ext = parsed.ext_filter;
@@ -295,6 +298,9 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	}
 	if (parsed.seen.lang_filter and parsed.command == .search) {
 		settings.search_lang = parsed.lang_filter;
+	}
+	if (settings.docs_only) {
+		settings.search_type = "doc";
 	}
 	if (parsed.seen.http_host) settings.http_host = parsed.http_host;
 	if (parsed.seen.http_port) settings.http_port = parsed.http_port;
@@ -434,7 +440,7 @@ fn buildSearchFilters(
 		filters.langs.items.len > 0 or
 		filters.kinds.items.len > 0;
 
-	if (!has_explicit) {
+	if (!has_explicit and !settings.docs_only) {
 		var primary_lang: ?[]const u8 = null;
 		var primary_owned = false;
 		if (settings.primary_lang) |value| {
@@ -623,6 +629,7 @@ const usage =
 	\\  --type <csv>            Restrict to types: code,doc,text,log
 	\\  --lang <csv>            Restrict search to languages
 	\\  --include-docs          Include markdown/README when defaulting to primary language
+	\\  --docs                  Only return markdown/README results
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
 	\\  --comments, --verbose   Show doc comments in human output

@@ -68,6 +68,7 @@
 - `min_score` filters low-scoring results after ranking (default `0.0`).
 - Search defaults to the primary code language by file count unless filters are supplied.
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
+- `--docs` restricts results to markdown/README only.
 - `--comments` / `--verbose` shows doc comments in human output (hidden by default).
 - `NO_COLOR=1` disables ANSI colors in human output.
 
