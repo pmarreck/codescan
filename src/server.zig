@@ -90,6 +90,10 @@ fn handleRequest(
 		try respondJson(req, "{\"status\":\"ok\"}");
 		return;
 	}
+	if (req.head.method == .GET and std.mem.eql(u8, path, "/help")) {
+		try respondText(req, help_text);
+		return;
+	}
 
 	if (req.head.method == .POST and std.mem.eql(u8, path, "/search")) {
 		const body = try readBody(allocator, req, 1024 * 1024);
@@ -184,6 +188,13 @@ fn handleRequest(
 fn respondJson(req: *std.http.Server.Request, body: []const u8) !void {
 	const headers = [_]std.http.Header{
 		.{ .name = "Content-Type", .value = "application/json" },
+	};
+	try req.respond(body, .{ .status = .ok, .extra_headers = &headers });
+}
+
+fn respondText(req: *std.http.Server.Request, body: []const u8) !void {
+	const headers = [_]std.http.Header{
+		.{ .name = "Content-Type", .value = "text/plain; charset=utf-8" },
 	};
 	try req.respond(body, .{ .status = .ok, .extra_headers = &headers });
 }
@@ -448,6 +459,28 @@ test "handleRequest responds to /health" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"status\":\"ok\"") != null);
 }
 
+test "handleRequest responds to /help" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	const request_bytes = "GET /help HTTP/1.1\r\nHost: localhost\r\n\r\n";
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [512]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "show-comments") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "default: hidden") != null);
+}
+
 const FakeEmbedder = struct {
 	pub fn embedder(self: *FakeEmbedder) embedding.Embedder {
 		return .{
@@ -500,3 +533,18 @@ fn testSettings() Settings {
 		.http_port = 0,
 	};
 }
+
+const help_text =
+	"codescan http api\n" ++
+	"\n" ++
+	"POST /search\n" ++
+	"  fields: query, top_n, mode, weight_vector, weight_lexical, min_score\n" ++
+	"          ext, type, lang, include_docs, docs/only_docs, comments/only_comments\n" ++
+	"\n" ++
+	"POST /index\n" ++
+	"  fields: ext, type\n" ++
+	"\n" ++
+	"GET /health\n" ++
+	"GET /help\n" ++
+	"\n" ++
+	"cli note: --show-comments/--verbose shows doc comments in human output (default: hidden)\n";

@@ -437,7 +437,7 @@ const usage =
 	\\  --comments, --only-comments  Only return doc-comment results
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
-	\\  --show-comments, --verbose   Show doc comments in human output
+	\\  --show-comments, --verbose   Show doc comments in human output (default: hidden)
 	\\  --json                  JSON output for CLI search/index
 	\\  -h, --help              Show help
 	\\

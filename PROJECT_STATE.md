@@ -23,7 +23,7 @@
 
 ## Run (HTTP)
 - `./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123`
-- Endpoints: `/health`, `/index`, `/search` (see `src/server.zig` for request shape)
+- Endpoints: `/health`, `/help`, `/index`, `/search` (see `src/server.zig` for request shape)
 
 ## Config (.codescan/config)
 - Load path: `<root>/.codescan/config`

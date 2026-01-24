@@ -83,6 +83,8 @@ Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 ./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123
 ```
 
+Endpoints: `GET /health`, `GET /help`, `POST /index`, `POST /search`.
+
 ## Config
 
 Create `<root>/.codescan/config` to override defaults. Example:
