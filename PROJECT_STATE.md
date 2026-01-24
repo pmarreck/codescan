@@ -6,6 +6,8 @@
 ## Build + test
 - Build: `nix develop -c zig build`
 - Unit tests: `./test`
+- CLI test: `nix develop -c ./test-cli`
+- HTTP test: `nix develop -c ./test-http`
 
 ## Run (CLI)
 - Index (creates `.codescan/index.sqlite3` under the root):
@@ -15,7 +17,8 @@
 - Search:
   - `./zig-out/bin/codescan search "<query>" --root <path>`
   - Optional knobs: `--mode <vector|lexical|hybrid>`, `--weight-vector`, `--weight-lexical`, `--top`
-  - Filters: `--ext <csv>`, `--type <csv>`, `--lang <csv>`, `--include-docs`
+  - Filters: `--ext <csv>`, `--type <csv>`, `--lang <csv>`, `--include-docs`, `--docs/--only-docs`, `--comments/--only-comments`
+  - Output: `--show-comments`/`--verbose` to display doc comments in human output
 - If `--root` is omitted, codescan searches upward from the current directory for a `.codescan/` directory and uses that root (else current dir).
 
 ## Run (HTTP)
@@ -26,7 +29,7 @@
 - Load path: `<root>/.codescan/config`
 - Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model`, `embedding_dim`, `batch_size`,
   `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`,
-  `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`.
+  `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`, `docs_only`, `comments_only`.
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
@@ -68,9 +71,11 @@
 - `min_score` filters low-scoring results after ranking (default `0.0`).
 - Search defaults to the primary code language by file count unless filters are supplied.
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
-- `--docs` restricts results to markdown/README only.
-- `--comments` / `--verbose` shows doc comments in human output (hidden by default).
+- `--docs`/`--only-docs` restrict results to markdown/README only.
+- `--comments`/`--only-comments` restrict results to doc comments only.
+- `--show-comments`/`--verbose` shows doc comments in human output (hidden by default).
 - `NO_COLOR=1` disables ANSI colors in human output.
+- Comment-only vector/hybrid search uses the `embeddings_comment` table (reindex if migrating older DBs).
 
 ## Integration tests
 - `test-integration` runs end-to-end indexing/search against pinned fixture repos.

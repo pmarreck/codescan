@@ -45,10 +45,15 @@ pub fn indexAll(
 
 	var batch_texts: std.ArrayListUnmanaged([]const u8) = .{};
 	var batch_rowids: std.ArrayListUnmanaged(i64) = .{};
+	var comment_texts: std.ArrayListUnmanaged([]const u8) = .{};
+	var comment_rowids: std.ArrayListUnmanaged(i64) = .{};
 	defer {
 		for (batch_texts.items) |text| allocator.free(text);
 		batch_texts.deinit(allocator);
 		batch_rowids.deinit(allocator);
+		for (comment_texts.items) |text| allocator.free(text);
+		comment_texts.deinit(allocator);
+		comment_rowids.deinit(allocator);
 	}
 
 	var stderr_buf: [4096]u8 = undefined;
@@ -102,11 +107,24 @@ pub fn indexAll(
 			if (batch_texts.items.len >= options.batch_size) {
 				try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
 			}
+
+			if (sym.doc_comment) |doc| {
+				const comment_text = try buildCommentText(allocator, doc);
+				try comment_texts.append(allocator, comment_text);
+				try comment_rowids.append(allocator, rowid);
+
+				if (comment_texts.items.len >= options.batch_size) {
+					try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+				}
+			}
 		}
 	}
 
 	if (batch_texts.items.len > 0) {
 		try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+	}
+	if (comment_texts.items.len > 0) {
+		try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
 	}
 
 	return stats;
@@ -150,6 +168,10 @@ pub fn buildSymbolText(allocator: std.mem.Allocator, symbol: model.Symbol) ![]u8
 	return out.toOwnedSlice();
 }
 
+pub fn buildCommentText(allocator: std.mem.Allocator, doc: []const u8) ![]u8 {
+	return allocator.dupe(u8, doc);
+}
+
 fn flushBatch(
 	allocator: std.mem.Allocator,
 	db: storage.Db,
@@ -165,6 +187,28 @@ fn flushBatch(
 	for (embeddings, 0..) |vector, idx| {
 		if (vector.len != options.embedding_dim) return error.EmbeddingDimMismatch;
 		try storage.insertEmbedding(db, allocator, batch_rowids.items[idx], vector);
+	}
+
+	for (batch_texts.items) |text| allocator.free(text);
+	batch_texts.clearRetainingCapacity();
+	batch_rowids.clearRetainingCapacity();
+}
+
+fn flushCommentBatch(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	embedder: embedding.Embedder,
+	options: Options,
+	batch_texts: *std.ArrayListUnmanaged([]const u8),
+	batch_rowids: *std.ArrayListUnmanaged(i64),
+) !void {
+	const embeddings = try embedder.embed(embedder.ctx, allocator, batch_texts.items);
+	defer embedder.free(embedder.ctx, allocator, embeddings);
+
+	if (embeddings.len != batch_texts.items.len) return error.EmbeddingCountMismatch;
+	for (embeddings, 0..) |vector, idx| {
+		if (vector.len != options.embedding_dim) return error.EmbeddingDimMismatch;
+		try storage.insertCommentEmbedding(db, allocator, batch_rowids.items[idx], vector);
 	}
 
 	for (batch_texts.items) |text| allocator.free(text);
@@ -237,6 +281,7 @@ test "indexAll stores symbols and embeddings" {
 	try std.testing.expectEqual(@as(usize, 2), stats.symbols);
 	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "symbols"));
 	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
 }
 
 test "indexAll skips files over max_file_size" {

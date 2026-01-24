@@ -58,6 +58,20 @@ pub fn build(b: *std.Build) void {
 	linkCommon(exe, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	b.installArtifact(exe);
 
+	const mk_db_module = b.createModule(.{
+		.root_source_file = b.path("src/mk_test_db.zig"),
+		.target = target,
+		.optimize = optimize,
+	});
+	addTreeSitterIncludes(b, mk_db_module);
+	addPcre2Includes(mk_db_module, pcre2_lib);
+	const mk_db = b.addExecutable(.{
+		.name = "mk-test-db",
+		.root_module = mk_db_module,
+	});
+	linkCommon(mk_db, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	b.installArtifact(mk_db);
+
 	const test_step = b.step("test", "Run unit tests");
 
 	const cli_tests = b.addTest(.{

@@ -8,6 +8,8 @@
 - README.md: usage, build, and configuration overview
 - LICENSE: MIT license
 - test-integration: end-to-end integration suite (requires Ollama + fixtures)
+- test-cli: CLI black-box test suite (uses mk_test_db fixture)
+- test-http: HTTP API black-box test suite (uses mk_test_db fixture)
 - fixtures/manifest.toml: pinned fixture repos for integration tests
 - .github/workflows/build.yml: CI build + release artifacts workflow
 - scripts/ci-setup-nix: CI helper to install Nix (used by GitHub Actions)
@@ -61,13 +63,14 @@
 - src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
-- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), large-file warnings + tests
 - src/search.zig: vector/lexical/hybrid search + weight tuning + FTS candidates + tests
 - src/output.zig: human/json output formatting for results + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests
+- src/filters.zig: shared parsing + filter logic for ext/lang/type and primary language defaults
 - src/filter.zig: glob-to-regex compiler + PCRE2 matcher for ignore patterns
 - src/pcre2.zig: minimal PCRE2 wrapper used by filter
+- src/mk_test_db.zig: generate tiny sqlite index for CLI/HTTP tests
 - deps/tree-sitter: vendored tree-sitter runtime (C library + headers)
 - deps/tree-sitter-c: vendored tree-sitter C grammar (parser.c)
 - deps/tree-sitter-typescript: vendored tree-sitter TypeScript/TSX grammar

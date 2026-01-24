@@ -20,6 +20,7 @@ pub const Options = struct {
 	min_score: f32 = 0.0,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
 	allowed_exts: []const []const u8 = &[_][]const u8{},
+	comments_only: bool = false,
 };
 
 pub const Result = struct {
@@ -62,7 +63,13 @@ pub fn search(
 	}
 
 	if (options.mode == .lexical) {
-		const lexical = try lexicalCandidates(allocator, db, query, options.top_n * options.candidate_multiplier);
+		const lexical = try lexicalCandidates(
+			allocator,
+			db,
+			query,
+			options.top_n * options.candidate_multiplier,
+			options.comments_only,
+		);
 		for (lexical) |res| try results.append(allocator, res);
 		allocator.free(lexical);
 	} else {
@@ -72,17 +79,35 @@ pub fn search(
 		if (embeddings.len != 1) return error.InvalidEmbeddingCount;
 
 		const limit = options.top_n * options.candidate_multiplier;
-		const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit);
+		const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only);
 		for (vector_results) |res| try results.append(allocator, res);
 		allocator.free(vector_results);
 
 		if (options.mode == .hybrid) {
-			const lexical = try lexicalCandidates(allocator, db, query, limit);
+			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only);
 			defer allocator.free(lexical);
 			for (lexical) |res| {
 				try appendUnique(allocator, &results, res);
 			}
 		}
+	}
+
+	if (options.comments_only) {
+		var filtered = std.ArrayListUnmanaged(Result){};
+		errdefer {
+			for (filtered.items) |*res| res.deinit(allocator);
+			filtered.deinit(allocator);
+		}
+		for (results.items) |res| {
+			if (res.symbol.doc_comment != null) {
+				try filtered.append(allocator, res);
+			} else {
+				var tmp = res;
+				tmp.deinit(allocator);
+			}
+		}
+		results.deinit(allocator);
+		results = filtered;
 	}
 
 	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0) {
@@ -104,7 +129,7 @@ pub fn search(
 	}
 
 	for (results.items) |*res| {
-		const lexical = try lexicalScore(allocator, query, res.symbol);
+		const lexical = try lexicalScore(allocator, query, res.symbol, options.comments_only);
 		res.lexical = lexical;
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
 		if (options.mode == .vector) {
@@ -202,17 +227,23 @@ fn vectorCandidates(
 	db: storage.Db,
 	vector: []const f32,
 	limit: usize,
+	comments_only: bool,
 ) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
 	const json = try vectorToJson(allocator, vector);
 	defer allocator.free(json);
 
-	const sql: [:0]const u8 =
+	const table = if (comments_only) "embeddings_comment" else "embeddings";
+	const sql = try allocPrintZ(
+		allocator,
 		"SELECT symbols.id, lang, file_path, start_line, end_line, symbol_name, signature, doc_comment, "
 		++ "vec_distance_l2(embedding, vec_f32(?1)) AS distance "
-		++ "FROM embeddings JOIN symbols ON embeddings.rowid = symbols.id "
-		++ "ORDER BY distance LIMIT ?2;\x00";
+		++ "FROM {s} JOIN symbols ON {s}.rowid = symbols.id "
+		++ "ORDER BY distance LIMIT ?2;",
+		.{ table, table },
+	);
+	defer allocator.free(sql);
 
 	var stmt: ?*sqlite.sqlite3_stmt = null;
 	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) {
@@ -249,7 +280,11 @@ fn lexicalCandidates(
 	db: storage.Db,
 	query: []const u8,
 	limit: usize,
+	comments_only: bool,
 ) ![]Result {
+	if (comments_only) {
+		return commentCandidates(allocator, db, query, limit);
+	}
 	if (ftsAvailable(db) catch false) {
 		const fts = ftsCandidates(allocator, db, query, limit) catch null;
 		if (fts) |rows| return rows;
@@ -277,6 +312,57 @@ fn likeCandidates(
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
 		++ "OR signature LIKE ?1 COLLATE NOCASE "
 		++ "OR doc_comment LIKE ?1 COLLATE NOCASE "
+		++ "LIMIT ?2;\x00";
+
+	var stmt: ?*sqlite.sqlite3_stmt = null;
+	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = sqlite.sqlite3_finalize(stmt.?);
+
+	_ = sqlite.sqlite3_bind_text(stmt.?, 1, pattern_z.ptr, @intCast(pattern.len), null);
+	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
+
+	var results = std.ArrayListUnmanaged(Result){};
+	errdefer {
+		for (results.items) |*res| res.deinit(allocator);
+		results.deinit(allocator);
+	}
+
+	while (true) {
+		const rc = sqlite.sqlite3_step(stmt.?);
+		if (rc == sqlite.SQLITE_ROW) {
+			const res = try readResultRow(allocator, stmt.?);
+			try results.append(allocator, res);
+		} else if (rc == sqlite.SQLITE_DONE) {
+			break;
+		} else {
+			return error.SqlStepFailed;
+		}
+	}
+
+	return results.toOwnedSlice(allocator);
+}
+
+fn commentCandidates(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	query: []const u8,
+	limit: usize,
+) ![]Result {
+	if (limit == 0) return allocator.alloc(Result, 0);
+
+	const pattern = try std.fmt.allocPrint(allocator, "%{s}%", .{query});
+	defer allocator.free(pattern);
+	const pattern_z = try allocator.dupeZ(u8, pattern);
+	defer allocator.free(pattern_z);
+
+	const sql: [:0]const u8 =
+		"SELECT id, lang, file_path, start_line, end_line, symbol_name, signature, doc_comment, "
+		++ "0.0 AS distance "
+		++ "FROM symbols "
+		++ "WHERE doc_comment IS NOT NULL "
+		++ "AND doc_comment LIKE ?1 COLLATE NOCASE "
 		++ "LIMIT ?2;\x00";
 
 	var stmt: ?*sqlite.sqlite3_stmt = null;
@@ -438,7 +524,7 @@ fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
 	return out.toOwnedSlice();
 }
 
-fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.Symbol) !f32 {
+fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
 	_ = allocator;
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
 	var token_count: usize = 0;
@@ -447,10 +533,14 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 	while (tokens.next()) |tok| {
 		token_count += 1;
 
-		const in_name = std.ascii.indexOfIgnoreCase(symbol.name, tok) != null;
-		const in_sig = std.ascii.indexOfIgnoreCase(symbol.signature, tok) != null;
 		const in_doc = if (symbol.doc_comment) |doc| std.ascii.indexOfIgnoreCase(doc, tok) != null else false;
-		if (in_name or in_sig or in_doc) match_count += 1;
+		if (comments_only) {
+			if (in_doc) match_count += 1;
+		} else {
+			const in_name = std.ascii.indexOfIgnoreCase(symbol.name, tok) != null;
+			const in_sig = std.ascii.indexOfIgnoreCase(symbol.signature, tok) != null;
+			if (in_name or in_sig or in_doc) match_count += 1;
+		}
 	}
 
 	if (token_count == 0) return 0;
@@ -530,8 +620,25 @@ test "lexicalScore matches query tokens" {
 	};
 	defer symbol.deinit(allocator);
 
-	const score = try lexicalScore(allocator, "hash functions", symbol);
+	const score = try lexicalScore(allocator, "hash functions", symbol, false);
 	try std.testing.expectApproxEqAbs(@as(f32, 1.0), score, 0.0001);
+}
+
+test "lexicalScore comments_only ignores name and signature" {
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/hash.zig"),
+		.name = try allocator.dupe(u8, "checksum"),
+		.signature = try allocator.dupe(u8, "fn checksum() void"),
+		.doc_comment = try allocator.dupe(u8, "Compute hash"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+
+	const score = try lexicalScore(allocator, "checksum", symbol, true);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.0), score, 0.0001);
 }
 
 test "search vector mode returns nearest symbol" {
@@ -577,6 +684,52 @@ test "search vector mode returns nearest symbol" {
 
 	try std.testing.expectEqual(@as(usize, 1), results.len);
 	try std.testing.expectEqualStrings("near", results[0].symbol.name);
+}
+
+test "search comments_only uses comment embeddings" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym_comment = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "commented"),
+		.signature = try allocator.dupe(u8, "fn commented() void"),
+		.doc_comment = try allocator.dupe(u8, "Useful comment"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_comment.deinit(allocator);
+
+	var sym_plain = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "plain"),
+		.signature = try allocator.dupe(u8, "fn plain() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_plain.deinit(allocator);
+
+	const id_comment = try storage.insertSymbol(db, sym_comment);
+	const id_plain = try storage.insertSymbol(db, sym_plain);
+	try storage.insertCommentEmbedding(db, allocator, id_comment, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_plain, &[_]f32{ 10.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = try search(allocator, db, fake.embedder(), "query", .{
+		.top_n = 1,
+		.mode = .vector,
+		.comments_only = true,
+	});
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 1), results.len);
+	try std.testing.expectEqualStrings("commented", results[0].symbol.name);
 }
 
 test "search filters by min_score" {

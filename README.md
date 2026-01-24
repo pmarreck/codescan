@@ -21,6 +21,13 @@ nix develop -c zig build -Doptimize=ReleaseFast
 ./test
 ```
 
+## CLI/HTTP tests
+
+```bash
+nix develop -c ./test-cli
+nix develop -c ./test-http
+```
+
 ## Integration test
 
 ```bash
@@ -48,6 +55,8 @@ nix develop -c ./test-integration
 # search
 ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
 # show doc comments in human output
+./zig-out/bin/codescan search "hash functions" --root <path> --show-comments
+# comment-only search (doc comments only)
 ./zig-out/bin/codescan search "hash functions" --root <path> --comments
 # include markdown/README when using default search scope
 ./zig-out/bin/codescan search "design doc" --include-docs
@@ -63,7 +72,8 @@ If `--root` is omitted, `codescan` searches upward from the current directory fo
 directory and uses that as the root (otherwise it falls back to the current directory).
 
 Search defaults to the primary code language by file count unless a filter is supplied.
-`--include-docs` adds markdown/README; `--docs` restricts results to markdown/README only.
+`--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
+`--comments`/`--only-comments` restricts results to doc comments.
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 
@@ -88,6 +98,8 @@ weight_lexical=0.3
 min_score=0.0
 max_file_size=2097152
 include_docs=false
+docs_only=false
+comments_only=false
 primary_lang=zig
 index_ext=zig,md
 index_type=code,doc

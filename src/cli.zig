@@ -19,6 +19,7 @@ pub const Seen = struct {
 	show_comments: bool = false,
 	include_docs: bool = false,
 	docs_only: bool = false,
+	comments_only: bool = false,
 	top_n: bool = false,
 	root_path: bool = false,
 	db_path: bool = false,
@@ -44,6 +45,7 @@ pub const Parsed = struct {
 	show_comments: bool,
 	include_docs: bool,
 	docs_only: bool,
+	comments_only: bool,
 	query: ?[]const u8,
 	top_n: usize,
 	root_path: []const u8,
@@ -73,6 +75,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.show_comments = false,
 			.include_docs = false,
 			.docs_only = false,
+			.comments_only = false,
 			.query = null,
 			.top_n = 10,
 			.root_path = ".",
@@ -100,6 +103,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.show_comments = false,
 		.include_docs = false,
 		.docs_only = false,
+		.comments_only = false,
 		.query = null,
 		.top_n = 10,
 		.root_path = ".",
@@ -151,9 +155,15 @@ pub fn parse(args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
-		if (std.mem.eql(u8, arg, "--comments") or std.mem.eql(u8, arg, "--verbose")) {
+		if (std.mem.eql(u8, arg, "--verbose") or std.mem.eql(u8, arg, "--show-comments")) {
 			parsed.show_comments = true;
 			parsed.seen.show_comments = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--comments") or std.mem.eql(u8, arg, "--only-comments")) {
+			parsed.comments_only = true;
+			parsed.seen.comments_only = true;
 			i += 1;
 			continue;
 		}
@@ -163,7 +173,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
-		if (std.mem.eql(u8, arg, "--docs")) {
+		if (std.mem.eql(u8, arg, "--docs") or std.mem.eql(u8, arg, "--only-docs")) {
 			parsed.docs_only = true;
 			parsed.seen.docs_only = true;
 			i += 1;
@@ -344,6 +354,7 @@ test "parse with no args defaults to help" {
 	try std.testing.expect(parsed.show_comments == false);
 	try std.testing.expect(parsed.include_docs == false);
 	try std.testing.expect(parsed.docs_only == false);
+	try std.testing.expect(parsed.comments_only == false);
 	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
 	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
 	try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), parsed.max_file_size);
@@ -358,6 +369,7 @@ test "parse search with query defaults" {
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
 	try std.testing.expect(parsed.show_comments == false);
+	try std.testing.expect(parsed.comments_only == false);
 	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
 	try std.testing.expectEqual(@as(usize, 10), parsed.top_n);
 	try std.testing.expectEqualStrings(".", parsed.root_path);
@@ -383,6 +395,7 @@ test "parse search with weights" {
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqualStrings("checksum", parsed.query.?);
 	try std.testing.expect(parsed.show_comments == false);
+	try std.testing.expect(parsed.comments_only == false);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), parsed.weight_vector, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), parsed.weight_lexical, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.4), parsed.min_score, 0.0001);
@@ -395,7 +408,7 @@ test "parse search with flags" {
 	const args = [_][]const u8{
 		"codescan",
 		"search",
-		"--comments",
+		"--show-comments",
 		"--include-docs",
 		"--ext",
 		"zig,md",
@@ -436,6 +449,7 @@ test "parse search with flags" {
 	try std.testing.expect(parsed.show_comments);
 	try std.testing.expect(parsed.include_docs);
 	try std.testing.expect(parsed.docs_only == false);
+	try std.testing.expect(parsed.comments_only == false);
 	try std.testing.expectEqualStrings("zig,md", parsed.ext_filter.?);
 	try std.testing.expectEqualStrings("code,doc", parsed.type_filter.?);
 	try std.testing.expectEqualStrings("zig", parsed.lang_filter.?);
@@ -480,6 +494,20 @@ test "parse search with docs flag" {
 	try std.testing.expect(parsed.docs_only);
 	try std.testing.expect(parsed.seen.docs_only);
 	try std.testing.expectEqualStrings("design doc", parsed.query.?);
+}
+
+test "parse search with comments flag" {
+	const args = [_][]const u8{
+		"codescan",
+		"search",
+		"--only-comments",
+		"doc query",
+	};
+	const parsed = try parse(&args);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.comments_only);
+	try std.testing.expect(parsed.seen.comments_only);
+	try std.testing.expectEqualStrings("doc query", parsed.query.?);
 }
 
 test "parse search missing query errors" {

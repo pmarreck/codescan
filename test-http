@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$(command -v codescan || true)"
+if [ -z "$BIN" ]; then
+	BIN="$ROOT/zig-out/bin/codescan"
+fi
+
+PORT="${CODESCAN_HTTP_TEST_PORT:-8124}"
+HOST="127.0.0.1"
+
+out=
+err=
+rc=
+
+fail() {
+	printf '%s\n' "error: $1" >&2
+	exit 1
+}
+
+require_tool() {
+	local tool="$1"
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		fail "missing required tool: $tool (run via 'nix develop -c ./test-http')"
+	fi
+}
+
+post_search() {
+	local payload="$1"
+	capture curl -fsS -X POST -H 'Content-Type: application/json' \
+		-d "$payload" "http://$HOST:$PORT/search"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "search request failed"
+	fi
+	printf '%s' "$out" | jq -r '.results[].name'
+}
+
+wait_for_health() {
+	for _ in $(seq 1 40); do
+		if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
+}
+
+main() {
+	require_tool curl
+	require_tool jq
+	require_tool rg
+
+	capture nix develop -c zig build -Doptimize=ReleaseFast
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "zig build failed"
+	fi
+
+	DB_DIR="$(mktemp -d "$TMPDIR/codescan-http.XXXXXX")"
+	DB="$DB_DIR/index.sqlite3"
+	trap 'rm -rf "$DB_DIR"' EXIT
+
+	capture "$ROOT/zig-out/bin/mk-test-db" --db "$DB"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "mk_test_db failed"
+	fi
+
+	"$BIN" serve --db "$DB" --http-host "$HOST" --http-port "$PORT" --ollama-url "http://127.0.0.1:1" &
+	SERVER_PID=$!
+	trap 'kill "$SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$DB_DIR"' EXIT
+
+	if ! wait_for_health; then
+		fail "server did not become healthy"
+	fi
+
+	names=$(post_search '{"query":"checksum","mode":"lexical"}')
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' && fail "default search included docs unexpectedly"
+
+	names=$(post_search '{"query":"checksum","mode":"lexical","include_docs":true}')
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "include_docs missing docs"
+
+	names=$(post_search '{"query":"checksum","mode":"lexical","docs":true}')
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "docs-only missing docs"
+	printf '%s\n' "$names" | rg -q '^checksum_fn$' && fail "docs-only included code"
+
+	names=$(post_search '{"query":"checksum","mode":"lexical","only_comments":true,"lang":"zig"}')
+	printf '%s\n' "$names" | rg -q '^hash_bytes$' || fail "comments-only missing commented symbol"
+	printf '%s\n' "$names" | rg -q '^checksum_fn$' && fail "comments-only included non-commented symbol"
+
+	printf '%s\n' "http ok"
+}
+
+main "$@"

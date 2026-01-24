@@ -62,7 +62,15 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	defer allocator.free(vec_sql);
 	try exec(db, vec_sql);
 
-	const version_sql: [:0]const u8 = "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '1');\x00";
+	const vec_comment_sql = try allocPrintZ(
+		allocator,
+		"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_comment USING vec0(embedding float[{d}]);",
+		.{schema.embedding_dim},
+	);
+	defer allocator.free(vec_comment_sql);
+	try exec(db, vec_comment_sql);
+
+	const version_sql: [:0]const u8 = "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');\x00";
 	try exec(db, version_sql);
 	const dim_sql = try allocPrintZ(
 		allocator,
@@ -85,8 +93,10 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 pub fn resetIndex(db: Db) !void {
 	const symbols_sql: [:0]const u8 = "DELETE FROM symbols;\x00";
 	const embeddings_sql: [:0]const u8 = "DELETE FROM embeddings;\x00";
+	const comment_sql: [:0]const u8 = "DELETE FROM embeddings_comment;\x00";
 	try exec(db, symbols_sql);
 	try exec(db, embeddings_sql);
+	try exec(db, comment_sql);
 	_ = execMaybe(db, "DELETE FROM symbols_fts;\x00");
 }
 
@@ -125,6 +135,25 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 
 pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
 	const sql: [:0]const u8 = "INSERT INTO embeddings (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	const json = try vectorToJson(allocator, vector);
+	defer allocator.free(json);
+
+	_ = c.sqlite3_bind_int64(stmt.?, 1, rowid);
+	_ = c.sqlite3_bind_text(stmt.?, 2, json.ptr, @intCast(json.len), null);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		return error.SqlStepFailed;
+	}
+}
+
+pub fn insertCommentEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
+	const sql: [:0]const u8 = "INSERT INTO embeddings_comment (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		return error.SqlPrepareFailed;
@@ -356,6 +385,7 @@ test "initSchema creates tables" {
 	try std.testing.expect(try tableExists(db, allocator, "meta"));
 	try std.testing.expect(try tableExists(db, allocator, "symbols"));
 	try std.testing.expect(try tableExists(db, allocator, "embeddings"));
+	try std.testing.expect(try tableExists(db, allocator, "embeddings_comment"));
 }
 
 test "insertSymbol and insertEmbedding" {

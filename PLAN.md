@@ -41,3 +41,7 @@
 - [x] Add markdown/text/log plugins with semantic chunking
 - [x] Add --ext/--type/--lang filters and --include-docs default behavior
 - [x] Determine primary language by file counts and use for default search
+- [x] Add comment-only embeddings + `--comments`/`--only-comments` search mode
+- [x] Add `--only-docs` synonym + config keys for docs/comments filters
+- [x] Ensure HTTP API parity for docs/comments/ext/type/lang filters
+- [x] Add black-box CLI + HTTP test scripts with mk_test_db fixture

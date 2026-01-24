@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN="$(command -v codescan || true)"
+if [ -z "$BIN" ]; then
+	BIN="$ROOT/zig-out/bin/codescan"
+fi
+
+out=
+err=
+rc=
+
+fail() {
+	printf '%s\n' "error: $1" >&2
+	exit 1
+}
+
+require_tool() {
+	local tool="$1"
+	if ! command -v "$tool" >/dev/null 2>&1; then
+		fail "missing required tool: $tool (run via 'nix develop -c ./test-cli')"
+	fi
+}
+
+search_names() {
+	local query="$1"
+	shift
+	capture "$BIN" search "$query" --db "$DB" --mode lexical --json "$@"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "codescan search failed"
+	fi
+	printf '%s' "$out" | jq -r '.results[].name'
+}
+
+main() {
+	require_tool jq
+	require_tool rg
+
+	capture nix develop -c zig build -Doptimize=ReleaseFast
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "zig build failed"
+	fi
+
+	DB_DIR="$(mktemp -d "$TMPDIR/codescan-cli.XXXXXX")"
+	DB="$DB_DIR/index.sqlite3"
+	trap 'rm -rf "$DB_DIR"' EXIT
+
+	capture "$ROOT/zig-out/bin/mk-test-db" --db "$DB"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "mk_test_db failed"
+	fi
+
+	names=$(search_names "checksum")
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' && fail "default search included docs unexpectedly"
+
+	names=$(search_names "checksum" --include-docs)
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "include-docs missing docs"
+
+	names=$(search_names "checksum" --docs)
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "docs-only missing docs"
+	printf '%s\n' "$names" | rg -q '^checksum_fn$' && fail "docs-only included code"
+
+	names=$(search_names "checksum" --only-docs)
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "only-docs missing docs"
+
+	names=$(search_names "checksum" --comments --lang zig)
+	printf '%s\n' "$names" | rg -q '^hash_bytes$' || fail "comments-only missing commented symbol"
+	printf '%s\n' "$names" | rg -q '^checksum_fn$' && fail "comments-only included non-commented symbol"
+
+	names=$(search_names "checksum" --only-comments --lang zig)
+	printf '%s\n' "$names" | rg -q '^hash_bytes$' || fail "only-comments missing commented symbol"
+
+	printf '%s\n' "cli ok"
+}
+
+main "$@"

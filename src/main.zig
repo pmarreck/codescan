@@ -10,7 +10,7 @@ const output = @import("output.zig");
 const server = @import("server.zig");
 const plugin = @import("plugin.zig");
 const scan = @import("scan.zig");
-const kind = @import("kind.zig");
+const filters = @import("filters.zig");
 const model = @import("model.zig");
 
 const Defaults = struct {
@@ -50,6 +50,7 @@ const Settings = struct {
 	min_score: f32,
 	include_docs: bool,
 	docs_only: bool,
+	comments_only: bool,
 	index_ext: ?[]const u8,
 	index_type: ?[]const u8,
 	search_ext: ?[]const u8,
@@ -115,7 +116,7 @@ pub fn main() !void {
 				.model = settings.ollama_model,
 			};
 
-			var index_filters = try buildIndexFilters(allocator, settings);
+			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 			defer index_filters.deinit(allocator);
 
 			const stats = try indexer.indexAll(
@@ -158,7 +159,14 @@ pub fn main() !void {
 				.model = settings.ollama_model,
 			};
 
-			var search_filters = try buildSearchFilters(allocator, settings, registry, db);
+			var search_filters = try filters.buildSearchFilters(allocator, registry, db, .{
+				.search_ext = settings.search_ext,
+				.search_type = settings.search_type,
+				.search_lang = settings.search_lang,
+				.primary_lang = settings.primary_lang,
+				.include_docs = settings.include_docs,
+				.docs_only = settings.docs_only,
+			});
 			defer search_filters.deinit(allocator);
 
 			const results = try search.search(
@@ -174,6 +182,7 @@ pub fn main() !void {
 					.min_score = settings.min_score,
 					.allowed_langs = search_filters.langs.items,
 					.allowed_exts = search_filters.exts.items,
+					.comments_only = settings.comments_only,
 				},
 			);
 			defer search.freeResults(allocator, results);
@@ -194,6 +203,15 @@ pub fn main() !void {
 				.max_file_size = settings.max_file_size,
 				.ollama_url = settings.ollama_url,
 				.ollama_model = settings.ollama_model,
+				.index_ext = settings.index_ext,
+				.index_type = settings.index_type,
+				.search_ext = settings.search_ext,
+				.search_type = settings.search_type,
+				.search_lang = settings.search_lang,
+				.primary_lang = settings.primary_lang,
+				.include_docs = settings.include_docs,
+				.docs_only = settings.docs_only,
+				.comments_only = settings.comments_only,
 				.search_top_n = settings.top_n,
 				.search_mode = settings.search_mode,
 				.search_weight_vector = settings.weight_vector,
@@ -229,6 +247,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.min_score = defaults.min_score,
 		.include_docs = defaults.include_docs,
 		.docs_only = false,
+		.comments_only = false,
 		.index_ext = null,
 		.index_type = null,
 		.search_ext = null,
@@ -261,6 +280,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.search_lang) |value| settings.search_lang = value;
 	if (cfg.primary_lang) |value| settings.primary_lang = value;
 	if (cfg.include_docs) |value| settings.include_docs = value;
+	if (cfg.docs_only) |value| settings.docs_only = value;
+	if (cfg.comments_only) |value| settings.comments_only = value;
 	settings.ignore_global = cfg.ignore_global.items;
 	settings.ignore_lang = cfg.ignore_lang.items;
 	if (cfg.http_host) |value| settings.http_host = value;
@@ -282,6 +303,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.min_score) settings.min_score = parsed.min_score;
 	if (parsed.seen.include_docs) settings.include_docs = parsed.include_docs;
 	if (parsed.seen.docs_only) settings.docs_only = parsed.docs_only;
+	if (parsed.seen.comments_only) settings.comments_only = parsed.comments_only;
 	if (parsed.seen.ext_filter) {
 		if (parsed.command == .index or parsed.command == .update) {
 			settings.index_ext = parsed.ext_filter;
@@ -298,9 +320,6 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	}
 	if (parsed.seen.lang_filter and parsed.command == .search) {
 		settings.search_lang = parsed.lang_filter;
-	}
-	if (settings.docs_only) {
-		settings.search_type = "doc";
 	}
 	if (parsed.seen.http_host) settings.http_host = parsed.http_host;
 	if (parsed.seen.http_port) settings.http_port = parsed.http_port;
@@ -387,221 +406,6 @@ fn parseMode(value: []const u8) !search.SearchMode {
 	return error.InvalidMode;
 }
 
-const FilterLists = struct {
-	exts: std.ArrayListUnmanaged([]const u8) = .{},
-	langs: std.ArrayListUnmanaged([]const u8) = .{},
-	kinds: std.ArrayListUnmanaged(kind.Kind) = .{},
-
-	pub fn deinit(self: *FilterLists, allocator: std.mem.Allocator) void {
-		for (self.exts.items) |item| allocator.free(item);
-		self.exts.deinit(allocator);
-		for (self.langs.items) |item| allocator.free(item);
-		self.langs.deinit(allocator);
-		self.kinds.deinit(allocator);
-		self.* = undefined;
-	}
-};
-
-fn buildIndexFilters(allocator: std.mem.Allocator, settings: Settings) !FilterLists {
-	var filters = FilterLists{};
-	errdefer filters.deinit(allocator);
-
-	if (settings.index_ext) |value| {
-		try parseExtList(allocator, &filters.exts, value);
-	}
-	if (settings.index_type) |value| {
-		try parseKindList(allocator, &filters.kinds, value);
-	}
-
-	return filters;
-}
-
-fn buildSearchFilters(
-	allocator: std.mem.Allocator,
-	settings: Settings,
-	registry: plugin.Registry,
-	db: storage.Db,
-) !FilterLists {
-	var filters = FilterLists{};
-	errdefer filters.deinit(allocator);
-
-	if (settings.search_ext) |value| {
-		try parseExtList(allocator, &filters.exts, value);
-	}
-	if (settings.search_lang) |value| {
-		try parseLangList(allocator, &filters.langs, value);
-	}
-	if (settings.search_type) |value| {
-		try parseKindList(allocator, &filters.kinds, value);
-	}
-
-	const has_explicit =
-		filters.exts.items.len > 0 or
-		filters.langs.items.len > 0 or
-		filters.kinds.items.len > 0;
-
-	if (!has_explicit and !settings.docs_only) {
-		var primary_lang: ?[]const u8 = null;
-		var primary_owned = false;
-		if (settings.primary_lang) |value| {
-			primary_lang = value;
-		} else {
-			const code_langs = try registry.languagesForKinds(allocator, &[_]kind.Kind{ .code });
-			defer {
-				for (code_langs) |item| allocator.free(item);
-				allocator.free(code_langs);
-			}
-			primary_lang = try storage.primaryLanguage(db, allocator, code_langs);
-			if (primary_lang != null) primary_owned = true;
-		}
-		defer if (primary_owned) allocator.free(primary_lang.?);
-
-		if (primary_lang) |value| {
-			const normalized = try normalizeLower(allocator, value);
-			errdefer allocator.free(normalized);
-			if (!containsString(filters.langs.items, normalized)) {
-				try filters.langs.append(allocator, normalized);
-			} else {
-				allocator.free(normalized);
-			}
-		}
-
-		if (settings.include_docs) {
-			const doc_langs = try registry.languagesForKinds(allocator, &[_]kind.Kind{ .doc });
-			defer {
-				for (doc_langs) |item| allocator.free(item);
-				allocator.free(doc_langs);
-			}
-			for (doc_langs) |item| {
-				if (!containsString(filters.langs.items, item)) {
-					try filters.langs.append(allocator, try allocator.dupe(u8, item));
-				}
-			}
-		}
-		return filters;
-	}
-
-	if (filters.kinds.items.len > 0) {
-		const type_langs = try registry.languagesForKinds(allocator, filters.kinds.items);
-		defer {
-			for (type_langs) |item| allocator.free(item);
-			allocator.free(type_langs);
-		}
-		if (filters.langs.items.len == 0) {
-			for (type_langs) |item| {
-				try filters.langs.append(allocator, try allocator.dupe(u8, item));
-			}
-		} else {
-			var kept = std.ArrayListUnmanaged([]const u8){};
-			errdefer {
-				for (kept.items) |item| allocator.free(item);
-				kept.deinit(allocator);
-			}
-			for (filters.langs.items) |item| {
-				if (containsString(type_langs, item)) {
-					try kept.append(allocator, item);
-				} else {
-					allocator.free(item);
-				}
-			}
-			filters.langs.deinit(allocator);
-			filters.langs = kept;
-		}
-	}
-
-	return filters;
-}
-
-fn parseExtList(
-	allocator: std.mem.Allocator,
-	list: *std.ArrayListUnmanaged([]const u8),
-	value: []const u8,
-) !void {
-	var it = std.mem.splitScalar(u8, value, ',');
-	while (it.next()) |part| {
-		const trimmed = std.mem.trim(u8, part, " \t\r");
-		if (trimmed.len == 0) continue;
-		const normalized = try normalizeExtension(allocator, trimmed);
-		if (!containsString(list.items, normalized)) {
-			try list.append(allocator, normalized);
-		} else {
-			allocator.free(normalized);
-		}
-	}
-}
-
-fn parseLangList(
-	allocator: std.mem.Allocator,
-	list: *std.ArrayListUnmanaged([]const u8),
-	value: []const u8,
-) !void {
-	var it = std.mem.splitScalar(u8, value, ',');
-	while (it.next()) |part| {
-		const trimmed = std.mem.trim(u8, part, " \t\r");
-		if (trimmed.len == 0) continue;
-		const normalized = try normalizeLower(allocator, trimmed);
-		if (!containsString(list.items, normalized)) {
-			try list.append(allocator, normalized);
-		} else {
-			allocator.free(normalized);
-		}
-	}
-}
-
-fn parseKindList(
-	allocator: std.mem.Allocator,
-	list: *std.ArrayListUnmanaged(kind.Kind),
-	value: []const u8,
-) !void {
-	var it = std.mem.splitScalar(u8, value, ',');
-	while (it.next()) |part| {
-		const trimmed = std.mem.trim(u8, part, " \t\r");
-		if (trimmed.len == 0) continue;
-		const lower = try normalizeLower(allocator, trimmed);
-		defer allocator.free(lower);
-		const parsed = kind.parse(lower) orelse return error.InvalidType;
-		if (!containsKind(list.items, parsed)) {
-			try list.append(allocator, parsed);
-		}
-	}
-}
-
-fn normalizeExtension(allocator: std.mem.Allocator, ext: []const u8) ![]const u8 {
-	const trimmed = std.mem.trim(u8, ext, " \t\r");
-	if (trimmed.len == 0) return error.InvalidExtension;
-	const needs_dot = trimmed[0] != '.';
-	const extra: usize = if (needs_dot) 1 else 0;
-	var buf = try allocator.alloc(u8, trimmed.len + extra);
-	if (needs_dot) {
-		buf[0] = '.';
-		@memcpy(buf[1..], trimmed);
-	} else {
-		@memcpy(buf, trimmed);
-	}
-	for (buf) |*ch| ch.* = std.ascii.toLower(ch.*);
-	return buf;
-}
-
-fn normalizeLower(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
-	const buf = try allocator.alloc(u8, value.len);
-	@memcpy(buf, value);
-	for (buf) |*ch| ch.* = std.ascii.toLower(ch.*);
-	return buf;
-}
-
-fn containsString(list: []const []const u8, value: []const u8) bool {
-	for (list) |item| {
-		if (std.mem.eql(u8, item, value)) return true;
-	}
-	return false;
-}
-
-fn containsKind(list: []const kind.Kind, value: kind.Kind) bool {
-	for (list) |item| {
-		if (item == value) return true;
-	}
-	return false;
-}
 
 const usage =
 	\\codescan <command> [options]
@@ -629,10 +433,11 @@ const usage =
 	\\  --type <csv>            Restrict to types: code,doc,text,log
 	\\  --lang <csv>            Restrict search to languages
 	\\  --include-docs          Include markdown/README when defaulting to primary language
-	\\  --docs                  Only return markdown/README results
+	\\  --docs, --only-docs     Only return markdown/README results
+	\\  --comments, --only-comments  Only return doc-comment results
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
-	\\  --comments, --verbose   Show doc comments in human output
+	\\  --show-comments, --verbose   Show doc comments in human output
 	\\  --json                  JSON output for CLI search/index
 	\\  -h, --help              Show help
 	\\
@@ -727,11 +532,18 @@ test "buildSearchFilters defaults to primary language" {
 	var settings = try resolveSettings(allocator, parsed, cfg, ".");
 	settings.include_docs = false;
 
-	var filters = try buildSearchFilters(allocator, settings, plugin.defaultRegistry(), db);
-	defer filters.deinit(allocator);
+	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+		.search_ext = settings.search_ext,
+		.search_type = settings.search_type,
+		.search_lang = settings.search_lang,
+		.primary_lang = settings.primary_lang,
+		.include_docs = settings.include_docs,
+		.docs_only = settings.docs_only,
+	});
+	defer filter_lists.deinit(allocator);
 
-	try std.testing.expectEqual(@as(usize, 1), filters.langs.items.len);
-	try std.testing.expectEqualStrings("zig", filters.langs.items[0]);
+	try std.testing.expectEqual(@as(usize, 1), filter_lists.langs.items.len);
+	try std.testing.expectEqualStrings("zig", filter_lists.langs.items[0]);
 }
 
 test "buildSearchFilters includes docs when requested" {
@@ -772,12 +584,19 @@ test "buildSearchFilters includes docs when requested" {
 	var settings = try resolveSettings(allocator, parsed, cfg, ".");
 	settings.include_docs = true;
 
-	var filters = try buildSearchFilters(allocator, settings, plugin.defaultRegistry(), db);
-	defer filters.deinit(allocator);
+	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+		.search_ext = settings.search_ext,
+		.search_type = settings.search_type,
+		.search_lang = settings.search_lang,
+		.primary_lang = settings.primary_lang,
+		.include_docs = settings.include_docs,
+		.docs_only = settings.docs_only,
+	});
+	defer filter_lists.deinit(allocator);
 
-	try std.testing.expectEqual(@as(usize, 2), filters.langs.items.len);
-	try std.testing.expect(containsString(filters.langs.items, "zig"));
-	try std.testing.expect(containsString(filters.langs.items, "markdown"));
+	try std.testing.expectEqual(@as(usize, 2), filter_lists.langs.items.len);
+	try std.testing.expect(listContains(filter_lists.langs.items, "zig"));
+	try std.testing.expect(listContains(filter_lists.langs.items, "markdown"));
 }
 
 test "resolveSettings uses discovered repo root for db path" {
@@ -810,4 +629,11 @@ test "resolveSettings uses discovered repo root for db path" {
 
 	try std.testing.expectEqualStrings(root.?, settings.root_path);
 	try std.testing.expectEqualStrings(expected_db, settings.db_path);
+}
+
+fn listContains(list: []const []const u8, value: []const u8) bool {
+	for (list) |item| {
+		if (std.mem.eql(u8, item, value)) return true;
+	}
+	return false;
 }

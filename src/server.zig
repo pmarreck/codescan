@@ -7,6 +7,7 @@ const output = @import("output.zig");
 const plugin = @import("plugin.zig");
 const ollama = @import("ollama.zig");
 const config = @import("config.zig");
+const filters = @import("filters.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
@@ -16,6 +17,15 @@ pub const Settings = struct {
 	max_file_size: usize,
 	ollama_url: []const u8,
 	ollama_model: []const u8,
+	index_ext: ?[]const u8,
+	index_type: ?[]const u8,
+	search_ext: ?[]const u8,
+	search_type: ?[]const u8,
+	search_lang: ?[]const u8,
+	primary_lang: ?[]const u8,
+	include_docs: bool,
+	docs_only: bool,
+	comments_only: bool,
 	search_top_n: usize,
 	search_mode: search.SearchMode,
 	search_weight_vector: f32,
@@ -88,12 +98,25 @@ fn handleRequest(
 		var parsed = try parseSearchRequest(allocator, body);
 		defer parsed.deinit(allocator);
 
+		var search_filters = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+			.search_ext = parsed.ext orelse settings.search_ext,
+			.search_type = parsed.type orelse settings.search_type,
+			.search_lang = parsed.lang orelse settings.search_lang,
+			.primary_lang = settings.primary_lang,
+			.include_docs = parsed.include_docs orelse settings.include_docs,
+			.docs_only = parsed.docs_only orelse settings.docs_only,
+		});
+		defer search_filters.deinit(allocator);
+
 		const results = try search.search(allocator, db, embedder, parsed.query, .{
 			.top_n = parsed.top_n orelse settings.search_top_n,
 			.mode = parsed.mode orelse settings.search_mode,
 			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
 			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
 			.min_score = parsed.min_score orelse settings.search_min_score,
+			.allowed_langs = search_filters.langs.items,
+			.allowed_exts = search_filters.exts.items,
+			.comments_only = parsed.comments_only orelse settings.comments_only,
 		});
 		defer search.freeResults(allocator, results);
 
@@ -111,6 +134,18 @@ fn handleRequest(
 	}
 
 	if (req.head.method == .POST and (std.mem.eql(u8, path, "/index") or std.mem.eql(u8, path, "/update"))) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+		var parsed = try parseIndexRequest(allocator, body);
+		defer parsed.deinit(allocator);
+
+		var index_filters = try filters.buildIndexFilters(
+			allocator,
+			parsed.ext orelse settings.index_ext,
+			parsed.type orelse settings.index_type,
+		);
+		defer index_filters.deinit(allocator);
+
 		const stats = try indexer.indexAll(
 			allocator,
 			db,
@@ -121,6 +156,8 @@ fn handleRequest(
 				.embedding_dim = settings.embedding_dim,
 				.batch_size = settings.batch_size,
 				.max_file_size = settings.max_file_size,
+				.allowed_exts = index_filters.exts.items,
+				.allowed_kinds = index_filters.kinds.items,
 				.ignore = .{
 					.global = settings.ignore_global,
 					.per_language = settings.ignore_lang,
@@ -183,9 +220,18 @@ pub const SearchRequest = struct {
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
 	min_score: ?f32 = null,
+	ext: ?[]const u8 = null,
+	type: ?[]const u8 = null,
+	lang: ?[]const u8 = null,
+	include_docs: ?bool = null,
+	docs_only: ?bool = null,
+	comments_only: ?bool = null,
 
 	pub fn deinit(self: *SearchRequest, allocator: std.mem.Allocator) void {
 		allocator.free(self.query);
+		if (self.ext) |value| allocator.free(value);
+		if (self.type) |value| allocator.free(value);
+		if (self.lang) |value| allocator.free(value);
 		self.* = undefined;
 	}
 };
@@ -226,6 +272,73 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 		req.min_score = try parseWeight(min_score);
 	}
 
+	if (obj.get("ext")) |ext_val| {
+		req.ext = try parseStringOrArray(allocator, ext_val);
+	}
+	if (obj.get("type")) |type_val| {
+		req.type = try parseStringOrArray(allocator, type_val);
+	}
+	if (obj.get("lang")) |lang_val| {
+		req.lang = try parseStringOrArray(allocator, lang_val);
+	}
+
+	if (obj.get("include_docs")) |flag| {
+		if (flag != .bool) return error.InvalidDocsFlag;
+		req.include_docs = flag.bool;
+	}
+	if (obj.get("docs")) |flag| {
+		if (flag != .bool) return error.InvalidDocsFlag;
+		req.docs_only = flag.bool;
+	}
+	if (obj.get("only_docs")) |flag| {
+		if (flag != .bool) return error.InvalidDocsFlag;
+		req.docs_only = flag.bool;
+	}
+	if (obj.get("docs_only")) |flag| {
+		if (flag != .bool) return error.InvalidDocsFlag;
+		req.docs_only = flag.bool;
+	}
+	if (obj.get("comments")) |flag| {
+		if (flag != .bool) return error.InvalidCommentsFlag;
+		req.comments_only = flag.bool;
+	}
+	if (obj.get("only_comments")) |flag| {
+		if (flag != .bool) return error.InvalidCommentsFlag;
+		req.comments_only = flag.bool;
+	}
+	if (obj.get("comments_only")) |flag| {
+		if (flag != .bool) return error.InvalidCommentsFlag;
+		req.comments_only = flag.bool;
+	}
+
+	return req;
+}
+
+pub const IndexRequest = struct {
+	ext: ?[]const u8 = null,
+	type: ?[]const u8 = null,
+
+	pub fn deinit(self: *IndexRequest, allocator: std.mem.Allocator) void {
+		if (self.ext) |value| allocator.free(value);
+		if (self.type) |value| allocator.free(value);
+		self.* = undefined;
+	}
+};
+
+pub fn parseIndexRequest(allocator: std.mem.Allocator, body: []const u8) !IndexRequest {
+	if (body.len == 0) return IndexRequest{};
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+	defer parsed.deinit();
+	if (parsed.value != .object) return error.InvalidRequest;
+	const obj = parsed.value.object;
+
+	var req = IndexRequest{};
+	if (obj.get("ext")) |ext_val| {
+		req.ext = try parseStringOrArray(allocator, ext_val);
+	}
+	if (obj.get("type")) |type_val| {
+		req.type = try parseStringOrArray(allocator, type_val);
+	}
 	return req;
 }
 
@@ -241,6 +354,23 @@ fn parseWeight(value: std.json.Value) !f32 {
 		.float => |val| return @floatCast(val),
 		.integer => |val| return @floatFromInt(val),
 		else => return error.InvalidWeight,
+	}
+}
+
+fn parseStringOrArray(allocator: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+	switch (value) {
+		.string => |str| return allocator.dupe(u8, str),
+		.array => |arr| {
+			var out = std.ArrayListUnmanaged(u8){};
+			errdefer out.deinit(allocator);
+			for (arr.items, 0..) |item, idx| {
+				if (item != .string) return error.InvalidFilterValue;
+				if (idx > 0) try out.append(allocator, ',');
+				try out.appendSlice(allocator, item.string);
+			}
+			return out.toOwnedSlice(allocator);
+		},
+		else => return error.InvalidFilterValue,
 	}
 }
 
@@ -261,7 +391,7 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 
 test "parseSearchRequest reads fields" {
 	const allocator = std.testing.allocator;
-	const body = "{\"query\":\"hash functions\",\"top_n\":5,\"mode\":\"vector\",\"weight_vector\":0.8,\"weight_lexical\":0.2,\"min_score\":0.4}";
+	const body = "{\"query\":\"hash functions\",\"top_n\":5,\"mode\":\"vector\",\"weight_vector\":0.8,\"weight_lexical\":0.2,\"min_score\":0.4,\"ext\":\"zig,md\",\"type\":[\"code\",\"doc\"],\"lang\":\"zig\",\"include_docs\":true,\"docs\":false,\"comments\":true}";
 	var req = try parseSearchRequest(allocator, body);
 	defer req.deinit(allocator);
 	try std.testing.expectEqualStrings("hash functions", req.query);
@@ -270,6 +400,12 @@ test "parseSearchRequest reads fields" {
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), req.weight_vector.?, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), req.weight_lexical.?, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.4), req.min_score.?, 0.0001);
+	try std.testing.expectEqualStrings("zig,md", req.ext.?);
+	try std.testing.expectEqualStrings("code,doc", req.type.?);
+	try std.testing.expectEqualStrings("zig", req.lang.?);
+	try std.testing.expectEqual(true, req.include_docs.?);
+	try std.testing.expectEqual(false, req.docs_only.?);
+	try std.testing.expectEqual(true, req.comments_only.?);
 }
 
 test "parseSearchRequest defaults optional fields" {
@@ -282,6 +418,12 @@ test "parseSearchRequest defaults optional fields" {
 	try std.testing.expect(req.weight_vector == null);
 	try std.testing.expect(req.weight_lexical == null);
 	try std.testing.expect(req.min_score == null);
+	try std.testing.expect(req.ext == null);
+	try std.testing.expect(req.type == null);
+	try std.testing.expect(req.lang == null);
+	try std.testing.expect(req.include_docs == null);
+	try std.testing.expect(req.docs_only == null);
+	try std.testing.expect(req.comments_only == null);
 }
 
 test "handleRequest responds to /health" {
@@ -338,6 +480,15 @@ fn testSettings() Settings {
 		.max_file_size = 1024,
 		.ollama_url = "http://localhost:11434",
 		.ollama_model = "bge-large",
+		.index_ext = null,
+		.index_type = null,
+		.search_ext = null,
+		.search_type = null,
+		.search_lang = null,
+		.primary_lang = null,
+		.include_docs = false,
+		.docs_only = false,
+		.comments_only = false,
 		.search_top_n = 5,
 		.search_mode = .vector,
 		.search_weight_vector = 1.0,

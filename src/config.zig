@@ -34,6 +34,8 @@ pub const Config = struct {
 	search_lang: ?[]const u8 = null,
 	primary_lang: ?[]const u8 = null,
 	include_docs: ?bool = null,
+	docs_only: ?bool = null,
+	comments_only: ?bool = null,
 	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
 	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
 	http_host: ?[]const u8 = null,
@@ -204,6 +206,28 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
+		if (std.mem.eql(u8, key, "docs_only")) {
+			if (std.mem.eql(u8, value, "true")) {
+				config.docs_only = true;
+			} else if (std.mem.eql(u8, value, "false")) {
+				config.docs_only = false;
+			} else {
+				return error.InvalidValue;
+			}
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "comments_only")) {
+			if (std.mem.eql(u8, value, "true")) {
+				config.comments_only = true;
+			} else if (std.mem.eql(u8, value, "false")) {
+				config.comments_only = false;
+			} else {
+				return error.InvalidValue;
+			}
+			continue;
+		}
+
 		if (std.mem.eql(u8, key, "http_host")) {
 			config.http_host = try allocator.dupe(u8, value);
 			continue;
@@ -284,6 +308,8 @@ test "parseText empty yields defaults" {
 	try std.testing.expect(cfg.weight_vector == null);
 	try std.testing.expect(cfg.weight_lexical == null);
 	try std.testing.expect(cfg.min_score == null);
+	try std.testing.expect(cfg.docs_only == null);
+	try std.testing.expect(cfg.comments_only == null);
 	try std.testing.expectEqual(@as(usize, 0), cfg.ignore_global.items.len);
 	try std.testing.expectEqual(@as(usize, 0), cfg.ignore_lang.items.len);
 	try std.testing.expect(cfg.http_host == null);
@@ -313,6 +339,8 @@ test "parseText reads values" {
 		"search_lang=zig\n" ++
 		"primary_lang=zig\n" ++
 		"include_docs=true\n" ++
+		"docs_only=false\n" ++
+		"comments_only=true\n" ++
 		"http_host=0.0.0.0\n" ++
 		"http_port=9001\n";
 	var cfg = try parseText(allocator, text);
@@ -337,6 +365,8 @@ test "parseText reads values" {
 	try std.testing.expectEqualStrings("zig", cfg.search_lang.?);
 	try std.testing.expectEqualStrings("zig", cfg.primary_lang.?);
 	try std.testing.expectEqual(true, cfg.include_docs.?);
+	try std.testing.expectEqual(false, cfg.docs_only.?);
+	try std.testing.expectEqual(true, cfg.comments_only.?);
 	try std.testing.expectEqualStrings("0.0.0.0", cfg.http_host.?);
 	try std.testing.expectEqual(@as(u16, 9001), cfg.http_port.?);
 }
