@@ -74,11 +74,11 @@ pub fn indexAll(
 		printProgress(stderr, 0, files.len, false);
 	}
 	var progress_last: usize = 0;
-	const progress_step: usize = 25;
+	const progress_step: usize = 1;
 	for (files) |rel_path| {
 		if (show_progress) {
 			progress_last += 1;
-			if (progress_last == files.len or progress_last % progress_step == 0) {
+			if (shouldEmitProgress(progress_last, files.len, progress_step)) {
 				printProgress(stderr, progress_last, files.len, false);
 			}
 		}
@@ -415,6 +415,11 @@ fn formatProgress(allocator: std.mem.Allocator, current: usize, total: usize) ![
 	return std.fmt.allocPrint(allocator, "Indexed {d}/{d}", .{ current, total });
 }
 
+fn shouldEmitProgress(current: usize, total: usize, step: usize) bool {
+	if (step == 0) return current == total;
+	return current == total or current % step == 0;
+}
+
 test "buildSymbolText includes name signature and doc" {
 	const allocator = std.testing.allocator;
 	var symbol = model.Symbol{
@@ -573,6 +578,14 @@ test "formatProgress formats counters" {
 	const text = try formatProgress(allocator, 3, 10);
 	defer allocator.free(text);
 	try std.testing.expectEqualStrings("Indexed 3/10", text);
+}
+
+test "shouldEmitProgress respects step and completion" {
+	try std.testing.expect(shouldEmitProgress(1, 10, 1));
+	try std.testing.expect(shouldEmitProgress(2, 10, 1));
+	try std.testing.expect(!shouldEmitProgress(3, 10, 2));
+	try std.testing.expect(shouldEmitProgress(4, 10, 2));
+	try std.testing.expect(shouldEmitProgress(10, 10, 5));
 }
 
 test "indexAll stores symbols and embeddings" {
