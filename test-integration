@@ -130,6 +130,21 @@ search_count() {
 	printf '%s' "$out" | jq '.results | length'
 }
 
+search_names_from_subdir() {
+	local root="$1"
+	local subdir="$2"
+	local query="$3"
+	local min_score="$4"
+	local top_n="$5"
+
+	capture bash -c 'cd "$1" && "$2" search "$3" --json --top "$4" --min-score "$5"' _ "$root/$subdir" "$BIN" "$query" "$top_n" "$min_score"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "search failed from subdir $root/$subdir"
+	fi
+	printf '%s' "$out" | jq -r '.results[].name'
+}
+
 index_repo() {
 	local root="$1"
 	capture "$BIN" index --root "$root"
@@ -238,6 +253,19 @@ main() {
 	printf '%s\n' "$zig_names" | rg -q '^int$' || fail "zig baseline query missing 'int'"
 	printf '%s\n' "$ex_names" | rg -q '^decode$' || fail "elixir baseline query missing 'decode'"
 	printf '%s\n' "$c_names" | rg -q '^crc32$' || fail "c baseline query missing 'crc32'"
+
+	# Search from subdirectories without --root
+	mkdir -p "$FIXTURES_DIR/$ZIG_NAME/.codescan-test-subdir"
+	mkdir -p "$FIXTURES_DIR/$ELIXIR_NAME/.codescan-test-subdir"
+	mkdir -p "$FIXTURES_DIR/$C_NAME/.codescan-test-subdir"
+
+	zig_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$ZIG_NAME" ".codescan-test-subdir" "parse integer value" 0.2 5)
+	ex_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$ELIXIR_NAME" ".codescan-test-subdir" "parse json value" 0.2 5)
+	c_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$C_NAME" ".codescan-test-subdir" "crc32 checksum" 0.2 5)
+
+	printf '%s\n' "$zig_sub_names" | rg -q '^int$' || fail "zig subdir search missing 'int'"
+	printf '%s\n' "$ex_sub_names" | rg -q '^decode$' || fail "elixir subdir search missing 'decode'"
+	printf '%s\n' "$c_sub_names" | rg -q '^crc32$' || fail "c subdir search missing 'crc32'"
 
 	# Negative queries should return nothing above threshold
 	zig_none=$(search_count "$FIXTURES_DIR/$ZIG_NAME" "quantum entanglement telescope" 0.55)
