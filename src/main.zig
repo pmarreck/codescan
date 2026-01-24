@@ -41,6 +41,7 @@ const Settings = struct {
 	db_path_owned: bool,
 	ollama_url: []const u8,
 	ollama_model: []const u8,
+	ollama_model_owned: bool,
 	embedding_dim: usize,
 	batch_size: usize,
 	max_file_size: usize,
@@ -110,6 +111,7 @@ pub fn main() !void {
 
 	const settings = try resolveSettings(allocator, parsed, cfg, config_root);
 	defer if (settings.db_path_owned) allocator.free(settings.db_path);
+	defer if (settings.ollama_model_owned) allocator.free(settings.ollama_model);
 
 	const registry = plugin.defaultRegistry();
 
@@ -121,6 +123,7 @@ pub fn main() !void {
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
 			var embedder_adapter = embedding.OllamaEmbedder{
 				.transport = http_client.transport(),
 				.base_url = settings.ollama_url,
@@ -164,6 +167,9 @@ pub fn main() !void {
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
+			if (settings.search_mode != .lexical) {
+				try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+			}
 			var embedder_adapter = embedding.OllamaEmbedder{
 				.transport = http_client.transport(),
 				.base_url = settings.ollama_url,
@@ -249,6 +255,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.db_path_owned = false,
 		.ollama_url = defaults.ollama_url,
 		.ollama_model = defaults.ollama_model,
+		.ollama_model_owned = false,
 		.embedding_dim = defaults.embedding_dim,
 		.batch_size = defaults.batch_size,
 		.max_file_size = defaults.max_file_size,
@@ -270,6 +277,14 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.http_host = defaults.http_host,
 		.http_port = defaults.http_port,
 	};
+
+	var env_model: ?[]u8 = null;
+	if (std.process.getEnvVarOwned(allocator, "OLLAMA_MODEL")) |value| {
+		env_model = value;
+	} else |err| switch (err) {
+		error.EnvironmentVariableNotFound => {},
+		else => return err,
+	}
 
 	if (cfg.output) |value| settings.output = value;
 	if (cfg.top_n) |value| settings.top_n = value;
@@ -298,13 +313,24 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.http_host) |value| settings.http_host = value;
 	if (cfg.http_port) |value| settings.http_port = value;
 
+	if (env_model) |value| {
+		settings.ollama_model = value;
+		settings.ollama_model_owned = true;
+	}
+
 	if (parsed.seen.output) settings.output = parsed.output;
 	if (parsed.seen.show_comments) settings.show_comments = parsed.show_comments;
 	if (parsed.seen.top_n) settings.top_n = parsed.top_n;
 	if (parsed.seen.root_path) settings.root_path = parsed.root_path;
 	if (parsed.seen.db_path) settings.db_path = parsed.db_path;
 	if (parsed.seen.ollama_url) settings.ollama_url = parsed.ollama_url;
-	if (parsed.seen.ollama_model) settings.ollama_model = parsed.ollama_model;
+	if (parsed.seen.ollama_model) {
+		if (settings.ollama_model_owned) {
+			allocator.free(settings.ollama_model);
+			settings.ollama_model_owned = false;
+		}
+		settings.ollama_model = parsed.ollama_model;
+	}
 	if (parsed.seen.embedding_dim) settings.embedding_dim = parsed.embedding_dim;
 	if (parsed.seen.batch_size) settings.batch_size = parsed.batch_size;
 	if (parsed.seen.max_file_size) settings.max_file_size = parsed.max_file_size;
@@ -341,6 +367,28 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	}
 
 	return settings;
+}
+
+fn ensureModelAvailableOrExit(
+	allocator: std.mem.Allocator,
+	transport: ollama.Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+) !void {
+	ollama.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
+		error.ModelNotFound => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
+				.{ model_name, model_name },
+			) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		},
+		else => return err,
+	};
 }
 
 fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
@@ -431,7 +479,7 @@ const usage =
 	\\  --root <path>           Root path (default: nearest .codescan ancestor or .)
 	\\  --db <path>             DB path (default .codescan/index.sqlite3)
 	\\  --ollama-url <url>      Ollama base URL (default http://localhost:11434)
-	\\  --ollama-model <name>   Embedding model (default bge-large)
+	\\  --ollama-model <name>   Embedding model (default bge-large or $OLLAMA_MODEL)
 	\\  --embedding-dim <n>     Embedding dimension (default 1024)
 	\\  --batch <n>             Embedding batch size (default 16)
 	\\  --max-file-size <n>     Max file size bytes (default 2097152)

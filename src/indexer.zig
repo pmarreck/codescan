@@ -100,7 +100,7 @@ pub fn indexAll(
 			const rowid = try storage.insertSymbol(db, sym);
 			stats.symbols += 1;
 
-			const text = try buildSymbolText(allocator, sym);
+			const text = try buildSymbolText(allocator, sym, extractor.kind);
 			try batch_texts.append(allocator, text);
 			try batch_rowids.append(allocator, rowid);
 
@@ -109,7 +109,7 @@ pub fn indexAll(
 			}
 
 			if (sym.doc_comment) |doc| {
-				const comment_text = try buildCommentText(allocator, doc);
+				const comment_text = try buildCommentText(allocator, doc, .doc);
 				try comment_texts.append(allocator, comment_text);
 				try comment_rowids.append(allocator, rowid);
 
@@ -153,7 +153,11 @@ fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
 	return std.ascii.eqlIgnoreCase(tail, ext);
 }
 
-pub fn buildSymbolText(allocator: std.mem.Allocator, symbol: model.Symbol) ![]u8 {
+pub fn buildSymbolText(
+	allocator: std.mem.Allocator,
+	symbol: model.Symbol,
+	symbol_kind: kind.Kind,
+) ![]u8 {
 	var out: std.io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
@@ -165,11 +169,102 @@ pub fn buildSymbolText(allocator: std.mem.Allocator, symbol: model.Symbol) ![]u8
 		try out.writer.writeAll(doc);
 	}
 
-	return out.toOwnedSlice();
+	const text = try out.toOwnedSlice();
+	return truncateOwnedText(allocator, symbol_kind, text);
 }
 
-pub fn buildCommentText(allocator: std.mem.Allocator, doc: []const u8) ![]u8 {
-	return allocator.dupe(u8, doc);
+pub fn buildCommentText(
+	allocator: std.mem.Allocator,
+	doc: []const u8,
+	comment_kind: kind.Kind,
+) ![]u8 {
+	return truncateForKind(allocator, comment_kind, doc);
+}
+
+const max_embed_bytes: usize = 1600;
+
+fn truncateOwnedText(allocator: std.mem.Allocator, item_kind: kind.Kind, text: []u8) ![]u8 {
+	if (text.len <= max_embed_bytes) return text;
+	const trimmed = try truncateForKind(allocator, item_kind, text);
+	allocator.free(text);
+	return trimmed;
+}
+
+fn truncateForKind(
+	allocator: std.mem.Allocator,
+	item_kind: kind.Kind,
+	text: []const u8,
+) ![]u8 {
+	if (text.len <= max_embed_bytes) return allocator.dupe(u8, text);
+
+	return switch (item_kind) {
+		.code, .log => truncateCode(allocator, text),
+		.doc, .text => truncateText(allocator, text),
+	};
+}
+
+fn truncateText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+	const limit = max_embed_bytes;
+	const min_reasonable = limit / 2;
+	const bounded = text[0..limit];
+
+	if (findSentenceCut(bounded, min_reasonable)) |cut| {
+		return allocator.dupe(u8, trimRight(text[0..cut]));
+	}
+	if (findWhitespaceCut(bounded, min_reasonable)) |cut| {
+		return allocator.dupe(u8, trimRight(text[0..cut]));
+	}
+	return allocator.dupe(u8, text[0..limit]);
+}
+
+fn truncateCode(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+	const limit = max_embed_bytes;
+	const min_reasonable = limit / 2;
+	const bounded = text[0..limit];
+
+	if (findNewlineCut(bounded, min_reasonable)) |cut| {
+		return allocator.dupe(u8, trimRight(text[0..cut]));
+	}
+	if (findWhitespaceCut(bounded, min_reasonable)) |cut| {
+		return allocator.dupe(u8, trimRight(text[0..cut]));
+	}
+	return allocator.dupe(u8, text[0..limit]);
+}
+
+fn findSentenceCut(text: []const u8, min_reasonable: usize) ?usize {
+	if (text.len == 0) return null;
+	var idx: usize = text.len;
+	while (idx > min_reasonable) : (idx -= 1) {
+		const ch = text[idx - 1];
+		if (ch == '.' or ch == '!' or ch == '?') {
+			if (idx < text.len and !isWhitespace(text[idx])) continue;
+			return idx;
+		}
+	}
+	return null;
+}
+
+fn findNewlineCut(text: []const u8, min_reasonable: usize) ?usize {
+	const idx = std.mem.lastIndexOfScalar(u8, text, '\n') orelse return null;
+	if (idx + 1 < min_reasonable) return null;
+	return idx + 1;
+}
+
+fn findWhitespaceCut(text: []const u8, min_reasonable: usize) ?usize {
+	if (text.len == 0) return null;
+	var idx: usize = text.len;
+	while (idx > min_reasonable) : (idx -= 1) {
+		if (isWhitespace(text[idx - 1])) return idx - 1;
+	}
+	return null;
+}
+
+fn isWhitespace(ch: u8) bool {
+	return ch == ' ' or ch == '\n' or ch == '\r' or ch == '\t';
+}
+
+fn trimRight(text: []const u8) []const u8 {
+	return std.mem.trimRight(u8, text, " \t\r\n");
 }
 
 fn flushBatch(
@@ -245,12 +340,74 @@ test "buildSymbolText includes name signature and doc" {
 	};
 	defer symbol.deinit(allocator);
 
-	const text = try buildSymbolText(allocator, symbol);
+	const text = try buildSymbolText(allocator, symbol, .code);
 	defer allocator.free(text);
 	try std.testing.expectEqualStrings(
 		"add\npub fn add(a: i32, b: i32) i32\nAdds two ints",
 		text,
 	);
+}
+
+test "truncateForKind prefers sentence boundary for docs" {
+	const allocator = std.testing.allocator;
+	const sentence = "This is a sentence. ";
+	var out = std.ArrayListUnmanaged(u8){};
+	defer out.deinit(allocator);
+
+	while (out.items.len <= max_embed_bytes + 20) {
+		try out.appendSlice(allocator, sentence);
+	}
+	const text = out.items;
+
+	const truncated = try truncateForKind(allocator, .doc, text);
+	defer allocator.free(truncated);
+	try std.testing.expect(truncated.len <= max_embed_bytes);
+	try std.testing.expect(truncated.len >= max_embed_bytes / 2);
+	const last = truncated[truncated.len - 1];
+	try std.testing.expect(last == '.' or last == '!' or last == '?');
+}
+
+test "truncateForKind prefers newline boundary for code" {
+	const allocator = std.testing.allocator;
+	var out = std.ArrayListUnmanaged(u8){};
+	defer out.deinit(allocator);
+
+	while (out.items.len <= max_embed_bytes + 40) {
+		try out.appendSlice(allocator, "const value = 12345;\n");
+	}
+	const text = out.items;
+
+	const truncated = try truncateForKind(allocator, .code, text);
+	defer allocator.free(truncated);
+	try std.testing.expect(truncated.len <= max_embed_bytes);
+	try std.testing.expect(truncated.len >= max_embed_bytes / 2);
+
+	const slice = text[0..max_embed_bytes];
+	const last_newline = std.mem.lastIndexOfScalar(u8, slice, '\n') orelse 0;
+	const expected = std.mem.trimRight(u8, text[0..last_newline + 1], " \t\r\n");
+	try std.testing.expectEqualStrings(expected, truncated);
+}
+
+test "buildSymbolText truncates long inputs" {
+	const allocator = std.testing.allocator;
+	const long_doc = try allocator.alloc(u8, max_embed_bytes + 10);
+	defer allocator.free(long_doc);
+	@memset(long_doc, 'a');
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "markdown"),
+		.file_path = try allocator.dupe(u8, "README.md"),
+		.name = try allocator.dupe(u8, "Title"),
+		.signature = try allocator.dupe(u8, "Intro"),
+		.doc_comment = try allocator.dupe(u8, long_doc),
+		.start_line = 1,
+		.end_line = 2,
+	};
+	defer symbol.deinit(allocator);
+
+	const text = try buildSymbolText(allocator, symbol, .doc);
+	defer allocator.free(text);
+	try std.testing.expect(text.len <= max_embed_bytes);
 }
 
 test "indexAll stores symbols and embeddings" {

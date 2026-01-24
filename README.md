@@ -3,7 +3,7 @@
 Semantic code search for local repositories.
 
 - Zig CLI + HTTP API
-- Ollama embeddings (default: `bge-large`)
+- Ollama embeddings (default: `bge-large`, override with `OLLAMA_MODEL`)
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
 - Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua, Haskell via tree-sitter/best-effort)
@@ -31,7 +31,7 @@ nix develop -c ./test-http
 ## Integration test
 
 ```bash
-# requires Ollama running with bge-large pulled
+# requires Ollama running with bge-large pulled (or set OLLAMA_MODEL)
 nix develop -c ./test-integration
 ```
 
@@ -108,6 +108,9 @@ index_type=code,doc
 search_ext=zig
 search_type=code
 search_lang=zig
+
+# Ollama model override (CLI flag or OLLAMA_MODEL env var also supported)
+ollama_model=bge-large
 
 # ignores
 ignore=**/.git/**, **/.codescan/**

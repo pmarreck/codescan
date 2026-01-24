@@ -1,7 +1,7 @@
 # PROJECT_STATE
 
 ## What this repo is
-`codescan` is a Zig CLI + HTTP server for semantic code search. It indexes function-like symbols via language plugins, stores embeddings in sqlite-vec, and supports vector/lexical/hybrid search. Defaults target Ollama `bge-large` on `http://localhost:11434`.
+`codescan` is a Zig CLI + HTTP server for semantic code search. It indexes function-like symbols via language plugins, stores embeddings in sqlite-vec, and supports vector/lexical/hybrid search. Defaults target Ollama `bge-large` on `http://localhost:11434` (override model via `OLLAMA_MODEL`).
 
 ## Build + test
 - Build: `nix develop -c zig build`
@@ -27,7 +27,7 @@
 
 ## Config (.codescan/config)
 - Load path: `<root>/.codescan/config`
-- Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model`, `embedding_dim`, `batch_size`,
+- Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model` (or env `OLLAMA_MODEL`), `embedding_dim`, `batch_size`,
   `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`,
   `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`, `docs_only`, `comments_only`.
 - Ignore globs:
@@ -76,6 +76,7 @@
 - `--show-comments`/`--verbose` shows doc comments in human output (hidden by default).
 - `NO_COLOR=1` disables ANSI colors in human output.
 - Comment-only vector/hybrid search uses the `embeddings_comment` table (reindex if migrating older DBs).
+- Embedding inputs are truncated to ~1600 bytes (sentence-aware for text/docs, line-aware for code/logs).
 
 ## Integration tests
 - `test-integration` runs end-to-end indexing/search against pinned fixture repos.

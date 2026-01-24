@@ -53,6 +53,13 @@ pub fn buildEmbedUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
 	return std.fmt.allocPrint(allocator, "{s}/api/embed", .{base_url});
 }
 
+pub fn buildTagsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+	if (std.mem.endsWith(u8, base_url, "/")) {
+		return std.fmt.allocPrint(allocator, "{s}api/tags", .{base_url});
+	}
+	return std.fmt.allocPrint(allocator, "{s}/api/tags", .{base_url});
+}
+
 pub fn buildEmbedRequest(
 	allocator: std.mem.Allocator,
 	model: []const u8,
@@ -65,6 +72,31 @@ pub fn buildEmbedRequest(
 	var stream: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
 	try stream.write(payload);
 	return out.toOwnedSlice();
+}
+
+pub fn ensureModelAvailable(
+	allocator: std.mem.Allocator,
+	transport: Transport,
+	base_url: []const u8,
+	model: []const u8,
+) !void {
+	const url = try buildTagsUrl(allocator, base_url);
+	defer allocator.free(url);
+
+	const headers = [_]std.http.Header{
+		.{ .name = "Accept", .value = "application/json" },
+	};
+
+	const response = try transport.send(transport.ctx, allocator, .{
+		.method = "GET",
+		.url = url,
+		.headers = &headers,
+		.body = "",
+	});
+	defer allocator.free(response.body);
+
+	if (response.status != 200) return error.HttpStatus;
+	if (!try hasModel(allocator, response.body, model)) return error.ModelNotFound;
 }
 
 pub fn parseEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 {
@@ -90,6 +122,30 @@ pub fn parseEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 
 	}
 
 	return result;
+}
+
+fn hasModel(allocator: std.mem.Allocator, body: []const u8, model: []const u8) !bool {
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+	defer parsed.deinit();
+
+	if (parsed.value != .object) return false;
+	const models_value = parsed.value.object.get("models") orelse return false;
+	if (models_value != .array) return false;
+
+	for (models_value.array.items) |item| {
+		if (item != .object) continue;
+		const name_value = item.object.get("name") orelse continue;
+		if (name_value != .string) continue;
+		const name = name_value.string;
+		if (std.mem.eql(u8, name, model)) return true;
+		if (std.mem.indexOfScalar(u8, model, ':') == null) {
+			if (std.mem.startsWith(u8, name, model) and name.len > model.len and name[model.len] == ':') {
+				return true;
+			}
+		}
+	}
+
+	return false;
 }
 
 pub fn freeEmbeddings(allocator: std.mem.Allocator, embeddings: [][]f32) void {
@@ -129,14 +185,19 @@ pub const StdHttpTransport = struct {
 		const self: *StdHttpTransport = @ptrCast(@alignCast(ctx));
 		const uri = try std.Uri.parse(req.url);
 
-		var request = try self.client.request(.POST, uri, .{
+		const method = try parseMethod(req.method);
+		var request = try self.client.request(method, uri, .{
 			.extra_headers = req.headers,
 		});
 		defer request.deinit();
 
-		const payload = try allocator.dupe(u8, req.body);
-		defer allocator.free(payload);
-		try request.sendBodyComplete(payload);
+		if (method.requestHasBody()) {
+			const payload = try allocator.dupe(u8, req.body);
+			defer allocator.free(payload);
+			try request.sendBodyComplete(payload);
+		} else {
+			try request.sendBodiless();
+		}
 		var response = try request.receiveHead(&.{});
 
 		var buffer: [8192]u8 = undefined;
@@ -146,6 +207,12 @@ pub const StdHttpTransport = struct {
 		return .{ .status = @intFromEnum(response.head.status), .body = body };
 	}
 };
+
+fn parseMethod(value: []const u8) !std.http.Method {
+	if (std.mem.eql(u8, value, "POST")) return .POST;
+	if (std.mem.eql(u8, value, "GET")) return .GET;
+	return error.UnsupportedMethod;
+}
 
 fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: usize) ![]u8 {
 	var out = std.ArrayListUnmanaged(u8){};
@@ -188,42 +255,43 @@ test "parseEmbeddings reads vectors" {
 	try std.testing.expectEqual(@as(f32, 2), embeddings[1][1]);
 }
 
-test "embed builds request and parses response" {
+test "ensureModelAvailable reports missing model" {
 	const allocator = std.testing.allocator;
+	var transport = StdHttpTransport.init(allocator);
+	defer transport.deinit();
 
-	const inputs = [_][]const u8{ "hash functions" };
-	const expected_body = "{\"model\":\"bge-large\",\"input\":[\"hash functions\"]}";
-	const response_body = "{\"embeddings\":[[0.3,0.4]]}";
+	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	defer allocator.free(url);
 
-	var fake = FakeTransport{
-		.expected_url = "http://localhost:11434/api/embed",
-		.expected_body = expected_body,
-		.response_body = response_body,
-	};
-
-	const embeddings = try embed(allocator, fake.transport(), "http://localhost:11434", "bge-large", &inputs);
-	defer freeEmbeddings(allocator, embeddings);
-	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
-	try std.testing.expectEqual(@as(usize, 2), embeddings[0].len);
-	try std.testing.expectApproxEqAbs(@as(f32, 0.3), embeddings[0][0], 0.0001);
+	try std.testing.expectError(
+		error.ModelNotFound,
+		ensureModelAvailable(allocator, transport.transport(), url, "codescan-does-not-exist"),
+	);
 }
 
-const FakeTransport = struct {
-	expected_url: []const u8,
-	expected_body: []const u8,
-	response_body: []const u8,
+test "embed uses live Ollama" {
+	const allocator = std.testing.allocator;
+	var transport = StdHttpTransport.init(allocator);
+	defer transport.deinit();
 
-	pub fn transport(self: *FakeTransport) Transport {
-		return .{ .ctx = self, .send = send };
-	}
+	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	defer allocator.free(url);
+	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
+	defer allocator.free(model);
 
-	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
-		const self: *FakeTransport = @ptrCast(@alignCast(ctx));
-		try std.testing.expectEqualStrings(self.expected_url, req.url);
-		try std.testing.expectEqualStrings(self.expected_body, req.body);
-		try std.testing.expectEqualStrings("POST", req.method);
-		try std.testing.expectEqual(@as(usize, 2), req.headers.len);
-		const body = try allocator.dupe(u8, self.response_body);
-		return .{ .status = 200, .body = body };
-	}
-};
+	try ensureModelAvailable(allocator, transport.transport(), url, model);
+
+	const inputs = [_][]const u8{ "hash functions" };
+	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs);
+	defer freeEmbeddings(allocator, embeddings);
+	try std.testing.expect(embeddings.len == 1);
+	try std.testing.expect(embeddings[0].len > 0);
+}
+
+fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
+	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
+		else => return err,
+	};
+	return value;
+}

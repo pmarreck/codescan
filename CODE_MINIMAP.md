@@ -26,7 +26,7 @@
 - src/cli.zig: CLI argument parsing (including hybrid weight flags) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), index reset, insert symbol/embedding, tests
-- src/ollama.zig: Ollama embed request/response + HTTP transport + tests
+- src/ollama.zig: Ollama embed + model availability check (`/api/tags`) + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests
 - src/model.zig: core data model for extracted symbols
 - src/kind.zig: type/category enum for plugins and filters (code/doc/text/log)
@@ -63,7 +63,7 @@
 - src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
-- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), large-file warnings + tests
+- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), embedding truncation (sentence/line-aware), large-file warnings + tests
 - src/search.zig: vector/lexical/hybrid search + weight tuning + FTS candidates + tests
 - src/output.zig: human/json output formatting for results + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests

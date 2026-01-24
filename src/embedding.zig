@@ -31,21 +31,24 @@ pub const OllamaEmbedder = struct {
 	}
 };
 
-test "OllamaEmbedder uses transport and model" {
+test "OllamaEmbedder uses live Ollama" {
 	const allocator = std.testing.allocator;
 	const inputs = [_][]const u8{ "hash functions" };
-	const response_body = "{\"embeddings\":[[0.1,0.2]]}";
 
-	var fake = FakeTransport{
-		.expected_url = "http://localhost:11434/api/embed",
-		.expected_body = "{\"model\":\"bge-large\",\"input\":[\"hash functions\"]}",
-		.response_body = response_body,
-	};
+	var transport = ollama.StdHttpTransport.init(allocator);
+	defer transport.deinit();
+
+	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	defer allocator.free(url);
+	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
+	defer allocator.free(model);
+
+	try ollama.ensureModelAvailable(allocator, transport.transport(), url, model);
 
 	var adapter = OllamaEmbedder{
-		.transport = fake.transport(),
-		.base_url = "http://localhost:11434",
-		.model = "bge-large",
+		.transport = transport.transport(),
+		.base_url = url,
+		.model = model,
 	};
 
 	const embedder = adapter.embedder();
@@ -53,24 +56,13 @@ test "OllamaEmbedder uses transport and model" {
 	defer embedder.free(embedder.ctx, allocator, embeddings);
 
 	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
-	try std.testing.expectApproxEqAbs(@as(f32, 0.1), embeddings[0][0], 0.0001);
+	try std.testing.expect(embeddings[0].len > 0);
 }
 
-const FakeTransport = struct {
-	expected_url: []const u8,
-	expected_body: []const u8,
-	response_body: []const u8,
-
-	pub fn transport(self: *FakeTransport) ollama.Transport {
-		return .{ .ctx = self, .send = send };
-	}
-
-	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: ollama.HttpRequest) !ollama.HttpResponse {
-		const self: *FakeTransport = @ptrCast(@alignCast(ctx));
-		try std.testing.expectEqualStrings(self.expected_url, req.url);
-		try std.testing.expectEqualStrings(self.expected_body, req.body);
-		try std.testing.expectEqualStrings("POST", req.method);
-		const body = try allocator.dupe(u8, self.response_body);
-		return .{ .status = 200, .body = body };
-	}
-};
+fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
+	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
+		else => return err,
+	};
+	return value;
+}

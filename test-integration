@@ -220,6 +220,8 @@ main() {
 	require_ollama
 	build_codescan
 
+	DOCS_DIR="$(mktemp -d "$TMPDIR/codescan-docs.XXXXXX")"
+
 	mkdir -p "$FIXTURES_DIR"
 
 	ZIG_NAME="$(toml_get zig name)"
@@ -238,7 +240,28 @@ main() {
 	ensure_repo "$ELIXIR_NAME" "$ELIXIR_URL" "$ELIXIR_COMMIT"
 	ensure_repo "$C_NAME" "$C_URL" "$C_COMMIT"
 
-	trap 'reset_repo "$ZIG_NAME" "$ZIG_COMMIT"; reset_repo "$ELIXIR_NAME" "$ELIXIR_COMMIT"; reset_repo "$C_NAME" "$C_COMMIT"' EXIT
+	trap 'rm -rf "$DOCS_DIR"; reset_repo "$ZIG_NAME" "$ZIG_COMMIT"; reset_repo "$ELIXIR_NAME" "$ELIXIR_COMMIT"; reset_repo "$C_NAME" "$C_COMMIT"' EXIT
+
+	# Docs-only index should succeed (exercise Ollama API compatibility)
+	cat <<'MD' > "$DOCS_DIR/README.md"
+# Doc Title
+
+This is a docs-only test for embeddings.
+MD
+
+	capture "$BIN" index --root "$DOCS_DIR" --type doc --db "$DOCS_DIR/.codescan/index.sqlite3"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "doc-only index failed"
+	fi
+
+	capture "$BIN" search "docs-only test" --root "$DOCS_DIR" --docs --mode lexical --json
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "doc-only search failed"
+	fi
+	doc_count=$(printf '%s' "$out" | jq '.results | length')
+	[ "$doc_count" -gt 0 ] || fail "doc-only search returned no results"
 
 	# Initial index + baseline searches
 	index_repo "$FIXTURES_DIR/$ZIG_NAME"

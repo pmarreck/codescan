@@ -45,3 +45,5 @@
 - [x] Add `--only-docs` synonym + config keys for docs/comments filters
 - [x] Ensure HTTP API parity for docs/comments/ext/type/lang filters
 - [x] Add black-box CLI + HTTP test scripts with mk_test_db fixture
+- [x] Add OLLAMA_MODEL env override + model-availability check with helpful error
+- [x] Truncate embedding inputs (~1600 bytes) using sentence/line-aware boundaries

@@ -44,6 +44,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 
 	var http_client = ollama.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
+	try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
 
 	var embedder_adapter = embedding.OllamaEmbedder{
 		.transport = http_client.transport(),
@@ -76,6 +77,28 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 			);
 		}
 	}
+}
+
+fn ensureModelAvailableOrExit(
+	allocator: std.mem.Allocator,
+	transport: ollama.Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+) !void {
+	ollama.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
+		error.ModelNotFound => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
+				.{ model_name, model_name },
+			) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		},
+		else => return err,
+	};
 }
 
 fn handleRequest(
