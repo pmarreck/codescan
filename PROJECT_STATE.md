@@ -83,7 +83,7 @@
 - A warning is emitted when a file exceeds `max_file_size / 4`.
 - Default DB location is `.codescan/index.sqlite3` under the target root.
 - `min_score` filters low-scoring results after ranking (default `0.0`).
-- Interactive index/update shows a compact progress counter on stderr (TTY only).
+- Interactive index/update shows a compact per-file progress counter on stderr (TTY only).
 - Search defaults to the primary code language by file count unless filters are supplied.
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
 - `--docs`/`--only-docs` restrict results to markdown/README only.
