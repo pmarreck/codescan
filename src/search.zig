@@ -18,6 +18,8 @@ pub const Options = struct {
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
 	min_score: f32 = 0.0,
+	allowed_langs: []const []const u8 = &[_][]const u8{},
+	allowed_exts: []const []const u8 = &[_][]const u8{},
 };
 
 pub const Result = struct {
@@ -83,6 +85,24 @@ pub fn search(
 		}
 	}
 
+	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0) {
+		var filtered = std.ArrayListUnmanaged(Result){};
+		errdefer {
+			for (filtered.items) |*res| res.deinit(allocator);
+			filtered.deinit(allocator);
+		}
+		for (results.items) |res| {
+			if (matchesFilters(res.symbol, options)) {
+				try filtered.append(allocator, res);
+			} else {
+				var tmp = res;
+				tmp.deinit(allocator);
+			}
+		}
+		results.deinit(allocator);
+		results = filtered;
+	}
+
 	for (results.items) |*res| {
 		const lexical = try lexicalScore(allocator, query, res.symbol);
 		res.lexical = lexical;
@@ -144,6 +164,37 @@ fn appendUnique(
 		}
 	}
 	try results.append(allocator, res);
+}
+
+fn matchesFilters(symbol: model.Symbol, options: Options) bool {
+	if (options.allowed_langs.len > 0) {
+		var ok = false;
+		for (options.allowed_langs) |lang| {
+			if (std.mem.eql(u8, symbol.language, lang)) {
+				ok = true;
+				break;
+			}
+		}
+		if (!ok) return false;
+	}
+	if (options.allowed_exts.len > 0) {
+		var ok = false;
+		for (options.allowed_exts) |ext| {
+			if (hasExtensionIgnoreCase(symbol.file_path, ext)) {
+				ok = true;
+				break;
+			}
+		}
+		if (!ok) return false;
+	}
+	return true;
+}
+
+fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
+	if (ext.len == 0) return false;
+	if (path.len < ext.len) return false;
+	const tail = path[path.len - ext.len ..];
+	return std.ascii.eqlIgnoreCase(tail, ext);
 }
 
 fn vectorCandidates(
@@ -570,8 +621,62 @@ test "search filters by min_score" {
 	});
 	defer freeResults(allocator, results);
 
-	try std.testing.expectEqual(@as(usize, 1), results.len);
-	try std.testing.expectEqualStrings("near", results[0].symbol.name);
+try std.testing.expectEqual(@as(usize, 1), results.len);
+try std.testing.expectEqualStrings("near", results[0].symbol.name);
+}
+
+test "search filters by language and extension" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym_code = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/main.zig"),
+		.name = try allocator.dupe(u8, "add"),
+		.signature = try allocator.dupe(u8, "fn add() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_code.deinit(allocator);
+
+	var sym_doc = model.Symbol{
+		.language = try allocator.dupe(u8, "markdown"),
+		.file_path = try allocator.dupe(u8, "README.md"),
+		.name = try allocator.dupe(u8, "Title"),
+		.signature = try allocator.dupe(u8, "Intro"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_doc.deinit(allocator);
+
+	_ = try storage.insertSymbol(db, sym_code);
+	_ = try storage.insertSymbol(db, sym_doc);
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results_lang = try search(allocator, db, fake.embedder(), "Intro", .{
+		.top_n = 5,
+		.mode = .lexical,
+		.allowed_langs = &[_][]const u8{ "markdown" },
+	});
+	defer freeResults(allocator, results_lang);
+
+	try std.testing.expectEqual(@as(usize, 1), results_lang.len);
+	try std.testing.expectEqualStrings("README.md", results_lang[0].symbol.file_path);
+
+	const results_ext = try search(allocator, db, fake.embedder(), "add", .{
+		.top_n = 5,
+		.mode = .lexical,
+		.allowed_exts = &[_][]const u8{ ".zig" },
+	});
+	defer freeResults(allocator, results_ext);
+
+	try std.testing.expectEqual(@as(usize, 1), results_ext.len);
+	try std.testing.expectEqualStrings("src/main.zig", results_ext[0].symbol.file_path);
 }
 
 test "search hybrid weights influence ranking" {

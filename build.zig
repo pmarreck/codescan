@@ -288,6 +288,39 @@ pub fn build(b: *std.Build) void {
 	linkCommon(extract_haskell_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(extract_haskell_tests).step);
 
+	const extract_markdown_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/extract_markdown.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addPcre2Includes(extract_markdown_tests.root_module, pcre2_lib);
+	linkCommon(extract_markdown_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(extract_markdown_tests).step);
+
+	const extract_text_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/extract_text.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addPcre2Includes(extract_text_tests.root_module, pcre2_lib);
+	linkCommon(extract_text_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(extract_text_tests).step);
+
+	const extract_log_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/extract_log.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addPcre2Includes(extract_log_tests.root_module, pcre2_lib);
+	linkCommon(extract_log_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(extract_log_tests).step);
+
 	const scan_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/scan.zig"),

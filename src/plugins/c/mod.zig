@@ -1,4 +1,7 @@
+const kinds = @import("../../kind.zig");
+
 pub const language = "c";
+pub const kind = kinds.Kind.code;
 
 pub const extensions = &[_][]const u8{
 	".c",

@@ -27,6 +27,7 @@
 - src/ollama.zig: Ollama embed request/response + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests
 - src/model.zig: core data model for extracted symbols
+- src/kind.zig: type/category enum for plugins and filters (code/doc/text/log)
 - src/plugin.zig: extractor interface, registry, and tests
 - src/plugins/zig/mod.zig: Zig plugin defaults (language, extensions, ignore globs)
 - src/plugins/elixir/mod.zig: Elixir plugin defaults (language, extensions, ignore globs)
@@ -40,6 +41,9 @@
 - src/plugins/bash/mod.zig: Bash plugin defaults
 - src/plugins/lua/mod.zig: Lua plugin defaults
 - src/plugins/haskell/mod.zig: Haskell plugin defaults
+- src/plugins/markdown/mod.zig: Markdown plugin defaults + README matcher
+- src/plugins/text/mod.zig: Text plugin defaults (.txt)
+- src/plugins/log/mod.zig: Log plugin defaults (.log)
 - src/extract_zig.zig: Zig AST-based extractor + tests
 - src/extract_elixir.zig: Elixir function extractor + tests (lightweight parser)
 - src/extract_c.zig: C extractor using tree-sitter + tests
@@ -52,6 +56,9 @@
 - src/extract_bash.zig: Bash extractor using tree-sitter + tests
 - src/extract_lua.zig: Lua extractor using tree-sitter + tests
 - src/extract_haskell.zig: Haskell extractor using tree-sitter + tests
+- src/extract_markdown.zig: Markdown heading-based chunk extractor + tests
+- src/extract_text.zig: Plain text paragraph/line/sentence extractor + tests
+- src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
 - src/scan.zig: file walker + ignore matching (global + per-language globs) + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store) + tests

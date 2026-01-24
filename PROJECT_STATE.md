@@ -15,6 +15,7 @@
 - Search:
   - `./zig-out/bin/codescan search "<query>" --root <path>`
   - Optional knobs: `--mode <vector|lexical|hybrid>`, `--weight-vector`, `--weight-lexical`, `--top`
+  - Filters: `--ext <csv>`, `--type <csv>`, `--lang <csv>`, `--include-docs`
 - If `--root` is omitted, codescan searches upward from the current directory for a `.codescan/` directory and uses that root (else current dir).
 
 ## Run (HTTP)
@@ -24,7 +25,8 @@
 ## Config (.codescan/config)
 - Load path: `<root>/.codescan/config`
 - Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model`, `embedding_dim`, `batch_size`,
-  `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`.
+  `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`,
+  `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`.
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
@@ -46,6 +48,9 @@
   - Bash: `src/extract_bash.zig` (tree-sitter)
   - Lua: `src/extract_lua.zig` (tree-sitter)
   - Haskell: `src/extract_haskell.zig` (tree-sitter)
+  - Markdown: `src/extract_markdown.zig` (heading-based)
+  - Text: `src/extract_text.zig` (paragraph/line/sentence)
+  - Log: `src/extract_log.zig` (line-based)
 - Plugin defaults live in `src/plugins/<lang>/mod.zig`.
 
 ## Dependencies + build notes
@@ -61,6 +66,8 @@
 - A warning is emitted when a file exceeds `max_file_size / 4`.
 - Default DB location is `.codescan/index.sqlite3` under the target root.
 - `min_score` filters low-scoring results after ranking (default `0.0`).
+- Search defaults to the primary code language by file count unless filters are supplied.
+- `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
 - `--comments` / `--verbose` shows doc comments in human output (hidden by default).
 - `NO_COLOR=1` disables ANSI colors in human output.
 

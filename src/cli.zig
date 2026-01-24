@@ -17,6 +17,7 @@ pub const CommandTag = enum {
 pub const Seen = struct {
 	output: bool = false,
 	show_comments: bool = false,
+	include_docs: bool = false,
 	top_n: bool = false,
 	root_path: bool = false,
 	db_path: bool = false,
@@ -31,12 +32,16 @@ pub const Seen = struct {
 	weight_vector: bool = false,
 	weight_lexical: bool = false,
 	min_score: bool = false,
+	ext_filter: bool = false,
+	type_filter: bool = false,
+	lang_filter: bool = false,
 };
 
 pub const Parsed = struct {
 	command: CommandTag,
 	output: OutputFormat,
 	show_comments: bool,
+	include_docs: bool,
 	query: ?[]const u8,
 	top_n: usize,
 	root_path: []const u8,
@@ -52,6 +57,9 @@ pub const Parsed = struct {
 	weight_vector: f32,
 	weight_lexical: f32,
 	min_score: f32,
+	ext_filter: ?[]const u8,
+	type_filter: ?[]const u8,
+	lang_filter: ?[]const u8,
 	seen: Seen,
 };
 
@@ -61,6 +69,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.command = .help,
 			.output = .human,
 			.show_comments = false,
+			.include_docs = false,
 			.query = null,
 			.top_n = 10,
 			.root_path = ".",
@@ -76,6 +85,9 @@ pub fn parse(args: []const []const u8) !Parsed {
 			.weight_vector = 0.7,
 			.weight_lexical = 0.3,
 			.min_score = 0.0,
+			.ext_filter = null,
+			.type_filter = null,
+			.lang_filter = null,
 			.seen = .{},
 		};
 	}
@@ -83,6 +95,7 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.command = .help,
 		.output = .human,
 		.show_comments = false,
+		.include_docs = false,
 		.query = null,
 		.top_n = 10,
 		.root_path = ".",
@@ -98,6 +111,9 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.weight_vector = 0.7,
 		.weight_lexical = 0.3,
 		.min_score = 0.0,
+		.ext_filter = null,
+		.type_filter = null,
+		.lang_filter = null,
 		.seen = .{},
 	};
 
@@ -134,6 +150,12 @@ pub fn parse(args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--comments") or std.mem.eql(u8, arg, "--verbose")) {
 			parsed.show_comments = true;
 			parsed.seen.show_comments = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--include-docs")) {
+			parsed.include_docs = true;
+			parsed.seen.include_docs = true;
 			i += 1;
 			continue;
 		}
@@ -249,6 +271,30 @@ pub fn parse(args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+		if (std.mem.eql(u8, arg, "--ext")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.ext_filter = args[i];
+			parsed.seen.ext_filter = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--type")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.type_filter = args[i];
+			parsed.seen.type_filter = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--lang")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.lang_filter = args[i];
+			parsed.seen.lang_filter = true;
+			i += 1;
+			continue;
+		}
 		if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
 			parsed.command = .help;
 			return parsed;
@@ -286,6 +332,7 @@ test "parse with no args defaults to help" {
 	try std.testing.expectEqual(CommandTag.help, parsed.command);
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
 	try std.testing.expect(parsed.show_comments == false);
+	try std.testing.expect(parsed.include_docs == false);
 	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
 	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
 	try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), parsed.max_file_size);
@@ -338,6 +385,13 @@ test "parse search with flags" {
 		"codescan",
 		"search",
 		"--comments",
+		"--include-docs",
+		"--ext",
+		"zig,md",
+		"--type",
+		"code,doc",
+		"--lang",
+		"zig",
 		"--json",
 		"--top",
 		"5",
@@ -369,6 +423,10 @@ test "parse search with flags" {
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(OutputFormat.json, parsed.output);
 	try std.testing.expect(parsed.show_comments);
+	try std.testing.expect(parsed.include_docs);
+	try std.testing.expectEqualStrings("zig,md", parsed.ext_filter.?);
+	try std.testing.expectEqualStrings("code,doc", parsed.type_filter.?);
+	try std.testing.expectEqualStrings("zig", parsed.lang_filter.?);
 	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
 	try std.testing.expectEqual(@as(usize, 5), parsed.top_n);
 	try std.testing.expectEqualStrings("/repo", parsed.root_path);

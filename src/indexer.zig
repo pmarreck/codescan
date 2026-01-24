@@ -1,5 +1,6 @@
 const std = @import("std");
 const plugin = @import("plugin.zig");
+const kind = @import("kind.zig");
 const scan = @import("scan.zig");
 const storage = @import("storage.zig");
 const model = @import("model.zig");
@@ -10,6 +11,8 @@ pub const Options = struct {
 	embedding_dim: usize,
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
+	allowed_exts: []const []const u8 = &[_][]const u8{},
+	allowed_kinds: []const kind.Kind = &[_]kind.Kind{},
 	ignore: scan.IgnoreConfig = .{
 		.global = &[_][]const u8{},
 		.per_language = &[_]config.IgnoreOverride{},
@@ -52,9 +55,11 @@ pub fn indexAll(
 	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
-	var stats = Stats{ .files = files.len, .symbols = 0 };
+	var stats = Stats{ .files = 0, .symbols = 0 };
 	for (files) |rel_path| {
 		const extractor = registry.find(rel_path) orelse continue;
+		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
+		if (!extAllowed(rel_path, options.allowed_exts)) continue;
 		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
 		defer allocator.free(full_path);
 
@@ -77,6 +82,8 @@ pub fn indexAll(
 			return err;
 		};
 		defer allocator.free(source);
+
+		stats.files += 1;
 
 		const symbols = try extractor.extract(allocator, rel_path, source);
 		defer {
@@ -103,6 +110,29 @@ pub fn indexAll(
 	}
 
 	return stats;
+}
+
+fn kindAllowed(kind_value: kind.Kind, allowed: []const kind.Kind) bool {
+	if (allowed.len == 0) return true;
+	for (allowed) |value| {
+		if (value == kind_value) return true;
+	}
+	return false;
+}
+
+fn extAllowed(path: []const u8, allowed: []const []const u8) bool {
+	if (allowed.len == 0) return true;
+	for (allowed) |ext| {
+		if (hasExtensionIgnoreCase(path, ext)) return true;
+	}
+	return false;
+}
+
+fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
+	if (ext.len == 0) return false;
+	if (path.len < ext.len) return false;
+	const tail = path[path.len - ext.len ..];
+	return std.ascii.eqlIgnoreCase(tail, ext);
 }
 
 pub fn buildSymbolText(allocator: std.mem.Allocator, symbol: model.Symbol) ![]u8 {
@@ -233,9 +263,36 @@ test "indexAll skips files over max_file_size" {
 		.max_file_size = 8,
 	});
 
-	try std.testing.expectEqual(@as(usize, 1), stats.files);
+	try std.testing.expectEqual(@as(usize, 0), stats.files);
 	try std.testing.expectEqual(@as(usize, 0), stats.symbols);
 	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(db, allocator, "symbols"));
+}
+
+test "indexAll filters by extension and kind" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "pub fn add() void {}" });
+	try tmp.dir.writeFile(.{ .sub_path = "README.md", .data = "# Title\nbody\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+	const stats = try indexAll(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.allowed_exts = &[_][]const u8{ ".md" },
+		.allowed_kinds = &[_]kind.Kind{ .doc },
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.files);
+	try std.testing.expect(stats.symbols > 0);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countDistinctFiles(db, allocator));
 }
 
 test "warnLargeFile includes limits" {

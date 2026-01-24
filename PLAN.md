@@ -38,3 +38,6 @@
 - [x] Add new language plugins (TypeScript, Rust, Lean4, Idris2, Nix, Nim, Bash, LuaJIT, Haskell)
 - [x] Vendor or fetch tree-sitter grammars for new languages (best-effort AST)
 - [x] Improve human output formatting (alignment + colors) and doc-comment gating (--verbose/--comments)
+- [x] Add markdown/text/log plugins with semantic chunking
+- [x] Add --ext/--type/--lang filters and --include-docs default behavior
+- [x] Determine primary language by file counts and use for default search

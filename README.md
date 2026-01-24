@@ -7,6 +7,7 @@ Semantic code search for local repositories.
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
 - Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua, Haskell via tree-sitter/best-effort)
+- Markdown/text/log indexing with semantic chunking
 
 ## Build
 
@@ -48,10 +49,18 @@ nix develop -c ./test-integration
 ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
 # show doc comments in human output
 ./zig-out/bin/codescan search "hash functions" --root <path> --comments
+# include markdown/README when using default search scope
+./zig-out/bin/codescan search "design doc" --include-docs
+# restrict by extension/type/language
+./zig-out/bin/codescan search "checksum" --ext md,zig
+./zig-out/bin/codescan search "checksum" --type code,doc
+./zig-out/bin/codescan search "checksum" --lang zig
 ```
 
 If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
 directory and uses that as the root (otherwise it falls back to the current directory).
+
+Search defaults to the primary code language by file count unless a filter is supplied.
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 
@@ -75,6 +84,13 @@ weight_vector=0.7
 weight_lexical=0.3
 min_score=0.0
 max_file_size=2097152
+include_docs=false
+primary_lang=zig
+index_ext=zig,md
+index_type=code,doc
+search_ext=zig
+search_type=code
+search_lang=zig
 
 # ignores
 ignore=**/.git/**, **/.codescan/**

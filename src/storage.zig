@@ -257,6 +257,64 @@ pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
 	return c.sqlite3_column_int64(stmt.?, 0);
 }
 
+pub fn countDistinctFiles(db: Db, allocator: std.mem.Allocator) !i64 {
+	_ = allocator;
+	const sql: [:0]const u8 = "SELECT COUNT(DISTINCT file_path) FROM symbols;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) {
+		return error.SqlStepFailed;
+	}
+	return c.sqlite3_column_int64(stmt.?, 0);
+}
+
+pub fn primaryLanguage(
+	db: Db,
+	allocator: std.mem.Allocator,
+	allowed_langs: []const []const u8,
+) !?[]const u8 {
+	if (allowed_langs.len == 0) return null;
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try out.writer.writeAll("SELECT lang, COUNT(DISTINCT file_path) AS files FROM symbols WHERE lang IN (");
+	for (allowed_langs, 0..) |_, idx| {
+		if (idx > 0) try out.writer.writeAll(",");
+		try out.writer.print("?{d}", .{idx + 1});
+	}
+	try out.writer.writeAll(") GROUP BY lang ORDER BY files DESC LIMIT 1;");
+
+	const sql = try out.toOwnedSlice();
+	defer allocator.free(sql);
+
+	const sql_z = try allocator.dupeZ(u8, sql);
+	defer allocator.free(sql_z);
+
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql_z, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	for (allowed_langs, 0..) |lang, idx| {
+		try bindText(stmt.?, @intCast(idx + 1), lang);
+	}
+
+	const rc = c.sqlite3_step(stmt.?);
+	if (rc == c.SQLITE_ROW) {
+		const ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
+		const slice = std.mem.span(ptr);
+		return @as(?[]const u8, try allocator.dupe(u8, slice));
+	}
+	if (rc == c.SQLITE_DONE) return null;
+	return error.SqlStepFailed;
+}
+
 fn bindText(stmt: *c.sqlite3_stmt, index: c_int, text: []const u8) !void {
 	if (c.sqlite3_bind_text(stmt, index, text.ptr, @intCast(text.len), null) != c.SQLITE_OK) {
 		return error.SqlBindFailed;
@@ -324,4 +382,56 @@ test "insertSymbol and insertEmbedding" {
 
 	try insertEmbedding(db, allocator, rowid, &[_]f32{ 0.1, 0.2 });
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
+}
+
+test "primaryLanguage selects most common language" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "b"),
+		.signature = try allocator.dupe(u8, "fn b() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym2.deinit(allocator);
+
+	var sym3 = model.Symbol{
+		.language = try allocator.dupe(u8, "rust"),
+		.file_path = try allocator.dupe(u8, "src/lib.rs"),
+		.name = try allocator.dupe(u8, "c"),
+		.signature = try allocator.dupe(u8, "fn c()"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym3.deinit(allocator);
+
+	_ = try insertSymbol(db, sym1);
+	_ = try insertSymbol(db, sym2);
+	_ = try insertSymbol(db, sym3);
+
+	const allowed = &[_][]const u8{ "zig", "rust" };
+	const primary = try primaryLanguage(db, allocator, allowed);
+	defer if (primary) |value| allocator.free(value);
+
+	try std.testing.expect(primary != null);
+	try std.testing.expectEqualStrings("zig", primary.?);
 }

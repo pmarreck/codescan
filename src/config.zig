@@ -27,6 +27,13 @@ pub const Config = struct {
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
 	min_score: ?f32 = null,
+	index_ext: ?[]const u8 = null,
+	index_type: ?[]const u8 = null,
+	search_ext: ?[]const u8 = null,
+	search_type: ?[]const u8 = null,
+	search_lang: ?[]const u8 = null,
+	primary_lang: ?[]const u8 = null,
+	include_docs: ?bool = null,
 	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
 	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
 	http_host: ?[]const u8 = null,
@@ -38,6 +45,12 @@ pub const Config = struct {
 		if (self.ollama_url) |value| allocator.free(value);
 		if (self.ollama_model) |value| allocator.free(value);
 		if (self.search_mode) |value| allocator.free(value);
+		if (self.index_ext) |value| allocator.free(value);
+		if (self.index_type) |value| allocator.free(value);
+		if (self.search_ext) |value| allocator.free(value);
+		if (self.search_type) |value| allocator.free(value);
+		if (self.search_lang) |value| allocator.free(value);
+		if (self.primary_lang) |value| allocator.free(value);
 		if (self.http_host) |value| allocator.free(value);
 		for (self.ignore_global.items) |pattern| allocator.free(pattern);
 		self.ignore_global.deinit(allocator);
@@ -150,6 +163,47 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
+		if (std.mem.eql(u8, key, "index_ext")) {
+			config.index_ext = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "index_type")) {
+			config.index_type = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "search_ext")) {
+			config.search_ext = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "search_type")) {
+			config.search_type = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "search_lang")) {
+			config.search_lang = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "primary_lang")) {
+			config.primary_lang = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "include_docs")) {
+			if (std.mem.eql(u8, value, "true")) {
+				config.include_docs = true;
+			} else if (std.mem.eql(u8, value, "false")) {
+				config.include_docs = false;
+			} else {
+				return error.InvalidValue;
+			}
+			continue;
+		}
+
 		if (std.mem.eql(u8, key, "http_host")) {
 			config.http_host = try allocator.dupe(u8, value);
 			continue;
@@ -252,6 +306,13 @@ test "parseText reads values" {
 		"weight_vector=0.8\n" ++
 		"weight_lexical=0.2\n" ++
 		"min_score=0.55\n" ++
+		"index_ext=zig,md\n" ++
+		"index_type=code,doc\n" ++
+		"search_ext=zig\n" ++
+		"search_type=code\n" ++
+		"search_lang=zig\n" ++
+		"primary_lang=zig\n" ++
+		"include_docs=true\n" ++
 		"http_host=0.0.0.0\n" ++
 		"http_port=9001\n";
 	var cfg = try parseText(allocator, text);
@@ -269,6 +330,13 @@ test "parseText reads values" {
 	try std.testing.expectApproxEqAbs(@as(f32, 0.8), cfg.weight_vector.?, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.2), cfg.weight_lexical.?, 0.0001);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.55), cfg.min_score.?, 0.0001);
+	try std.testing.expectEqualStrings("zig,md", cfg.index_ext.?);
+	try std.testing.expectEqualStrings("code,doc", cfg.index_type.?);
+	try std.testing.expectEqualStrings("zig", cfg.search_ext.?);
+	try std.testing.expectEqualStrings("code", cfg.search_type.?);
+	try std.testing.expectEqualStrings("zig", cfg.search_lang.?);
+	try std.testing.expectEqualStrings("zig", cfg.primary_lang.?);
+	try std.testing.expectEqual(true, cfg.include_docs.?);
 	try std.testing.expectEqualStrings("0.0.0.0", cfg.http_host.?);
 	try std.testing.expectEqual(@as(u16, 9001), cfg.http_port.?);
 }

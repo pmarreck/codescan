@@ -172,15 +172,18 @@ test "findFiles finds supported extensions" {
 		allocator.free(files);
 	}
 
-	try std.testing.expectEqual(@as(usize, 2), files.len);
+	try std.testing.expectEqual(@as(usize, 3), files.len);
 	var found_zig = false;
 	var found_ex = false;
+	var found_readme = false;
 	for (files) |path| {
 		if (std.mem.eql(u8, path, "src/main.zig")) found_zig = true;
 		if (std.mem.eql(u8, path, "lib/demo.ex")) found_ex = true;
+		if (std.mem.eql(u8, path, "README.md")) found_readme = true;
 	}
 	try std.testing.expect(found_zig);
 	try std.testing.expect(found_ex);
+	try std.testing.expect(found_readme);
 }
 
 test "findFiles respects ignores" {

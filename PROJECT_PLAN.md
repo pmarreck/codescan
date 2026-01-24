@@ -1,7 +1,7 @@
 # Project Plan
 
 ## Objective
-Build `codescan`: a Zig CLI for semantic code search using Ollama embeddings (bge-large) and sqlite-vec, with a plugin architecture starting with Zig, Elixir, and C (tree-sitter-based) extractors.
+Build `codescan`: a Zig CLI for semantic code search using Ollama embeddings (bge-large) and sqlite-vec, with a plugin architecture covering code + docs (Markdown/text/log) and multiple languages.
 
 ## Milestones
 - M1: CLI scaffolding + config + tests
