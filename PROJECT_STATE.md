@@ -32,14 +32,23 @@
 - Load path: `<root>/.codescan/config`
 - Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model` (or env `OLLAMA_MODEL`), `embedding_dim`, `batch_size`,
   `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`,
-  `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`, `docs_only`, `comments_only`.
+  `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`, `docs_only`, `comments_only`,
+  `include_node_modules`.
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
 - Glob semantics: match against repo-relative paths unless the pattern begins with `/` (root-anchored).
 - Plugin defaults provide language-specific ignore globs; config adds more (no removal yet).
-- Built-in ignore globs: `.git`, `.codescan`, `.codescan-fixtures`, `deps`, `node_modules`, `.zig-cache`, `zig-cache`, `.zig-out`, `zig-out` (plus other build/cache dirs).
-- `include_node_modules=true` or `--include-node-modules` will index `node_modules`.
+- Built-in ignore globs:
+  - VCS/metadata: `.git`, `.hg`, `.svn`, `.bzr`, `CVS`
+  - Project metadata: `.codescan`, `.codescan-fixtures`, `.idea`, `.vscode`, `.cache`
+  - Dependencies: `deps`, `node_modules` (opt-in), `vendor`, `third_party`, `.pnpm-store`, `.yarn`, `.pnp`
+  - Build/output: `build`, `dist`, `out`, `target`, `bin`, `obj`, `coverage`, `.build`, `CMakeFiles`
+  - JS frameworks: `.next`, `.nuxt`, `.svelte-kit`, `.turbo`, `.parcel-cache`, `.vite`
+  - Mobile: `Pods`
+  - Language caches: `.zig-cache`, `zig-cache`, `.zig-out`, `zig-out`, `__pycache__`, `.venv`, `venv`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`, `.stack-work`, `dist-newstyle`, `nimcache`, `result`
+  - Misc: `.DS_Store`
+  - `include_node_modules=true` or `--include-node-modules` will index `node_modules`.
 
 ## Plugin architecture
 - Registry in `src/plugin.zig` selects extractors by file extension.
@@ -74,6 +83,7 @@
 - A warning is emitted when a file exceeds `max_file_size / 4`.
 - Default DB location is `.codescan/index.sqlite3` under the target root.
 - `min_score` filters low-scoring results after ranking (default `0.0`).
+- Interactive index/update shows a compact progress counter on stderr (TTY only).
 - Search defaults to the primary code language by file count unless filters are supplied.
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
 - `--docs`/`--only-docs` restrict results to markdown/README only.

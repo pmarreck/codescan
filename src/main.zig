@@ -163,6 +163,7 @@ pub fn main() !void {
 						.per_language = settings.ignore_lang,
 						.include_node_modules = settings.include_node_modules,
 					},
+					.show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
 				},
 			);
 
@@ -407,6 +408,10 @@ fn ensureModelAvailableOrExit(
 		},
 		else => return err,
 	};
+}
+
+fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat) bool {
+	return is_tty and out_format == .human;
 }
 
 fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
@@ -691,6 +696,12 @@ test "findRepoRoot returns null when missing" {
 	defer if (root) |path| allocator.free(path);
 
 	try std.testing.expect(root == null);
+}
+
+test "shouldShowProgress requires tty and human output" {
+	try std.testing.expect(shouldShowProgress(true, .human));
+	try std.testing.expect(!shouldShowProgress(false, .human));
+	try std.testing.expect(!shouldShowProgress(true, .json));
 }
 
 test "buildSearchFilters defaults to primary language" {

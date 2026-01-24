@@ -49,3 +49,6 @@
 - [x] Truncate embedding inputs (~1600 bytes) using sentence/line-aware boundaries
 - [x] Recreate DB on reindex (delete file before init)
 - [x] Add DEBUG-index logging + built-in ignore globs for common dirs
+- [x] Add config show/edit commands
+- [x] Add include_node_modules opt-in for indexing
+- [x] Show TTY progress for index/update

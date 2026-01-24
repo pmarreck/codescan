@@ -467,6 +467,16 @@ test "parseSearchRequest defaults optional fields" {
 	try std.testing.expect(req.comments_only == null);
 }
 
+test "parseIndexRequest reads fields" {
+	const allocator = std.testing.allocator;
+	const body = "{\"ext\":[\"zig\"],\"type\":\"code\",\"include_node_modules\":true}";
+	var req = try parseIndexRequest(allocator, body);
+	defer req.deinit(allocator);
+	try std.testing.expectEqualStrings("zig", req.ext.?);
+	try std.testing.expectEqualStrings("code", req.type.?);
+	try std.testing.expectEqual(true, req.include_node_modules.?);
+}
+
 test "handleRequest responds to /health" {
 	const allocator = std.testing.allocator;
 	const db = try storage.openMemoryWithVec(allocator);

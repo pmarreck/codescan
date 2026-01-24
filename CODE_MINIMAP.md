@@ -22,7 +22,7 @@
 - build.zig: Zig build script for CLI + unit tests
 - test: unit test runner script (wraps `zig build test` in nix dev shell)
 - PROJECT_STATE.md: working notes for future contributors/LLMs (build/run/config details)
-- src/main.zig: CLI entrypoint wiring config, root discovery, index/search, and HTTP server
+- src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, and HTTP server
 - src/cli.zig: CLI argument parsing (including hybrid weight flags) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), index reset, insert symbol/embedding, tests
@@ -62,8 +62,8 @@
 - src/extract_text.zig: Plain text paragraph/line/sentence extractor + tests
 - src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
-- src/scan.zig: file walker + ignore matching (built-in + global + per-language globs) + tests
-- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), embedding truncation (sentence/line-aware), DEBUG progress logs, large-file warnings + tests
+- src/scan.zig: file walker + ignore matching (built-in + global + per-language globs, node_modules opt-in) + tests
+- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), embedding truncation (sentence/line-aware), TTY progress counter, DEBUG progress logs, large-file warnings + tests
 - src/search.zig: vector/lexical/hybrid search + weight tuning + FTS candidates + tests
 - src/output.zig: human/json output formatting for results + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests

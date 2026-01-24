@@ -18,6 +18,7 @@ pub const Options = struct {
 		.per_language = &[_]config.IgnoreOverride{},
 		.include_node_modules = false,
 	},
+	show_progress: bool = false,
 };
 
 pub const Stats = struct {
@@ -39,6 +40,7 @@ pub fn indexAll(
 	try storage.resetIndex(db);
 
 	const debug = try debugEnabled(allocator);
+	const show_progress = options.show_progress and !debug;
 
 	const files = try scan.findFiles(allocator, root_path, registry, options.ignore);
 	defer {
@@ -67,7 +69,18 @@ pub fn indexAll(
 	if (debug) {
 		debugLog(stderr, "codescan: debug: indexing {d} files\n", .{files.len});
 	}
+	if (show_progress) {
+		printProgress(stderr, 0, files.len, false);
+	}
+	var progress_last: usize = 0;
+	const progress_step: usize = 25;
 	for (files) |rel_path| {
+		if (show_progress) {
+			progress_last += 1;
+			if (progress_last == files.len or progress_last % progress_step == 0) {
+				printProgress(stderr, progress_last, files.len, false);
+			}
+		}
 		if (debug) {
 			debugLog(stderr, "codescan: debug: scanning {s}\n", .{rel_path});
 		}
@@ -146,6 +159,10 @@ pub fn indexAll(
 			debugLog(stderr, "codescan: debug: embedding {d} comments\n", .{comment_texts.items.len});
 		}
 		try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+	}
+
+	if (show_progress) {
+		printProgress(stderr, progress_last, files.len, true);
 	}
 
 	return stats;
@@ -371,6 +388,16 @@ fn debugLog(writer: *std.Io.Writer, comptime fmt: []const u8, args: anytype) voi
 	_ = writer.flush() catch {};
 }
 
+fn printProgress(writer: *std.Io.Writer, current: usize, total: usize, done: bool) void {
+	const tail = if (done) "\n" else "";
+	_ = writer.print("\rIndexed {d}/{d}{s}", .{ current, total, tail }) catch {};
+	_ = writer.flush() catch {};
+}
+
+fn formatProgress(allocator: std.mem.Allocator, current: usize, total: usize) ![]u8 {
+	return std.fmt.allocPrint(allocator, "Indexed {d}/{d}", .{ current, total });
+}
+
 test "buildSymbolText includes name signature and doc" {
 	const allocator = std.testing.allocator;
 	var symbol = model.Symbol{
@@ -462,6 +489,13 @@ test "debugEnabledFromValue recognizes truthy values" {
 	try std.testing.expect(debugEnabledFromValue("1"));
 	try std.testing.expect(debugEnabledFromValue("true"));
 	try std.testing.expect(debugEnabledFromValue("yes"));
+}
+
+test "formatProgress formats counters" {
+	const allocator = std.testing.allocator;
+	const text = try formatProgress(allocator, 3, 10);
+	defer allocator.free(text);
+	try std.testing.expectEqualStrings("Indexed 3/10", text);
 }
 
 test "indexAll stores symbols and embeddings" {
