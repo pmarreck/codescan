@@ -92,7 +92,7 @@
 - `NO_COLOR=1` disables ANSI colors in human output.
 - `DEBUG=1` enables verbose indexing progress logs to stderr.
 - Comment-only vector/hybrid search uses the `embeddings_comment` table (reindex if migrating older DBs).
-- Embedding inputs are truncated to ~1600 bytes (sentence-aware for text/docs, line-aware for code/logs).
+- Embedding inputs are truncated to ~1600 bytes for code/logs and ~1000 bytes for docs/text (sentence/line-aware).
 
 ## Integration tests
 - `test-integration` runs end-to-end indexing/search against pinned fixture repos.

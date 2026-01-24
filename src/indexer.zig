@@ -5,6 +5,7 @@ const scan = @import("scan.zig");
 const storage = @import("storage.zig");
 const model = @import("model.zig");
 const embedding = @import("embedding.zig");
+const ollama = @import("ollama.zig");
 const config = @import("config.zig");
 
 pub const Options = struct {
@@ -219,10 +220,19 @@ pub fn buildCommentText(
 	return truncateForKind(allocator, comment_kind, doc);
 }
 
-const max_embed_bytes: usize = 1600;
+const max_embed_bytes_code: usize = 1600;
+const max_embed_bytes_doc: usize = 1000;
+
+fn maxEmbedBytes(item_kind: kind.Kind) usize {
+	return switch (item_kind) {
+		.code, .log => max_embed_bytes_code,
+		.doc, .text => max_embed_bytes_doc,
+	};
+}
 
 fn truncateOwnedText(allocator: std.mem.Allocator, item_kind: kind.Kind, text: []u8) ![]u8 {
-	if (text.len <= max_embed_bytes) return text;
+	const limit = maxEmbedBytes(item_kind);
+	if (text.len <= limit) return text;
 	const trimmed = try truncateForKind(allocator, item_kind, text);
 	allocator.free(text);
 	return trimmed;
@@ -233,16 +243,16 @@ fn truncateForKind(
 	item_kind: kind.Kind,
 	text: []const u8,
 ) ![]u8 {
-	if (text.len <= max_embed_bytes) return allocator.dupe(u8, text);
+	const limit = maxEmbedBytes(item_kind);
+	if (text.len <= limit) return allocator.dupe(u8, text);
 
 	return switch (item_kind) {
-		.code, .log => truncateCode(allocator, text),
-		.doc, .text => truncateText(allocator, text),
+		.code, .log => truncateCode(allocator, text, limit),
+		.doc, .text => truncateText(allocator, text, limit),
 	};
 }
 
-fn truncateText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-	const limit = max_embed_bytes;
+fn truncateText(allocator: std.mem.Allocator, text: []const u8, limit: usize) ![]u8 {
 	const min_reasonable = limit / 2;
 	const bounded = text[0..limit];
 
@@ -255,8 +265,7 @@ fn truncateText(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
 	return allocator.dupe(u8, text[0..limit]);
 }
 
-fn truncateCode(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-	const limit = max_embed_bytes;
+fn truncateCode(allocator: std.mem.Allocator, text: []const u8, limit: usize) ![]u8 {
 	const min_reasonable = limit / 2;
 	const bounded = text[0..limit];
 
@@ -383,6 +392,14 @@ fn debugEnabledFromValue(value: []const u8) bool {
 	return true;
 }
 
+fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
+	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
+		else => return err,
+	};
+	return value;
+}
+
 fn debugLog(writer: *std.Io.Writer, comptime fmt: []const u8, args: anytype) void {
 	_ = writer.print(fmt, args) catch {};
 	_ = writer.flush() catch {};
@@ -425,15 +442,15 @@ test "truncateForKind prefers sentence boundary for docs" {
 	var out = std.ArrayListUnmanaged(u8){};
 	defer out.deinit(allocator);
 
-	while (out.items.len <= max_embed_bytes + 20) {
+	while (out.items.len <= max_embed_bytes_doc + 20) {
 		try out.appendSlice(allocator, sentence);
 	}
 	const text = out.items;
 
 	const truncated = try truncateForKind(allocator, .doc, text);
 	defer allocator.free(truncated);
-	try std.testing.expect(truncated.len <= max_embed_bytes);
-	try std.testing.expect(truncated.len >= max_embed_bytes / 2);
+	try std.testing.expect(truncated.len <= max_embed_bytes_doc);
+	try std.testing.expect(truncated.len >= max_embed_bytes_doc / 2);
 	const last = truncated[truncated.len - 1];
 	try std.testing.expect(last == '.' or last == '!' or last == '?');
 }
@@ -443,17 +460,17 @@ test "truncateForKind prefers newline boundary for code" {
 	var out = std.ArrayListUnmanaged(u8){};
 	defer out.deinit(allocator);
 
-	while (out.items.len <= max_embed_bytes + 40) {
+	while (out.items.len <= max_embed_bytes_code + 40) {
 		try out.appendSlice(allocator, "const value = 12345;\n");
 	}
 	const text = out.items;
 
 	const truncated = try truncateForKind(allocator, .code, text);
 	defer allocator.free(truncated);
-	try std.testing.expect(truncated.len <= max_embed_bytes);
-	try std.testing.expect(truncated.len >= max_embed_bytes / 2);
+	try std.testing.expect(truncated.len <= max_embed_bytes_code);
+	try std.testing.expect(truncated.len >= max_embed_bytes_code / 2);
 
-	const slice = text[0..max_embed_bytes];
+	const slice = text[0..max_embed_bytes_code];
 	const last_newline = std.mem.lastIndexOfScalar(u8, slice, '\n') orelse 0;
 	const expected = std.mem.trimRight(u8, text[0..last_newline + 1], " \t\r\n");
 	try std.testing.expectEqualStrings(expected, truncated);
@@ -461,7 +478,7 @@ test "truncateForKind prefers newline boundary for code" {
 
 test "buildSymbolText truncates long inputs" {
 	const allocator = std.testing.allocator;
-	const long_doc = try allocator.alloc(u8, max_embed_bytes + 10);
+	const long_doc = try allocator.alloc(u8, max_embed_bytes_doc + 10);
 	defer allocator.free(long_doc);
 	@memset(long_doc, 'a');
 
@@ -478,7 +495,67 @@ test "buildSymbolText truncates long inputs" {
 
 	const text = try buildSymbolText(allocator, symbol, .doc);
 	defer allocator.free(text);
-	try std.testing.expect(text.len <= max_embed_bytes);
+	try std.testing.expect(text.len <= max_embed_bytes_doc);
+}
+
+test "doc truncation avoids Ollama context length errors" {
+	const allocator = std.testing.allocator;
+	const doc =
+		"## Images\n\n" ++
+		"| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |\n" ++
+		"|--------|------------|------------------|-----------------|-----------|-----|\n" ++
+		"| **PNG** | .png | Signature, chunk structure, IEND terminator | CRC32 per chunk | Checksum | \u{2014} |\n" ++
+		"| **JPEG** | .jpg, .jpeg | SOI/EOI markers, segment structure | Full decode via libjpeg-turbo | Full Decode | \u{2014} |\n" ++
+		"| **JPEG XL** | .jxl | Codestream (FF 0A) or container signature | Full decode via libjxl | Full Decode | 1 |\n" ++
+		"| **GIF** | .gif | Header (GIF87a/89a), trailer (0x3B), block structure | Full LZW decode via zigimg | Full Decode | 1 |\n" ++
+		"| **BMP** | .bmp | Header, DIB header, pixel data bounds | Full pixel decode via zigimg | Full Decode | 1 |\n" ++
+		"| **WebP** | .webp | RIFF container, VP8/VP8L/VP8X chunks | Full decode via libwebp | Full Decode | 1 |\n" ++
+		"| **TIFF** | .tiff, .tif | Header (II/MM), IFD structure, tag validation | Full decode via zigimg | Full Decode | 1 |\n" ++
+		"| **HEIC/HEIF** | .heic, .heif | ISOBMFF structure, ftyp brand validation | Full decode via libheif/libde265 | Full Decode | 1 |\n" ++
+		"| **AVIF** | .avif | ISOBMFF structure, ftyp brand validation | Full decode via libheif/dav1d | Full Decode | 1 |\n" ++
+		"| **SVG** | .svg | XML declaration, `<svg>` root element | Full XML parse | Integrity | \u{2014} |\n" ++
+		"| **OpenEXR** | .exr | Signature (76 2F 31 01), header structure | Required attribute validation (channels, compression, windows) | Integrity | \u{2014} |\n";
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "markdown"),
+		.file_path = try allocator.dupe(u8, "FORMAT_VERIFICATIONS.md"),
+		.name = try allocator.dupe(u8, "Images"),
+		.signature = try allocator.dupe(
+			u8,
+			"| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |",
+		),
+		.doc_comment = try allocator.dupe(u8, doc),
+		.start_line = 1,
+		.end_line = 20,
+	};
+	defer symbol.deinit(allocator);
+
+	const text = try buildSymbolText(allocator, symbol, .doc);
+	defer allocator.free(text);
+
+	var transport = ollama.StdHttpTransport.init(allocator);
+	defer transport.deinit();
+
+	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	defer allocator.free(url);
+	const model_name = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
+	defer allocator.free(model_name);
+
+	try ollama.ensureModelAvailable(allocator, transport.transport(), url, model_name);
+
+	var adapter = embedding.OllamaEmbedder{
+		.transport = transport.transport(),
+		.base_url = url,
+		.model = model_name,
+	};
+	const embedder = adapter.embedder();
+
+	const inputs = [_][]const u8{ text };
+	const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
+	defer embedder.free(embedder.ctx, allocator, embeddings);
+
+	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
+	try std.testing.expect(embeddings[0].len > 0);
 }
 
 test "debugEnabledFromValue recognizes truthy values" {
