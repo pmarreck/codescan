@@ -69,33 +69,7 @@ pub const Parsed = struct {
 
 pub fn parse(args: []const []const u8) !Parsed {
 	if (args.len <= 1) {
-		return Parsed{
-			.command = .help,
-			.output = .human,
-			.show_comments = false,
-			.include_docs = false,
-			.docs_only = false,
-			.comments_only = false,
-			.query = null,
-			.top_n = 10,
-			.root_path = ".",
-			.db_path = ".codescan/index.sqlite3",
-			.ollama_url = "http://localhost:11434",
-			.ollama_model = "bge-large",
-			.embedding_dim = 1024,
-			.batch_size = 16,
-			.max_file_size = 2 * 1024 * 1024,
-			.http_host = "127.0.0.1",
-			.http_port = 8123,
-			.search_mode = .hybrid,
-			.weight_vector = 0.7,
-			.weight_lexical = 0.3,
-			.min_score = 0.0,
-			.ext_filter = null,
-			.type_filter = null,
-			.lang_filter = null,
-			.seen = .{},
-		};
+		return error.MissingQuery;
 	}
 	var parsed = Parsed{
 		.command = .help,
@@ -346,21 +320,9 @@ fn parseMode(value: []const u8) !search.SearchMode {
 	return error.InvalidMode;
 }
 
-test "parse with no args defaults to help" {
+test "parse with no args requires query" {
 	const args = [_][]const u8{ "codescan" };
-	const parsed = try parse(&args);
-	try std.testing.expectEqual(CommandTag.help, parsed.command);
-	try std.testing.expectEqual(OutputFormat.human, parsed.output);
-	try std.testing.expect(parsed.show_comments == false);
-	try std.testing.expect(parsed.include_docs == false);
-	try std.testing.expect(parsed.docs_only == false);
-	try std.testing.expect(parsed.comments_only == false);
-	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
-	try std.testing.expectEqual(@as(usize, 1024), parsed.embedding_dim);
-	try std.testing.expectEqual(@as(usize, 2 * 1024 * 1024), parsed.max_file_size);
-	try std.testing.expectEqual(@as(u16, 8123), parsed.http_port);
-	try std.testing.expectApproxEqAbs(@as(f32, 0.0), parsed.min_score, 0.0001);
-	try std.testing.expect(parsed.seen.output == false);
+	try std.testing.expectError(error.MissingQuery, parse(&args));
 }
 
 test "parse search with query defaults" {

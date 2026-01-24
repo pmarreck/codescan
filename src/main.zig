@@ -71,11 +71,21 @@ pub fn main() !void {
 	const args = try std.process.argsAlloc(allocator);
 	defer std.process.argsFree(allocator, args);
 
-	const parsed = try cli.parse(args);
-
 	var stdout_buf: [4096]u8 = undefined;
 	var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
 	const stdout = &stdout_writer.interface;
+
+	const parsed = cli.parse(args) catch |err| {
+		if (isUsageError(err)) {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.writeAll(usage) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(64);
+		}
+		return err;
+	};
 
 	if (parsed.command == .help) {
 		try stdout.writeAll(usage);
@@ -442,6 +452,15 @@ const usage =
 	\\  -h, --help              Show help
 	\\
 ;
+
+fn isUsageError(err: anyerror) bool {
+	return err == error.MissingQuery or
+		err == error.UnknownCommand or
+		err == error.MissingValue or
+		err == error.InvalidMode or
+		err == error.UnexpectedArg or
+		err == error.TooManyArgs;
+}
 
 test "findRepoRoot finds nearest .codescan ancestor" {
 	const allocator = std.testing.allocator;
