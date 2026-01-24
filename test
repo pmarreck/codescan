@@ -6,15 +6,24 @@ source "$HOME/dotfiles/bin/src/capture.bash"
 out=
 err=
 rc=
+failed=0
 
-capture nix develop -c zig build test
+run_case() {
+	local name="$1"
+	shift
+	capture "$@"
+	if [ "$rc" -eq 0 ]; then
+		printf '\033[32mPASS\033[0m %s\n' "$name"
+	else
+		printf '\033[31mFAIL\033[0m %s\n' "$name" >&2
+		printf '%s' "$out" >&2
+		printf '%s' "$err" >&2
+		failed=1
+	fi
+}
 
-if [ "$rc" -eq 0 ]; then
-	printf '\033[32mPASS\033[0m unit\n'
-	exit 0
-fi
+run_case "unit" nix develop -c zig build test
+run_case "cli" nix develop -c ./test-cli
+run_case "http" nix develop -c ./test-http
 
-printf '\033[31mFAIL\033[0m unit\n' >&2
-printf '%s' "$out" >&2
-printf '%s' "$err" >&2
-exit "$rc"
+exit "$failed"
