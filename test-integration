@@ -275,7 +275,7 @@ MD
 
 	printf '%s\n' "$zig_names" | rg -q '^int$' || fail "zig baseline query missing 'int'"
 	printf '%s\n' "$ex_names" | rg -q '^decode$' || fail "elixir baseline query missing 'decode'"
-	printf '%s\n' "$c_names" | rg -q '^crc32$' || fail "c baseline query missing 'crc32'"
+	printf '%s\n' "$c_names" | rg -q '^(crc32|crc32_z)$' || fail "c baseline query missing crc32"
 
 	# Search from subdirectories without --root
 	mkdir -p "$FIXTURES_DIR/$ZIG_NAME/.codescan-test-subdir"
@@ -288,7 +288,7 @@ MD
 
 	printf '%s\n' "$zig_sub_names" | rg -q '^int$' || fail "zig subdir search missing 'int'"
 	printf '%s\n' "$ex_sub_names" | rg -q '^decode$' || fail "elixir subdir search missing 'decode'"
-	printf '%s\n' "$c_sub_names" | rg -q '^crc32$' || fail "c subdir search missing 'crc32'"
+	printf '%s\n' "$c_sub_names" | rg -q '^(crc32|crc32_z)$' || fail "c subdir search missing crc32"
 
 	# Negative queries should return nothing above threshold
 	zig_none=$(search_count "$FIXTURES_DIR/$ZIG_NAME" "quantum entanglement telescope" 0.55)
@@ -318,7 +318,7 @@ MD
 	printf '%s\n' "$ex_dupe" | rg -q '^decode$' || fail "elixir duplicate query missing 'decode'"
 	printf '%s\n' "$ex_dupe" | rg -q '^decode_similar$' || fail "elixir duplicate query missing 'decode_similar'"
 
-	printf '%s\n' "$c_dupe" | rg -q '^crc32$' || fail "c duplicate query missing 'crc32'"
+	printf '%s\n' "$c_dupe" | rg -q '^(crc32|crc32_z)$' || fail "c duplicate query missing crc32"
 	printf '%s\n' "$c_dupe" | rg -q '^crc32_duplicate$' || fail "c duplicate query missing 'crc32_duplicate'"
 
 	# New-function searches

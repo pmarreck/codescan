@@ -35,6 +35,7 @@
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
 - Glob semantics: match against repo-relative paths unless the pattern begins with `/` (root-anchored).
 - Plugin defaults provide language-specific ignore globs; config adds more (no removal yet).
+- Built-in ignore globs: `.git`, `.codescan`, `.codescan-fixtures`, `deps`, `.zig-cache`, `zig-cache`, `.zig-out`, `zig-out`.
 
 ## Plugin architecture
 - Registry in `src/plugin.zig` selects extractors by file extension.
@@ -75,6 +76,7 @@
 - `--comments`/`--only-comments` restrict results to doc comments only.
 - `--show-comments`/`--verbose` shows doc comments in human output (hidden by default).
 - `NO_COLOR=1` disables ANSI colors in human output.
+- `DEBUG=1` enables verbose indexing progress logs to stderr.
 - Comment-only vector/hybrid search uses the `embeddings_comment` table (reindex if migrating older DBs).
 - Embedding inputs are truncated to ~1600 bytes (sentence-aware for text/docs, line-aware for code/logs).
 

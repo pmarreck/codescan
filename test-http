@@ -8,6 +8,8 @@ BIN="$ROOT/zig-out/bin/codescan"
 
 PORT="${CODESCAN_HTTP_TEST_PORT:-8124}"
 HOST="127.0.0.1"
+OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
+MODEL_NAME="${OLLAMA_MODEL:-bge-large}"
 
 out=
 err=
@@ -22,6 +24,17 @@ require_tool() {
 	local tool="$1"
 	if ! command -v "$tool" >/dev/null 2>&1; then
 		fail "missing required tool: $tool (run via 'nix develop -c ./test-http')"
+	fi
+}
+
+require_ollama() {
+	capture curl -fsS "$OLLAMA_URL/api/tags"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "Ollama not reachable at $OLLAMA_URL (ensure server is running)"
+	fi
+	if ! printf '%s' "$out" | rg -q "\"name\":\"$MODEL_NAME"; then
+		fail "Ollama model '$MODEL_NAME' not found (run: ollama pull $MODEL_NAME)"
 	fi
 }
 
@@ -50,6 +63,7 @@ main() {
 	require_tool curl
 	require_tool jq
 	require_tool rg
+	require_ollama
 
 	capture nix develop -c zig build -Doptimize=ReleaseFast
 	if [ "$rc" -ne 0 ]; then
@@ -67,7 +81,7 @@ main() {
 		fail "mk_test_db failed"
 	fi
 
-	"$BIN" serve --db "$DB" --http-host "$HOST" --http-port "$PORT" --ollama-url "http://127.0.0.1:1" &
+	"$BIN" serve --db "$DB" --http-host "$HOST" --http-port "$PORT" --ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" &
 	SERVER_PID=$!
 	trap 'kill "$SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$DB_DIR"' EXIT
 

@@ -118,7 +118,7 @@ pub fn main() !void {
 	switch (parsed.command) {
 		.index, .update => {
 			try ensureParentDir(settings.db_path);
-			const db = try storage.openFileWithVec(allocator, settings.db_path);
+			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
 			defer storage.close(db);
 
 			var http_client = ollama.StdHttpTransport.init(allocator);

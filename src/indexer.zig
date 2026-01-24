@@ -37,6 +37,8 @@ pub fn indexAll(
 	try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
 	try storage.resetIndex(db);
 
+	const debug = try debugEnabled(allocator);
+
 	const files = try scan.findFiles(allocator, root_path, registry, options.ignore);
 	defer {
 		for (files) |path| allocator.free(path);
@@ -61,7 +63,13 @@ pub fn indexAll(
 	const stderr = &stderr_writer.interface;
 
 	var stats = Stats{ .files = 0, .symbols = 0 };
+	if (debug) {
+		debugLog(stderr, "codescan: debug: indexing {d} files\n", .{files.len});
+	}
 	for (files) |rel_path| {
+		if (debug) {
+			debugLog(stderr, "codescan: debug: scanning {s}\n", .{rel_path});
+		}
 		const extractor = registry.find(rel_path) orelse continue;
 		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
 		if (!extAllowed(rel_path, options.allowed_exts)) continue;
@@ -105,6 +113,9 @@ pub fn indexAll(
 			try batch_rowids.append(allocator, rowid);
 
 			if (batch_texts.items.len >= options.batch_size) {
+				if (debug) {
+					debugLog(stderr, "codescan: debug: embedding {d} symbols\n", .{batch_texts.items.len});
+				}
 				try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
 			}
 
@@ -114,6 +125,9 @@ pub fn indexAll(
 				try comment_rowids.append(allocator, rowid);
 
 				if (comment_texts.items.len >= options.batch_size) {
+					if (debug) {
+						debugLog(stderr, "codescan: debug: embedding {d} comments\n", .{comment_texts.items.len});
+					}
 					try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
 				}
 			}
@@ -121,9 +135,15 @@ pub fn indexAll(
 	}
 
 	if (batch_texts.items.len > 0) {
+		if (debug) {
+			debugLog(stderr, "codescan: debug: embedding {d} symbols\n", .{batch_texts.items.len});
+		}
 		try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
 	}
 	if (comment_texts.items.len > 0) {
+		if (debug) {
+			debugLog(stderr, "codescan: debug: embedding {d} comments\n", .{comment_texts.items.len});
+		}
 		try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
 	}
 
@@ -327,6 +347,29 @@ fn warnLargeFile(
 	_ = writer.flush() catch {};
 }
 
+fn debugEnabled(allocator: std.mem.Allocator) !bool {
+	const value = std.process.getEnvVarOwned(allocator, "DEBUG") catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => return false,
+		else => return err,
+	};
+	defer allocator.free(value);
+	return debugEnabledFromValue(value);
+}
+
+fn debugEnabledFromValue(value: []const u8) bool {
+	const trimmed = std.mem.trim(u8, value, " \t\r\n");
+	if (trimmed.len == 0) return false;
+	if (std.ascii.eqlIgnoreCase(trimmed, "0")) return false;
+	if (std.ascii.eqlIgnoreCase(trimmed, "false")) return false;
+	if (std.ascii.eqlIgnoreCase(trimmed, "no")) return false;
+	return true;
+}
+
+fn debugLog(writer: *std.Io.Writer, comptime fmt: []const u8, args: anytype) void {
+	_ = writer.print(fmt, args) catch {};
+	_ = writer.flush() catch {};
+}
+
 test "buildSymbolText includes name signature and doc" {
 	const allocator = std.testing.allocator;
 	var symbol = model.Symbol{
@@ -408,6 +451,16 @@ test "buildSymbolText truncates long inputs" {
 	const text = try buildSymbolText(allocator, symbol, .doc);
 	defer allocator.free(text);
 	try std.testing.expect(text.len <= max_embed_bytes);
+}
+
+test "debugEnabledFromValue recognizes truthy values" {
+	try std.testing.expect(!debugEnabledFromValue(""));
+	try std.testing.expect(!debugEnabledFromValue("0"));
+	try std.testing.expect(!debugEnabledFromValue("false"));
+	try std.testing.expect(!debugEnabledFromValue("no"));
+	try std.testing.expect(debugEnabledFromValue("1"));
+	try std.testing.expect(debugEnabledFromValue("true"));
+	try std.testing.expect(debugEnabledFromValue("yes"));
 }
 
 test "indexAll stores symbols and embeddings" {

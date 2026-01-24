@@ -18,6 +18,17 @@ const IgnoreSet = struct {
 	patterns: []IgnorePattern,
 };
 
+const default_ignore_global = &[_][]const u8{
+	"**/.git/**",
+	"**/.codescan/**",
+	"**/.codescan-fixtures/**",
+	"**/deps/**",
+	"**/.zig-cache/**",
+	"**/zig-cache/**",
+	"**/.zig-out/**",
+	"**/zig-out/**",
+};
+
 pub fn findFiles(
 	allocator: std.mem.Allocator,
 	root_path: []const u8,
@@ -70,6 +81,7 @@ fn buildIgnoreSets(
 			patterns.deinit(allocator);
 		}
 
+		try appendPatterns(allocator, &patterns, default_ignore_global);
 		try appendPatterns(allocator, &patterns, ignore_cfg.global);
 		try appendPatterns(allocator, &patterns, extractor.ignore_patterns);
 		if (findOverrides(ignore_cfg.per_language, extractor.language)) |override| {
@@ -230,4 +242,36 @@ test "findFiles respects ignores" {
 	}
 	try std.testing.expect(found_zig);
 	try std.testing.expect(found_ex);
+}
+
+test "findFiles ignores built-in paths" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.makePath(".git");
+	try tmp.dir.makePath(".codescan");
+	try tmp.dir.makePath(".codescan-fixtures/fixture");
+	try tmp.dir.makePath("deps/lib");
+	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = ".git/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = ".codescan/index.sqlite3", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = "deps/lib/ignored.zig", .data = "" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), files.len);
+	try std.testing.expectEqualStrings("src/main.zig", files[0]);
 }

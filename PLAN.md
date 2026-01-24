@@ -47,3 +47,5 @@
 - [x] Add black-box CLI + HTTP test scripts with mk_test_db fixture
 - [x] Add OLLAMA_MODEL env override + model-availability check with helpful error
 - [x] Truncate embedding inputs (~1600 bytes) using sentence/line-aware boundaries
+- [x] Recreate DB on reindex (delete file before init)
+- [x] Add DEBUG-index logging + built-in ignore globs for common dirs

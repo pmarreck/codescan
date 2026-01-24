@@ -48,6 +48,26 @@ pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !Db {
 	return handle;
 }
 
+pub fn openFileWithVecRecreate(allocator: std.mem.Allocator, path: []const u8) !Db {
+	try deleteFileIfExists(path);
+	return openFileWithVec(allocator, path);
+}
+
+fn deleteFileIfExists(path: []const u8) !void {
+	if (std.fs.path.isAbsolute(path)) {
+		std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
+			error.FileNotFound => {},
+			else => return err,
+		};
+		return;
+	}
+
+	std.fs.cwd().deleteFile(path) catch |err| switch (err) {
+		error.FileNotFound => {},
+		else => return err,
+	};
+}
+
 pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const meta_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
 	const symbols_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT);\x00";
@@ -386,6 +406,28 @@ test "initSchema creates tables" {
 	try std.testing.expect(try tableExists(db, allocator, "symbols"));
 	try std.testing.expect(try tableExists(db, allocator, "embeddings"));
 	try std.testing.expect(try tableExists(db, allocator, "embeddings_comment"));
+}
+
+test "openFileWithVecRecreate replaces existing file" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.writeFile(.{ .sub_path = "db.sqlite3", .data = "not a sqlite db" });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "db.sqlite3");
+	defer allocator.free(abs_path);
+
+	const db = try openFileWithVecRecreate(allocator, abs_path);
+	defer _ = c.sqlite3_close(db);
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var file = try std.fs.openFileAbsolute(abs_path, .{});
+	defer file.close();
+
+	var header: [16]u8 = undefined;
+	const n = try file.readAll(&header);
+	try std.testing.expect(n >= 15);
+	try std.testing.expectEqualStrings("SQLite format 3", header[0..15]);
 }
 
 test "insertSymbol and insertEmbedding" {

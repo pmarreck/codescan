@@ -74,8 +74,10 @@ directory and uses that as the root (otherwise it falls back to the current dire
 Search defaults to the primary code language by file count unless a filter is supplied.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
+Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/`.
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
+Set `DEBUG=1` to emit verbose indexing progress to stderr.
 
 ## Run (HTTP)
 
