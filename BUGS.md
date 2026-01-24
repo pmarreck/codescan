@@ -28,3 +28,7 @@ Command exits with:
 ### Resolution
 - Truncate embedding inputs to ~1600 bytes with sentence/line-aware boundaries.
 - Doc-only indexing now succeeds (reindex required after upgrade).
+
+### Update (2026-01-24)
+- Retried after enabling real Ollama server usage in codescan tests.
+- `codescan index --type doc --db .codescan/docs.sqlite3` still fails with `error: HttpStatus`.

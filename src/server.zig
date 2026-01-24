@@ -33,6 +33,7 @@ pub const Settings = struct {
 	search_min_score: f32,
 	ignore_global: []const []const u8,
 	ignore_lang: []const config.IgnoreOverride,
+	include_node_modules: bool,
 	http_host: []const u8,
 	http_port: u16,
 };
@@ -188,6 +189,7 @@ fn handleRequest(
 				.ignore = .{
 					.global = settings.ignore_global,
 					.per_language = settings.ignore_lang,
+					.include_node_modules = parsed.include_node_modules orelse settings.include_node_modules,
 				},
 			},
 		);
@@ -351,6 +353,7 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 pub const IndexRequest = struct {
 	ext: ?[]const u8 = null,
 	type: ?[]const u8 = null,
+	include_node_modules: ?bool = null,
 
 	pub fn deinit(self: *IndexRequest, allocator: std.mem.Allocator) void {
 		if (self.ext) |value| allocator.free(value);
@@ -372,6 +375,10 @@ pub fn parseIndexRequest(allocator: std.mem.Allocator, body: []const u8) !IndexR
 	}
 	if (obj.get("type")) |type_val| {
 		req.type = try parseStringOrArray(allocator, type_val);
+	}
+	if (obj.get("include_node_modules")) |flag| {
+		if (flag != .bool) return error.InvalidIncludeNodeModules;
+		req.include_node_modules = flag.bool;
 	}
 	return req;
 }
@@ -552,6 +559,7 @@ fn testSettings() Settings {
 		.search_min_score = 0.0,
 		.ignore_global = &[_][]const u8{},
 		.ignore_lang = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
 		.http_host = "127.0.0.1",
 		.http_port = 0,
 	};
@@ -565,7 +573,7 @@ const help_text =
 	"          ext, type, lang, include_docs, docs/only_docs, comments/only_comments\n" ++
 	"\n" ++
 	"POST /index\n" ++
-	"  fields: ext, type\n" ++
+	"  fields: ext, type, include_node_modules\n" ++
 	"\n" ++
 	"GET /health\n" ++
 	"GET /help\n" ++

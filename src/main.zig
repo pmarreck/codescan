@@ -30,6 +30,7 @@ const Defaults = struct {
 	http_host: []const u8 = "127.0.0.1",
 	http_port: u16 = 8123,
 	include_docs: bool = false,
+	include_node_modules: bool = false,
 };
 
 const Settings = struct {
@@ -52,6 +53,7 @@ const Settings = struct {
 	include_docs: bool,
 	docs_only: bool,
 	comments_only: bool,
+	include_node_modules: bool,
 	index_ext: ?[]const u8,
 	index_type: ?[]const u8,
 	search_ext: ?[]const u8,
@@ -116,6 +118,17 @@ pub fn main() !void {
 	const registry = plugin.defaultRegistry();
 
 	switch (parsed.command) {
+		.config => {
+			const cfg_path = try configPath(allocator, config_root);
+			defer allocator.free(cfg_path);
+
+			if (parsed.config_action == .show) {
+				try showConfig(allocator, cfg_path, stdout);
+				try stdout.flush();
+			} else {
+				try editConfig(allocator, cfg_path);
+			}
+		},
 		.index, .update => {
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
@@ -148,6 +161,7 @@ pub fn main() !void {
 					.ignore = .{
 						.global = settings.ignore_global,
 						.per_language = settings.ignore_lang,
+						.include_node_modules = settings.include_node_modules,
 					},
 				},
 			);
@@ -236,6 +250,7 @@ pub fn main() !void {
 				.search_min_score = settings.min_score,
 				.ignore_global = settings.ignore_global,
 				.ignore_lang = settings.ignore_lang,
+				.include_node_modules = settings.include_node_modules,
 				.http_host = settings.http_host,
 				.http_port = settings.http_port,
 			});
@@ -266,6 +281,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.include_docs = defaults.include_docs,
 		.docs_only = false,
 		.comments_only = false,
+		.include_node_modules = defaults.include_node_modules,
 		.index_ext = null,
 		.index_type = null,
 		.search_ext = null,
@@ -308,6 +324,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.include_docs) |value| settings.include_docs = value;
 	if (cfg.docs_only) |value| settings.docs_only = value;
 	if (cfg.comments_only) |value| settings.comments_only = value;
+	if (cfg.include_node_modules) |value| settings.include_node_modules = value;
 	settings.ignore_global = cfg.ignore_global.items;
 	settings.ignore_lang = cfg.ignore_lang.items;
 	if (cfg.http_host) |value| settings.http_host = value;
@@ -341,6 +358,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.include_docs) settings.include_docs = parsed.include_docs;
 	if (parsed.seen.docs_only) settings.docs_only = parsed.docs_only;
 	if (parsed.seen.comments_only) settings.comments_only = parsed.comments_only;
+	if (parsed.seen.include_node_modules) settings.include_node_modules = parsed.include_node_modules;
 	if (parsed.seen.ext_filter) {
 		if (parsed.command == .index or parsed.command == .update) {
 			settings.index_ext = parsed.ext_filter;
@@ -443,7 +461,7 @@ fn hasCodescanDir(path: []const u8) !bool {
 }
 
 fn loadConfig(allocator: std.mem.Allocator, root_path: []const u8) !config.Config {
-	const path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
+	const path = try configPath(allocator, root_path);
 	defer allocator.free(path);
 
 	return config.loadFromPath(allocator, path) catch |err| switch (err) {
@@ -451,6 +469,114 @@ fn loadConfig(allocator: std.mem.Allocator, root_path: []const u8) !config.Confi
 		error.NotDir => config.Config{},
 		else => err,
 	};
+}
+
+fn configPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
+	return std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
+}
+
+fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Writer) !void {
+	const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+		error.FileNotFound => {
+			try writer.print("No config found at {s}\n", .{path});
+			try writer.writeAll("Use: codescan config edit\n");
+			return;
+		},
+		error.NotDir => {
+			try writer.print("No config found at {s}\n", .{path});
+			try writer.writeAll("Use: codescan config edit\n");
+			return;
+		},
+		else => return err,
+	};
+	defer file.close();
+
+	const data = try file.readToEndAlloc(allocator, 1024 * 1024);
+	defer allocator.free(data);
+	try writer.writeAll(data);
+	if (data.len == 0 or data[data.len - 1] != '\n') {
+		try writer.writeAll("\n");
+	}
+	try writer.writeAll("# To edit: codescan config edit\n");
+}
+
+fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
+	try ensureParentDir(path);
+	ensureFileExists(path) catch |err| return err;
+
+	const editor = getEditor(allocator) catch |err| switch (err) {
+		error.MissingEditor => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.writeAll("error: $VISUAL or $EDITOR is not set\n") catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		},
+		else => return err,
+	};
+	defer allocator.free(editor);
+
+	const quoted_path = try shellQuote(allocator, path);
+	defer allocator.free(quoted_path);
+	const cmd = try std.fmt.allocPrint(allocator, "{s} {s}", .{ editor, quoted_path });
+	defer allocator.free(cmd);
+
+	const argv = &[_][]const u8{ "sh", "-c", cmd };
+	var child = std.process.Child.init(argv, allocator);
+	child.stdin_behavior = .Inherit;
+	child.stdout_behavior = .Inherit;
+	child.stderr_behavior = .Inherit;
+
+	const term = try child.spawnAndWait();
+	switch (term) {
+		.Exited => |code| {
+			if (code != 0) return error.EditorFailed;
+		},
+		else => return error.EditorFailed,
+	}
+}
+
+fn getEditor(allocator: std.mem.Allocator) ![]u8 {
+	const visual = std.process.getEnvVarOwned(allocator, "VISUAL") catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => null,
+		else => return err,
+	};
+	if (visual) |value| return value;
+	const editor = std.process.getEnvVarOwned(allocator, "EDITOR") catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => return error.MissingEditor,
+		else => return err,
+	};
+	return editor;
+}
+
+fn shellQuote(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try out.writer.writeAll("'");
+	for (value) |ch| {
+		if (ch == '\'') {
+			try out.writer.writeAll("'\"'\"'");
+		} else {
+			try out.writer.writeByte(ch);
+		}
+	}
+	try out.writer.writeAll("'");
+	return out.toOwnedSlice();
+}
+
+fn ensureFileExists(path: []const u8) !void {
+	const result = std.fs.cwd().openFile(path, .{});
+	if (result) |file| {
+		file.close();
+		return;
+	} else |err| switch (err) {
+		error.FileNotFound => {
+			const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = false });
+			file.close();
+		},
+		else => return err,
+	}
 }
 
 fn ensureParentDir(path: []const u8) !void {
@@ -470,6 +596,7 @@ const usage =
 	\\codescan <command> [options]
 	\\
 	\\Commands:
+	\\  config [show|edit]  Show or edit project config
 	\\  index             Index codebase
 	\\  update            Rebuild index (currently full reindex)
 	\\  search <query>    Search indexed codebase
@@ -494,6 +621,7 @@ const usage =
 	\\  --include-docs          Include markdown/README when defaulting to primary language
 	\\  --docs, --only-docs     Only return markdown/README results
 	\\  --comments, --only-comments  Only return doc-comment results
+	\\  --include-node-modules  Include node_modules during indexing
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
 	\\  --show-comments, --verbose   Show doc comments in human output (default: hidden)

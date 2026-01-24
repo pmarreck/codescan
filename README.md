@@ -45,6 +45,10 @@ nix develop -c ./test-integration
 ## Run (CLI)
 
 ```bash
+# show or edit project config
+./zig-out/bin/codescan config
+./zig-out/bin/codescan config edit
+
 # ReleaseFast builds are self-contained; no `nix develop` prefix needed to run.
 # index
 ./zig-out/bin/codescan index --root <path>
@@ -66,6 +70,9 @@ nix develop -c ./test-integration
 ./zig-out/bin/codescan search "checksum" --ext md,zig
 ./zig-out/bin/codescan search "checksum" --type code,doc
 ./zig-out/bin/codescan search "checksum" --lang zig
+
+# index node_modules too
+./zig-out/bin/codescan index --include-node-modules
 ```
 
 If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
@@ -74,7 +81,7 @@ directory and uses that as the root (otherwise it falls back to the current dire
 Search defaults to the primary code language by file count unless a filter is supplied.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
-Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/`.
+Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `node_modules/`, `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/` (see PROJECT_STATE for full list).
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 Set `DEBUG=1` to emit verbose indexing progress to stderr.
@@ -104,6 +111,7 @@ max_file_size=2097152
 include_docs=false
 docs_only=false
 comments_only=false
+include_node_modules=false
 primary_lang=zig
 index_ext=zig,md
 index_type=code,doc

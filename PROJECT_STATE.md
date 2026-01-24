@@ -10,6 +10,9 @@
 - HTTP test: `nix develop -c ./test-http`
 
 ## Run (CLI)
+- Config:
+  - `./zig-out/bin/codescan config` (show)
+  - `./zig-out/bin/codescan config edit`
 - Index (creates `.codescan/index.sqlite3` under the root):
   - `./zig-out/bin/codescan index --root <path>`
 - Update (full reindex for now):
@@ -35,7 +38,8 @@
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`
 - Glob semantics: match against repo-relative paths unless the pattern begins with `/` (root-anchored).
 - Plugin defaults provide language-specific ignore globs; config adds more (no removal yet).
-- Built-in ignore globs: `.git`, `.codescan`, `.codescan-fixtures`, `deps`, `.zig-cache`, `zig-cache`, `.zig-out`, `zig-out`.
+- Built-in ignore globs: `.git`, `.codescan`, `.codescan-fixtures`, `deps`, `node_modules`, `.zig-cache`, `zig-cache`, `.zig-out`, `zig-out` (plus other build/cache dirs).
+- `include_node_modules=true` or `--include-node-modules` will index `node_modules`.
 
 ## Plugin architecture
 - Registry in `src/plugin.zig` selects extractors by file extension.

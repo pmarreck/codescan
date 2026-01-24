@@ -16,6 +16,7 @@ pub const Options = struct {
 	ignore: scan.IgnoreConfig = .{
 		.global = &[_][]const u8{},
 		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
 	},
 };
 

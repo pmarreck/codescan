@@ -8,10 +8,16 @@ pub const OutputFormat = enum {
 
 pub const CommandTag = enum {
 	help,
+	config,
 	index,
 	update,
 	search,
 	serve,
+};
+
+pub const ConfigAction = enum {
+	show,
+	edit,
 };
 
 pub const Seen = struct {
@@ -20,6 +26,7 @@ pub const Seen = struct {
 	include_docs: bool = false,
 	docs_only: bool = false,
 	comments_only: bool = false,
+	include_node_modules: bool = false,
 	top_n: bool = false,
 	root_path: bool = false,
 	db_path: bool = false,
@@ -41,11 +48,13 @@ pub const Seen = struct {
 
 pub const Parsed = struct {
 	command: CommandTag,
+	config_action: ConfigAction,
 	output: OutputFormat,
 	show_comments: bool,
 	include_docs: bool,
 	docs_only: bool,
 	comments_only: bool,
+	include_node_modules: bool,
 	query: ?[]const u8,
 	top_n: usize,
 	root_path: []const u8,
@@ -73,11 +82,13 @@ pub fn parse(args: []const []const u8) !Parsed {
 	}
 	var parsed = Parsed{
 		.command = .help,
+		.config_action = .show,
 		.output = .human,
 		.show_comments = false,
 		.include_docs = false,
 		.docs_only = false,
 		.comments_only = false,
+		.include_node_modules = false,
 		.query = null,
 		.top_n = 10,
 		.root_path = ".",
@@ -109,6 +120,8 @@ pub fn parse(args: []const []const u8) !Parsed {
 	if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
 		parsed.command = .help;
 		return parsed;
+	} else if (std.mem.eql(u8, cmd, "config")) {
+		parsed.command = .config;
 	} else if (std.mem.eql(u8, cmd, "index")) {
 		parsed.command = .index;
 	} else if (std.mem.eql(u8, cmd, "update")) {
@@ -123,6 +136,18 @@ pub fn parse(args: []const []const u8) !Parsed {
 
 	while (i < args.len) {
 		const arg = args[i];
+		if (parsed.command == .config) {
+			if (std.mem.eql(u8, arg, "show")) {
+				parsed.config_action = .show;
+				i += 1;
+				continue;
+			}
+			if (std.mem.eql(u8, arg, "edit")) {
+				parsed.config_action = .edit;
+				i += 1;
+				continue;
+			}
+		}
 		if (std.mem.eql(u8, arg, "--json")) {
 			parsed.output = .json;
 			parsed.seen.output = true;
@@ -138,6 +163,12 @@ pub fn parse(args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--comments") or std.mem.eql(u8, arg, "--only-comments")) {
 			parsed.comments_only = true;
 			parsed.seen.comments_only = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--include-node-modules")) {
+			parsed.include_node_modules = true;
+			parsed.seen.include_node_modules = true;
 			i += 1;
 			continue;
 		}
@@ -378,6 +409,7 @@ test "parse search with flags" {
 		"code,doc",
 		"--lang",
 		"zig",
+		"--include-node-modules",
 		"--json",
 		"--top",
 		"5",
@@ -412,6 +444,7 @@ test "parse search with flags" {
 	try std.testing.expect(parsed.include_docs);
 	try std.testing.expect(parsed.docs_only == false);
 	try std.testing.expect(parsed.comments_only == false);
+	try std.testing.expect(parsed.include_node_modules);
 	try std.testing.expectEqualStrings("zig,md", parsed.ext_filter.?);
 	try std.testing.expectEqualStrings("code,doc", parsed.type_filter.?);
 	try std.testing.expectEqualStrings("zig", parsed.lang_filter.?);
@@ -429,6 +462,20 @@ test "parse search with flags" {
 	try std.testing.expect(parsed.search_mode == .vector);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.6), parsed.min_score, 0.0001);
 	try std.testing.expect(parsed.seen.http_port);
+}
+
+test "parse config defaults to show" {
+	const args = [_][]const u8{ "codescan", "config" };
+	const parsed = try parse(&args);
+	try std.testing.expectEqual(CommandTag.config, parsed.command);
+	try std.testing.expectEqual(ConfigAction.show, parsed.config_action);
+}
+
+test "parse config edit" {
+	const args = [_][]const u8{ "codescan", "config", "edit" };
+	const parsed = try parse(&args);
+	try std.testing.expectEqual(CommandTag.config, parsed.command);
+	try std.testing.expectEqual(ConfigAction.edit, parsed.config_action);
 }
 
 test "parse search with verbose alias" {

@@ -6,6 +6,7 @@ const filter = @import("filter.zig");
 pub const IgnoreConfig = struct {
 	global: []const []const u8,
 	per_language: []const config.IgnoreOverride,
+	include_node_modules: bool,
 };
 
 const IgnorePattern = struct {
@@ -18,15 +19,51 @@ const IgnoreSet = struct {
 	patterns: []IgnorePattern,
 };
 
+const node_modules_pattern = "**/node_modules/**";
+
 const default_ignore_global = &[_][]const u8{
 	"**/.git/**",
+	"**/.hg/**",
+	"**/.svn/**",
+	"**/.bzr/**",
+	"**/CVS/**",
 	"**/.codescan/**",
 	"**/.codescan-fixtures/**",
+	"**/.idea/**",
+	"**/.vscode/**",
+	"**/.cache/**",
 	"**/deps/**",
+	node_modules_pattern,
+	"**/vendor/**",
+	"**/third_party/**",
+	"**/.gradle/**",
+	"**/.m2/**",
+	"**/build/**",
+	"**/dist/**",
+	"**/out/**",
+	"**/target/**",
+	"**/bin/**",
+	"**/obj/**",
+	"**/coverage/**",
+	"**/.pytest_cache/**",
+	"**/.mypy_cache/**",
+	"**/.ruff_cache/**",
+	"**/.tox/**",
+	"**/.nox/**",
+	"**/__pycache__/**",
+	"**/.venv/**",
+	"**/venv/**",
+	"**/.stack-work/**",
+	"**/dist-newstyle/**",
+	"**/nimcache/**",
+	"**/result/**",
+	"**/.build/**",
+	"**/CMakeFiles/**",
 	"**/.zig-cache/**",
 	"**/zig-cache/**",
 	"**/.zig-out/**",
 	"**/zig-out/**",
+	"**/.DS_Store",
 };
 
 pub fn findFiles(
@@ -81,7 +118,7 @@ fn buildIgnoreSets(
 			patterns.deinit(allocator);
 		}
 
-		try appendPatterns(allocator, &patterns, default_ignore_global);
+		try appendDefaultPatterns(allocator, &patterns, ignore_cfg.include_node_modules);
 		try appendPatterns(allocator, &patterns, ignore_cfg.global);
 		try appendPatterns(allocator, &patterns, extractor.ignore_patterns);
 		if (findOverrides(ignore_cfg.per_language, extractor.language)) |override| {
@@ -103,12 +140,31 @@ fn appendPatterns(
 	list: []const []const u8,
 ) !void {
 	for (list) |raw| {
-		const compiled = try filter.compile(allocator, raw);
-		try patterns.append(allocator, .{
-			.pattern = compiled,
-			.root_anchored = std.mem.startsWith(u8, raw, "/"),
-		});
+		try appendPattern(allocator, patterns, raw);
 	}
+}
+
+fn appendDefaultPatterns(
+	allocator: std.mem.Allocator,
+	patterns: *std.ArrayListUnmanaged(IgnorePattern),
+	include_node_modules: bool,
+) !void {
+	for (default_ignore_global) |raw| {
+		if (include_node_modules and std.mem.eql(u8, raw, node_modules_pattern)) continue;
+		try appendPattern(allocator, patterns, raw);
+	}
+}
+
+fn appendPattern(
+	allocator: std.mem.Allocator,
+	patterns: *std.ArrayListUnmanaged(IgnorePattern),
+	raw: []const u8,
+) !void {
+	const compiled = try filter.compile(allocator, raw);
+	try patterns.append(allocator, .{
+		.pattern = compiled,
+		.root_anchored = std.mem.startsWith(u8, raw, "/"),
+	});
 }
 
 fn findOverrides(
@@ -178,6 +234,7 @@ test "findFiles finds supported extensions" {
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
 		.global = &[_][]const u8{},
 		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
 	});
 	defer {
 		for (files) |path| allocator.free(path);
@@ -226,6 +283,7 @@ test "findFiles respects ignores" {
 	const ignore = IgnoreConfig{
 		.global = &[_][]const u8{},
 		.per_language = overrides[0..],
+		.include_node_modules = false,
 	};
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), ignore);
 	defer {
@@ -253,11 +311,13 @@ test "findFiles ignores built-in paths" {
 	try tmp.dir.makePath(".codescan");
 	try tmp.dir.makePath(".codescan-fixtures/fixture");
 	try tmp.dir.makePath("deps/lib");
+	try tmp.dir.makePath("node_modules/pkg");
 	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = ".git/ignored.zig", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = ".codescan/index.sqlite3", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = "deps/lib/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/ignored.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realpathAlloc(allocator, ".");
@@ -266,6 +326,7 @@ test "findFiles ignores built-in paths" {
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
 		.global = &[_][]const u8{},
 		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
 	});
 	defer {
 		for (files) |path| allocator.free(path);
@@ -274,4 +335,30 @@ test "findFiles ignores built-in paths" {
 
 	try std.testing.expectEqual(@as(usize, 1), files.len);
 	try std.testing.expectEqualStrings("src/main.zig", files[0]);
+}
+
+test "findFiles includes node_modules when enabled" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.makePath("node_modules/pkg");
+	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/dep.zig", .data = "" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = true,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	try std.testing.expectEqual(@as(usize, 2), files.len);
 }
