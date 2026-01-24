@@ -81,7 +81,7 @@ directory and uses that as the root (otherwise it falls back to the current dire
 Search defaults to the primary code language by file count unless a filter is supplied.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
-Index/update defaults to code + docs + text + log unless `--type`/`index_type` is set.
+Index/update defaults to code + docs unless `--type`/`index_type` is set.
 Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `node_modules/` (opt-in), `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/` (see PROJECT_STATE for full list).
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.

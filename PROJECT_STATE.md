@@ -88,7 +88,7 @@
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
 - `--docs`/`--only-docs` restrict results to markdown/README only.
 - `--comments`/`--only-comments` restrict results to doc comments only.
-- Index/update defaults to code + docs + text + log unless `index_type` is set.
+- Index/update defaults to code + docs unless `index_type` is set.
 - `--show-comments`/`--verbose` shows doc comments in human output (hidden by default).
 - `NO_COLOR=1` disables ANSI colors in human output.
 - `DEBUG=1` enables verbose indexing progress logs to stderr.

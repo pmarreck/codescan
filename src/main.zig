@@ -31,7 +31,7 @@ const Defaults = struct {
 	http_port: u16 = 8123,
 	include_docs: bool = false,
 	include_node_modules: bool = false,
-	index_type: []const u8 = "code,doc,text,log",
+	index_type: []const u8 = "code,doc",
 };
 
 const Settings = struct {
@@ -853,7 +853,7 @@ test "resolveSettings uses discovered repo root for db path" {
 	try std.testing.expectEqualStrings(expected_db, settings.db_path);
 }
 
-test "resolveSettings defaults index_type to code and docs" {
+test "resolveSettings defaults index_type to code and doc" {
 	const allocator = std.testing.allocator;
 	const args = [_][]const u8{ "codescan", "index" };
 	const parsed = try cli.parse(&args);
@@ -863,7 +863,7 @@ test "resolveSettings defaults index_type to code and docs" {
 
 	const settings = try resolveSettings(allocator, parsed, cfg, ".");
 	try std.testing.expect(settings.index_type != null);
-	try std.testing.expectEqualStrings("code,doc,text,log", settings.index_type.?);
+	try std.testing.expectEqualStrings("code,doc", settings.index_type.?);
 }
 
 fn listContains(list: []const []const u8, value: []const u8) bool {
