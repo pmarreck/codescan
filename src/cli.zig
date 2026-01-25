@@ -130,22 +130,27 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	}
 
 	const cmd = args[i];
-	i += 1;
 	if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
 		parsed.command = .help;
 		return parsed;
 	} else if (std.mem.eql(u8, cmd, "config")) {
 		parsed.command = .config;
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "index")) {
 		parsed.command = .index;
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "update")) {
 		parsed.command = .update;
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "search")) {
 		parsed.command = .search;
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "serve")) {
 		parsed.command = .serve;
+		i += 1;
 	} else {
-		return error.UnknownCommand;
+		parsed.command = .search;
+		parsed.assumed_search = true;
 	}
 
 	while (i < args.len) {
@@ -429,6 +434,7 @@ test "parse defaults to search with multi word query" {
 	try std.testing.expect(parsed.assumed_search);
 	try std.testing.expectEqualStrings("memory allocation", parsed.query.?);
 }
+
 test "parse search with query defaults" {
 	const args = [_][]const u8{ "codescan", "search", "hash functions" };
 	var parsed = try parse(std.testing.allocator, &args);

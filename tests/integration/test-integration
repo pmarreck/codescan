@@ -3,7 +3,7 @@ set -euo pipefail
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURES_DIR="$ROOT/.codescan-fixtures"
 MANIFEST="$ROOT/fixtures/manifest.toml"
 BIN="$ROOT/zig-out/bin/codescan"
@@ -22,7 +22,7 @@ fail() {
 require_tool() {
 	local tool="$1"
 	if ! command -v "$tool" >/dev/null 2>&1; then
-		fail "missing required tool: $tool (run via 'nix develop -c ./test-integration')"
+		fail "missing required tool: $tool (run via 'nix develop -c ./tests/integration/test-integration')"
 	fi
 }
 

@@ -3,7 +3,7 @@ set -euo pipefail
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BIN="$ROOT/zig-out/bin/codescan"
 
 PORT="${CODESCAN_HTTP_TEST_PORT:-8124}"
@@ -23,7 +23,7 @@ fail() {
 require_tool() {
 	local tool="$1"
 	if ! command -v "$tool" >/dev/null 2>&1; then
-		fail "missing required tool: $tool (run via 'nix develop -c ./test-http')"
+		fail "missing required tool: $tool (run via 'nix develop -c ./tests/http/test-http')"
 	fi
 }
 

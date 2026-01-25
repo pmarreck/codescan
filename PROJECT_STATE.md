@@ -6,8 +6,8 @@
 ## Build + test
 - Build: `nix develop -c zig build`
 - Unit tests: `./test`
-- CLI test: `nix develop -c ./test-cli`
-- HTTP test: `nix develop -c ./test-http`
+- CLI test: `nix develop -c ./tests/cli/test-cli`
+- HTTP test: `nix develop -c ./tests/http/test-http`
 
 ## Run (CLI)
 - Config:
@@ -96,9 +96,9 @@
 - Embedding inputs are truncated to ~1600 bytes for code/logs and ~1000 bytes for docs/text (sentence/line-aware).
 
 ## Integration tests
-- `test-integration` runs end-to-end indexing/search against pinned fixture repos.
+- `tests/integration/test-integration` runs end-to-end indexing/search against pinned fixture repos.
 - Fixture repos live in `.codescan-fixtures/` (gitignored) with pins in `fixtures/manifest.toml`.
-- Run with: `nix develop -c ./test-integration` (requires Ollama + model).
+- Run with: `nix develop -c ./tests/integration/test-integration` (requires Ollama + model).
 
 ## CI / Releases
 - GitHub Actions workflow: `.github/workflows/build.yml`

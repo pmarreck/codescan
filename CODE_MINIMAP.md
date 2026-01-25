@@ -3,14 +3,17 @@
 - AGENTS.md: project-specific agent instructions
 - PLAN.md: task checklist
 - PROJECT_PLAN.md: high-level milestones and objective
+- PROJECT_OVERVIEW.md: project goals and terminology
+- RULES.md: non-negotiable project rules
 - CODE_MINIMAP.md: overview of important files and their purpose
 - .gitignore: ignored paths for build outputs and local indexes
 - .jjignore: jj ignore patterns (avoids tracking Zig cache)
 - README.md: usage, build, and configuration overview
 - LICENSE: MIT license
-- test-integration: end-to-end integration suite (requires Ollama + fixtures)
-- test-cli: CLI black-box test suite (uses mk_test_db fixture)
-- test-http: HTTP API black-box test suite (uses mk_test_db fixture)
+- tests/integration/test-integration: end-to-end integration suite (requires Ollama + fixtures)
+- tests/cli/test-cli: CLI black-box test suite (uses mk_test_db fixture)
+- tests/http/test-http: HTTP API black-box test suite (uses mk_test_db fixture)
+- tests/unit/test-unit: Zig unit-test runner (wraps `zig build test` in nix dev shell)
 - fixtures/manifest.toml: pinned fixture repos for integration tests
 - .github/workflows/build.yml: CI build + release artifacts workflow
 - scripts/ci-setup-nix: CI helper to install Nix (used by GitHub Actions)
@@ -21,10 +24,10 @@
 - flake.nix: Nix flake providing dev dependencies (zig_0_15) + sqlite amalgamation env vars
 - build.zig.zon: Zig package metadata + git dependency on sqlite-vec fork
 - build.zig: Zig build script for CLI + unit tests
-- test: unit test runner script (wraps `zig build test` in nix dev shell)
+- test: master test runner script (unit/cli/http/integration)
 - PROJECT_STATE.md: working notes for future contributors/LLMs (build/run/config details)
 - src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, and HTTP server
-- src/cli.zig: CLI argument parsing (including hybrid weight flags) + tests
+- src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed + model availability check (`/api/tags`) + HTTP transport + tests

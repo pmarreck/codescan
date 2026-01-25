@@ -22,8 +22,9 @@ run_case() {
 	fi
 }
 
-run_case "unit" nix develop -c zig build test
-run_case "cli" nix develop -c ./test-cli
-run_case "http" nix develop -c ./test-http
+run_case "unit" nix develop -c ./tests/unit/test-unit
+run_case "cli" nix develop -c ./tests/cli/test-cli
+run_case "http" nix develop -c ./tests/http/test-http
+run_case "integration" nix develop -c ./tests/integration/test-integration
 
 exit "$failed"

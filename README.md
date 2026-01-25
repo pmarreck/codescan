@@ -24,15 +24,15 @@ nix develop -c zig build -Doptimize=ReleaseFast
 ## CLI/HTTP tests
 
 ```bash
-nix develop -c ./test-cli
-nix develop -c ./test-http
+nix develop -c ./tests/cli/test-cli
+nix develop -c ./tests/http/test-http
 ```
 
 ## Integration test
 
 ```bash
 # requires Ollama running with bge-large pulled (or set OLLAMA_MODEL)
-nix develop -c ./test-integration
+nix develop -c ./tests/integration/test-integration
 ```
 
 ## CI (local, Linux only)
@@ -58,6 +58,8 @@ nix develop -c ./test-integration
 
 # search
 ./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
+# default verb is search
+./zig-out/bin/codescan "hash functions" --root <path>
 # show doc comments in human output
 ./zig-out/bin/codescan search "hash functions" --root <path> --show-comments
 # comment-only search (doc comments only)

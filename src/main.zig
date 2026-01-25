@@ -99,6 +99,14 @@ pub fn main() !void {
 		return;
 	}
 
+	if (parsed.assumed_search) {
+		var stderr_buf: [256]u8 = undefined;
+		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		const stderr = &stderr_writer.interface;
+		_ = stderr.print("note: No verb specified, assuming 'search'.\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+	}
+
 	var discovered_root: ?[]u8 = null;
 	defer if (discovered_root) |path| allocator.free(path);
 
@@ -600,7 +608,7 @@ fn parseMode(value: []const u8) !search.SearchMode {
 
 
 const usage =
-	\\codescan <command> [options]
+	\\codescan [command] [options]
 	\\
 	\\Commands:
 	\\  config [show|edit]  Show or edit project config
@@ -608,6 +616,8 @@ const usage =
 	\\  update            Rebuild index (currently full reindex)
 	\\  search <query>    Search indexed codebase
 	\\  serve             Start HTTP API server
+	\\
+	\\If no command is specified, codescan assumes `search`.
 	\\
 	\\Options:
 	\\  --root <path>           Root path (default: nearest .codescan ancestor or .)
