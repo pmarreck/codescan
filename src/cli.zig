@@ -49,6 +49,8 @@ pub const Seen = struct {
 pub const Parsed = struct {
 	command: CommandTag,
 	config_action: ConfigAction,
+	assumed_search: bool,
+	query_owned: bool,
 	output: OutputFormat,
 	show_comments: bool,
 	include_docs: bool,
@@ -74,15 +76,23 @@ pub const Parsed = struct {
 	type_filter: ?[]const u8,
 	lang_filter: ?[]const u8,
 	seen: Seen,
+
+	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
+		if (self.query_owned and self.query != null) {
+			allocator.free(self.query.?);
+		}
+	}
 };
 
-pub fn parse(args: []const []const u8) !Parsed {
+pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	if (args.len <= 1) {
 		return error.MissingQuery;
 	}
 	var parsed = Parsed{
 		.command = .help,
 		.config_action = .show,
+		.assumed_search = false,
+		.query_owned = false,
 		.output = .human,
 		.show_comments = false,
 		.include_docs = false,
@@ -109,6 +119,10 @@ pub fn parse(args: []const []const u8) !Parsed {
 		.lang_filter = null,
 		.seen = .{},
 	};
+
+	var query_parts: std.ArrayList([]const u8) = undefined;
+	var query_parts_inited = false;
+	defer if (query_parts_inited) query_parts.deinit(allocator);
 
 	var i: usize = 1;
 	if (i >= args.len) {
@@ -326,22 +340,50 @@ pub fn parse(args: []const []const u8) !Parsed {
 		}
 
 		if (parsed.command == .search) {
-			if (parsed.query == null) {
-				parsed.query = arg;
-				i += 1;
-				continue;
+			if (!query_parts_inited) {
+				query_parts = .{};
+				query_parts_inited = true;
 			}
-			return error.TooManyArgs;
+			try query_parts.append(allocator, arg);
+			i += 1;
+			continue;
 		}
 
 		return error.UnexpectedArg;
 	}
 
-	if (parsed.command == .search and parsed.query == null) {
-		return error.MissingQuery;
+	if (parsed.command == .search) {
+		if (!query_parts_inited or query_parts.items.len == 0) {
+			return error.MissingQuery;
+		}
+		if (query_parts.items.len == 1) {
+			parsed.query = query_parts.items[0];
+		} else {
+			parsed.query = try joinArgs(allocator, query_parts.items);
+			parsed.query_owned = true;
+		}
 	}
 
 	return parsed;
+}
+
+fn joinArgs(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+	var total: usize = 0;
+	for (parts, 0..) |part, idx| {
+		total += part.len;
+		if (idx + 1 < parts.len) total += 1;
+	}
+	const buf = try allocator.alloc(u8, total);
+	var offset: usize = 0;
+	for (parts, 0..) |part, idx| {
+		std.mem.copyForwards(u8, buf[offset .. offset + part.len], part);
+		offset += part.len;
+		if (idx + 1 < parts.len) {
+			buf[offset] = ' ';
+			offset += 1;
+		}
+	}
+	return buf;
 }
 
 fn parseMode(value: []const u8) !search.SearchMode {
@@ -353,12 +395,44 @@ fn parseMode(value: []const u8) !search.SearchMode {
 
 test "parse with no args requires query" {
 	const args = [_][]const u8{ "codescan" };
-	try std.testing.expectError(error.MissingQuery, parse(&args));
+	try std.testing.expectError(error.MissingQuery, parse(std.testing.allocator, &args));
 }
 
+test "parse defaults to search when first arg is query" {
+	const args = [_][]const u8{ "codescan", "checksum" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.assumed_search);
+	try std.testing.expectEqualStrings("checksum", parsed.query.?);
+}
+
+test "parse defaults to search when first arg is flag" {
+	const args = [_][]const u8{
+		"codescan",
+		"--docs",
+		"design doc",
+	};
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.assumed_search);
+	try std.testing.expect(parsed.docs_only);
+	try std.testing.expectEqualStrings("design doc", parsed.query.?);
+}
+
+test "parse defaults to search with multi word query" {
+	const args = [_][]const u8{ "codescan", "memory", "allocation" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.assumed_search);
+	try std.testing.expectEqualStrings("memory allocation", parsed.query.?);
+}
 test "parse search with query defaults" {
 	const args = [_][]const u8{ "codescan", "search", "hash functions" };
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(OutputFormat.human, parsed.output);
 	try std.testing.expect(parsed.show_comments == false);
@@ -370,6 +444,14 @@ test "parse search with query defaults" {
 	try std.testing.expectEqualStrings("http://localhost:11434", parsed.ollama_url);
 	try std.testing.expect(parsed.search_mode == .hybrid);
 	try std.testing.expect(parsed.seen.top_n == false);
+}
+
+test "parse search joins multi word args" {
+	const args = [_][]const u8{ "codescan", "search", "memory", "allocation" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqualStrings("memory allocation", parsed.query.?);
 }
 
 test "parse search with weights" {
@@ -384,7 +466,8 @@ test "parse search with weights" {
 		"--min-score",
 		"0.4",
 	};
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqualStrings("checksum", parsed.query.?);
 	try std.testing.expect(parsed.show_comments == false);
@@ -437,7 +520,8 @@ test "parse search with flags" {
 		"0.6",
 		"hash functions",
 	};
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(OutputFormat.json, parsed.output);
 	try std.testing.expect(parsed.show_comments);
@@ -466,14 +550,16 @@ test "parse search with flags" {
 
 test "parse config defaults to show" {
 	const args = [_][]const u8{ "codescan", "config" };
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.config, parsed.command);
 	try std.testing.expectEqual(ConfigAction.show, parsed.config_action);
 }
 
 test "parse config edit" {
 	const args = [_][]const u8{ "codescan", "config", "edit" };
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.config, parsed.command);
 	try std.testing.expectEqual(ConfigAction.edit, parsed.config_action);
 }
@@ -485,7 +571,8 @@ test "parse search with verbose alias" {
 		"--verbose",
 		"hash",
 	};
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expect(parsed.show_comments);
 	try std.testing.expect(parsed.seen.show_comments);
@@ -498,7 +585,8 @@ test "parse search with docs flag" {
 		"--docs",
 		"design doc",
 	};
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expect(parsed.docs_only);
 	try std.testing.expect(parsed.seen.docs_only);
@@ -512,7 +600,8 @@ test "parse search with comments flag" {
 		"--only-comments",
 		"doc query",
 	};
-	const parsed = try parse(&args);
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expect(parsed.comments_only);
 	try std.testing.expect(parsed.seen.comments_only);
@@ -521,5 +610,5 @@ test "parse search with comments flag" {
 
 test "parse search missing query errors" {
 	const args = [_][]const u8{ "codescan", "search" };
-	try std.testing.expectError(error.MissingQuery, parse(&args));
+	try std.testing.expectError(error.MissingQuery, parse(std.testing.allocator, &args));
 }

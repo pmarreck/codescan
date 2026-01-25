@@ -5,6 +5,7 @@
 - PROJECT_PLAN.md: high-level milestones and objective
 - CODE_MINIMAP.md: overview of important files and their purpose
 - .gitignore: ignored paths for build outputs and local indexes
+- .jjignore: jj ignore patterns (avoids tracking Zig cache)
 - README.md: usage, build, and configuration overview
 - LICENSE: MIT license
 - test-integration: end-to-end integration suite (requires Ollama + fixtures)

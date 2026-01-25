@@ -79,7 +79,7 @@ pub fn main() !void {
 	var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
 	const stdout = &stdout_writer.interface;
 
-	const parsed = cli.parse(args) catch |err| {
+	var parsed = cli.parse(allocator, args) catch |err| {
 		if (isUsageError(err)) {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
@@ -91,6 +91,7 @@ pub fn main() !void {
 		}
 		return err;
 	};
+	defer parsed.deinit(allocator);
 
 	if (parsed.command == .help) {
 		try printUsage(stdout);
@@ -748,7 +749,8 @@ test "buildSearchFilters defaults to primary language" {
 	_ = try storage.insertSymbol(db, sym3);
 
 	const args = [_][]const u8{ "codescan", "search", "query" };
-	const parsed = try cli.parse(&args);
+	var parsed = try cli.parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
 	var settings = try resolveSettings(allocator, parsed, cfg, ".");
@@ -800,7 +802,8 @@ test "buildSearchFilters includes docs when requested" {
 	_ = try storage.insertSymbol(db, sym2);
 
 	const args = [_][]const u8{ "codescan", "search", "query" };
-	const parsed = try cli.parse(&args);
+	var parsed = try cli.parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
 	var settings = try resolveSettings(allocator, parsed, cfg, ".");
@@ -838,7 +841,8 @@ test "resolveSettings uses discovered repo root for db path" {
 	try std.testing.expect(root != null);
 
 	const args = [_][]const u8{ "codescan", "search", "checksum" };
-	const parsed = try cli.parse(&args);
+	var parsed = try cli.parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
@@ -856,7 +860,8 @@ test "resolveSettings uses discovered repo root for db path" {
 test "resolveSettings defaults index_type to code and doc" {
 	const allocator = std.testing.allocator;
 	const args = [_][]const u8{ "codescan", "index" };
-	const parsed = try cli.parse(&args);
+	var parsed = try cli.parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
 
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
