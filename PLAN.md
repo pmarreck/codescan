@@ -16,7 +16,7 @@
 - [x] Add hybrid weight knobs (CLI/config/HTTP) + tests
 - [x] Normalize hybrid weights automatically
 - [x] Add FTS5 lexical search with fallback to LIKE
-- [x] Index bash scripts without extension via shebang (2026-01-25 EST)
+- [x] Index bash/lua shebang scripts without extension (2026-01-25 EST)
 - [x] Reorganize test scripts under ./tests (2026-01-25 EST)
 - [ ] Add tests for edge cases and filters; keep tests fast/deterministic
 - [x] Prefer static link for pcre2 dependency

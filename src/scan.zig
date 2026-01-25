@@ -136,13 +136,16 @@ fn parseShebang(line: []const u8) ?[]const u8 {
 	var token = nextToken(rest);
 	if (isEnvToken(token)) {
 		rest = std.mem.trimLeft(u8, rest[token.len..], " \t");
-		if (rest.len == 0) return null;
-		token = nextToken(rest);
+		while (rest.len > 0) {
+			token = nextToken(rest);
+			if (token.len == 0) return null;
+			rest = std.mem.trimLeft(u8, rest[token.len..], " \t");
+			if (!std.mem.startsWith(u8, token, "-")) break;
+		}
 	}
 
 	const name = basename(token);
-	if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "sh")) return "bash";
-	return null;
+	return shebangLanguage(name);
 }
 
 fn nextToken(text: []const u8) []const u8 {
@@ -159,6 +162,12 @@ fn basename(path: []const u8) []const u8 {
 	const pos = std.mem.lastIndexOfScalar(u8, path, '/') orelse return path;
 	if (pos + 1 >= path.len) return path;
 	return path[pos + 1 ..];
+}
+
+fn shebangLanguage(name: []const u8) ?[]const u8 {
+	if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "sh")) return "bash";
+	if (std.mem.eql(u8, name, "lua") or std.mem.eql(u8, name, "luajit")) return "lua";
+	return null;
 }
 
 fn buildIgnoreSets(
@@ -319,11 +328,13 @@ test "findFiles finds supported extensions" {
 	try std.testing.expect(found_readme);
 }
 
-test "findFiles includes bash shebang scripts without extension" {
+test "findFiles includes shebang scripts without extension" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
 	try tmp.dir.writeFile(.{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
+	try tmp.dir.writeFile(.{ .sub_path = "luascript", .data = "#!/usr/bin/env luajit\nprint('ok')\n" });
+	try tmp.dir.writeFile(.{ .sub_path = "pythonscript", .data = "#!/usr/bin/env python3\nprint('no')\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realpathAlloc(allocator, ".");
@@ -339,8 +350,18 @@ test "findFiles includes bash shebang scripts without extension" {
 		allocator.free(files);
 	}
 
-	try std.testing.expectEqual(@as(usize, 1), files.len);
-	try std.testing.expectEqualStrings("script", files[0]);
+	try std.testing.expectEqual(@as(usize, 2), files.len);
+	var found_bash = false;
+	var found_lua = false;
+	var found_python = false;
+	for (files) |path| {
+		if (std.mem.eql(u8, path, "script")) found_bash = true;
+		if (std.mem.eql(u8, path, "luascript")) found_lua = true;
+		if (std.mem.eql(u8, path, "pythonscript")) found_python = true;
+	}
+	try std.testing.expect(found_bash);
+	try std.testing.expect(found_lua);
+	try std.testing.expect(!found_python);
 }
 
 test "findFiles respects ignores" {
