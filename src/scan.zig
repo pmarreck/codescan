@@ -99,12 +99,66 @@ pub fn findFiles(
 
 	while (try walker.next()) |entry| {
 		if (entry.kind != .file) continue;
-		const extractor = registry.find(entry.path) orelse continue;
-		if (shouldIgnore(allocator, ignore_sets, extractor.language, entry.path)) continue;
+		var extractor = registry.find(entry.path);
+		if (extractor == null) {
+			if (detectShebangLanguage(dir, entry.path)) |language| {
+				extractor = registry.findByLanguage(language);
+			}
+		}
+		const chosen = extractor orelse continue;
+		if (shouldIgnore(allocator, ignore_sets, chosen.language, entry.path)) continue;
 		try results.append(allocator, try allocator.dupe(u8, entry.path));
 	}
 
 	return results.toOwnedSlice(allocator);
+}
+
+fn detectShebangLanguage(dir: std.fs.Dir, rel_path: []const u8) ?[]const u8 {
+	var file = dir.openFile(rel_path, .{}) catch return null;
+	defer file.close();
+
+	var buf: [256]u8 = undefined;
+	const n = file.read(&buf) catch return null;
+	if (n < 2) return null;
+	if (buf[0] != '#' or buf[1] != '!') return null;
+
+	const slice = buf[0..n];
+	const line_end = std.mem.indexOfScalar(u8, slice, '\n') orelse slice.len;
+	return parseShebang(slice[0..line_end]);
+}
+
+fn parseShebang(line: []const u8) ?[]const u8 {
+	if (line.len < 2 or line[0] != '#' or line[1] != '!') return null;
+
+	var rest = std.mem.trimLeft(u8, line[2..], " \t");
+	if (rest.len == 0) return null;
+
+	var token = nextToken(rest);
+	if (isEnvToken(token)) {
+		rest = std.mem.trimLeft(u8, rest[token.len..], " \t");
+		if (rest.len == 0) return null;
+		token = nextToken(rest);
+	}
+
+	const name = basename(token);
+	if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "sh")) return "bash";
+	return null;
+}
+
+fn nextToken(text: []const u8) []const u8 {
+	var idx: usize = 0;
+	while (idx < text.len and !std.ascii.isWhitespace(text[idx])) : (idx += 1) {}
+	return text[0..idx];
+}
+
+fn isEnvToken(token: []const u8) bool {
+	return std.mem.eql(u8, basename(token), "env");
+}
+
+fn basename(path: []const u8) []const u8 {
+	const pos = std.mem.lastIndexOfScalar(u8, path, '/') orelse return path;
+	if (pos + 1 >= path.len) return path;
+	return path[pos + 1 ..];
 }
 
 fn buildIgnoreSets(
@@ -263,6 +317,30 @@ test "findFiles finds supported extensions" {
 	try std.testing.expect(found_zig);
 	try std.testing.expect(found_ex);
 	try std.testing.expect(found_readme);
+}
+
+test "findFiles includes bash shebang scripts without extension" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.writeFile(.{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), files.len);
+	try std.testing.expectEqualStrings("script", files[0]);
 }
 
 test "findFiles respects ignores" {

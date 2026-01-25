@@ -69,6 +69,13 @@ pub const Registry = struct {
 		return null;
 	}
 
+	pub fn findByLanguage(self: Registry, language: []const u8) ?*const Extractor {
+		for (self.extractors) |*extractor| {
+			if (std.mem.eql(u8, extractor.language, language)) return extractor;
+		}
+		return null;
+	}
+
 	pub fn languagesForKinds(
 		self: Registry,
 		allocator: std.mem.Allocator,
