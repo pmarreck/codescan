@@ -73,6 +73,15 @@ main() {
 	names=$(search_names "checksum" --only-comments --lang zig)
 	printf '%s\n' "$names" | rg -q '^hash_bytes$' || fail "only-comments missing commented symbol"
 
+	capture "$BIN" search "zzzzzzzzzz" --db "$DB" --mode lexical --json --min-score 1
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "no-results search failed"
+	fi
+	count=$(printf '%s' "$out" | jq '.results | length')
+	[ "$count" -eq 0 ] || fail "expected no results for missing query"
+	printf '%s' "$err" | rg -q 're-?index' || fail "missing reindex suggestion on empty results"
+
 	printf '%s\n' "cli ok"
 }
 

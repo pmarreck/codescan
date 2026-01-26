@@ -229,6 +229,17 @@ pub fn main() !void {
 			);
 			defer search.freeResults(allocator, results);
 
+			if (results.len == 0) {
+				var stderr_buf: [256]u8 = undefined;
+				var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+				const stderr = &stderr_writer.interface;
+				_ = stderr.print(
+					"note: no results found; consider re-indexing with `codescan update`.\n",
+					.{},
+				) catch {};
+				_ = stderr.flush() catch {};
+			}
+
 			const use_color = settings.output == .human and !std.process.hasEnvVarConstant("NO_COLOR");
 			try output.writeResults(allocator, stdout, settings.output, results, .{
 				.show_comments = settings.show_comments,
