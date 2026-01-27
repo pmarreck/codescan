@@ -13,8 +13,8 @@
             .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0OvwBACYsEQvfmbSw0sUHuXhcwD5PgjGyslHXU2q",
         },
         .pcre2 = .{
-            .url = "https://github.com/qaptoR-support/pcre2/archive/refs/tags/zig0.14.tar.gz",
-            .hash = "N-V-__8AAN0G3wA6horCZYad-eyYofHQ4Q9D7m9nSWiCqbXb",
+            .url = "git+https://github.com/pmarreck/pcre2#8fb017d8c41587a3eb3ac165b6e743d318c8fcfe",
+            .hash = "pcre2-10.47.0-S7QTbjnVMgAEncX1a_JtH4G6BgDWzC1tCMvL-KOMrM8b",
         },
     },
     .fingerprint = 0x61f89dfe5a676f3c,
