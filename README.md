@@ -9,7 +9,23 @@ Semantic code search for local repositories.
 - Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua, Haskell via tree-sitter/best-effort)
 - Markdown/text/log indexing with semantic chunking
 
-## Build
+## Install
+
+### With Nix (recommended)
+
+```bash
+# Run directly without installing
+nix run github:pmarreck/codescan -- search "your query"
+
+# Install to your profile
+nix profile install github:pmarreck/codescan
+
+# For faster downloads, add the garnix binary cache to /etc/nix/nix.conf:
+#   extra-substituters = https://cache.garnix.io
+#   extra-trusted-public-keys = cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=
+```
+
+### Build from source
 
 ```bash
 nix develop -c zig build -Doptimize=ReleaseFast
