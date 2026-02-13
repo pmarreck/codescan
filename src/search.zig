@@ -159,8 +159,10 @@ pub fn search(
 			} else if (in_name) {
 				// Query is a substring of the name
 				res.score = @min(1.0, res.score * 1.1);
-			} else {
-				// Query not in name at all — only in signature/doc; penalize
+			} else if (lexical > 0) {
+				// Query not in name but matches signature/doc; penalize to rank
+				// below name matches. Skip when lex is 0 — pure vector results
+				// shouldn't be doubly penalized (already low from zero lex contribution).
 				res.score = res.score * 0.7;
 			}
 		}
@@ -995,8 +997,8 @@ test "search hybrid normalizes weights" {
 	defer freeResults(allocator, results);
 
 	try std.testing.expectEqual(@as(usize, 1), results.len);
-	// "missing" not in symbol name → ×0.7 penalty: (2/3) * 0.7 ≈ 0.4667
-	try std.testing.expectApproxEqAbs(@as(f32, 0.46666667), results[0].score, 0.0001);
+	// "missing" has lex=0 so no name-relevance penalty applies: (2/3) ≈ 0.6667
+	try std.testing.expectApproxEqAbs(@as(f32, 0.6666667), results[0].score, 0.0001);
 }
 
 test "search lexical uses fts when available" {
