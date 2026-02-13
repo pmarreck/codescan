@@ -98,10 +98,12 @@ pub fn indexAll(
 		const stat = try file.stat();
 		const size = stat.size;
 		if (options.max_file_size > 0) {
-			const warn_threshold: u64 = @intCast(options.max_file_size / 4);
-			if (warn_threshold > 0 and size > warn_threshold) {
-				const skipping = size > options.max_file_size;
-				warnLargeFile(stderr, rel_path, size, warn_threshold, options.max_file_size, skipping);
+			if (show_progress) {
+				const warn_threshold: u64 = @intCast(options.max_file_size / 4);
+				if (warn_threshold > 0 and size > warn_threshold) {
+					const skipping = size > options.max_file_size;
+					warnLargeFile(stderr, rel_path, size, warn_threshold, options.max_file_size, skipping);
+				}
 			}
 			if (size > options.max_file_size) continue;
 		}
@@ -124,7 +126,7 @@ pub fn indexAll(
 		const hashes = computeFileHashes(allocator, source) catch null;
 		defer if (hashes) |h| allocator.free(h);
 
-		for (symbols) |sym| {
+		for (symbols, 0..) |sym, sym_idx| {
 			var sym_with_hash = sym;
 			if (hashes) |h| {
 				if (sym.start_line > 0 and sym.start_line <= h.len)
@@ -140,6 +142,9 @@ pub fn indexAll(
 			try batch_rowids.append(allocator, rowid);
 
 			if (batch_texts.items.len >= options.batch_size) {
+				if (show_progress and symbols.len > options.batch_size) {
+					printFileProgress(stderr, progress_last, files.len, rel_path, sym_idx + 1, symbols.len);
+				}
 				if (debug) {
 					debugLog(stderr, "codescan: debug: embedding {d} symbols\n", .{batch_texts.items.len});
 				}
@@ -342,7 +347,7 @@ pub fn indexIncremental(
 		const hashes = computeFileHashes(allocator, source) catch null;
 		defer if (hashes) |h| allocator.free(h);
 
-		for (symbols) |sym| {
+		for (symbols, 0..) |sym, sym_idx| {
 			var sym_with_hash = sym;
 			if (hashes) |h| {
 				if (sym.start_line > 0 and sym.start_line <= h.len)
@@ -358,6 +363,9 @@ pub fn indexIncremental(
 			try batch_rowids.append(allocator, rowid);
 
 			if (batch_texts.items.len >= options.batch_size) {
+				if (show_progress and symbols.len > options.batch_size) {
+					printFileProgress(stderr, progress_count, files.len, rel_path, sym_idx + 1, symbols.len);
+				}
 				try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
 			}
 
@@ -649,8 +657,21 @@ fn debugLog(writer: *std.Io.Writer, comptime fmt: []const u8, args: anytype) voi
 }
 
 fn printProgress(writer: *std.Io.Writer, current: usize, total: usize, done: bool) void {
-	const tail = if (done) "\n" else "";
-	_ = writer.print("\rIndexed {d}/{d}{s}", .{ current, total, tail }) catch {};
+	if (done) {
+		// Clear the line and print final count
+		_ = writer.print("\r\x1b[KIndexed {d}/{d}\n", .{ current, total }) catch {};
+	} else {
+		_ = writer.print("\r\x1b[KIndexed {d}/{d}", .{ current, total }) catch {};
+	}
+	_ = writer.flush() catch {};
+}
+
+fn printFileProgress(writer: *std.Io.Writer, file_count: usize, file_total: usize, filename: []const u8, sym_current: usize, sym_total: usize) void {
+	// Show: Indexed 95/173 — gtk.zig (48/312 symbols)
+	const basename = std.fs.path.basename(filename);
+	_ = writer.print("\r\x1b[KIndexed {d}/{d} \xe2\x80\x94 {s} ({d}/{d} symbols)", .{
+		file_count, file_total, basename, sym_current, sym_total,
+	}) catch {};
 	_ = writer.flush() catch {};
 }
 

@@ -47,6 +47,11 @@ pub fn watchLoop(
 	_ = stderr.print("Watching {s} (native events, Ctrl-C to stop)\n", .{root_path}) catch {};
 	_ = stderr.flush() catch {};
 
+	// Snapshot config mtime so we can detect edits
+	const config_path = configPathFromDir(allocator, options.codescan_dir);
+	defer if (config_path) |p| allocator.free(p);
+	var config_mtime = getFileMtime(config_path);
+
 	// Initial full incremental pass
 	const initial = try indexer.indexIncremental(
 		allocator,
@@ -58,9 +63,19 @@ pub fn watchLoop(
 	);
 	printChangeSummary(stderr, initial);
 
+	const max_consecutive_errors = 5;
+	var consecutive_errors: u32 = 0;
+
 	while (!stop.load(.acquire)) {
 		const result = native_watcher.wait(options.interval_ms) catch .timeout;
 		if (stop.load(.acquire)) break;
+
+		// Check if config file was edited
+		if (configChanged(config_path, &config_mtime)) {
+			_ = stderr.print("watcher: config changed, stopping (restart to apply new settings)\n", .{}) catch {};
+			_ = stderr.flush() catch {};
+			return;
+		}
 
 		// Run incremental index on change or periodic timeout
 		const stats = indexer.indexIncremental(
@@ -71,10 +86,17 @@ pub fn watchLoop(
 			embedder,
 			options.index_options,
 		) catch |err| {
-			_ = stderr.print("watcher: index error: {s}\n", .{@errorName(err)}) catch {};
+			consecutive_errors += 1;
+			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
 			_ = stderr.flush() catch {};
+			if (consecutive_errors >= max_consecutive_errors) {
+				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+				return;
+			}
 			continue;
 		};
+		consecutive_errors = 0;
 
 		if (stats.new_files > 0 or stats.modified_files > 0 or stats.deleted_files > 0) {
 			printChangeSummary(stderr, stats);
@@ -102,6 +124,11 @@ fn watchLoopPolling(
 	}) catch {};
 	_ = stderr.flush() catch {};
 
+	// Snapshot config mtime so we can detect edits
+	const config_path = configPathFromDir(allocator, options.codescan_dir);
+	defer if (config_path) |p| allocator.free(p);
+	var config_mtime = getFileMtime(config_path);
+
 	// Initial full incremental pass
 	const initial = try indexer.indexIncremental(
 		allocator,
@@ -113,9 +140,19 @@ fn watchLoopPolling(
 	);
 	printChangeSummary(stderr, initial);
 
+	const max_consecutive_errors = 5;
+	var consecutive_errors: u32 = 0;
+
 	while (!stop.load(.acquire)) {
 		std.Thread.sleep(options.interval_ms * std.time.ns_per_ms);
 		if (stop.load(.acquire)) break;
+
+		// Check if config file was edited
+		if (configChanged(config_path, &config_mtime)) {
+			_ = stderr.print("watcher: config changed, stopping (restart to apply new settings)\n", .{}) catch {};
+			_ = stderr.flush() catch {};
+			return;
+		}
 
 		const stats = indexer.indexIncremental(
 			allocator,
@@ -125,15 +162,57 @@ fn watchLoopPolling(
 			embedder,
 			options.index_options,
 		) catch |err| {
-			_ = stderr.print("watcher: index error: {s}\n", .{@errorName(err)}) catch {};
+			consecutive_errors += 1;
+			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
 			_ = stderr.flush() catch {};
+			if (consecutive_errors >= max_consecutive_errors) {
+				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+				return;
+			}
 			continue;
 		};
+		consecutive_errors = 0;
 
 		if (stats.new_files > 0 or stats.modified_files > 0 or stats.deleted_files > 0) {
 			printChangeSummary(stderr, stats);
 		}
 	}
+}
+
+/// Build the config file path from the .codescan directory, or null if unavailable.
+fn configPathFromDir(allocator: std.mem.Allocator, codescan_dir: ?[]const u8) ?[]u8 {
+	const dir = codescan_dir orelse return null;
+	return std.fs.path.join(allocator, &.{ dir, "config" }) catch return null;
+}
+
+/// Get a file's mtime (nanoseconds), or null if the file doesn't exist / can't be stat'd.
+fn getFileMtime(path: ?[]const u8) ?i128 {
+	const p = path orelse return null;
+	const file = std.fs.cwd().openFile(p, .{}) catch return null;
+	defer file.close();
+	const stat = file.stat() catch return null;
+	return stat.mtime;
+}
+
+/// Returns true if the config file's mtime differs from the stored value, updating it in place.
+fn configChanged(config_path: ?[]const u8, stored_mtime: *?i128) bool {
+	const current = getFileMtime(config_path);
+	if (stored_mtime.* == null and current == null) return false;
+	if (stored_mtime.* == null and current != null) {
+		// Config file was created
+		stored_mtime.* = current;
+		return true;
+	}
+	if (stored_mtime.* != null and current == null) {
+		// Config file was deleted — not a "change" worth restarting for
+		return false;
+	}
+	if (stored_mtime.*.? != current.?) {
+		stored_mtime.* = current;
+		return true;
+	}
+	return false;
 }
 
 fn printChangeSummary(writer: *std.Io.Writer, stats: indexer.IncrementalStats) void {

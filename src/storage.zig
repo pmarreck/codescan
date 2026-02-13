@@ -46,6 +46,11 @@ pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !Db {
 
 	try initVecStatic(handle);
 
+	// Enable WAL mode for concurrent access (watcher + CLI commands)
+	_ = execMaybe(handle, "PRAGMA journal_mode=WAL;\x00");
+	// Wait up to 5s if another process holds the write lock
+	_ = execMaybe(handle, "PRAGMA busy_timeout=5000;\x00");
+
 	return handle;
 }
 
@@ -142,6 +147,7 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "insertSymbol: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -169,12 +175,16 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	}
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		logSqliteError(db, "insertSymbol: step");
 		return error.SqlStepFailed;
 	}
 	const rowid = c.sqlite3_last_insert_rowid(db);
 	insertSymbolFts(db, symbol, rowid) catch |err| switch (err) {
 		error.SqlPrepareFailed => {},
-		else => return err,
+		else => {
+			logSqliteError(db, "insertSymbolFts");
+			return err;
+		},
 	};
 	return rowid;
 }
@@ -183,6 +193,7 @@ pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector:
 	const sql: [:0]const u8 = "INSERT INTO embeddings (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "insertEmbedding: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -194,6 +205,7 @@ pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector:
 	_ = c.sqlite3_bind_text(stmt.?, 2, json.ptr, @intCast(json.len), null);
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		logSqliteError(db, "insertEmbedding: step");
 		return error.SqlStepFailed;
 	}
 }
@@ -202,6 +214,7 @@ pub fn insertCommentEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, 
 	const sql: [:0]const u8 = "INSERT INTO embeddings_comment (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "insertCommentEmbedding: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -213,6 +226,7 @@ pub fn insertCommentEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, 
 	_ = c.sqlite3_bind_text(stmt.?, 2, json.ptr, @intCast(json.len), null);
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		logSqliteError(db, "insertCommentEmbedding: step");
 		return error.SqlStepFailed;
 	}
 }
@@ -399,6 +413,18 @@ pub fn primaryLanguage(
 	}
 	if (rc == c.SQLITE_DONE) return null;
 	return error.SqlStepFailed;
+}
+
+fn logSqliteError(db: Db, context: []const u8) void {
+	const msg = c.sqlite3_errmsg(db);
+	if (msg != null) {
+		const msg_slice = std.mem.span(msg);
+		var stderr_buf: [4096]u8 = undefined;
+		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		const stderr = &stderr_writer.interface;
+		_ = stderr.print("sqlite error ({s}): {s}\n", .{ context, msg_slice }) catch {};
+		_ = stderr.flush() catch {};
+	}
 }
 
 fn bindText(stmt: *c.sqlite3_stmt, index: c_int, text: []const u8) !void {

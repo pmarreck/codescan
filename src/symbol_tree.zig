@@ -1,5 +1,6 @@
 const std = @import("std");
 const hashline = @import("hashline.zig");
+const LineIndex = @import("line_index.zig").LineIndex;
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -87,6 +88,10 @@ pub fn extractZig(allocator: std.mem.Allocator, source: []const u8) !SymbolTree 
 	var tree = try Ast.parse(allocator, source_z, .zig);
 	defer tree.deinit(allocator);
 
+	// Build line-offset table once — O(n) — then O(log n) per lookup
+	var line_idx = try LineIndex.build(allocator, source);
+	defer line_idx.deinit(allocator);
+
 	const root_decls = tree.rootDecls();
 	var symbols = std.ArrayListUnmanaged(SymbolNode){};
 	errdefer {
@@ -95,7 +100,7 @@ pub fn extractZig(allocator: std.mem.Allocator, source: []const u8) !SymbolTree 
 	}
 
 	for (root_decls) |decl_idx| {
-		if (try extractZigNode(allocator, &tree, decl_idx)) |sym| {
+		if (try extractZigNode(allocator, &tree, decl_idx, line_idx)) |sym| {
 			try symbols.append(allocator, sym);
 		}
 	}
@@ -105,13 +110,13 @@ pub fn extractZig(allocator: std.mem.Allocator, source: []const u8) !SymbolTree 
 
 const ZigExtractError = std.mem.Allocator.Error;
 
-fn extractZigNode(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index) ZigExtractError!?SymbolNode {
+fn extractZigNode(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index, line_idx: LineIndex) ZigExtractError!?SymbolNode {
 	return switch (tree.nodeTag(node)) {
-		.fn_decl => try extractZigFn(allocator, tree, node),
-		.simple_var_decl => try extractZigVarDecl(allocator, tree, node, .simple),
-		.global_var_decl => try extractZigVarDecl(allocator, tree, node, .global),
-		.aligned_var_decl => try extractZigVarDecl(allocator, tree, node, .aligned),
-		.test_decl => try extractZigTest(allocator, tree, node),
+		.fn_decl => try extractZigFn(allocator, tree, node, line_idx),
+		.simple_var_decl => try extractZigVarDecl(allocator, tree, node, .simple, line_idx),
+		.global_var_decl => try extractZigVarDecl(allocator, tree, node, .global, line_idx),
+		.aligned_var_decl => try extractZigVarDecl(allocator, tree, node, .aligned, line_idx),
+		.test_decl => try extractZigTest(allocator, tree, node, line_idx),
 		else => null,
 	};
 }
@@ -123,6 +128,7 @@ fn extractZigVarDecl(
 	tree: *const Ast,
 	node: Ast.Node.Index,
 	var_kind: VarDeclKind,
+	line_idx: LineIndex,
 ) ZigExtractError!?SymbolNode {
 	const var_decl = switch (var_kind) {
 		.simple => tree.simpleVarDecl(node),
@@ -138,8 +144,8 @@ fn extractZigVarDecl(
 
 	const start_tok = tree.firstToken(node);
 	const end_tok = tree.lastToken(node);
-	const start_loc = tree.tokenLocation(0, start_tok);
-	const end_loc = tree.tokenLocation(0, end_tok);
+	const start_line = line_idx.lineForOffset(tree.tokenStart(start_tok));
+	const end_line = line_idx.lineForOffset(tree.tokenStart(end_tok));
 	const start_byte: usize = tree.tokenStart(start_tok);
 	const end_byte: usize = tree.tokenStart(end_tok) + tree.tokenSlice(end_tok).len;
 
@@ -148,7 +154,7 @@ fn extractZigVarDecl(
 		var buf2: [2]Ast.Node.Index = undefined;
 		if (tree.fullContainerDecl(&buf2, init_idx)) |container| {
 			const kind = zigContainerKind(tree, container);
-			const children = try extractZigContainerMembers(allocator, tree, container);
+			const children = try extractZigContainerMembers(allocator, tree, container, line_idx);
 			errdefer {
 				for (children) |*c| @constCast(c).deinit(allocator);
 				allocator.free(children);
@@ -156,8 +162,8 @@ fn extractZigVarDecl(
 			return .{
 				.name = name,
 				.kind = kind,
-				.start_line = start_loc.line + 1,
-				.end_line = end_loc.line + 1,
+				.start_line = start_line + 1,
+				.end_line = end_line + 1,
 				.start_byte = start_byte,
 				.end_byte = end_byte,
 				.children = children,
@@ -169,15 +175,15 @@ fn extractZigVarDecl(
 	return .{
 		.name = name,
 		.kind = if (is_const) .constant else .variable,
-		.start_line = start_loc.line + 1,
-		.end_line = end_loc.line + 1,
+		.start_line = start_line + 1,
+		.end_line = end_line + 1,
 		.start_byte = start_byte,
 		.end_byte = end_byte,
 		.children = try allocator.alloc(SymbolNode, 0),
 	};
 }
 
-fn extractZigFn(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index) ZigExtractError!?SymbolNode {
+fn extractZigFn(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index, line_idx: LineIndex) ZigExtractError!?SymbolNode {
 	var buffer: [1]Ast.Node.Index = undefined;
 	const fn_proto = tree.fullFnProto(&buffer, node) orelse return null;
 	const name_token = fn_proto.name_token orelse return null;
@@ -187,23 +193,23 @@ fn extractZigFn(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.I
 
 	const start_tok = tree.firstToken(node);
 	const end_tok = tree.lastToken(node);
-	const start_loc = tree.tokenLocation(0, start_tok);
-	const end_loc = tree.tokenLocation(0, end_tok);
+	const start_line = line_idx.lineForOffset(tree.tokenStart(start_tok));
+	const end_line = line_idx.lineForOffset(tree.tokenStart(end_tok));
 	const start_byte: usize = tree.tokenStart(start_tok);
 	const end_byte: usize = tree.tokenStart(end_tok) + tree.tokenSlice(end_tok).len;
 
 	return .{
 		.name = name,
 		.kind = .function,
-		.start_line = start_loc.line + 1,
-		.end_line = end_loc.line + 1,
+		.start_line = start_line + 1,
+		.end_line = end_line + 1,
 		.start_byte = start_byte,
 		.end_byte = end_byte,
 		.children = try allocator.alloc(SymbolNode, 0),
 	};
 }
 
-fn extractZigTest(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index) ZigExtractError!?SymbolNode {
+fn extractZigTest(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node.Index, line_idx: LineIndex) ZigExtractError!?SymbolNode {
 	const data = tree.nodeData(node).opt_token_and_node;
 
 	var name: []const u8 = "(anonymous)";
@@ -222,16 +228,16 @@ fn extractZigTest(allocator: std.mem.Allocator, tree: *const Ast, node: Ast.Node
 
 	const start_tok = tree.firstToken(node);
 	const end_tok = tree.lastToken(node);
-	const start_loc = tree.tokenLocation(0, start_tok);
-	const end_loc = tree.tokenLocation(0, end_tok);
+	const start_line = line_idx.lineForOffset(tree.tokenStart(start_tok));
+	const end_line = line_idx.lineForOffset(tree.tokenStart(end_tok));
 	const start_byte: usize = tree.tokenStart(start_tok);
 	const end_byte: usize = tree.tokenStart(end_tok) + tree.tokenSlice(end_tok).len;
 
 	return .{
 		.name = owned_name,
 		.kind = .test_decl,
-		.start_line = start_loc.line + 1,
-		.end_line = end_loc.line + 1,
+		.start_line = start_line + 1,
+		.end_line = end_line + 1,
 		.start_byte = start_byte,
 		.end_byte = end_byte,
 		.children = try allocator.alloc(SymbolNode, 0),
@@ -247,7 +253,7 @@ fn zigContainerKind(tree: *const Ast, container: Ast.full.ContainerDecl) SymbolK
 	};
 }
 
-fn extractZigContainerMembers(allocator: std.mem.Allocator, tree: *const Ast, container: Ast.full.ContainerDecl) ZigExtractError![]SymbolNode {
+fn extractZigContainerMembers(allocator: std.mem.Allocator, tree: *const Ast, container: Ast.full.ContainerDecl, line_idx: LineIndex) ZigExtractError![]SymbolNode {
 	var children = std.ArrayListUnmanaged(SymbolNode){};
 	errdefer {
 		for (children.items) |*child| child.deinit(allocator);
@@ -255,7 +261,7 @@ fn extractZigContainerMembers(allocator: std.mem.Allocator, tree: *const Ast, co
 	}
 
 	for (container.ast.members) |member_idx| {
-		if (try extractZigNode(allocator, tree, member_idx)) |child| {
+		if (try extractZigNode(allocator, tree, member_idx, line_idx)) |child| {
 			try children.append(allocator, child);
 		}
 	}

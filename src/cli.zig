@@ -9,6 +9,7 @@ pub const OutputFormat = enum {
 pub const CommandTag = enum {
 	help,
 	config,
+	init,
 	index,
 	update,
 	search,
@@ -63,6 +64,7 @@ pub const Seen = struct {
 	ext_filter: bool = false,
 	type_filter: bool = false,
 	lang_filter: bool = false,
+	force: bool = false,
 };
 
 pub const Parsed = struct {
@@ -103,6 +105,7 @@ pub const Parsed = struct {
 	rename_to: ?[]const u8,
 	watch_interval: u64,
 	watch_action: WatchAction,
+	force: bool,
 	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
@@ -154,6 +157,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.rename_to = null,
 		.watch_interval = 2000,
 		.watch_action = .run,
+		.force = false,
 		.seen = .{},
 	};
 
@@ -172,6 +176,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		return parsed;
 	} else if (std.mem.eql(u8, cmd, "config")) {
 		parsed.command = .config;
+		i += 1;
+	} else if (std.mem.eql(u8, cmd, "init")) {
+		parsed.command = .init;
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "index")) {
 		parsed.command = .index;
@@ -511,6 +518,12 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+		if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) {
+			parsed.force = true;
+			parsed.seen.force = true;
+			i += 1;
+			continue;
+		}
 		if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
 			parsed.command = .help;
 			return parsed;
@@ -810,4 +823,29 @@ test "parse --format invalid value errors" {
 test "parse search missing query errors" {
 	const args = [_][]const u8{ "codescan", "search" };
 	try std.testing.expectError(error.MissingQuery, parse(std.testing.allocator, &args));
+}
+
+test "parse init command" {
+	const args = [_][]const u8{ "codescan", "init" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.init, parsed.command);
+	try std.testing.expect(!parsed.force);
+}
+
+test "parse init --force" {
+	const args = [_][]const u8{ "codescan", "init", "--force" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.init, parsed.command);
+	try std.testing.expect(parsed.force);
+	try std.testing.expect(parsed.seen.force);
+}
+
+test "parse init -f shorthand" {
+	const args = [_][]const u8{ "codescan", "init", "-f" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.init, parsed.command);
+	try std.testing.expect(parsed.force);
 }

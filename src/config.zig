@@ -1,6 +1,57 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 
+/// Default config template written to new .codescan/config files.
+/// All values are commented out; uncomment to override defaults.
+pub const default_template =
+    \\# codescan project configuration
+    \\# Uncomment and modify values as needed.
+    \\# Changes take effect on the next command invocation.
+    \\# See: codescan --help
+    \\
+    \\# Output format: human or json
+    \\#output=human
+    \\
+    \\# Number of search results to return
+    \\#top=10
+    \\
+    \\# Ollama embedding server
+    \\#ollama_url=http://localhost:11434
+    \\#ollama_model=bge-large
+    \\#embedding_dim=1024
+    \\#batch_size=16
+    \\
+    \\# Maximum file size to index (bytes, default 2 MiB)
+    \\#max_file_size=2097152
+    \\
+    \\# Search tuning
+    \\#search_mode=hybrid
+    \\#weight_vector=0.7
+    \\#weight_lexical=0.3
+    \\#min_score=0.0
+    \\
+    \\# Index/search file filters (comma-separated)
+    \\#index_ext=
+    \\#index_type=code,doc
+    \\#search_ext=
+    \\#search_type=
+    \\#search_lang=
+    \\#primary_lang=
+    \\
+    \\# Include options
+    \\#include_docs=false
+    \\#include_node_modules=false
+    \\
+    \\# Ignore patterns (comma-separated globs, can be per-language)
+    \\#ignore=
+    \\#ignore.zig=zig-cache,zig-out
+    \\
+    \\# HTTP API server
+    \\#http_host=127.0.0.1
+    \\#http_port=8123
+    \\
+;
+
 pub const IgnoreOverride = struct {
 	language: []const u8,
 	patterns: std.ArrayListUnmanaged([]const u8) = .{},
@@ -413,6 +464,18 @@ test "parseText errors on invalid line" {
 test "parseText errors on unknown key" {
 	const allocator = std.testing.allocator;
 	try std.testing.expectError(error.UnknownKey, parseText(allocator, "nope=1\n"));
+}
+
+test "default_template parses without error" {
+	const allocator = std.testing.allocator;
+	var cfg = try parseText(allocator, default_template);
+	defer cfg.deinit(allocator);
+	// All values should remain null (everything is commented out)
+	try std.testing.expect(cfg.output == null);
+	try std.testing.expect(cfg.top_n == null);
+	try std.testing.expect(cfg.max_file_size == null);
+	try std.testing.expect(cfg.ollama_url == null);
+	try std.testing.expect(cfg.search_mode == null);
 }
 
 test "loadFromPath reads file" {

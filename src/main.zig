@@ -20,6 +20,9 @@ const watcher = @import("watcher.zig");
 const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
 
+/// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
+var g_stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
+
 const Defaults = struct {
 	output: cli.OutputFormat = .human,
 	top_n: usize = 10,
@@ -145,6 +148,108 @@ pub fn main() !void {
 			} else {
 				try editConfig(allocator, cfg_path);
 			}
+		},
+		.init => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+
+			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+
+			// Check if .codescan/ already exists
+			const dir_exists = blk: {
+				var d = std.fs.cwd().openDir(codescan_dir, .{}) catch break :blk false;
+				d.close();
+				break :blk true;
+			};
+
+			if (dir_exists) {
+				if (parsed.force) {
+					// --force: delete and recreate
+					std.fs.cwd().deleteTree(codescan_dir) catch |err| {
+						_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
+						_ = stderr.flush() catch {};
+						std.process.exit(1);
+					};
+				} else if (std.fs.File.stdin().isTty()) {
+					// Interactive: prompt user
+					_ = stderr.print("{s}/ already exists. Remove and reinitialize? [y/N] ", .{codescan_dir}) catch {};
+					_ = stderr.flush() catch {};
+					var input_buf: [16]u8 = undefined;
+					const stdin = std.fs.File.stdin();
+					const n = stdin.read(&input_buf) catch 0;
+					if (n > 0 and (input_buf[0] == 'y' or input_buf[0] == 'Y')) {
+						std.fs.cwd().deleteTree(codescan_dir) catch |err| {
+							_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
+							_ = stderr.flush() catch {};
+							std.process.exit(1);
+						};
+					} else {
+						try stdout.print("Using existing index.\n", .{});
+						try stdout.flush();
+						return;
+					}
+				} else {
+					// Non-interactive: bail
+					try stdout.print("Already initialized. Use --force to reinitialize.\n", .{});
+					try stdout.flush();
+					return;
+				}
+			}
+
+			// Create .codescan/ directory and write default config
+			try ensureParentDir(settings.db_path);
+			{
+				const cfg_path = try configPath(allocator, config_root);
+				defer allocator.free(cfg_path);
+				try ensureConfigWithDefaults(cfg_path);
+			}
+
+			// Open DB and init schema
+			const db = try storage.openFileWithVec(allocator, settings.db_path);
+			defer storage.close(db);
+			try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+
+			// Try Ollama; fall back to lexical-only if unavailable
+			var http_client = ollama.StdHttpTransport.init(allocator);
+			defer http_client.deinit();
+			const ollama_ok = tryInitOllama(allocator, &http_client, settings.ollama_url, settings.ollama_model, stderr);
+
+			var embedder_adapter = embedding.OllamaEmbedder{
+				.transport = http_client.transport(),
+				.base_url = settings.ollama_url,
+				.model = settings.ollama_model,
+			};
+
+			const show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output);
+
+			// Perform full index
+			const stats = try performFullIndex(
+				allocator,
+				db,
+				settings,
+				registry,
+				embedder_adapter.embedder(),
+				stderr,
+				show_progress,
+			);
+
+			// Print summary
+			if (settings.output == .json) {
+				try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d},\"semantic\":{s}}}\n", .{
+					stats.files, stats.symbols, if (ollama_ok) "true" else "false",
+				});
+			} else {
+				try stdout.print("Initialized codescan: {d} files, {d} symbols indexed", .{ stats.files, stats.symbols });
+				if (!ollama_ok) {
+					try stdout.print(" (lexical only)", .{});
+				}
+				try stdout.print("\n", .{});
+			}
+			try stdout.flush();
+
+			// Start background watcher
+			maybeStartWatcher(allocator, settings, stderr);
 		},
 		.index => {
 			try ensureParentDir(settings.db_path);
@@ -529,10 +634,12 @@ pub fn main() !void {
 					var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 					defer index_filters.deinit(allocator);
 
-					var stop_flag = std.atomic.Value(bool).init(false);
+					g_stop_flag.store(false, .release);
 					const act = std.posix.Sigaction{
 						.handler = .{ .handler = struct {
-							fn handler(_: c_int) callconv(.c) void {}
+							fn handler(_: c_int) callconv(.c) void {
+								g_stop_flag.store(true, .release);
+							}
 						}.handler },
 						.mask = std.posix.sigemptyset(),
 						.flags = 0,
@@ -563,7 +670,7 @@ pub fn main() !void {
 								.show_progress = false,
 							},
 						},
-						&stop_flag,
+						&g_stop_flag,
 					);
 				},
 			}
@@ -927,7 +1034,7 @@ fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Wr
 
 fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 	try ensureParentDir(path);
-	ensureFileExists(path) catch |err| return err;
+	try ensureConfigWithDefaults(path);
 
 	const editor = getEditor(allocator) catch |err| switch (err) {
 		error.MissingEditor => {
@@ -999,6 +1106,27 @@ fn ensureFileExists(path: []const u8) !void {
 		error.FileNotFound => {
 			const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = false });
 			file.close();
+		},
+		else => return err,
+	}
+}
+
+fn ensureConfigWithDefaults(path: []const u8) !void {
+	const result = std.fs.cwd().openFile(path, .{});
+	if (result) |file| {
+		// File exists — check if it's empty
+		const stat = try file.stat();
+		file.close();
+		if (stat.size == 0) {
+			const f = try std.fs.cwd().createFile(path, .{ .truncate = true });
+			defer f.close();
+			try f.writeAll(config.default_template);
+		}
+	} else |err| switch (err) {
+		error.FileNotFound => {
+			const file = try std.fs.cwd().createFile(path, .{});
+			defer file.close();
+			try file.writeAll(config.default_template);
 		},
 		else => return err,
 	}
@@ -1805,6 +1933,7 @@ const usage =
 	\\codescan [command] [options]
 	\\
 	\\Commands:
+	\\  init [--force]           Initialize codescan for this project
 	\\  config [show|edit]       Show or edit project config
 	\\  index                    Index codebase
 	\\  update                   Incremental index (only new/modified/deleted)

@@ -1,5 +1,6 @@
 const std = @import("std");
 const model = @import("model.zig");
+const LineIndex = @import("line_index.zig").LineIndex;
 
 pub fn extract(
 	allocator: std.mem.Allocator,
@@ -11,6 +12,10 @@ pub fn extract(
 
 	var tree = try std.zig.Ast.parse(allocator, source_z, .zig);
 	defer tree.deinit(allocator);
+
+	// Build line-offset table once — O(n) — then O(log n) per lookup
+	var line_idx = try LineIndex.build(allocator, source);
+	defer line_idx.deinit(allocator);
 
 	var results = std.ArrayListUnmanaged(model.Symbol){};
 	errdefer {
@@ -33,8 +38,8 @@ pub fn extract(
 
 			const start_tok = tree.firstToken(node);
 			const end_tok = tree.lastToken(node);
-			const start_loc = tree.tokenLocation(0, start_tok);
-			const end_loc = tree.tokenLocation(0, end_tok);
+			const start_line = line_idx.lineForOffset(tree.tokenStart(start_tok));
+			const end_line = line_idx.lineForOffset(tree.tokenStart(end_tok));
 
 			const symbol = model.Symbol{
 				.language = try allocator.dupe(u8, "zig"),
@@ -42,12 +47,12 @@ pub fn extract(
 				.name = try allocator.dupe(u8, name),
 				.signature = signature,
 				.doc_comment = doc_comment,
-				.start_line = start_loc.line + 1,
-				.end_line = end_loc.line + 1,
+				.start_line = start_line + 1,
+				.end_line = end_line + 1,
 			};
 			try results.append(allocator, symbol);
 		} else if (tag == .simple_var_decl or tag == .global_var_decl or tag == .aligned_var_decl) {
-			if (try extractVarDecl(allocator, file_path, tree, node, tag)) |symbol| {
+			if (try extractVarDecl(allocator, file_path, tree, node, tag, line_idx)) |symbol| {
 				try results.append(allocator, symbol);
 			}
 		}
@@ -76,6 +81,7 @@ fn extractVarDecl(
 	tree: std.zig.Ast,
 	node: std.zig.Ast.Node.Index,
 	tag: std.zig.Ast.Node.Tag,
+	line_idx: LineIndex,
 ) !?model.Symbol {
 	const var_decl = switch (tag) {
 		.simple_var_decl => tree.simpleVarDecl(node),
@@ -91,8 +97,8 @@ fn extractVarDecl(
 	// Build signature from the first line of the declaration
 	const start_tok = tree.firstToken(node);
 	const end_tok = tree.lastToken(node);
-	const start_loc = tree.tokenLocation(0, start_tok);
-	const end_loc = tree.tokenLocation(0, end_tok);
+	const start_line = line_idx.lineForOffset(tree.tokenStart(start_tok));
+	const end_line = line_idx.lineForOffset(tree.tokenStart(end_tok));
 	const start_byte = tree.tokenStart(start_tok);
 
 	// Get the first line of the decl for the signature
@@ -109,8 +115,8 @@ fn extractVarDecl(
 		.name = try allocator.dupe(u8, name),
 		.signature = signature,
 		.doc_comment = doc_comment,
-		.start_line = start_loc.line + 1,
-		.end_line = end_loc.line + 1,
+		.start_line = start_line + 1,
+		.end_line = end_line + 1,
 	};
 }
 
