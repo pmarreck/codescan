@@ -152,18 +152,13 @@ pub fn search(
 		// distinguish definitions from call sites, so boost/penalize based on
 		// whether the query matches the symbol name vs. just appearing in the signature.
 		if (!options.comments_only and query_trimmed.len > 0 and options.mode != .lexical) {
-			const in_name = std.ascii.indexOfIgnoreCase(res.symbol.name, query_trimmed) != null;
-			if (std.ascii.eqlIgnoreCase(query_trimmed, res.symbol.name)) {
-				// Exact name match: this symbol IS the query
-				res.score = @min(1.0, res.score * 1.25);
-			} else if (in_name) {
-				// Query is a substring of the name
-				res.score = @min(1.0, res.score * 1.1);
-			} else if (lexical > 0) {
-				// Query not in name but matches signature/doc; penalize to rank
-				// below name matches. Skip when lex is 0 — pure vector results
-				// shouldn't be doubly penalized (already low from zero lex contribution).
-				res.score = res.score * 0.7;
+			const name_rel = nameRelevance(allocator, query_trimmed, res.symbol.name) catch .none;
+			switch (name_rel) {
+				.exact => res.score = @min(1.0, res.score * 1.25),
+				.substring => res.score = @min(1.0, res.score * 1.1),
+				.none => if (lexical > 0) {
+					res.score = res.score * 0.7;
+				},
 			}
 		}
 	}
@@ -574,6 +569,84 @@ fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
 	}
 	try out.writer.writeAll("]");
 	return out.toOwnedSlice();
+}
+
+const NameRelevance = enum { exact, substring, none };
+
+/// Determine how the query relates to the symbol name.
+/// Handles multi-word queries by checking camelCase/snake_case joins
+/// and whether all individual tokens appear in the name.
+fn nameRelevance(allocator: std.mem.Allocator, query: []const u8, name: []const u8) !NameRelevance {
+	// Single-token fast path: direct comparison
+	if (std.mem.indexOfScalar(u8, query, ' ') == null) {
+		if (std.ascii.eqlIgnoreCase(query, name)) return .exact;
+		if (std.ascii.indexOfIgnoreCase(name, query) != null) return .substring;
+		return .none;
+	}
+
+	// Multi-word: try camelCase and snake_case joins for exact match
+	const camel = try joinCamelCase(allocator, query);
+	defer allocator.free(camel);
+	if (std.ascii.eqlIgnoreCase(camel, name)) return .exact;
+
+	const snake = try joinSnakeCase(allocator, query);
+	defer allocator.free(snake);
+	if (std.ascii.eqlIgnoreCase(snake, name)) return .exact;
+
+	// Check if camelCase/snake_case join is a substring of the name
+	if (std.ascii.indexOfIgnoreCase(name, camel) != null) return .substring;
+	if (std.ascii.indexOfIgnoreCase(name, snake) != null) return .substring;
+
+	// Check if ALL query tokens appear individually in the name
+	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
+	var all_in_name = true;
+	var token_count: usize = 0;
+	while (tokens.next()) |tok| {
+		token_count += 1;
+		if (std.ascii.indexOfIgnoreCase(name, tok) == null) {
+			all_in_name = false;
+			break;
+		}
+	}
+	if (all_in_name and token_count > 0) return .substring;
+
+	return .none;
+}
+
+/// Join query words as camelCase: "draw rectangle" → "drawRectangle"
+fn joinCamelCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
+	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
+	var parts = std.ArrayListUnmanaged(u8){};
+	defer parts.deinit(allocator);
+	var first = true;
+	while (tokens.next()) |tok| {
+		if (tok.len == 0) continue;
+		if (first) {
+			try parts.appendSlice(allocator, tok);
+			first = false;
+		} else {
+			// Capitalize first letter
+			var upper: [1]u8 = .{std.ascii.toUpper(tok[0])};
+			try parts.appendSlice(allocator, &upper);
+			if (tok.len > 1) try parts.appendSlice(allocator, tok[1..]);
+		}
+	}
+	return parts.toOwnedSlice(allocator);
+}
+
+/// Join query words as snake_case: "draw rectangle" → "draw_rectangle"
+fn joinSnakeCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
+	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
+	var parts = std.ArrayListUnmanaged(u8){};
+	defer parts.deinit(allocator);
+	var first = true;
+	while (tokens.next()) |tok| {
+		if (tok.len == 0) continue;
+		if (!first) try parts.append(allocator, '_');
+		try parts.appendSlice(allocator, tok);
+		first = false;
+	}
+	return parts.toOwnedSlice(allocator);
 }
 
 fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
@@ -1254,6 +1327,26 @@ test "lexicalScore name substring bonus for contained query" {
 
 	// Name containing the full query should get substring bonus
 	try std.testing.expect(score_contains > score_none);
+}
+
+test "nameRelevance matches camelCase from multi-word query" {
+	const allocator = std.testing.allocator;
+	// "draw rectangle" → camelCase "drawRectangle" matches exactly
+	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "draw rectangle", "drawRectangle"));
+	// snake_case match
+	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "draw rectangle", "draw_rectangle"));
+	// All tokens in name (different joining)
+	try std.testing.expectEqual(NameRelevance.substring, try nameRelevance(allocator, "draw rectangle", "drawBigRectangle"));
+	// camelCase join is substring of a longer name
+	try std.testing.expectEqual(NameRelevance.substring, try nameRelevance(allocator, "draw rect", "myDrawRectHelper"));
+	// Single word exact
+	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "init", "init"));
+	// Single word substring
+	try std.testing.expectEqual(NameRelevance.substring, try nameRelevance(allocator, "init", "initEvents"));
+	// No match at all
+	try std.testing.expectEqual(NameRelevance.none, try nameRelevance(allocator, "draw rectangle", "colorPicker"));
+	// Case-insensitive exact
+	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "Draw Rectangle", "drawRectangle"));
 }
 
 const FakeEmbedder = struct {
