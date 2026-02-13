@@ -135,6 +135,7 @@ pub fn search(
 		results = filtered;
 	}
 
+	const query_trimmed = std.mem.trim(u8, query, " \t\r\n");
 	for (results.items) |*res| {
 		const lexical = try lexicalScore(allocator, query, res.symbol, options.comments_only);
 		res.lexical = lexical;
@@ -145,6 +146,23 @@ pub fn search(
 			res.score = lexical;
 		} else {
 			res.score = vector_score * weight_vector + lexical * weight_lexical;
+		}
+
+		// Post-combination name-relevance adjustment: the vector model doesn't
+		// distinguish definitions from call sites, so boost/penalize based on
+		// whether the query matches the symbol name vs. just appearing in the signature.
+		if (!options.comments_only and query_trimmed.len > 0 and options.mode != .lexical) {
+			const in_name = std.ascii.indexOfIgnoreCase(res.symbol.name, query_trimmed) != null;
+			if (std.ascii.eqlIgnoreCase(query_trimmed, res.symbol.name)) {
+				// Exact name match: this symbol IS the query
+				res.score = @min(1.0, res.score * 1.25);
+			} else if (in_name) {
+				// Query is a substring of the name
+				res.score = @min(1.0, res.score * 1.1);
+			} else {
+				// Query not in name at all — only in signature/doc; penalize
+				res.score = res.score * 0.7;
+			}
 		}
 	}
 
@@ -560,23 +578,33 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 	_ = allocator;
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
 	var token_count: usize = 0;
-	var match_count: usize = 0;
+	var weighted_score: f32 = 0;
 
+	// Weight matches by where the query term appears:
+	//   name match    → 1.0  (this symbol IS the thing)
+	//   doc comment   → 0.5  (described in docs)
+	//   signature only → 0.3 (just referenced/called in body)
 	while (tokens.next()) |tok| {
 		token_count += 1;
 
 		const in_doc = if (symbol.doc_comment) |doc| std.ascii.indexOfIgnoreCase(doc, tok) != null else false;
 		if (comments_only) {
-			if (in_doc) match_count += 1;
+			if (in_doc) weighted_score += 1.0;
 		} else {
 			const in_name = std.ascii.indexOfIgnoreCase(symbol.name, tok) != null;
 			const in_sig = std.ascii.indexOfIgnoreCase(symbol.signature, tok) != null;
-			if (in_name or in_sig or in_doc) match_count += 1;
+			if (in_name) {
+				weighted_score += 1.0;
+			} else if (in_doc) {
+				weighted_score += 0.5;
+			} else if (in_sig) {
+				weighted_score += 0.3;
+			}
 		}
 	}
 
 	if (token_count == 0) return 0;
-	var base_score = @as(f32, @floatFromInt(match_count)) / @as(f32, @floatFromInt(token_count));
+	var base_score = weighted_score / @as(f32, @floatFromInt(token_count));
 
 	// Exact-match and substring bonuses (only for non-comment-only mode)
 	if (!comments_only) {
@@ -668,8 +696,9 @@ test "lexicalScore matches query tokens" {
 	};
 	defer symbol.deinit(allocator);
 
+	// Both tokens match only in doc_comment (0.5 weight each) → 0.5
 	const score = try lexicalScore(allocator, "hash functions", symbol, false);
-	try std.testing.expectApproxEqAbs(@as(f32, 1.0), score, 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.5), score, 0.0001);
 }
 
 test "lexicalScore comments_only ignores name and signature" {
@@ -966,7 +995,8 @@ test "search hybrid normalizes weights" {
 	defer freeResults(allocator, results);
 
 	try std.testing.expectEqual(@as(usize, 1), results.len);
-	try std.testing.expectApproxEqAbs(@as(f32, 0.6666667), results[0].score, 0.0001);
+	// "missing" not in symbol name → ×0.7 penalty: (2/3) * 0.7 ≈ 0.4667
+	try std.testing.expectApproxEqAbs(@as(f32, 0.46666667), results[0].score, 0.0001);
 }
 
 test "search lexical uses fts when available" {
