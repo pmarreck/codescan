@@ -25,7 +25,8 @@
 				pcre2-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/pcre2.git";
 					rev = "8fb017d8c41587a3eb3ac165b6e743d318c8fcfe";
-					hash = "sha256-SYMIiNgDIFjDUBTE0vIHvvdUzanjqo7fxqhWPIxkdts=";
+					hash = "sha256-ru0tyw/GkB0D89ZHMhy+NsrbRPwZJoF5KwOJu7BW24c=";
+					fetchSubmodules = true;
 				};
 
 				# Create a directory matching Zig's package cache layout
