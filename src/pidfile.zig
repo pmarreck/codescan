@@ -1,7 +1,14 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+const is_posix = switch (builtin.os.tag) {
+	.windows => false,
+	else => true,
+};
 
 /// Writes the current process PID to `.codescan/watcher.pid` under the given codescan dir.
 pub fn writePid(allocator: std.mem.Allocator, codescan_dir: []const u8) !void {
+	if (!is_posix) return;
 	const path = try pidPath(allocator, codescan_dir);
 	defer allocator.free(path);
 
@@ -16,6 +23,7 @@ pub fn writePid(allocator: std.mem.Allocator, codescan_dir: []const u8) !void {
 
 /// Removes the PID file. Safe to call if file doesn't exist.
 pub fn removePid(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
+	if (!is_posix) return;
 	const path = pidPath(allocator, codescan_dir) catch return;
 	defer allocator.free(path);
 	std.fs.cwd().deleteFile(path) catch {};
@@ -23,7 +31,8 @@ pub fn removePid(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
 
 /// Reads the PID from the file and checks if the process is alive.
 /// Returns the PID if alive, null if file missing, unreadable, or process dead.
-pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !?std.posix.pid_t {
+pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !?PidType {
+	if (!is_posix) return null;
 	const path = try pidPath(allocator, codescan_dir);
 	defer allocator.free(path);
 
@@ -31,7 +40,7 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	defer allocator.free(contents);
 
 	const trimmed = std.mem.trim(u8, contents, &std.ascii.whitespace);
-	const pid = std.fmt.parseInt(std.posix.pid_t, trimmed, 10) catch return null;
+	const pid = std.fmt.parseInt(PidType, trimmed, 10) catch return null;
 
 	if (pid <= 0) return null;
 
@@ -42,6 +51,8 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	// Process doesn't exist (ESRCH) or we can't signal it — treat as dead
 	return null;
 }
+
+const PidType = if (is_posix) std.posix.pid_t else i32;
 
 /// Convenience: returns true if a watcher process is currently running.
 pub fn isWatcherRunning(allocator: std.mem.Allocator, codescan_dir: []const u8) bool {
@@ -56,6 +67,7 @@ fn pidPath(allocator: std.mem.Allocator, codescan_dir: []const u8) ![]u8 {
 // Tests
 
 test "writePid creates file with current PID" {
+	if (!is_posix) return;
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
@@ -73,6 +85,7 @@ test "writePid creates file with current PID" {
 }
 
 test "readAndCheckPid returns current PID when alive" {
+	if (!is_posix) return;
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
@@ -100,6 +113,7 @@ test "readAndCheckPid returns null for missing file" {
 }
 
 test "readAndCheckPid returns null for stale PID" {
+	if (!is_posix) return;
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
@@ -117,6 +131,7 @@ test "readAndCheckPid returns null for stale PID" {
 }
 
 test "removePid cleans up file" {
+	if (!is_posix) return;
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
@@ -137,6 +152,7 @@ test "removePid cleans up file" {
 }
 
 test "isWatcherRunning returns true for current process" {
+	if (!is_posix) return;
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
