@@ -32,7 +32,36 @@ pub fn extract(
 			continue;
 		}
 
-		if (isDefLine(trimmed)) {
+		if (isModuleLine(trimmed)) {
+			const mod_name = extractModuleName(trimmed) orelse continue;
+			const signature = try allocator.dupe(u8, extractSignature(trimmed));
+
+			// Don't call findEndLine — we want to keep scanning inner defs
+			const symbol = model.Symbol{
+				.language = try allocator.dupe(u8, "elixir"),
+				.file_path = try allocator.dupe(u8, file_path),
+				.name = try allocator.dupe(u8, mod_name),
+				.signature = signature,
+				.doc_comment = doc_comment,
+				.start_line = line_no,
+				.end_line = line_no, // just the defmodule line
+			};
+			doc_comment = null;
+			try results.append(allocator, symbol);
+		} else if (isStructLine(trimmed)) {
+			const signature = try allocator.dupe(u8, std.mem.trimRight(u8, trimmed, " \t\r"));
+			const symbol = model.Symbol{
+				.language = try allocator.dupe(u8, "elixir"),
+				.file_path = try allocator.dupe(u8, file_path),
+				.name = try allocator.dupe(u8, "defstruct"),
+				.signature = signature,
+				.doc_comment = doc_comment,
+				.start_line = line_no,
+				.end_line = line_no,
+			};
+			doc_comment = null;
+			try results.append(allocator, symbol);
+		} else if (isDefLine(trimmed)) {
 			const name = extractName(trimmed) orelse continue;
 			const signature = try allocator.dupe(u8, extractSignature(trimmed));
 			const start_line = line_no;
@@ -57,6 +86,24 @@ pub fn extract(
 
 fn isDefLine(line: []const u8) bool {
 	return std.mem.startsWith(u8, line, "def ") or std.mem.startsWith(u8, line, "defp ");
+}
+
+fn isModuleLine(line: []const u8) bool {
+	return std.mem.startsWith(u8, line, "defmodule ");
+}
+
+fn isStructLine(line: []const u8) bool {
+	return std.mem.startsWith(u8, line, "defstruct");
+}
+
+fn extractModuleName(line: []const u8) ?[]const u8 {
+	if (!std.mem.startsWith(u8, line, "defmodule ")) return null;
+	const rest = line["defmodule ".len..];
+	const end_idx = std.mem.indexOfAny(u8, rest, " \t{") orelse rest.len;
+	// Also trim "do" if present
+	const candidate = std.mem.trimRight(u8, rest[0..end_idx], " \t");
+	if (std.mem.eql(u8, candidate, "do")) return null;
+	return if (candidate.len > 0) candidate else null;
 }
 
 fn extractName(line: []const u8) ?[]const u8 {
@@ -178,6 +225,47 @@ fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]const u
 	return out.toOwnedSlice();
 }
 
+test "extract finds elixir defmodule" {
+	const allocator = std.testing.allocator;
+	const source =
+		"defmodule MyApp.Router do\n" ++
+		"  def hello, do: :world\n" ++
+		"end\n";
+
+	const symbols = try extract(allocator, "lib/router.ex", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expect(symbols.len >= 1);
+	try std.testing.expectEqualStrings("MyApp.Router", symbols[0].name);
+}
+
+test "extract finds elixir defstruct" {
+	const allocator = std.testing.allocator;
+	const source =
+		"defmodule User do\n" ++
+		"  defstruct [:name, :email]\n" ++
+		"end\n";
+
+	const symbols = try extract(allocator, "lib/user.ex", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	// Should find both defmodule and defstruct
+	var found_module = false;
+	var found_struct = false;
+	for (symbols) |sym| {
+		if (std.mem.eql(u8, sym.name, "User")) found_module = true;
+		if (std.mem.eql(u8, sym.name, "defstruct")) found_struct = true;
+	}
+	try std.testing.expect(found_module);
+	try std.testing.expect(found_struct);
+}
+
 test "extract finds elixir defs" {
 	const allocator = std.testing.allocator;
 	const source =
@@ -196,9 +284,11 @@ test "extract finds elixir defs" {
 		allocator.free(symbols);
 	}
 
-	try std.testing.expectEqual(@as(usize, 2), symbols.len);
-	try std.testing.expectEqualStrings("add", symbols[0].name);
-	try std.testing.expectEqualStrings("adds", symbols[0].doc_comment.?);
-	try std.testing.expectEqual(@as(usize, 3), symbols[0].start_line);
-	try std.testing.expectEqual(@as(usize, 5), symbols[0].end_line);
+	// Now finds defmodule + def + defp = 3 symbols
+	try std.testing.expectEqual(@as(usize, 3), symbols.len);
+	try std.testing.expectEqualStrings("Demo", symbols[0].name);
+	try std.testing.expectEqualStrings("add", symbols[1].name);
+	try std.testing.expectEqualStrings("adds", symbols[1].doc_comment.?);
+	try std.testing.expectEqual(@as(usize, 3), symbols[1].start_line);
+	try std.testing.expectEqual(@as(usize, 5), symbols[1].end_line);
 }

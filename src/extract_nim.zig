@@ -71,7 +71,10 @@ fn isCallableDecl(node: ts.TSNode) bool {
 		std.mem.eql(u8, ty, "iterator_declaration") or
 		std.mem.eql(u8, ty, "macro_declaration") or
 		std.mem.eql(u8, ty, "template_declaration") or
-		std.mem.eql(u8, ty, "converter_declaration");
+		std.mem.eql(u8, ty, "converter_declaration") or
+		std.mem.eql(u8, ty, "type_section") or
+		std.mem.eql(u8, ty, "const_section") or
+		std.mem.eql(u8, ty, "var_section");
 }
 
 fn extractFunction(

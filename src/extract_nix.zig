@@ -75,16 +75,17 @@ fn extractBinding(
 	lines: []const []const u8,
 	node: ts.TSNode,
 ) !?model.Symbol {
-	const expr = ts.ts_node_child_by_field_name(node, "expression", "expression".len);
-	if (ts.ts_node_is_null(expr)) return null;
-	if (!isFunctionExpression(expr)) return null;
-
 	const name_node = ts.ts_node_child_by_field_name(node, "attrpath", "attrpath".len);
 	if (ts.ts_node_is_null(name_node)) return null;
 	const name = nodeText(source, name_node);
 	if (name.len == 0) return null;
 
-	const signature = try extractSignature(allocator, source, name, expr);
+	const expr = ts.ts_node_child_by_field_name(node, "expression", "expression".len);
+	const signature = if (!ts.ts_node_is_null(expr) and isFunctionExpression(expr))
+		try extractSignature(allocator, source, name, expr)
+	else
+		try extractFirstLineSignature(allocator, source, node);
+
 	const doc_comment = try util.extractDocComment(allocator, lines, @intCast(ts.ts_node_start_point(node).row), .{
 		.line_prefixes = &[_][]const u8{ "#" },
 		.block_start = "/*",
@@ -104,6 +105,14 @@ fn extractBinding(
 		.end_line = end_point.row + 1,
 	};
 	return symbol;
+}
+
+fn extractFirstLineSignature(allocator: std.mem.Allocator, source: []const u8, node: ts.TSNode) ![]const u8 {
+	const start = @as(usize, @intCast(ts.ts_node_start_byte(node)));
+	if (start >= source.len) return allocator.dupe(u8, "");
+	const remaining = source[start..];
+	const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
+	return allocator.dupe(u8, std.mem.trimRight(u8, remaining[0..newline_pos], " \t\r;"));
 }
 
 fn isFunctionExpression(node: ts.TSNode) bool {

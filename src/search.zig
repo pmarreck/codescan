@@ -2,6 +2,7 @@ const std = @import("std");
 const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
 const model = @import("model.zig");
+const hashline = @import("hashline.zig");
 
 const sqlite = storage.sqlite;
 
@@ -18,6 +19,7 @@ pub const Options = struct {
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
 	min_score: f32 = 0.0,
+	score_dropoff: f32 = 0.65,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
 	allowed_exts: []const []const u8 = &[_][]const u8{},
 	comments_only: bool = false,
@@ -159,7 +161,19 @@ pub fn search(
 
 	std.sort.heap(Result, filtered.items, {}, sortByScoreDesc);
 
-	const take = @min(filtered.items.len, options.top_n);
+	// Apply score dropoff: drop results below top_score * score_dropoff
+	var relevant: usize = filtered.items.len;
+	if (filtered.items.len > 0 and options.score_dropoff > 0) {
+		const floor = filtered.items[0].score * options.score_dropoff;
+		relevant = 0;
+		for (filtered.items) |res| {
+			if (res.score >= floor) {
+				relevant += 1;
+			} else break; // sorted desc, so once below floor, all remaining are too
+		}
+	}
+
+	const take = @min(relevant, options.top_n);
 	const out = try allocator.alloc(Result, take);
 	@memcpy(out, filtered.items[0..take]);
 	for (filtered.items[take..]) |*res| res.deinit(allocator);
@@ -237,7 +251,7 @@ fn vectorCandidates(
 	const table = if (comments_only) "embeddings_comment" else "embeddings";
 	const sql = try allocPrintZ(
 		allocator,
-		"SELECT symbols.id, lang, file_path, start_line, end_line, symbol_name, signature, doc_comment, "
+		"SELECT symbols.id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
 		++ "vec_distance_l2(embedding, vec_f32(?1)) AS distance "
 		++ "FROM {s} JOIN symbols ON {s}.rowid = symbols.id "
 		++ "ORDER BY distance LIMIT ?2;",
@@ -306,7 +320,7 @@ fn likeCandidates(
 	defer allocator.free(pattern_z);
 
 	const sql: [:0]const u8 =
-		"SELECT id, lang, file_path, start_line, end_line, symbol_name, signature, doc_comment, "
+		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
 		++ "0.0 AS distance "
 		++ "FROM symbols "
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
@@ -358,7 +372,7 @@ fn commentCandidates(
 	defer allocator.free(pattern_z);
 
 	const sql: [:0]const u8 =
-		"SELECT id, lang, file_path, start_line, end_line, symbol_name, signature, doc_comment, "
+		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
 		++ "0.0 AS distance "
 		++ "FROM symbols "
 		++ "WHERE doc_comment IS NOT NULL "
@@ -410,8 +424,8 @@ fn ftsCandidates(
 
 	const sql_ranked = try allocPrintZ(
 		allocator,
-		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.end_line, "
-		++ "symbols.symbol_name, symbols.signature, symbols.doc_comment, "
+		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
+		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "0.0 AS distance "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
@@ -422,8 +436,8 @@ fn ftsCandidates(
 	defer allocator.free(sql_ranked);
 	const sql_plain = try allocPrintZ(
 		allocator,
-		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.end_line, "
-		++ "symbols.symbol_name, symbols.signature, symbols.doc_comment, "
+		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
+		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "0.0 AS distance "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
@@ -466,11 +480,13 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 	const lang = try dupColumnText(allocator, stmt, 1);
 	const file_path = try dupColumnText(allocator, stmt, 2);
 	const start_line = @as(usize, @intCast(sqlite.sqlite3_column_int64(stmt, 3)));
-	const end_line = @as(usize, @intCast(sqlite.sqlite3_column_int64(stmt, 4)));
-	const name = try dupColumnText(allocator, stmt, 5);
-	const signature = try dupColumnText(allocator, stmt, 6);
-	const doc_comment = try dupColumnTextOptional(allocator, stmt, 7);
-	const distance = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt, 8)));
+	const start_hash = readHashColumn(stmt, 4);
+	const end_line = @as(usize, @intCast(sqlite.sqlite3_column_int64(stmt, 5)));
+	const end_hash = readHashColumn(stmt, 6);
+	const name = try dupColumnText(allocator, stmt, 7);
+	const signature = try dupColumnText(allocator, stmt, 8);
+	const doc_comment = try dupColumnTextOptional(allocator, stmt, 9);
+	const distance = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt, 10)));
 
 	return .{
 		.id = id,
@@ -482,11 +498,20 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 			.doc_comment = doc_comment,
 			.start_line = start_line,
 			.end_line = end_line,
+			.start_hash = start_hash,
+			.end_hash = end_hash,
 		},
 		.score = 0,
 		.distance = distance,
 		.lexical = 0,
 	};
+}
+
+fn readHashColumn(stmt: *sqlite.sqlite3_stmt, col: c_int) ?hashline.Hash {
+	const ptr = sqlite.sqlite3_column_text(stmt, col) orelse return null;
+	const slice = std.mem.span(ptr);
+	if (slice.len < hashline.HASH_LEN) return null;
+	return slice[0..hashline.HASH_LEN].*;
 }
 
 fn bindText(stmt: *sqlite.sqlite3_stmt, index: c_int, text: []const u8) !void {
@@ -544,7 +569,23 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 	}
 
 	if (token_count == 0) return 0;
-	return @as(f32, @floatFromInt(match_count)) / @as(f32, @floatFromInt(token_count));
+	var base_score = @as(f32, @floatFromInt(match_count)) / @as(f32, @floatFromInt(token_count));
+
+	// Exact-match and substring bonuses (only for non-comment-only mode)
+	if (!comments_only) {
+		const query_trimmed = std.mem.trim(u8, query, " \t\r\n");
+		if (query_trimmed.len > 0) {
+			if (std.ascii.eqlIgnoreCase(query_trimmed, symbol.name)) {
+				// Exact name match → strong boost
+				base_score = @min(1.0, base_score + 0.5);
+			} else if (query_trimmed.len >= 3 and std.ascii.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
+				// Full query is a substring of the name → moderate boost
+				base_score = @min(1.0, base_score + 0.2);
+			}
+		}
+	}
+
+	return base_score;
 }
 
 fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
@@ -963,6 +1004,217 @@ test "search lexical uses fts when available" {
 	} else {
 		try std.testing.expectEqual(@as(usize, 0), results.len);
 	}
+}
+
+test "search hybrid returns no duplicate symbol IDs" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Insert a symbol that will match BOTH vector (nearby) and lexical (name match)
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/hash.zig"),
+		.name = try allocator.dupe(u8, "computeHash"),
+		.signature = try allocator.dupe(u8, "pub fn computeHash(data: []const u8) u32"),
+		.doc_comment = try allocator.dupe(u8, "Compute a hash digest"),
+		.start_line = 1,
+		.end_line = 10,
+	};
+	defer sym.deinit(allocator);
+
+	const id = try storage.insertSymbol(db, sym);
+	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 0.0, 0.0 });
+
+	// Hybrid search: vector will find it (close embedding), lexical will also find it (name match)
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = try search(allocator, db, fake.embedder(), "computeHash", .{
+		.top_n = 10,
+		.mode = .hybrid,
+	});
+	defer freeResults(allocator, results);
+
+	// Must appear exactly once despite matching both vector and lexical
+	try std.testing.expectEqual(@as(usize, 1), results.len);
+	try std.testing.expectEqualStrings("computeHash", results[0].symbol.name);
+
+	// Verify no duplicate IDs
+	for (results, 0..) |res, i| {
+		for (results[i + 1 ..]) |other| {
+			try std.testing.expect(res.id != other.id);
+		}
+	}
+}
+
+test "UNIQUE constraint prevents duplicate symbols in DB" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "foo"),
+		.signature = try allocator.dupe(u8, "fn foo() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym1.deinit(allocator);
+
+	_ = try storage.insertSymbol(db, sym1);
+
+	// Insert the same symbol again (same file, lines, name) — should replace, not duplicate
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "foo"),
+		.signature = try allocator.dupe(u8, "fn foo() void // updated"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym2.deinit(allocator);
+
+	_ = try storage.insertSymbol(db, sym2);
+
+	// Should have exactly 1 row, not 2
+	const count = try storage.countRows(db, allocator, "symbols");
+	try std.testing.expectEqual(@as(i64, 1), count);
+}
+
+test "search omits low-relevance results below score dropoff" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// sym1: very close to query vector
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "close"),
+		.signature = try allocator.dupe(u8, "fn close() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym1.deinit(allocator);
+
+	// sym2: moderately close
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "medium"),
+		.signature = try allocator.dupe(u8, "fn medium() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym2.deinit(allocator);
+
+	// sym3: very far from query vector — should be dropped by dropoff
+	var sym3 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/c.zig"),
+		.name = try allocator.dupe(u8, "distant"),
+		.signature = try allocator.dupe(u8, "fn distant() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym3.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym1);
+	const id2 = try storage.insertSymbol(db, sym2);
+	const id3 = try storage.insertSymbol(db, sym3);
+	// distance 0 → score 1.0, distance 0.5 → score ~0.667, distance 100 → score ~0.0099
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.5, 0.0 });
+	try storage.insertEmbedding(db, allocator, id3, &[_]f32{ 100.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = try search(allocator, db, fake.embedder(), "query", .{
+		.top_n = 10,
+		.mode = .vector,
+		.score_dropoff = 0.65,
+	});
+	defer freeResults(allocator, results);
+
+	// sym3 scores ~0.01, top score is 1.0, floor is 0.65 — sym3 should be dropped
+	try std.testing.expect(results.len < 3);
+	try std.testing.expect(results.len >= 1);
+	// First result should be the closest
+	try std.testing.expectEqualStrings("close", results[0].symbol.name);
+}
+
+test "exact symbol name match scores higher than partial match" {
+	const allocator = std.testing.allocator;
+	var sym_exact = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "insertSymbol"),
+		.signature = try allocator.dupe(u8, "fn insertSymbol() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_exact.deinit(allocator);
+
+	var sym_partial = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "deleteSymbol"),
+		.signature = try allocator.dupe(u8, "fn deleteSymbol() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_partial.deinit(allocator);
+
+	const score_exact = try lexicalScore(allocator, "insertSymbol", sym_exact, false);
+	const score_partial = try lexicalScore(allocator, "insertSymbol", sym_partial, false);
+
+	// Exact name match should score higher than partial (both have "Symbol" in name)
+	try std.testing.expect(score_exact > score_partial);
+	// Exact match should get the bonus
+	try std.testing.expect(score_exact >= 1.0);
+}
+
+test "lexicalScore name substring bonus for contained query" {
+	const allocator = std.testing.allocator;
+	var sym_contains = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "myInsertHelper"),
+		.signature = try allocator.dupe(u8, "fn myInsertHelper() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_contains.deinit(allocator);
+
+	var sym_no_match = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "deleteAll"),
+		.signature = try allocator.dupe(u8, "fn deleteAll() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_no_match.deinit(allocator);
+
+	const score_contains = try lexicalScore(allocator, "Insert", sym_contains, false);
+	const score_none = try lexicalScore(allocator, "Insert", sym_no_match, false);
+
+	// Name containing the full query should get substring bonus
+	try std.testing.expect(score_contains > score_none);
 }
 
 const FakeEmbedder = struct {

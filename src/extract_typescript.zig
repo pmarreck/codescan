@@ -44,7 +44,7 @@ pub fn extract(
 	var done = false;
 	while (!done) {
 		const node = ts.ts_tree_cursor_current_node(&cursor);
-		if (isFunctionLike(node)) {
+		if (isFunctionLike(node) or isTypeLike(node)) {
 			if (try extractFunction(allocator, file_path, source, lines.items, node)) |symbol| {
 				try results.append(allocator, symbol);
 			}
@@ -70,6 +70,14 @@ fn isFunctionLike(node: ts.TSNode) bool {
 	return std.mem.eql(u8, ty, "function_declaration") or
 		std.mem.eql(u8, ty, "generator_function_declaration") or
 		std.mem.eql(u8, ty, "method_definition");
+}
+
+fn isTypeLike(node: ts.TSNode) bool {
+	const ty = std.mem.span(ts.ts_node_type(node));
+	return std.mem.eql(u8, ty, "class_declaration") or
+		std.mem.eql(u8, ty, "interface_declaration") or
+		std.mem.eql(u8, ty, "enum_declaration") or
+		std.mem.eql(u8, ty, "type_alias_declaration");
 }
 
 fn extractFunction(
@@ -142,7 +150,34 @@ test "extract finds typescript functions" {
 		allocator.free(symbols);
 	}
 
-	try std.testing.expectEqual(@as(usize, 2), symbols.len);
+	// Now extracts function, class, and method inside class
+	try std.testing.expect(symbols.len >= 2);
 	try std.testing.expectEqualStrings("add", symbols[0].name);
 	try std.testing.expectEqualStrings("adds", symbols[0].doc_comment.?);
+}
+
+test "extract finds typescript classes and interfaces" {
+	const allocator = std.testing.allocator;
+	const source =
+		"interface Shape {\n" ++
+		"    area(): number;\n" ++
+		"}\n" ++
+		"\n" ++
+		"enum Direction {\n" ++
+		"    Up,\n" ++
+		"    Down,\n" ++
+		"}\n" ++
+		"\n" ++
+		"type Point = { x: number; y: number };\n";
+
+	const symbols = try extract(allocator, "src/types.ts", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 3), symbols.len);
+	try std.testing.expectEqualStrings("Shape", symbols[0].name);
+	try std.testing.expectEqualStrings("Direction", symbols[1].name);
+	try std.testing.expectEqualStrings("Point", symbols[2].name);
 }

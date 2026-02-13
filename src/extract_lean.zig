@@ -69,7 +69,10 @@ fn isDeclaration(node: ts.TSNode) bool {
 		std.mem.eql(u8, ty, "theorem") or
 		std.mem.eql(u8, ty, "abbrev") or
 		std.mem.eql(u8, ty, "structure") or
-		std.mem.eql(u8, ty, "example");
+		std.mem.eql(u8, ty, "example") or
+		std.mem.eql(u8, ty, "class") or
+		std.mem.eql(u8, ty, "instance") or
+		std.mem.eql(u8, ty, "inductive");
 }
 
 fn extractDeclaration(

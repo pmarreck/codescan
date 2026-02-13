@@ -19,38 +19,44 @@ pub fn extract(
 	}
 
 	const tags = tree.nodes.items(.tag);
-	var buffer: [1]std.zig.Ast.Node.Index = undefined;
+	var fn_buffer: [1]std.zig.Ast.Node.Index = undefined;
 	for (tags, 0..) |tag, idx| {
-		if (tag != .fn_decl) continue;
 		const node: std.zig.Ast.Node.Index = @enumFromInt(@as(u32, @intCast(idx)));
-		const fn_proto = tree.fullFnProto(&buffer, node) orelse continue;
-		const name_token = fn_proto.name_token orelse continue;
 
-		const name = tree.tokenSlice(name_token);
-		const signature = try extractSignature(allocator, tree, node);
-		const doc_comment = try extractDocComment(allocator, tree, fn_proto.firstToken());
+		if (tag == .fn_decl) {
+			const fn_proto = tree.fullFnProto(&fn_buffer, node) orelse continue;
+			const name_token = fn_proto.name_token orelse continue;
 
-		const start_tok = tree.firstToken(node);
-		const end_tok = tree.lastToken(node);
-		const start_loc = tree.tokenLocation(0, start_tok);
-		const end_loc = tree.tokenLocation(0, end_tok);
+			const name = tree.tokenSlice(name_token);
+			const signature = try extractFnSignature(allocator, tree, node);
+			const doc_comment = try extractDocComment(allocator, tree, fn_proto.firstToken());
 
-		const symbol = model.Symbol{
-			.language = try allocator.dupe(u8, "zig"),
-			.file_path = try allocator.dupe(u8, file_path),
-			.name = try allocator.dupe(u8, name),
-			.signature = signature,
-			.doc_comment = doc_comment,
-			.start_line = start_loc.line + 1,
-			.end_line = end_loc.line + 1,
-		};
-		try results.append(allocator, symbol);
+			const start_tok = tree.firstToken(node);
+			const end_tok = tree.lastToken(node);
+			const start_loc = tree.tokenLocation(0, start_tok);
+			const end_loc = tree.tokenLocation(0, end_tok);
+
+			const symbol = model.Symbol{
+				.language = try allocator.dupe(u8, "zig"),
+				.file_path = try allocator.dupe(u8, file_path),
+				.name = try allocator.dupe(u8, name),
+				.signature = signature,
+				.doc_comment = doc_comment,
+				.start_line = start_loc.line + 1,
+				.end_line = end_loc.line + 1,
+			};
+			try results.append(allocator, symbol);
+		} else if (tag == .simple_var_decl or tag == .global_var_decl or tag == .aligned_var_decl) {
+			if (try extractVarDecl(allocator, file_path, tree, node, tag)) |symbol| {
+				try results.append(allocator, symbol);
+			}
+		}
 	}
 
 	return results.toOwnedSlice(allocator);
 }
 
-fn extractSignature(
+fn extractFnSignature(
 	allocator: std.mem.Allocator,
 	tree: std.zig.Ast,
 	node: std.zig.Ast.Node.Index,
@@ -62,6 +68,50 @@ fn extractSignature(
 	const end_byte = tree.tokenStart(body_tok);
 	const slice = std.mem.trimRight(u8, tree.source[start_byte..end_byte], " \t\r\n");
 	return allocator.dupe(u8, slice);
+}
+
+fn extractVarDecl(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	tree: std.zig.Ast,
+	node: std.zig.Ast.Node.Index,
+	tag: std.zig.Ast.Node.Tag,
+) !?model.Symbol {
+	const var_decl = switch (tag) {
+		.simple_var_decl => tree.simpleVarDecl(node),
+		.global_var_decl => tree.globalVarDecl(node),
+		.aligned_var_decl => tree.alignedVarDecl(node),
+		else => return null,
+	};
+	const name_token_idx = var_decl.ast.mut_token + 1;
+	if (tree.tokenTag(name_token_idx) != .identifier) return null;
+
+	const name = tree.tokenSlice(name_token_idx);
+
+	// Build signature from the first line of the declaration
+	const start_tok = tree.firstToken(node);
+	const end_tok = tree.lastToken(node);
+	const start_loc = tree.tokenLocation(0, start_tok);
+	const end_loc = tree.tokenLocation(0, end_tok);
+	const start_byte = tree.tokenStart(start_tok);
+
+	// Get the first line of the decl for the signature
+	const remaining = tree.source[start_byte..];
+	const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
+	const first_line = std.mem.trimRight(u8, remaining[0..newline_pos], " \t\r{");
+	const signature = try allocator.dupe(u8, first_line);
+
+	const doc_comment = try extractDocComment(allocator, tree, start_tok);
+
+	return model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, file_path),
+		.name = try allocator.dupe(u8, name),
+		.signature = signature,
+		.doc_comment = doc_comment,
+		.start_line = start_loc.line + 1,
+		.end_line = end_loc.line + 1,
+	};
 }
 
 fn extractDocComment(
@@ -105,6 +155,61 @@ fn cleanDocLine(raw: []const u8) []const u8 {
 		line = line[3..];
 	}
 	return std.mem.trimLeft(u8, line, " \t");
+}
+
+test "extract finds zig enums" {
+	const allocator = std.testing.allocator;
+	const source =
+		"/// Output format\n" ++
+		"pub const OutputFormat = enum {\n" ++
+		"    human,\n" ++
+		"    json,\n" ++
+		"};\n";
+
+	const symbols = try extract(allocator, "src/cli.zig", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expectEqualStrings("OutputFormat", symbols[0].name);
+	try std.testing.expectEqualStrings("Output format", symbols[0].doc_comment.?);
+}
+
+test "extract finds zig structs" {
+	const allocator = std.testing.allocator;
+	const source =
+		"pub const Options = struct {\n" ++
+		"    top_n: usize = 10,\n" ++
+		"    mode: SearchMode = .hybrid,\n" ++
+		"};\n";
+
+	const symbols = try extract(allocator, "src/search.zig", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expectEqualStrings("Options", symbols[0].name);
+}
+
+test "extract finds zig constants" {
+	const allocator = std.testing.allocator;
+	const source =
+		"pub const MAX_SIZE: usize = 1024;\n" ++
+		"const DEFAULT_NAME = \"hello\";\n";
+
+	const symbols = try extract(allocator, "src/config.zig", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 2), symbols.len);
+	try std.testing.expectEqualStrings("MAX_SIZE", symbols[0].name);
+	try std.testing.expectEqualStrings("DEFAULT_NAME", symbols[1].name);
 }
 
 test "extract finds zig functions" {

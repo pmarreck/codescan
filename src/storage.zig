@@ -6,6 +6,7 @@ const c = @cImport({
 	@cInclude("sqlite-vec.h");
 });
 const model = @import("model.zig");
+const hashline = @import("hashline.zig");
 
 pub const sqlite = c;
 pub const Db = *c.sqlite3;
@@ -70,9 +71,13 @@ fn deleteFileIfExists(path: []const u8) !void {
 
 pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const meta_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
-	const symbols_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, end_line INTEGER NOT NULL, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT);\x00";
+	const symbols_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, start_hash TEXT, end_line INTEGER NOT NULL, end_hash TEXT, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT);\x00";
 	try exec(db, meta_sql);
 	try exec(db, symbols_sql);
+
+	// Unique constraint prevents duplicate symbols from being inserted (defense-in-depth)
+	const unique_idx_sql: [:0]const u8 = "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols (file_path, start_line, end_line, symbol_name);\x00";
+	try exec(db, unique_idx_sql);
 
 	const vec_sql = try allocPrintZ(
 		allocator,
@@ -123,16 +128,18 @@ pub fn resetIndex(db: Db) !void {
 	const symbols_sql: [:0]const u8 = "DELETE FROM symbols;\x00";
 	const embeddings_sql: [:0]const u8 = "DELETE FROM embeddings;\x00";
 	const comment_sql: [:0]const u8 = "DELETE FROM embeddings_comment;\x00";
+	const files_sql: [:0]const u8 = "DELETE FROM indexed_files;\x00";
 	try exec(db, symbols_sql);
 	try exec(db, embeddings_sql);
 	try exec(db, comment_sql);
 	_ = execMaybe(db, "DELETE FROM symbols_fts;\x00");
+	_ = execMaybe(db, files_sql);
 }
 
 pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	const sql: [:0]const u8 =
-		"INSERT INTO symbols (lang, file_path, start_line, end_line, symbol_name, signature, doc_comment) "
-		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7);\x00";
+		"INSERT OR REPLACE INTO symbols (lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment) "
+		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		return error.SqlPrepareFailed;
@@ -142,13 +149,23 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	try bindText(stmt.?, 1, symbol.language);
 	try bindText(stmt.?, 2, symbol.file_path);
 	try bindInt(stmt.?, 3, symbol.start_line);
-	try bindInt(stmt.?, 4, symbol.end_line);
-	try bindText(stmt.?, 5, symbol.name);
-	try bindText(stmt.?, 6, symbol.signature);
-	if (symbol.doc_comment) |doc| {
-		try bindText(stmt.?, 7, doc);
+	if (symbol.start_hash) |hash| {
+		_ = c.sqlite3_bind_text(stmt.?, 4, &hash, hashline.HASH_LEN, null);
 	} else {
-		_ = c.sqlite3_bind_null(stmt.?, 7);
+		_ = c.sqlite3_bind_null(stmt.?, 4);
+	}
+	try bindInt(stmt.?, 5, symbol.end_line);
+	if (symbol.end_hash) |hash| {
+		_ = c.sqlite3_bind_text(stmt.?, 6, &hash, hashline.HASH_LEN, null);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 6);
+	}
+	try bindText(stmt.?, 7, symbol.name);
+	try bindText(stmt.?, 8, symbol.signature);
+	if (symbol.doc_comment) |doc| {
+		try bindText(stmt.?, 9, doc);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 9);
 	}
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {

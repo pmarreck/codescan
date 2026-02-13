@@ -7,6 +7,7 @@ const model = @import("model.zig");
 const embedding = @import("embedding.zig");
 const ollama = @import("ollama.zig");
 const config = @import("config.zig");
+const hashline = @import("hashline.zig");
 
 pub const Options = struct {
 	embedding_dim: usize,
@@ -119,8 +120,19 @@ pub fn indexAll(
 			allocator.free(symbols);
 		}
 
+		// Compute chain hashes for this file's lines
+		const hashes = computeFileHashes(allocator, source) catch null;
+		defer if (hashes) |h| allocator.free(h);
+
 		for (symbols) |sym| {
-			const rowid = try storage.insertSymbol(db, sym);
+			var sym_with_hash = sym;
+			if (hashes) |h| {
+				if (sym.start_line > 0 and sym.start_line <= h.len)
+					sym_with_hash.start_hash = h[sym.start_line - 1];
+				if (sym.end_line > 0 and sym.end_line <= h.len)
+					sym_with_hash.end_hash = h[sym.end_line - 1];
+			}
+			const rowid = try storage.insertSymbol(db, sym_with_hash);
 			stats.symbols += 1;
 
 			const text = try buildSymbolText(allocator, sym, extractor.kind);
@@ -147,6 +159,11 @@ pub fn indexAll(
 				}
 			}
 		}
+
+		// Track indexed file so indexIncremental knows about it
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+		const current_size: i64 = @intCast(size);
+		try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
 	}
 
 	if (batch_texts.items.len > 0) {
@@ -321,8 +338,19 @@ pub fn indexIncremental(
 			allocator.free(symbols);
 		}
 
+		// Compute chain hashes for this file's lines
+		const hashes = computeFileHashes(allocator, source) catch null;
+		defer if (hashes) |h| allocator.free(h);
+
 		for (symbols) |sym| {
-			const rowid = try storage.insertSymbol(db, sym);
+			var sym_with_hash = sym;
+			if (hashes) |h| {
+				if (sym.start_line > 0 and sym.start_line <= h.len)
+					sym_with_hash.start_hash = h[sym.start_line - 1];
+				if (sym.end_line > 0 and sym.end_line <= h.len)
+					sym_with_hash.end_hash = h[sym.end_line - 1];
+			}
+			const rowid = try storage.insertSymbol(db, sym_with_hash);
 			stats.symbols += 1;
 
 			const text = try buildSymbolText(allocator, sym, extractor.kind);
@@ -384,6 +412,27 @@ fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
 	if (path.len < ext.len) return false;
 	const tail = path[path.len - ext.len ..];
 	return std.ascii.eqlIgnoreCase(tail, ext);
+}
+
+/// Split source into lines and compute chain hashes.
+fn computeFileHashes(allocator: std.mem.Allocator, source: []const u8) ![]hashline.Hash {
+	// Split source into lines
+	var lines = std.ArrayListUnmanaged([]const u8){};
+	defer lines.deinit(allocator);
+
+	var start: usize = 0;
+	for (source, 0..) |ch, i| {
+		if (ch == '\n') {
+			try lines.append(allocator, source[start..i]);
+			start = i + 1;
+		}
+	}
+	// Last line (may not end with newline)
+	if (start <= source.len) {
+		try lines.append(allocator, source[start..]);
+	}
+
+	return hashline.computeChainHashes(allocator, lines.items);
 }
 
 pub fn buildSymbolText(

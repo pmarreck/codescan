@@ -65,7 +65,9 @@ pub fn extract(
 
 fn isFunctionDeclaration(node: ts.TSNode) bool {
 	const ty = std.mem.span(ts.ts_node_type(node));
-	return std.mem.eql(u8, ty, "function_declaration");
+	return std.mem.eql(u8, ty, "function_declaration") or
+		std.mem.eql(u8, ty, "function_definition_statement") or
+		std.mem.eql(u8, ty, "local_function_definition_statement");
 }
 
 fn extractFunction(

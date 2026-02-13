@@ -30,6 +30,15 @@ pub const ConfigAction = enum {
 	edit,
 };
 
+pub const WatchAction = enum {
+	run, // default: foreground watcher
+	stop,
+	start, // background daemon
+	restart,
+	status,
+	pid,
+};
+
 pub const Seen = struct {
 	output: bool = false,
 	show_comments: bool = false,
@@ -93,6 +102,7 @@ pub const Parsed = struct {
 	hashline_ref: ?[]const u8,
 	rename_to: ?[]const u8,
 	watch_interval: u64,
+	watch_action: WatchAction,
 	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
@@ -143,6 +153,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.hashline_ref = null,
 		.rename_to = null,
 		.watch_interval = 2000,
+		.watch_action = .run,
 		.seen = .{},
 	};
 
@@ -238,6 +249,26 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	} else if (std.mem.eql(u8, cmd, "watch")) {
 		parsed.command = .watch;
 		i += 1;
+		// Parse optional watch subcommand
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			const sub = args[i];
+			if (std.mem.eql(u8, sub, "stop")) {
+				parsed.watch_action = .stop;
+				i += 1;
+			} else if (std.mem.eql(u8, sub, "start")) {
+				parsed.watch_action = .start;
+				i += 1;
+			} else if (std.mem.eql(u8, sub, "restart")) {
+				parsed.watch_action = .restart;
+				i += 1;
+			} else if (std.mem.eql(u8, sub, "status")) {
+				parsed.watch_action = .status;
+				i += 1;
+			} else if (std.mem.eql(u8, sub, "pid")) {
+				parsed.watch_action = .pid;
+				i += 1;
+			}
+		}
 	} else {
 		parsed.command = .search;
 		parsed.assumed_search = true;
@@ -259,6 +290,20 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--json")) {
 			parsed.output = .json;
+			parsed.seen.output = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--format")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			if (std.mem.eql(u8, args[i], "json")) {
+				parsed.output = .json;
+			} else if (std.mem.eql(u8, args[i], "human")) {
+				parsed.output = .human;
+			} else {
+				return error.InvalidValue;
+			}
 			parsed.seen.output = true;
 			i += 1;
 			continue;
@@ -739,6 +784,27 @@ test "parse search with comments flag" {
 	try std.testing.expect(parsed.comments_only);
 	try std.testing.expect(parsed.seen.comments_only);
 	try std.testing.expectEqualStrings("doc query", parsed.query.?);
+}
+
+test "parse recognizes --format json" {
+	const args = [_][]const u8{ "codescan", "search", "--format", "json", "query" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(OutputFormat.json, parsed.output);
+	try std.testing.expect(parsed.seen.output);
+}
+
+test "parse recognizes --format human" {
+	const args = [_][]const u8{ "codescan", "search", "--format", "human", "query" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(OutputFormat.human, parsed.output);
+	try std.testing.expect(parsed.seen.output);
+}
+
+test "parse --format invalid value errors" {
+	const args = [_][]const u8{ "codescan", "search", "--format", "xml", "query" };
+	try std.testing.expectError(error.InvalidValue, parse(std.testing.allocator, &args));
 }
 
 test "parse search missing query errors" {

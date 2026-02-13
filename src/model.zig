@@ -1,4 +1,5 @@
 const std = @import("std");
+const hashline = @import("hashline.zig");
 
 pub const Symbol = struct {
 	language: []const u8,
@@ -8,6 +9,8 @@ pub const Symbol = struct {
 	doc_comment: ?[]const u8,
 	start_line: usize,
 	end_line: usize,
+	start_hash: ?hashline.Hash = null,
+	end_hash: ?hashline.Hash = null,
 
 	pub fn deinit(self: *Symbol, allocator: std.mem.Allocator) void {
 		allocator.free(self.language);

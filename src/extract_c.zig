@@ -45,6 +45,10 @@ pub fn extract(
 			if (try extractFunction(allocator, file_path, source, lines.items, node)) |symbol| {
 				try results.append(allocator, symbol);
 			}
+		} else if (isStructOrEnumDecl(node)) {
+			if (try extractTypeDecl(allocator, file_path, source, lines.items, node)) |symbol| {
+				try results.append(allocator, symbol);
+			}
 		}
 
 		if (ts.ts_tree_cursor_goto_first_child(&cursor)) continue;
@@ -94,6 +98,77 @@ fn extractFunction(
 fn isFunctionDefinition(node: ts.TSNode) bool {
 	const ty = std.mem.span(ts.ts_node_type(node));
 	return std.mem.eql(u8, ty, "function_definition");
+}
+
+fn isStructOrEnumDecl(node: ts.TSNode) bool {
+	const ty = std.mem.span(ts.ts_node_type(node));
+	// In C, "struct foo { ... };" parses as type_definition or declaration
+	// containing a struct_specifier or enum_specifier
+	return std.mem.eql(u8, ty, "type_definition") or
+		std.mem.eql(u8, ty, "struct_specifier") or
+		std.mem.eql(u8, ty, "enum_specifier");
+}
+
+fn extractTypeDecl(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	source: []const u8,
+	lines: []const []const u8,
+	node: ts.TSNode,
+) !?model.Symbol {
+	const ty = std.mem.span(ts.ts_node_type(node));
+
+	// For type_definition (typedef struct { ... } Name;), get the name from the declarator
+	if (std.mem.eql(u8, ty, "type_definition")) {
+		const declarator = ts.ts_node_child_by_field_name(node, "declarator", "declarator".len);
+		if (ts.ts_node_is_null(declarator)) return null;
+		const name = nodeText(source, declarator);
+		if (name.len == 0) return null;
+
+		const signature = try extractFirstLine(allocator, source, node);
+		const doc_comment = try extractDocComment(allocator, lines, node);
+		const start_point = ts.ts_node_start_point(node);
+		const end_point = ts.ts_node_end_point(node);
+
+		return model.Symbol{
+			.language = try allocator.dupe(u8, "c"),
+			.file_path = try allocator.dupe(u8, file_path),
+			.name = try allocator.dupe(u8, name),
+			.signature = signature,
+			.doc_comment = doc_comment,
+			.start_line = start_point.row + 1,
+			.end_line = end_point.row + 1,
+		};
+	}
+
+	// For struct_specifier / enum_specifier (e.g., "struct Foo { ... };")
+	const name_node = ts.ts_node_child_by_field_name(node, "name", "name".len);
+	if (ts.ts_node_is_null(name_node)) return null;
+	const name = nodeText(source, name_node);
+	if (name.len == 0) return null;
+
+	const signature = try extractFirstLine(allocator, source, node);
+	const doc_comment = try extractDocComment(allocator, lines, node);
+	const start_point = ts.ts_node_start_point(node);
+	const end_point = ts.ts_node_end_point(node);
+
+	return model.Symbol{
+		.language = try allocator.dupe(u8, "c"),
+		.file_path = try allocator.dupe(u8, file_path),
+		.name = try allocator.dupe(u8, name),
+		.signature = signature,
+		.doc_comment = doc_comment,
+		.start_line = start_point.row + 1,
+		.end_line = end_point.row + 1,
+	};
+}
+
+fn extractFirstLine(allocator: std.mem.Allocator, source: []const u8, node: ts.TSNode) ![]const u8 {
+	const start = @as(usize, @intCast(ts.ts_node_start_byte(node)));
+	if (start >= source.len) return allocator.dupe(u8, "");
+	const remaining = source[start..];
+	const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
+	return allocator.dupe(u8, std.mem.trimRight(u8, remaining[0..newline_pos], " \t\r{"));
 }
 
 fn findIdentifierInDeclarator(node: ts.TSNode) ?ts.TSNode {
@@ -216,6 +291,45 @@ fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUn
 		try lines.append(allocator, line);
 	}
 	return lines;
+}
+
+test "extract finds C struct declarations" {
+	const allocator = std.testing.allocator;
+	const source =
+		"// A point in 2D space\n" ++
+		"typedef struct {\n" ++
+		"    int x;\n" ++
+		"    int y;\n" ++
+		"} Point;\n";
+
+	const symbols = try extract(allocator, "src/geom.h", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expectEqualStrings("Point", symbols[0].name);
+	try std.testing.expectEqualStrings("A point in 2D space", symbols[0].doc_comment.?);
+}
+
+test "extract finds C enum declarations" {
+	const allocator = std.testing.allocator;
+	const source =
+		"enum Color {\n" ++
+		"    RED,\n" ++
+		"    GREEN,\n" ++
+		"    BLUE\n" ++
+		"};\n";
+
+	const symbols = try extract(allocator, "src/color.h", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expectEqualStrings("Color", symbols[0].name);
 }
 
 test "extract finds c functions" {

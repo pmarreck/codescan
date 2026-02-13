@@ -469,59 +469,104 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.watch => {
-			try ensureParentDir(settings.db_path);
-			// Open existing DB or create new one (don't destroy existing index)
-			const db = try storage.openFileWithVec(allocator, settings.db_path);
-			defer storage.close(db);
+			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 
-			var http_client = ollama.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
-			var embedder_adapter = embedding.OllamaEmbedder{
-				.transport = http_client.transport(),
-				.base_url = settings.ollama_url,
-				.model = settings.ollama_model,
-			};
-
-			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-			defer index_filters.deinit(allocator);
-
-			var stop_flag = std.atomic.Value(bool).init(false);
-			const act = std.posix.Sigaction{
-				.handler = .{ .handler = struct {
-					fn handler(_: c_int) callconv(.c) void {}
-				}.handler },
-				.mask = std.posix.sigemptyset(),
-				.flags = 0,
-			};
-			std.posix.sigaction(std.posix.SIG.INT, &act, null);
-			std.posix.sigaction(std.posix.SIG.TERM, &act, null);
-
-			try watcher.watchLoop(
-				allocator,
-				db,
-				settings.root_path,
-				registry,
-				embedder_adapter.embedder(),
-				.{
-					.interval_ms = parsed.watch_interval,
-					.codescan_dir = std.fs.path.dirname(settings.db_path),
-					.index_options = .{
-						.embedding_dim = settings.embedding_dim,
-						.batch_size = settings.batch_size,
-						.max_file_size = settings.max_file_size,
-						.allowed_exts = index_filters.exts.items,
-						.allowed_kinds = index_filters.kinds.items,
-						.ignore = .{
-							.global = settings.ignore_global,
-							.per_language = settings.ignore_lang,
-							.include_node_modules = settings.include_node_modules,
-						},
-						.show_progress = false,
-					},
+			switch (parsed.watch_action) {
+				.stop => {
+					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+						_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+						try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+						try stdout.flush();
+						pidfile.removePid(allocator, codescan_dir);
+					} else {
+						try stdout.print("No watcher running\n", .{});
+						try stdout.flush();
+					}
 				},
-				&stop_flag,
-			);
+				.start => {
+					maybeStartWatcher(allocator, settings, stdout);
+				},
+				.restart => {
+					// Stop if running
+					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+						_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+						try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+						// Brief pause for process cleanup
+						std.Thread.sleep(200 * std.time.ns_per_ms);
+						pidfile.removePid(allocator, codescan_dir);
+					}
+					maybeStartWatcher(allocator, settings, stdout);
+				},
+				.status => {
+					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+						try stdout.print("Watcher running (PID {d})\n", .{pid_val});
+					} else {
+						try stdout.print("No watcher running\n", .{});
+					}
+					try stdout.flush();
+				},
+				.pid => {
+					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+						try stdout.print("{d}\n", .{pid_val});
+					}
+					try stdout.flush();
+				},
+				.run => {
+					try ensureParentDir(settings.db_path);
+					// Open existing DB or create new one (don't destroy existing index)
+					const db = try storage.openFileWithVec(allocator, settings.db_path);
+					defer storage.close(db);
+
+					var http_client = ollama.StdHttpTransport.init(allocator);
+					defer http_client.deinit();
+					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+					var embedder_adapter = embedding.OllamaEmbedder{
+						.transport = http_client.transport(),
+						.base_url = settings.ollama_url,
+						.model = settings.ollama_model,
+					};
+
+					var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+					defer index_filters.deinit(allocator);
+
+					var stop_flag = std.atomic.Value(bool).init(false);
+					const act = std.posix.Sigaction{
+						.handler = .{ .handler = struct {
+							fn handler(_: c_int) callconv(.c) void {}
+						}.handler },
+						.mask = std.posix.sigemptyset(),
+						.flags = 0,
+					};
+					std.posix.sigaction(std.posix.SIG.INT, &act, null);
+					std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+
+					try watcher.watchLoop(
+						allocator,
+						db,
+						settings.root_path,
+						registry,
+						embedder_adapter.embedder(),
+						.{
+							.interval_ms = parsed.watch_interval,
+							.codescan_dir = codescan_dir,
+							.index_options = .{
+								.embedding_dim = settings.embedding_dim,
+								.batch_size = settings.batch_size,
+								.max_file_size = settings.max_file_size,
+								.allowed_exts = index_filters.exts.items,
+								.allowed_kinds = index_filters.kinds.items,
+								.ignore = .{
+									.global = settings.ignore_global,
+									.per_language = settings.ignore_lang,
+									.include_node_modules = settings.include_node_modules,
+								},
+								.show_progress = false,
+							},
+						},
+						&stop_flag,
+					);
+				},
+			}
 		},
 		.help => {},
 	}
@@ -761,10 +806,7 @@ fn performFullIndex(
 }
 
 /// Spawns `codescan watch` in the background if not already running.
-/// Only auto-launches when stderr is a TTY (avoids surprising CI/pipes).
 fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *std.Io.Writer) void {
-	// Only auto-launch in interactive TTY sessions
-	if (!std.fs.File.stderr().isTty()) return;
 
 	// Derive the .codescan dir from db_path (parent of index.sqlite3)
 	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse return;
@@ -2079,4 +2121,73 @@ fn listContains(list: []const []const u8, value: []const u8) bool {
 		if (std.mem.eql(u8, item, value)) return true;
 	}
 	return false;
+}
+
+test "replace-lines rejects stale hashlines after file edit" {
+	const allocator = std.testing.allocator;
+
+	// --- Setup: create a temp file with known content ---
+	const original_content = "fn foo() void {\n    return 42;\n}\n";
+
+	var tmp_dir = std.testing.tmpDir(.{});
+	defer tmp_dir.cleanup();
+	try tmp_dir.dir.writeFile(.{ .sub_path = "test.zig", .data = original_content });
+
+	// --- Step 1: Compute hashes from original content (simulates indexer) ---
+	var orig_lines = try splitLines(allocator, original_content);
+	defer orig_lines.deinit(allocator);
+
+	const orig_hashes = try hashline.computeChainHashes(allocator, orig_lines.items);
+	defer allocator.free(orig_hashes);
+
+	// Store "from" and "to" hashline refs for lines 1-3
+	const from_hash = orig_hashes[0]; // line 1
+	const to_hash = orig_hashes[2]; // line 3
+
+	// Verify hashes match original content
+	try std.testing.expect(std.mem.eql(u8, &from_hash, &orig_hashes[0]));
+	try std.testing.expect(std.mem.eql(u8, &to_hash, &orig_hashes[2]));
+
+	// --- Step 2: Modify the file (simulates user editing between index and search) ---
+	const modified_content = "fn foo() void {\n    return 99;\n}\n";
+	try tmp_dir.dir.writeFile(.{ .sub_path = "test.zig", .data = modified_content });
+
+	// --- Step 3: Re-read and compute hashes for current file content ---
+	var mod_lines = try splitLines(allocator, modified_content);
+	defer mod_lines.deinit(allocator);
+
+	const new_hashes = try hashline.computeChainHashes(allocator, mod_lines.items);
+	defer allocator.free(new_hashes);
+
+	// --- Step 4: Verify stale detection ---
+	// Line 1 is unchanged — hash should still match
+	try std.testing.expect(std.mem.eql(u8, &from_hash, &new_hashes[0]));
+
+	// Line 2 was edited — its hash must differ (chain breaks here)
+	try std.testing.expect(!std.mem.eql(u8, &orig_hashes[1], &new_hashes[1]));
+
+	// Line 3 content unchanged but chain input differs — hash must differ (cascade)
+	try std.testing.expect(!std.mem.eql(u8, &to_hash, &new_hashes[2]));
+
+	// This is exactly the check runReplaceLines performs:
+	// it would reject the edit because to_hash no longer matches new_hashes[2]
+}
+
+test "parseHashlineRef round-trips with computed hashes" {
+	const allocator = std.testing.allocator;
+
+	const source = "line one\nline two\nline three\n";
+	var lines = try splitLines(allocator, source);
+	defer lines.deinit(allocator);
+
+	const hashes = try hashline.computeChainHashes(allocator, lines.items);
+	defer allocator.free(hashes);
+
+	// Format as "2:<hash>" and parse back
+	var buf: [16]u8 = undefined;
+	const ref_str = try std.fmt.bufPrint(&buf, "2:{s}", .{@as([]const u8, &hashes[1])});
+	const parsed_ref = try parseHashlineRef(ref_str);
+
+	try std.testing.expectEqual(@as(usize, 2), parsed_ref.line);
+	try std.testing.expectEqualStrings(&hashes[1], &parsed_ref.hash);
 }

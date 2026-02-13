@@ -1,6 +1,8 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const search = @import("search.zig");
+const hashline = @import("hashline.zig");
+const model = @import("model.zig");
 
 pub const OutputOptions = struct {
 	show_comments: bool = false,
@@ -26,8 +28,9 @@ fn writeHuman(writer: *std.Io.Writer, results: []const search.Result, options: O
 	var range_width: usize = 0;
 	for (results) |res| {
 		path_width = @max(path_width, res.symbol.file_path.len);
-		const len = countRangeWidth(res.symbol.start_line, res.symbol.end_line);
-		range_width = @max(range_width, len);
+		var tmp_buf: [128]u8 = undefined;
+		const tmp_range = formatRange(&tmp_buf, res.symbol);
+		range_width = @max(range_width, tmp_range.len);
 	}
 
 	for (results, 0..) |res, idx| {
@@ -37,8 +40,8 @@ fn writeHuman(writer: *std.Io.Writer, results: []const search.Result, options: O
 		try writePadding(writer, path_width - res.symbol.file_path.len);
 		try writer.writeAll(" ");
 
-		var range_buf: [64]u8 = undefined;
-		const range = try std.fmt.bufPrint(&range_buf, "{d}-{d}", .{ res.symbol.start_line, res.symbol.end_line });
+		var range_buf: [128]u8 = undefined;
+		const range = formatRange(&range_buf, res.symbol);
 		try writeColored(writer, options.use_color, "\x1b[33m", range);
 		try writePadding(writer, range_width - range.len);
 		try writer.writeAll("  ");
@@ -66,7 +69,9 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		language: []const u8,
 		file_path: []const u8,
 		start_line: usize,
+		start_hash: ?[]const u8,
 		end_line: usize,
+		end_hash: ?[]const u8,
 		name: []const u8,
 		signature: []const u8,
 		doc_comment: ?[]const u8,
@@ -87,7 +92,9 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 			.language = res.symbol.language,
 			.file_path = res.symbol.file_path,
 			.start_line = res.symbol.start_line,
+			.start_hash = if (res.symbol.start_hash) |*h| @as([]const u8, h) else null,
 			.end_line = res.symbol.end_line,
+			.end_hash = if (res.symbol.end_hash) |*h| @as([]const u8, h) else null,
 			.name = res.symbol.name,
 			.signature = res.symbol.signature,
 			.doc_comment = res.symbol.doc_comment,
@@ -239,9 +246,16 @@ fn countDigits(value: usize) usize {
 	return digits;
 }
 
-fn countRangeWidth(start_line: usize, end_line: usize) usize {
-	var buf: [64]u8 = undefined;
-	return (std.fmt.bufPrint(&buf, "{d}-{d}", .{ start_line, end_line }) catch "0-0").len;
+/// Formats a line range as "start:hash-end:hash" when hashes present, or "start-end" without.
+fn formatRange(buf: []u8, sym: model.Symbol) []const u8 {
+	if (sym.start_hash) |sh| {
+		if (sym.end_hash) |eh| {
+			return std.fmt.bufPrint(buf, "{d}:{s}-{d}:{s}", .{
+				sym.start_line, &sh, sym.end_line, &eh,
+			}) catch "?-?";
+		}
+	}
+	return std.fmt.bufPrint(buf, "{d}-{d}", .{ sym.start_line, sym.end_line }) catch "?-?";
 }
 
 fn writeIndex(writer: *std.Io.Writer, value: usize, width: usize) !void {
@@ -262,4 +276,102 @@ fn writeColored(writer: *std.Io.Writer, use_color: bool, code: []const u8, text:
 	if (use_color) try writer.writeAll(code);
 	try writer.writeAll(text);
 	if (use_color) try writer.writeAll("\x1b[0m");
+}
+
+test "human output includes hashlines when hashes present" {
+	const allocator = std.testing.allocator;
+
+	var res = search.Result{
+		.id = 1,
+		.symbol = .{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/a.zig"),
+			.name = try allocator.dupe(u8, "add"),
+			.signature = try allocator.dupe(u8, "fn add() void"),
+			.doc_comment = null,
+			.start_line = 10,
+			.end_line = 20,
+			.start_hash = .{ 'k', '7', 'm' },
+			.end_hash = .{ 'x', '9', 'a' },
+		},
+		.score = 0.9,
+		.distance = 0.1,
+		.lexical = 1.0,
+	};
+	defer res.deinit(allocator);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{ .use_color = false });
+	const payload = try out.toOwnedSlice();
+	defer allocator.free(payload);
+
+	// Line ranges must include hashline format: "10:k7m-20:x9a"
+	try std.testing.expect(std.mem.indexOf(u8, payload, "10:k7m-20:x9a") != null);
+}
+
+test "json output includes hashlines when hashes present" {
+	const allocator = std.testing.allocator;
+
+	var res = search.Result{
+		.id = 1,
+		.symbol = .{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/a.zig"),
+			.name = try allocator.dupe(u8, "add"),
+			.signature = try allocator.dupe(u8, "fn add() void"),
+			.doc_comment = null,
+			.start_line = 10,
+			.end_line = 20,
+			.start_hash = .{ 'k', '7', 'm' },
+			.end_hash = .{ 'x', '9', 'a' },
+		},
+		.score = 0.9,
+		.distance = 0.1,
+		.lexical = 1.0,
+	};
+	defer res.deinit(allocator);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try writeResults(allocator, &out.writer, .json, &[_]search.Result{res}, .{});
+	const payload = try out.toOwnedSlice();
+	defer allocator.free(payload);
+
+	// JSON should include start_hash and end_hash fields
+	try std.testing.expect(std.mem.indexOf(u8, payload, "\"start_hash\":\"k7m\"") != null);
+	try std.testing.expect(std.mem.indexOf(u8, payload, "\"end_hash\":\"x9a\"") != null);
+}
+
+test "human output shows plain line range when hashes absent" {
+	const allocator = std.testing.allocator;
+
+	var res = search.Result{
+		.id = 1,
+		.symbol = .{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/a.zig"),
+			.name = try allocator.dupe(u8, "add"),
+			.signature = try allocator.dupe(u8, "fn add() void"),
+			.doc_comment = null,
+			.start_line = 10,
+			.end_line = 20,
+		},
+		.score = 0.9,
+		.distance = 0.1,
+		.lexical = 1.0,
+	};
+	defer res.deinit(allocator);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{ .use_color = false });
+	const payload = try out.toOwnedSlice();
+	defer allocator.free(payload);
+
+	// Without hashes, plain range format
+	try std.testing.expect(std.mem.indexOf(u8, payload, "10-20") != null);
 }

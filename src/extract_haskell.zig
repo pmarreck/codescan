@@ -42,7 +42,7 @@ pub fn extract(
 	var done = false;
 	while (!done) {
 		const node = ts.ts_tree_cursor_current_node(&cursor);
-		if (isFunction(node)) {
+		if (isFunction(node) or isTypeDecl(node)) {
 			if (try extractFunction(allocator, file_path, source, lines.items, node)) |symbol| {
 				try results.append(allocator, symbol);
 			}
@@ -66,6 +66,15 @@ pub fn extract(
 fn isFunction(node: ts.TSNode) bool {
 	const ty = std.mem.span(ts.ts_node_type(node));
 	return std.mem.eql(u8, ty, "function");
+}
+
+fn isTypeDecl(node: ts.TSNode) bool {
+	const ty = std.mem.span(ts.ts_node_type(node));
+	return std.mem.eql(u8, ty, "adt") or // data declarations
+		std.mem.eql(u8, ty, "newtype") or
+		std.mem.eql(u8, ty, "type_alias") or // type synonyms
+		std.mem.eql(u8, ty, "class") or
+		std.mem.eql(u8, ty, "instance");
 }
 
 fn extractFunction(
