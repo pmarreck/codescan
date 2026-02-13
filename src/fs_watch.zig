@@ -11,7 +11,9 @@ pub const FsWatch = struct {
 
 	pub const Backend = switch (builtin.os.tag) {
 		.macos => MacOsBackend,
-		.linux => LinuxBackend,
+		// Use fanotify when the C library exposes it; otherwise fall back to polling
+		// (e.g. garnix builders where glibc headers lack fanotify wrappers).
+		.linux => if (@hasDecl(std.c, "fanotify_init")) LinuxBackend else PollingBackend,
 		else => PollingBackend,
 	};
 
