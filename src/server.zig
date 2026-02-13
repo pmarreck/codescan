@@ -136,8 +136,9 @@ fn handleRequest(
 		});
 		defer search_filters.deinit(allocator);
 
-		const results = try search.search(allocator, db, embedder, parsed.query, .{
-			.top_n = parsed.top_n orelse settings.search_top_n,
+		const top_n = parsed.top_n orelse settings.search_top_n;
+		const sr = try search.search(allocator, db, embedder, parsed.query, .{
+			.top_n = top_n,
 			.mode = parsed.mode orelse settings.search_mode,
 			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
 			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
@@ -146,13 +147,15 @@ fn handleRequest(
 			.allowed_exts = search_filters.exts.items,
 			.comments_only = parsed.comments_only orelse settings.comments_only,
 		});
-		defer search.freeResults(allocator, results);
+		defer search.freeResults(allocator, sr.results);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		try output.writeResults(allocator, &out.writer, .json, results, .{
+		try output.writeResults(allocator, &out.writer, .json, sr.results, .{
 			.show_comments = false,
 			.use_color = false,
+			.total_relevant = sr.total_relevant,
+			.top_n = top_n,
 		});
 		const payload = try out.toOwnedSlice();
 		defer allocator.free(payload);

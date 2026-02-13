@@ -431,7 +431,7 @@ pub fn main() !void {
 			});
 			defer search_filters.deinit(allocator);
 
-			const results = try search.search(
+			const sr = try search.search(
 				allocator,
 				db,
 				embedder_adapter.embedder(),
@@ -447,9 +447,9 @@ pub fn main() !void {
 					.comments_only = settings.comments_only,
 				},
 			);
-			defer search.freeResults(allocator, results);
+			defer search.freeResults(allocator, sr.results);
 
-			if (results.len == 0) {
+			if (sr.results.len == 0) {
 				_ = stderr.print(
 					"note: no results found; consider re-indexing with `codescan update`.\n",
 					.{},
@@ -458,9 +458,11 @@ pub fn main() !void {
 			}
 
 			const use_color = settings.output == .human and !std.process.hasEnvVarConstant("NO_COLOR");
-			try output.writeResults(allocator, stdout, settings.output, results, .{
+			try output.writeResults(allocator, stdout, settings.output, sr.results, .{
 				.show_comments = settings.show_comments,
 				.use_color = use_color,
+				.total_relevant = sr.total_relevant,
+				.top_n = settings.top_n,
 			});
 			try stdout.flush();
 

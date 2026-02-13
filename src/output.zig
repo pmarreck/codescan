@@ -7,6 +7,8 @@ const model = @import("model.zig");
 pub const OutputOptions = struct {
 	show_comments: bool = false,
 	use_color: bool = true,
+	total_relevant: usize = 0,
+	top_n: usize = 10,
 };
 
 pub fn writeResults(
@@ -18,11 +20,16 @@ pub fn writeResults(
 ) !void {
 	switch (format) {
 		.human => try writeHuman(writer, results, options),
-		.json => try writeJson(allocator, writer, results),
+		.json => try writeJson(allocator, writer, results, options),
 	}
 }
 
 fn writeHuman(writer: *std.Io.Writer, results: []const search.Result, options: OutputOptions) !void {
+	if (options.total_relevant > results.len) {
+		try writer.print("Showing {d} of {d} results (use --top {d} to see all)\n", .{
+			results.len, options.total_relevant, options.total_relevant,
+		});
+	}
 	const idx_width = countDigits(results.len);
 	var path_width: usize = 0;
 	var range_width: usize = 0;
@@ -64,7 +71,7 @@ fn writeHuman(writer: *std.Io.Writer, results: []const search.Result, options: O
 	}
 }
 
-fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []const search.Result) !void {
+fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []const search.Result, options: OutputOptions) !void {
 	const JsonResult = struct {
 		language: []const u8,
 		file_path: []const u8,
@@ -81,6 +88,8 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 	};
 
 	const Payload = struct {
+		total_relevant: usize,
+		showing: usize,
 		results: []const JsonResult,
 	};
 
@@ -105,7 +114,11 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 	}
 
 	var stream: std.json.Stringify = .{ .writer = writer, .options = .{} };
-	try stream.write(Payload{ .results = rows });
+	try stream.write(Payload{
+		.total_relevant = options.total_relevant,
+		.showing = results.len,
+		.results = rows,
+	});
 }
 
 test "writeResults emits json payload" {

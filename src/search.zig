@@ -38,15 +38,20 @@ pub const Result = struct {
 	}
 };
 
+pub const SearchResult = struct {
+	results: []Result,
+	total_relevant: usize,
+};
+
 pub fn search(
 	allocator: std.mem.Allocator,
 	db: storage.Db,
 	embedder: embedding.Embedder,
 	query: []const u8,
 	options: Options,
-) ![]Result {
+) !SearchResult {
 	if (query.len == 0) return error.EmptyQuery;
-	if (options.top_n == 0) return allocator.alloc(Result, 0);
+	if (options.top_n == 0) return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
 
 	var weight_vector = options.weight_vector;
 	var weight_lexical = options.weight_lexical;
@@ -178,7 +183,7 @@ pub fn search(
 	@memcpy(out, filtered.items[0..take]);
 	for (filtered.items[take..]) |*res| res.deinit(allocator);
 	filtered.deinit(allocator);
-	return out;
+	return .{ .results = out, .total_relevant = relevant };
 }
 
 pub fn freeResults(allocator: std.mem.Allocator, results: []Result) void {
@@ -249,13 +254,15 @@ fn vectorCandidates(
 	defer allocator.free(json);
 
 	const table = if (comments_only) "embeddings_comment" else "embeddings";
+	// Use vec0 KNN MATCH syntax for indexed search instead of brute-force ORDER BY distance.
 	const sql = try allocPrintZ(
 		allocator,
 		"SELECT symbols.id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
-		++ "vec_distance_l2(embedding, vec_f32(?1)) AS distance "
-		++ "FROM {s} JOIN symbols ON {s}.rowid = symbols.id "
-		++ "ORDER BY distance LIMIT ?2;",
-		.{ table, table },
+		++ "knn.distance "
+		++ "FROM {s} AS knn JOIN symbols ON knn.rowid = symbols.id "
+		++ "WHERE knn.embedding MATCH vec_f32(?1) AND k = ?2 "
+		++ "ORDER BY knn.distance;",
+		.{table},
 	);
 	defer allocator.free(sql);
 
@@ -717,10 +724,10 @@ test "search vector mode returns nearest symbol" {
 	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 10.0, 0.0 });
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results = try search(allocator, db, fake.embedder(), "query", .{
+	const results = (try search(allocator, db, fake.embedder(), "query", .{
 		.top_n = 1,
 		.mode = .vector,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 	try std.testing.expectEqual(@as(usize, 1), results.len);
@@ -762,11 +769,11 @@ test "search comments_only uses comment embeddings" {
 	try storage.insertEmbedding(db, allocator, id_plain, &[_]f32{ 10.0, 0.0 });
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results = try search(allocator, db, fake.embedder(), "query", .{
+	const results = (try search(allocator, db, fake.embedder(), "query", .{
 		.top_n = 1,
 		.mode = .vector,
 		.comments_only = true,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 	try std.testing.expectEqual(@as(usize, 1), results.len);
@@ -808,11 +815,11 @@ test "search filters by min_score" {
 	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 10.0, 0.0 });
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results = try search(allocator, db, fake.embedder(), "query", .{
+	const results = (try search(allocator, db, fake.embedder(), "query", .{
 		.top_n = 5,
 		.mode = .vector,
 		.min_score = 0.5,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 try std.testing.expectEqual(@as(usize, 1), results.len);
@@ -852,21 +859,21 @@ test "search filters by language and extension" {
 	_ = try storage.insertSymbol(db, sym_doc);
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results_lang = try search(allocator, db, fake.embedder(), "Intro", .{
+	const results_lang = (try search(allocator, db, fake.embedder(), "Intro", .{
 		.top_n = 5,
 		.mode = .lexical,
 		.allowed_langs = &[_][]const u8{ "markdown" },
-	});
+	})).results;
 	defer freeResults(allocator, results_lang);
 
 	try std.testing.expectEqual(@as(usize, 1), results_lang.len);
 	try std.testing.expectEqualStrings("README.md", results_lang[0].symbol.file_path);
 
-	const results_ext = try search(allocator, db, fake.embedder(), "add", .{
+	const results_ext = (try search(allocator, db, fake.embedder(), "add", .{
 		.top_n = 5,
 		.mode = .lexical,
 		.allowed_exts = &[_][]const u8{ ".zig" },
-	});
+	})).results;
 	defer freeResults(allocator, results_ext);
 
 	try std.testing.expectEqual(@as(usize, 1), results_ext.len);
@@ -909,21 +916,21 @@ test "search hybrid weights influence ranking" {
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
 
-	const prefer_vector = try search(allocator, db, fake.embedder(), "alpha beta", .{
+	const prefer_vector = (try search(allocator, db, fake.embedder(), "alpha beta", .{
 		.top_n = 1,
 		.mode = .hybrid,
 		.weight_vector = 0.9,
 		.weight_lexical = 0.1,
-	});
+	})).results;
 	defer freeResults(allocator, prefer_vector);
 	try std.testing.expectEqualStrings("near_nomatch", prefer_vector[0].symbol.name);
 
-	const prefer_lexical = try search(allocator, db, fake.embedder(), "alpha beta", .{
+	const prefer_lexical = (try search(allocator, db, fake.embedder(), "alpha beta", .{
 		.top_n = 1,
 		.mode = .hybrid,
 		.weight_vector = 0.1,
 		.weight_lexical = 0.9,
-	});
+	})).results;
 	defer freeResults(allocator, prefer_lexical);
 	try std.testing.expectEqualStrings("far_match", prefer_lexical[0].symbol.name);
 }
@@ -950,12 +957,12 @@ test "search hybrid normalizes weights" {
 	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 0.0, 0.0 });
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results = try search(allocator, db, fake.embedder(), "missing", .{
+	const results = (try search(allocator, db, fake.embedder(), "missing", .{
 		.top_n = 1,
 		.mode = .hybrid,
 		.weight_vector = 2.0,
 		.weight_lexical = 1.0,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 	try std.testing.expectEqual(@as(usize, 1), results.len);
@@ -992,10 +999,10 @@ test "search lexical uses fts when available" {
 		defer freeResults(allocator, fts_results);
 		try std.testing.expectEqual(@as(usize, 1), fts_results.len);
 	}
-	const results = try search(allocator, db, fake.embedder(), "functions hash", .{
+	const results = (try search(allocator, db, fake.embedder(), "functions hash", .{
 		.top_n = 3,
 		.mode = .lexical,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 	if (has_fts) {
@@ -1030,10 +1037,10 @@ test "search hybrid returns no duplicate symbol IDs" {
 
 	// Hybrid search: vector will find it (close embedding), lexical will also find it (name match)
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results = try search(allocator, db, fake.embedder(), "computeHash", .{
+	const results = (try search(allocator, db, fake.embedder(), "computeHash", .{
 		.top_n = 10,
 		.mode = .hybrid,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 	// Must appear exactly once despite matching both vector and lexical
@@ -1139,11 +1146,11 @@ test "search omits low-relevance results below score dropoff" {
 	try storage.insertEmbedding(db, allocator, id3, &[_]f32{ 100.0, 0.0 });
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
-	const results = try search(allocator, db, fake.embedder(), "query", .{
+	const results = (try search(allocator, db, fake.embedder(), "query", .{
 		.top_n = 10,
 		.mode = .vector,
 		.score_dropoff = 0.65,
-	});
+	})).results;
 	defer freeResults(allocator, results);
 
 	// sym3 scores ~0.01, top score is 1.0, floor is 0.65 — sym3 should be dropped
