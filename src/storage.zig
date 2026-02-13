@@ -100,6 +100,15 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	defer allocator.free(dim_sql);
 	try exec(db, dim_sql);
 
+	const files_sql: [:0]const u8 =
+		"CREATE TABLE IF NOT EXISTS indexed_files (" ++
+		"file_path TEXT PRIMARY KEY, " ++
+		"mtime_ns INTEGER NOT NULL, " ++
+		"size INTEGER NOT NULL, " ++
+		"indexed_at INTEGER NOT NULL" ++
+		");\x00";
+	try exec(db, files_sql);
+
 	const fts_enabled = tryInitFts(allocator, db);
 	const fts_sql = if (fts_enabled)
 		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '1');"
@@ -306,6 +315,17 @@ pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
 	return c.sqlite3_column_int64(stmt.?, 0);
 }
 
+/// Returns true if the symbols table exists and contains at least one row.
+pub fn isIndexPopulated(db: Db) bool {
+	var stmt: ?*c.sqlite3_stmt = null;
+	const sql = "SELECT 1 FROM symbols LIMIT 1;";
+	if (c.sqlite3_prepare_v2(db, sql, @intCast(sql.len), &stmt, null) != c.SQLITE_OK) {
+		return false; // table doesn't exist
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+	return c.sqlite3_step(stmt.?) == c.SQLITE_ROW;
+}
+
 pub fn countDistinctFiles(db: Db, allocator: std.mem.Allocator) !i64 {
 	_ = allocator;
 	const sql: [:0]const u8 = "SELECT COUNT(DISTINCT file_path) FROM symbols;\x00";
@@ -389,6 +409,147 @@ fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
 	return out.toOwnedSlice();
 }
 
+// --- File tracking for incremental indexing ---
+
+pub const IndexedFile = struct {
+	file_path: []const u8,
+	mtime_ns: i64,
+	size: i64,
+};
+
+pub fn upsertIndexedFile(db: Db, file_path: []const u8, mtime_ns: i64, size: i64) !void {
+	const sql: [:0]const u8 =
+		"INSERT OR REPLACE INTO indexed_files (file_path, mtime_ns, size, indexed_at) " ++
+		"VALUES (?1, ?2, ?3, strftime('%s','now'));\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	try bindText(stmt.?, 1, file_path);
+	_ = c.sqlite3_bind_int64(stmt.?, 2, mtime_ns);
+	_ = c.sqlite3_bind_int64(stmt.?, 3, size);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		return error.SqlStepFailed;
+	}
+}
+
+pub fn getIndexedFileMtime(db: Db, file_path: []const u8) !?i64 {
+	const sql: [:0]const u8 =
+		"SELECT mtime_ns FROM indexed_files WHERE file_path = ?1;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	try bindText(stmt.?, 1, file_path);
+	const rc = c.sqlite3_step(stmt.?);
+	if (rc == c.SQLITE_ROW) {
+		return c.sqlite3_column_int64(stmt.?, 0);
+	}
+	if (rc == c.SQLITE_DONE) return null;
+	return error.SqlStepFailed;
+}
+
+pub fn getAllIndexedFiles(db: Db, allocator: std.mem.Allocator) ![]IndexedFile {
+	const sql: [:0]const u8 =
+		"SELECT file_path, mtime_ns, size FROM indexed_files;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	var list: std.ArrayListUnmanaged(IndexedFile) = .{};
+	errdefer {
+		for (list.items) |item| allocator.free(item.file_path);
+		list.deinit(allocator);
+	}
+
+	while (true) {
+		const rc = c.sqlite3_step(stmt.?);
+		if (rc == c.SQLITE_DONE) break;
+		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+
+		const ptr = c.sqlite3_column_text(stmt.?, 0) orelse continue;
+		const path = try allocator.dupe(u8, std.mem.span(ptr));
+		errdefer allocator.free(path);
+
+		try list.append(allocator, .{
+			.file_path = path,
+			.mtime_ns = c.sqlite3_column_int64(stmt.?, 1),
+			.size = c.sqlite3_column_int64(stmt.?, 2),
+		});
+	}
+
+	return list.toOwnedSlice(allocator);
+}
+
+pub fn deleteIndexedFile(db: Db, file_path: []const u8) !void {
+	const sql: [:0]const u8 =
+		"DELETE FROM indexed_files WHERE file_path = ?1;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	try bindText(stmt.?, 1, file_path);
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		return error.SqlStepFailed;
+	}
+}
+
+pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
+	// First delete corresponding embeddings and FTS entries
+	const del_embed_sql: [:0]const u8 =
+		"DELETE FROM embeddings WHERE rowid IN (SELECT id FROM symbols WHERE file_path = ?1);\x00";
+	const del_comment_sql: [:0]const u8 =
+		"DELETE FROM embeddings_comment WHERE rowid IN (SELECT id FROM symbols WHERE file_path = ?1);\x00";
+	const del_fts_sql: [:0]const u8 =
+		"DELETE FROM symbols_fts WHERE rowid IN (SELECT id FROM symbols WHERE file_path = ?1);\x00";
+	const del_sym_sql: [:0]const u8 =
+		"DELETE FROM symbols WHERE file_path = ?1;\x00";
+
+	inline for (.{ del_embed_sql, del_comment_sql }) |sql| {
+		var stmt: ?*c.sqlite3_stmt = null;
+		if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+			return error.SqlPrepareFailed;
+		}
+		defer _ = c.sqlite3_finalize(stmt.?);
+		try bindText(stmt.?, 1, file_path);
+		if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+			return error.SqlStepFailed;
+		}
+	}
+
+	// FTS may not exist, so allow failure
+	{
+		var stmt: ?*c.sqlite3_stmt = null;
+		if (c.sqlite3_prepare_v2(db, del_fts_sql, -1, &stmt, null) == c.SQLITE_OK) {
+			defer _ = c.sqlite3_finalize(stmt.?);
+			try bindText(stmt.?, 1, file_path);
+			_ = c.sqlite3_step(stmt.?);
+		}
+	}
+
+	// Delete symbols themselves
+	{
+		var stmt: ?*c.sqlite3_stmt = null;
+		if (c.sqlite3_prepare_v2(db, del_sym_sql, -1, &stmt, null) != c.SQLITE_OK) {
+			return error.SqlPrepareFailed;
+		}
+		defer _ = c.sqlite3_finalize(stmt.?);
+		try bindText(stmt.?, 1, file_path);
+		if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+			return error.SqlStepFailed;
+		}
+	}
+}
+
 fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
 	const tmp = try std.fmt.allocPrint(allocator, fmt, args);
 	defer allocator.free(tmp);
@@ -456,6 +617,87 @@ test "insertSymbol and insertEmbedding" {
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
 }
 
+test "indexed_files tracking" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Initially no tracked files
+	const initial = try getIndexedFileMtime(db, "src/main.zig");
+	try std.testing.expect(initial == null);
+
+	// Upsert a file
+	try upsertIndexedFile(db, "src/main.zig", 1234567890, 1024);
+	const mtime = try getIndexedFileMtime(db, "src/main.zig");
+	try std.testing.expect(mtime != null);
+	try std.testing.expectEqual(@as(i64, 1234567890), mtime.?);
+
+	// Update same file
+	try upsertIndexedFile(db, "src/main.zig", 9999999999, 2048);
+	const mtime2 = try getIndexedFileMtime(db, "src/main.zig");
+	try std.testing.expectEqual(@as(i64, 9999999999), mtime2.?);
+
+	// Add another file and list all
+	try upsertIndexedFile(db, "src/lib.zig", 5555555555, 512);
+	const all = try getAllIndexedFiles(db, allocator);
+	defer {
+		for (all) |item| allocator.free(item.file_path);
+		allocator.free(all);
+	}
+	try std.testing.expectEqual(@as(usize, 2), all.len);
+
+	// Delete a file
+	try deleteIndexedFile(db, "src/main.zig");
+	const after_del = try getIndexedFileMtime(db, "src/main.zig");
+	try std.testing.expect(after_del == null);
+}
+
+test "deleteSymbolsByFile removes symbols and embeddings" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Insert symbols for two files
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "b"),
+		.signature = try allocator.dupe(u8, "fn b() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym2.deinit(allocator);
+
+	const rowid1 = try insertSymbol(db, sym1);
+	try insertEmbedding(db, allocator, rowid1, &[_]f32{ 0.1, 0.2 });
+	const rowid2 = try insertSymbol(db, sym2);
+	try insertEmbedding(db, allocator, rowid2, &[_]f32{ 0.3, 0.4 });
+
+	try std.testing.expectEqual(@as(i64, 2), try countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 2), try countRows(db, allocator, "embeddings"));
+
+	// Delete symbols for file a
+	try deleteSymbolsByFile(db, "src/a.zig");
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
+}
+
 test "primaryLanguage selects most common language" {
 	const allocator = std.testing.allocator;
 	const db = try openMemoryWithVec(allocator);
@@ -506,4 +748,44 @@ test "primaryLanguage selects most common language" {
 
 	try std.testing.expect(primary != null);
 	try std.testing.expectEqualStrings("zig", primary.?);
+}
+
+test "isIndexPopulated returns false on empty DB" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try std.testing.expect(!isIndexPopulated(db));
+}
+
+test "isIndexPopulated returns true with data" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+
+	_ = try insertSymbol(db, sym);
+	try std.testing.expect(isIndexPopulated(db));
+}
+
+test "isIndexPopulated returns false without schema" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	// No initSchema — table doesn't exist
+	try std.testing.expect(!isIndexPopulated(db));
 }

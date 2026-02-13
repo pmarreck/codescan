@@ -18,7 +18,6 @@
 - [x] Add FTS5 lexical search with fallback to LIKE
 - [x] Index bash/lua shebang scripts without extension (2026-01-25 EST)
 - [x] Reorganize test scripts under ./tests (2026-01-25 EST)
-- [ ] Add tests for edge cases and filters; keep tests fast/deterministic
 - [x] Prefer static link for pcre2 dependency
 - [x] Add plugin-specific ignore globs with PCRE2-backed matcher
 - [x] Support ignore config overrides (global + per-language) in .codescan/config
@@ -54,3 +53,28 @@
 - [x] Add config show/edit commands
 - [x] Add include_node_modules opt-in for indexing
 - [x] Show TTY progress for index/update
+- [ ] Add tests for edge cases and filters; keep tests fast/deterministic
+
+## Semantic Editing (see SEMANTIC_EDITING_PLAN.md for full details)
+
+### Phase 1: Tree-sitter Read-Only
+- [ ] `codescan symbols <file>` — list symbols grouped by kind
+- [ ] `codescan find-symbol <name_path>` — name path pattern matching over AST
+- [ ] Hashline output format (3-char base-36 per-symbol chain hashes on code lines)
+- [ ] Name path resolution from tree-sitter AST hierarchy
+
+### Phase 2: Tree-sitter Editing
+- [ ] `codescan replace-symbol <name_path> --file <path>` — byte-precise symbol body replacement
+- [ ] `codescan insert-after <name_path> --file <path>` — insert code after named symbol
+- [ ] `codescan insert-before <name_path> --file <path>` — insert code before named symbol
+- [ ] `codescan replace-lines --from <line:hash> --to <line:hash>` — hashline-anchored edits
+- [ ] `codescan insert-at <line:hash> --file <path>` — hashline-anchored insertion
+- [ ] Stdin body input for all editing commands
+
+### Phase 3: Optional LSP Integration
+- [ ] `codescan references <name_path> --file <path>` — cross-file reference lookup
+- [ ] `codescan rename <name_path> --file <path> --to <new_name>` — cross-file rename
+- [ ] Auto-detect language and lazy-start appropriate LSP server
+
+### Phase 4: Background Auto-Indexing
+- [ ] File watcher (kqueue/FSEvents) for incremental reindex on changes

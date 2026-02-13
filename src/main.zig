@@ -12,6 +12,13 @@ const plugin = @import("plugin.zig");
 const scan = @import("scan.zig");
 const filters = @import("filters.zig");
 const model = @import("model.zig");
+const symbol_tree = @import("symbol_tree.zig");
+const ts_symbols = @import("ts_symbols.zig");
+const hashline = @import("hashline.zig");
+const lsp = @import("lsp.zig");
+const watcher = @import("watcher.zig");
+const pidfile = @import("pidfile.zig");
+const fs_watch = @import("fs_watch.zig");
 
 const Defaults = struct {
 	output: cli.OutputFormat = .human,
@@ -139,7 +146,7 @@ pub fn main() !void {
 				try editConfig(allocator, cfg_path);
 			}
 		},
-		.index, .update => {
+		.index => {
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
 			defer storage.close(db);
@@ -184,17 +191,125 @@ pub fn main() !void {
 			}
 			try stdout.flush();
 		},
-		.search => {
-			const query = parsed.query orelse return error.MissingQuery;
+		.update => {
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			if (settings.search_mode != .lexical) {
-				try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+			var embedder_adapter = embedding.OllamaEmbedder{
+				.transport = http_client.transport(),
+				.base_url = settings.ollama_url,
+				.model = settings.ollama_model,
+			};
+
+			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+			defer index_filters.deinit(allocator);
+
+			const stats = try indexer.indexIncremental(
+				allocator,
+				db,
+				settings.root_path,
+				registry,
+				embedder_adapter.embedder(),
+				.{
+					.embedding_dim = settings.embedding_dim,
+					.batch_size = settings.batch_size,
+					.max_file_size = settings.max_file_size,
+					.allowed_exts = index_filters.exts.items,
+					.allowed_kinds = index_filters.kinds.items,
+					.ignore = .{
+						.global = settings.ignore_global,
+						.per_language = settings.ignore_lang,
+						.include_node_modules = settings.include_node_modules,
+					},
+					.show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
+				},
+			);
+
+			if (settings.output == .json) {
+				try stdout.print("{{\"status\":\"ok\",\"new\":{d},\"modified\":{d},\"deleted\":{d},\"unchanged\":{d},\"symbols\":{d}}}\n", .{
+					stats.new_files,
+					stats.modified_files,
+					stats.deleted_files,
+					stats.unchanged_files,
+					stats.symbols,
+				});
+			} else {
+				try stdout.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged ({d} symbols re-embedded)\n", .{
+					stats.new_files,
+					stats.modified_files,
+					stats.deleted_files,
+					stats.unchanged_files,
+					stats.symbols,
+				});
 			}
+			try stdout.flush();
+
+			// Auto-launch background watcher after update
+			{
+				var update_stderr_buf: [4096]u8 = undefined;
+				var update_stderr_writer = std.fs.File.stderr().writer(&update_stderr_buf);
+				const update_stderr = &update_stderr_writer.interface;
+				maybeStartWatcher(allocator, settings, update_stderr);
+			}
+		},
+		.search => {
+			const query = parsed.query orelse return error.MissingQuery;
+			try ensureParentDir(settings.db_path);
+			const db = try storage.openFileWithVec(allocator, settings.db_path);
+			defer storage.close(db);
+
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+
+			var http_client = ollama.StdHttpTransport.init(allocator);
+			defer http_client.deinit();
+
+			// Track whether we should use lexical-only (Ollama unavailable)
+			var effective_search_mode = settings.search_mode;
+			var did_auto_index = false;
+
+			// Auto-index if DB is empty
+			if (!storage.isIndexPopulated(db)) {
+				_ = stderr.print("note: No index found. Setting up codescan for this project...\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+
+				// Try Ollama; fall back to lexical if unavailable
+				const ollama_ok = tryInitOllama(allocator, &http_client, settings.ollama_url, settings.ollama_model, stderr);
+				if (!ollama_ok) {
+					effective_search_mode = .lexical;
+				}
+
+				var embedder_adapter = embedding.OllamaEmbedder{
+					.transport = http_client.transport(),
+					.base_url = settings.ollama_url,
+					.model = settings.ollama_model,
+				};
+
+				// Need to init schema before indexing into a fresh DB
+				try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+
+				_ = try performFullIndex(
+					allocator,
+					db,
+					settings,
+					registry,
+					embedder_adapter.embedder(),
+					stderr,
+					shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
+				);
+				did_auto_index = true;
+			} else {
+				// Normal path: ensure Ollama if needed
+				if (effective_search_mode != .lexical) {
+					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+				}
+			}
+
 			var embedder_adapter = embedding.OllamaEmbedder{
 				.transport = http_client.transport(),
 				.base_url = settings.ollama_url,
@@ -218,7 +333,7 @@ pub fn main() !void {
 				query,
 				.{
 					.top_n = settings.top_n,
-					.mode = settings.search_mode,
+					.mode = effective_search_mode,
 					.weight_vector = settings.weight_vector,
 					.weight_lexical = settings.weight_lexical,
 					.min_score = settings.min_score,
@@ -230,9 +345,6 @@ pub fn main() !void {
 			defer search.freeResults(allocator, results);
 
 			if (results.len == 0) {
-				var stderr_buf: [256]u8 = undefined;
-				var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
-				const stderr = &stderr_writer.interface;
 				_ = stderr.print(
 					"note: no results found; consider re-indexing with `codescan update`.\n",
 					.{},
@@ -246,6 +358,11 @@ pub fn main() !void {
 				.use_color = use_color,
 			});
 			try stdout.flush();
+
+			// Auto-launch background watcher after first auto-index
+			if (did_auto_index) {
+				maybeStartWatcher(allocator, settings, stderr);
+			}
 		},
 		.serve => {
 			try server.serve(allocator, .{
@@ -276,6 +393,135 @@ pub fn main() !void {
 				.http_host = settings.http_host,
 				.http_port = settings.http_port,
 			});
+		},
+		.symbols => {
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: symbols command requires a file path\nusage: codescan symbols <file>\n");
+			try runSymbols(allocator, file_path, parsed.output, stdout);
+			try stdout.flush();
+		},
+		.find_symbol => {
+			const pattern = parsed.find_symbol_pattern orelse
+				exitWithError("error: find-symbol requires a name path pattern\nusage: codescan find-symbol <pattern> --file <path>\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: find-symbol requires --file <path>\n");
+			try runFindSymbol(allocator, file_path, pattern, parsed.include_body, parsed.output, stdout);
+			try stdout.flush();
+		},
+		.replace_symbol => {
+			const pattern = parsed.find_symbol_pattern orelse
+				exitWithError("error: replace-symbol requires a name path\nusage: echo 'new body' | codescan replace-symbol <name_path> --file <path>\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: replace-symbol requires --file <path>\n");
+			try runReplaceSymbol(allocator, file_path, pattern, stdout);
+			try stdout.flush();
+		},
+		.insert_after => {
+			const pattern = parsed.find_symbol_pattern orelse
+				exitWithError("error: insert-after requires a name path\nusage: echo 'code' | codescan insert-after <name_path> --file <path>\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: insert-after requires --file <path>\n");
+			try runInsertAfter(allocator, file_path, pattern, stdout);
+			try stdout.flush();
+		},
+		.insert_before => {
+			const pattern = parsed.find_symbol_pattern orelse
+				exitWithError("error: insert-before requires a name path\nusage: echo 'code' | codescan insert-before <name_path> --file <path>\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: insert-before requires --file <path>\n");
+			try runInsertBefore(allocator, file_path, pattern, stdout);
+			try stdout.flush();
+		},
+		.replace_lines => {
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: replace-lines requires --file <path>\n");
+			const from_ref = parsed.from_ref orelse
+				exitWithError("error: replace-lines requires --from <line:hash>\n");
+			const to_ref = parsed.to_ref orelse
+				exitWithError("error: replace-lines requires --to <line:hash>\n");
+			try runReplaceLines(allocator, file_path, from_ref, to_ref, stdout);
+			try stdout.flush();
+		},
+		.insert_at => {
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: insert-at requires --file <path>\n");
+			const ref = parsed.hashline_ref orelse
+				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
+			try runInsertAt(allocator, file_path, ref, stdout);
+			try stdout.flush();
+		},
+		.references => {
+			const pattern = parsed.find_symbol_pattern orelse
+				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: references requires --file <path>\n");
+			try runReferences(allocator, file_path, pattern, parsed.output, stdout);
+			try stdout.flush();
+		},
+		.rename => {
+			const pattern = parsed.find_symbol_pattern orelse
+				exitWithError("error: rename requires a name path pattern\nusage: codescan rename <pattern> --file <path> --to <new_name>\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: rename requires --file <path>\n");
+			const new_name = parsed.rename_to orelse
+				exitWithError("error: rename requires --to <new_name>\n");
+			try runRename(allocator, file_path, pattern, new_name, parsed.output, stdout);
+			try stdout.flush();
+		},
+		.watch => {
+			try ensureParentDir(settings.db_path);
+			// Open existing DB or create new one (don't destroy existing index)
+			const db = try storage.openFileWithVec(allocator, settings.db_path);
+			defer storage.close(db);
+
+			var http_client = ollama.StdHttpTransport.init(allocator);
+			defer http_client.deinit();
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+			var embedder_adapter = embedding.OllamaEmbedder{
+				.transport = http_client.transport(),
+				.base_url = settings.ollama_url,
+				.model = settings.ollama_model,
+			};
+
+			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+			defer index_filters.deinit(allocator);
+
+			var stop_flag = std.atomic.Value(bool).init(false);
+			const act = std.posix.Sigaction{
+				.handler = .{ .handler = struct {
+					fn handler(_: c_int) callconv(.c) void {}
+				}.handler },
+				.mask = std.posix.sigemptyset(),
+				.flags = 0,
+			};
+			std.posix.sigaction(std.posix.SIG.INT, &act, null);
+			std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+
+			try watcher.watchLoop(
+				allocator,
+				db,
+				settings.root_path,
+				registry,
+				embedder_adapter.embedder(),
+				.{
+					.interval_ms = parsed.watch_interval,
+					.codescan_dir = std.fs.path.dirname(settings.db_path),
+					.index_options = .{
+						.embedding_dim = settings.embedding_dim,
+						.batch_size = settings.batch_size,
+						.max_file_size = settings.max_file_size,
+						.allowed_exts = index_filters.exts.items,
+						.allowed_kinds = index_filters.kinds.items,
+						.ignore = .{
+							.global = settings.ignore_global,
+							.per_language = settings.ignore_lang,
+							.include_node_modules = settings.include_node_modules,
+						},
+						.show_progress = false,
+					},
+				},
+				&stop_flag,
+			);
 		},
 		.help => {},
 	}
@@ -382,14 +628,14 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.comments_only) settings.comments_only = parsed.comments_only;
 	if (parsed.seen.include_node_modules) settings.include_node_modules = parsed.include_node_modules;
 	if (parsed.seen.ext_filter) {
-		if (parsed.command == .index or parsed.command == .update) {
+		if (parsed.command == .index or parsed.command == .update or parsed.command == .watch) {
 			settings.index_ext = parsed.ext_filter;
 		} else if (parsed.command == .search) {
 			settings.search_ext = parsed.ext_filter;
 		}
 	}
 	if (parsed.seen.type_filter) {
-		if (parsed.command == .index or parsed.command == .update) {
+		if (parsed.command == .index or parsed.command == .update or parsed.command == .watch) {
 			settings.index_type = parsed.type_filter;
 		} else if (parsed.command == .search) {
 			settings.search_type = parsed.type_filter;
@@ -433,6 +679,117 @@ fn ensureModelAvailableOrExit(
 
 fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat) bool {
 	return is_tty and out_format == .human;
+}
+
+/// Tries to connect to Ollama and ensure the model is available.
+/// Returns whether Ollama is available. On failure, prints a warning to stderr.
+fn tryInitOllama(
+	allocator: std.mem.Allocator,
+	http_client: *ollama.StdHttpTransport,
+	ollama_url: []const u8,
+	ollama_model: []const u8,
+	stderr: *std.Io.Writer,
+) bool {
+	ollama.ensureModelAvailable(
+		allocator,
+		http_client.transport(),
+		ollama_url,
+		ollama_model,
+	) catch |err| {
+		switch (err) {
+			error.ModelNotFound => {
+				_ = stderr.print(
+					"  note: Ollama model '{s}' not found. Using lexical-only search.\n" ++
+						"  Run 'ollama pull {s}' then 'codescan update' for semantic search.\n",
+					.{ ollama_model, ollama_model },
+				) catch {};
+			},
+			else => {
+				_ = stderr.print(
+					"  note: Ollama not available. Using lexical-only search.\n" ++
+						"  Run 'codescan update' after starting Ollama for semantic search.\n",
+					.{},
+				) catch {};
+			},
+		}
+		_ = stderr.flush() catch {};
+		return false;
+	};
+	return true;
+}
+
+/// Performs a full index (shared between `codescan index` and auto-index-before-search).
+fn performFullIndex(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	settings: Settings,
+	registry: plugin.Registry,
+	embedder: embedding.Embedder,
+	stderr: *std.Io.Writer,
+	show_progress: bool,
+) !indexer.Stats {
+	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+	defer index_filters.deinit(allocator);
+
+	const stats = try indexer.indexAll(
+		allocator,
+		db,
+		settings.root_path,
+		registry,
+		embedder,
+		.{
+			.embedding_dim = settings.embedding_dim,
+			.batch_size = settings.batch_size,
+			.max_file_size = settings.max_file_size,
+			.allowed_exts = index_filters.exts.items,
+			.allowed_kinds = index_filters.kinds.items,
+			.ignore = .{
+				.global = settings.ignore_global,
+				.per_language = settings.ignore_lang,
+				.include_node_modules = settings.include_node_modules,
+			},
+			.show_progress = show_progress,
+		},
+	);
+
+	if (show_progress) {
+		_ = stderr.print("  Indexed {d} files, {d} symbols\n", .{ stats.files, stats.symbols }) catch {};
+		_ = stderr.flush() catch {};
+	}
+
+	return stats;
+}
+
+/// Spawns `codescan watch` in the background if not already running.
+/// Only auto-launches when stderr is a TTY (avoids surprising CI/pipes).
+fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *std.Io.Writer) void {
+	// Only auto-launch in interactive TTY sessions
+	if (!std.fs.File.stderr().isTty()) return;
+
+	// Derive the .codescan dir from db_path (parent of index.sqlite3)
+	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse return;
+
+	// Check if watcher is already running
+	if (pidfile.isWatcherRunning(allocator, codescan_dir)) return;
+
+	// Find our own binary
+	const self_exe = std.fs.selfExePathAlloc(allocator) catch return;
+	defer allocator.free(self_exe);
+
+	// Spawn: codescan watch --root <path>
+	var child = std.process.Child.init(
+		&.{ self_exe, "watch", "--root", settings.root_path },
+		allocator,
+	);
+	child.stdin_behavior = .Close;
+	child.stdout_behavior = .Close;
+	child.stderr_behavior = .Close;
+
+	child.spawn() catch return;
+
+	// Don't wait — let it run in background (init adopts on parent exit)
+	_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id}) catch {};
+	_ = stderr.flush() catch {};
 }
 
 fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
@@ -617,18 +974,840 @@ fn parseMode(value: []const u8) !search.SearchMode {
 	return error.InvalidMode;
 }
 
+fn exitWithError(comptime msg: []const u8) noreturn {
+	var eb: [512]u8 = undefined;
+	var ew = std.fs.File.stderr().writer(&eb);
+	const se = &ew.interface;
+	_ = se.writeAll(msg) catch {};
+	_ = se.flush() catch {};
+	std.process.exit(1);
+}
+
+fn readFileContents(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+	const file = try std.fs.cwd().openFile(path, .{});
+	defer file.close();
+	return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+}
+
+fn runSymbols(allocator: std.mem.Allocator, file_path: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	const ext = std.fs.path.extension(file_path);
+	var tree: symbol_tree.SymbolTree = undefined;
+	var tree_valid = false;
+
+	if (std.mem.eql(u8, ext, ".zig")) {
+		tree = try symbol_tree.extractZig(allocator, source);
+		tree_valid = true;
+	} else if (ts_symbols.Language.fromExtension(ext)) |lang| {
+		tree = try ts_symbols.extract(allocator, source, lang);
+		tree_valid = true;
+	}
+
+	if (!tree_valid) {
+		try writer.print("error: unsupported file type '{s}'\n", .{ext});
+		return;
+	}
+	defer tree.deinit(allocator);
+
+	// Compute per-file chain hashes for auto-expiry on symbol references
+	var lines_list: std.ArrayListUnmanaged([]const u8) = .{};
+	defer lines_list.deinit(allocator);
+	{
+		var it = std.mem.splitScalar(u8, source, '\n');
+		while (it.next()) |line| {
+			try lines_list.append(allocator, line);
+		}
+	}
+	const all_hashes = try hashline.computeChainHashes(allocator, lines_list.items);
+	defer allocator.free(all_hashes);
+
+	if (out_fmt == .json) {
+		try writeSymbolsJson(tree.symbols, all_hashes, writer);
+	} else {
+		try formatSymbolsWithHashes(tree.symbols, all_hashes, writer, 0);
+	}
+}
+
+fn runFindSymbol(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	pattern: []const u8,
+	include_body: bool,
+	out_fmt: cli.OutputFormat,
+	writer: *std.Io.Writer,
+) !void {
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	const ext = std.fs.path.extension(file_path);
+	var tree: symbol_tree.SymbolTree = undefined;
+	var tree_valid = false;
+
+	if (std.mem.eql(u8, ext, ".zig")) {
+		tree = try symbol_tree.extractZig(allocator, source);
+		tree_valid = true;
+	} else if (ts_symbols.Language.fromExtension(ext)) |lang| {
+		tree = try ts_symbols.extract(allocator, source, lang);
+		tree_valid = true;
+	}
+
+	if (!tree_valid) {
+		try writer.print("error: unsupported file type '{s}'\n", .{ext});
+		return;
+	}
+	defer tree.deinit(allocator);
+
+	// Split source into lines and compute per-file chain hashes
+	var lines_list: std.ArrayListUnmanaged([]const u8) = .{};
+	defer lines_list.deinit(allocator);
+	{
+		var it = std.mem.splitScalar(u8, source, '\n');
+		while (it.next()) |line| {
+			try lines_list.append(allocator, line);
+		}
+	}
+	const lines = lines_list.items;
+	const all_hashes = try hashline.computeChainHashes(allocator, lines);
+	defer allocator.free(all_hashes);
+
+	var found = false;
+	for (tree.symbols) |*sym| {
+		try findAndPrintMatch(allocator, sym, pattern, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+	}
+
+	if (!found and out_fmt != .json) {
+		try writer.print("No symbols matching '{s}' found in {s}\n", .{ pattern, file_path });
+	}
+}
+
+fn findAndPrintMatch(
+	allocator: std.mem.Allocator,
+	sym: *const symbol_tree.SymbolNode,
+	pattern: []const u8,
+	parent_path: ?[]const u8,
+	include_body: bool,
+	lines: []const []const u8,
+	all_hashes: []const hashline.Hash,
+	out_fmt: cli.OutputFormat,
+	writer: *std.Io.Writer,
+	found: *bool,
+) !void {
+	const name_path = try sym.namePath(allocator, parent_path);
+	defer allocator.free(name_path);
+
+	const start_idx = if (sym.start_line > 0) sym.start_line - 1 else 0;
+	const end_idx = if (sym.end_line > 0) sym.end_line - 1 else 0;
+
+	if (matchesNamePath(pattern, name_path, sym.name)) {
+		found.* = true;
+		if (out_fmt == .json) {
+			try writer.writeAll("{\"name_path\":");
+			try writeJsonString(name_path, writer);
+			try writer.print(",\"kind\":\"{s}\",\"start_line\":{d},\"end_line\":{d}", .{
+				sym.kind.label(), sym.start_line, sym.end_line,
+			});
+			if (start_idx < all_hashes.len) {
+				try writer.print(",\"start_hash\":\"{s}\"", .{&all_hashes[start_idx]});
+			}
+			if (end_idx < all_hashes.len) {
+				try writer.print(",\"end_hash\":\"{s}\"", .{&all_hashes[end_idx]});
+			}
+			if (include_body) {
+				const start = start_idx;
+				const end = @min(sym.end_line, lines.len);
+				try writer.writeAll(",\"body\":[");
+				for (lines[start..end], 0..) |line, li| {
+					if (li > 0) try writer.writeAll(",");
+					try writeJsonString(line, writer);
+				}
+				try writer.writeAll("]");
+			}
+			try writer.writeAll("}\n");
+		} else {
+			if (sym.start_line == sym.end_line) {
+				if (start_idx < all_hashes.len) {
+					try writer.print("{s} {s} ({d}:{s})\n", .{
+						sym.kind.label(), name_path, sym.start_line, &all_hashes[start_idx],
+					});
+				} else {
+					try writer.print("{s} {s} ({d})\n", .{
+						sym.kind.label(), name_path, sym.start_line,
+					});
+				}
+			} else {
+				if (start_idx < all_hashes.len and end_idx < all_hashes.len) {
+					try writer.print("{s} {s} ({d}:{s}-{d}:{s})\n", .{
+						sym.kind.label(), name_path, sym.start_line, &all_hashes[start_idx], sym.end_line, &all_hashes[end_idx],
+					});
+				} else {
+					try writer.print("{s} {s} ({d}-{d})\n", .{
+						sym.kind.label(), name_path, sym.start_line, sym.end_line,
+					});
+				}
+			}
+			if (include_body) {
+				const start = start_idx;
+				const end = @min(sym.end_line, lines.len);
+				for (lines[start..end], all_hashes[start..end], 0..) |line, hash, idx| {
+					try hashline.formatHashline(start + idx + 1, hash, line, writer);
+					try writer.writeAll("\n");
+				}
+			}
+		}
+	}
+
+	for (sym.children) |*child| {
+		try findAndPrintMatch(allocator, child, pattern, name_path, include_body, lines, all_hashes, out_fmt, writer, found);
+	}
+}
+
+// ─── Shared Editing Utilities ────────────────────────────────────────
+
+const HashlineRef = struct {
+	line: usize,
+	hash: hashline.Hash,
+};
+
+fn parseHashlineRef(s: []const u8) !HashlineRef {
+	const colon = std.mem.indexOf(u8, s, ":") orelse return error.InvalidHashlineRef;
+	const line = std.fmt.parseInt(usize, s[0..colon], 10) catch return error.InvalidHashlineRef;
+	const hash_str = s[colon + 1 ..];
+	if (hash_str.len != hashline.HASH_LEN) return error.InvalidHashlineRef;
+	return .{
+		.line = line,
+		.hash = hash_str[0..hashline.HASH_LEN].*,
+	};
+}
+
+fn readStdin(allocator: std.mem.Allocator) ![]u8 {
+	const stdin = std.fs.File.stdin();
+	return try stdin.readToEndAlloc(allocator, 10 * 1024 * 1024);
+}
+
+fn spliceFile(allocator: std.mem.Allocator, file_path: []const u8, start_byte: usize, end_byte: usize, new_content: []const u8) !void {
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	if (start_byte > source.len or end_byte > source.len or start_byte > end_byte)
+		return error.InvalidByteRange;
+
+	const result_len = source.len - (end_byte - start_byte) + new_content.len;
+	const result = try allocator.alloc(u8, result_len);
+	defer allocator.free(result);
+
+	@memcpy(result[0..start_byte], source[0..start_byte]);
+	@memcpy(result[start_byte .. start_byte + new_content.len], new_content);
+	@memcpy(result[start_byte + new_content.len ..], source[end_byte..]);
+
+	const file = try std.fs.cwd().createFile(file_path, .{});
+	defer file.close();
+	try file.writeAll(result);
+}
+
+fn extractFileAndTree(allocator: std.mem.Allocator, file_path: []const u8) !struct { source: []u8, tree: symbol_tree.SymbolTree } {
+	const source = try readFileContents(allocator, file_path);
+	errdefer allocator.free(source);
+
+	const ext = std.fs.path.extension(file_path);
+	var tree: symbol_tree.SymbolTree = undefined;
+	var tree_valid = false;
+
+	if (std.mem.eql(u8, ext, ".zig")) {
+		tree = try symbol_tree.extractZig(allocator, source);
+		tree_valid = true;
+	} else if (ts_symbols.Language.fromExtension(ext)) |lang| {
+		tree = try ts_symbols.extract(allocator, source, lang);
+		tree_valid = true;
+	}
+
+	if (!tree_valid) {
+		allocator.free(source);
+		return error.UnsupportedFileType;
+	}
+
+	return .{ .source = source, .tree = tree };
+}
+
+const SymbolMatch = struct {
+	start_byte: usize,
+	end_byte: usize,
+	start_line: usize,
+	end_line: usize,
+};
+
+fn findFirstMatch(
+	allocator: std.mem.Allocator,
+	symbols: []const symbol_tree.SymbolNode,
+	pattern: []const u8,
+	parent_path: ?[]const u8,
+) !?SymbolMatch {
+	for (symbols) |*sym| {
+		const name_path = try sym.namePath(allocator, parent_path);
+		defer allocator.free(name_path);
+
+		if (matchesNamePath(pattern, name_path, sym.name)) {
+			return .{
+				.start_byte = sym.start_byte,
+				.end_byte = sym.end_byte,
+				.start_line = sym.start_line,
+				.end_line = sym.end_line,
+			};
+		}
+
+		if (sym.children.len > 0) {
+			if (try findFirstMatch(allocator, sym.children, pattern, name_path)) |m| {
+				return m;
+			}
+		}
+	}
+	return null;
+}
+
+fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
+	var list: std.ArrayListUnmanaged([]const u8) = .{};
+	var it = std.mem.splitScalar(u8, source, '\n');
+	while (it.next()) |line| {
+		try list.append(allocator, line);
+	}
+	return list;
+}
+
+fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
+	// Returns byte offset of the start of each line (0-indexed line numbers)
+	var offsets: std.ArrayListUnmanaged(usize) = .{};
+	defer offsets.deinit(allocator);
+	try offsets.append(allocator, 0);
+	for (source, 0..) |ch, i| {
+		if (ch == '\n' and i + 1 <= source.len) {
+			try offsets.append(allocator, i + 1);
+		}
+	}
+	return offsets.toOwnedSlice(allocator);
+}
+
+// ─── Editing Command Implementations ─────────────────────────────────
+
+fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
+	const new_body = try readStdin(allocator);
+	defer allocator.free(new_body);
+
+	const result = try extractFileAndTree(allocator, file_path);
+	var tree = result.tree;
+	defer tree.deinit(allocator);
+	defer allocator.free(result.source);
+
+	const match = try findFirstMatch(allocator, tree.symbols, pattern, null) orelse {
+		try writer.print("error: no symbol matching '{s}' found in {s}\n", .{ pattern, file_path });
+		return;
+	};
+
+	try spliceFile(allocator, file_path, match.start_byte, match.end_byte, new_body);
+	try writer.print("Replaced {s} (lines {d}-{d}, bytes {d}-{d})\n", .{
+		pattern, match.start_line, match.end_line, match.start_byte, match.end_byte,
+	});
+}
+
+fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
+	const new_body = try readStdin(allocator);
+	defer allocator.free(new_body);
+
+	const result = try extractFileAndTree(allocator, file_path);
+	var tree = result.tree;
+	defer tree.deinit(allocator);
+	defer allocator.free(result.source);
+
+	const match = try findFirstMatch(allocator, tree.symbols, pattern, null) orelse {
+		try writer.print("error: no symbol matching '{s}' found in {s}\n", .{ pattern, file_path });
+		return;
+	};
+
+	// Insert after the symbol's end byte with a newline separator
+	const insert_content = try std.fmt.allocPrint(allocator, "\n{s}", .{new_body});
+	defer allocator.free(insert_content);
+
+	try spliceFile(allocator, file_path, match.end_byte, match.end_byte, insert_content);
+	try writer.print("Inserted after {s} (after line {d})\n", .{ pattern, match.end_line });
+}
+
+fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
+	const new_body = try readStdin(allocator);
+	defer allocator.free(new_body);
+
+	const result = try extractFileAndTree(allocator, file_path);
+	var tree = result.tree;
+	defer tree.deinit(allocator);
+	defer allocator.free(result.source);
+
+	const match = try findFirstMatch(allocator, tree.symbols, pattern, null) orelse {
+		try writer.print("error: no symbol matching '{s}' found in {s}\n", .{ pattern, file_path });
+		return;
+	};
+
+	// Insert before the symbol's start byte with a newline separator
+	const insert_content = try std.fmt.allocPrint(allocator, "{s}\n", .{new_body});
+	defer allocator.free(insert_content);
+
+	try spliceFile(allocator, file_path, match.start_byte, match.start_byte, insert_content);
+	try writer.print("Inserted before {s} (before line {d})\n", .{ pattern, match.start_line });
+}
+
+fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str: []const u8, to_str: []const u8, writer: *std.Io.Writer) !void {
+	const from = parseHashlineRef(from_str) catch {
+		try writer.print("error: invalid --from hashline ref '{s}' (expected format: line:hash, e.g. 45:r2p)\n", .{from_str});
+		return;
+	};
+	const to = parseHashlineRef(to_str) catch {
+		try writer.print("error: invalid --to hashline ref '{s}' (expected format: line:hash, e.g. 47:3bw)\n", .{to_str});
+		return;
+	};
+
+	if (from.line > to.line) {
+		try writer.print("error: --from line ({d}) must be <= --to line ({d})\n", .{ from.line, to.line });
+		return;
+	}
+
+	const new_body = try readStdin(allocator);
+	defer allocator.free(new_body);
+
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	// Split into lines and compute hashes
+	var lines_list = try splitLines(allocator, source);
+	defer lines_list.deinit(allocator);
+	const lines = lines_list.items;
+
+	const all_hashes = try hashline.computeChainHashes(allocator, lines);
+	defer allocator.free(all_hashes);
+
+	// Verify hashes
+	const from_idx = from.line - 1;
+	const to_idx = to.line - 1;
+
+	if (from_idx >= all_hashes.len) {
+		try writer.print("error: line {d} is beyond end of file ({d} lines)\n", .{ from.line, all_hashes.len });
+		return;
+	}
+	if (to_idx >= all_hashes.len) {
+		try writer.print("error: line {d} is beyond end of file ({d} lines)\n", .{ to.line, all_hashes.len });
+		return;
+	}
+
+	if (!std.mem.eql(u8, &all_hashes[from_idx], &from.hash)) {
+		try writer.print("error: hashline mismatch at line {d} (expected {s}, got {s}) — file changed since last read\n", .{
+			from.line, &from.hash, &all_hashes[from_idx],
+		});
+		return;
+	}
+	if (!std.mem.eql(u8, &all_hashes[to_idx], &to.hash)) {
+		try writer.print("error: hashline mismatch at line {d} (expected {s}, got {s}) — file changed since last read\n", .{
+			to.line, &to.hash, &all_hashes[to_idx],
+		});
+		return;
+	}
+
+	// Compute byte offsets for the line range
+	const offsets = try lineByteOffsets(source, allocator);
+	defer allocator.free(offsets);
+
+	const start_byte = offsets[from_idx];
+	const end_byte = if (to_idx + 1 < offsets.len) offsets[to_idx + 1] else source.len;
+
+	try spliceFile(allocator, file_path, start_byte, end_byte, new_body);
+	try writer.print("Replaced lines {d}-{d}\n", .{ from.line, to.line });
+}
+
+fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []const u8, writer: *std.Io.Writer) !void {
+	const ref = parseHashlineRef(ref_str) catch {
+		try writer.print("error: invalid hashline ref '{s}' (expected format: line:hash, e.g. 47:3bw)\n", .{ref_str});
+		return;
+	};
+
+	const new_body = try readStdin(allocator);
+	defer allocator.free(new_body);
+
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	var lines_list = try splitLines(allocator, source);
+	defer lines_list.deinit(allocator);
+	const lines = lines_list.items;
+
+	const all_hashes = try hashline.computeChainHashes(allocator, lines);
+	defer allocator.free(all_hashes);
+
+	const ref_idx = ref.line - 1;
+	if (ref_idx >= all_hashes.len) {
+		try writer.print("error: line {d} is beyond end of file ({d} lines)\n", .{ ref.line, all_hashes.len });
+		return;
+	}
+
+	if (!std.mem.eql(u8, &all_hashes[ref_idx], &ref.hash)) {
+		try writer.print("error: hashline mismatch at line {d} (expected {s}, got {s}) — file changed since last read\n", .{
+			ref.line, &ref.hash, &all_hashes[ref_idx],
+		});
+		return;
+	}
+
+	// Insert after the referenced line
+	const offsets = try lineByteOffsets(source, allocator);
+	defer allocator.free(offsets);
+
+	const insert_byte = if (ref_idx + 1 < offsets.len) offsets[ref_idx + 1] else source.len;
+
+	// Ensure new content ends with newline for clean insertion
+	const insert_content = if (new_body.len > 0 and new_body[new_body.len - 1] != '\n')
+		try std.fmt.allocPrint(allocator, "{s}\n", .{new_body})
+	else
+		try allocator.dupe(u8, new_body);
+	defer allocator.free(insert_content);
+
+	try spliceFile(allocator, file_path, insert_byte, insert_byte, insert_content);
+	try writer.print("Inserted after line {d}\n", .{ref.line});
+}
+
+fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
+	// First, find the symbol position using tree-sitter
+	var result = extractFileAndTree(allocator, file_path) catch |err| {
+		if (err == error.UnsupportedFileType) {
+			try writer.print("error: unsupported file type for '{s}'\n", .{file_path});
+			return;
+		}
+		return err;
+	};
+	defer allocator.free(result.source);
+	defer result.tree.deinit(allocator);
+
+	const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
+		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+		return;
+	};
+	const sym_match = match orelse {
+		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+		return;
+	};
+
+	// Determine the language server binary
+	const ext = std.fs.path.extension(file_path);
+	const server_info = lsp.serverForExtension(ext) orelse {
+		try writer.print("error: no language server known for '{s}' files\n", .{ext});
+		return;
+	};
+
+	// Resolve absolute path and root URI
+	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
+	defer allocator.free(abs_path);
+
+	const root_dir = std.fs.path.dirname(abs_path) orelse "/";
+	const root_uri = try lsp.pathToUri(allocator, root_dir);
+	defer allocator.free(root_uri);
+
+	const file_uri = try lsp.pathToUri(allocator, abs_path);
+	defer allocator.free(file_uri);
+
+	// Start LSP, open file, request references
+	var client = lsp.LspClient.start(allocator, server_info, root_uri) catch {
+		try writer.print("error: could not start language server '{s}' — is it installed and on PATH?\n", .{server_info.binary});
+		return;
+	};
+	defer client.deinit();
+
+	const lang_id = lsp.languageId(ext);
+	client.didOpen(file_uri, lang_id, result.source) catch {
+		try writer.print("error: failed to send didOpen to language server\n", .{});
+		return;
+	};
+
+	// LSP uses 0-based line/col
+	const line: u32 = @intCast(sym_match.start_line);
+	const col: u32 = 0;
+
+	const locations = client.references(file_uri, line, col) catch {
+		try writer.print("error: references request failed\n", .{});
+		return;
+	};
+	defer allocator.free(locations);
+
+	if (locations.len == 0) {
+		try writer.print("No references found for '{s}'\n", .{pattern});
+		return;
+	}
+
+	if (out_fmt == .json) {
+		try writer.writeAll("[");
+		for (locations, 0..) |loc, i| {
+			if (i > 0) try writer.writeAll(",");
+			const path = lsp.uriToPath(loc.uri) orelse loc.uri;
+			try writer.print("{{\"file\":\"{s}\",\"line\":{d},\"col\":{d}}}", .{
+				path, loc.start_line + 1, loc.start_col,
+			});
+		}
+		try writer.writeAll("]\n");
+	} else {
+		try writer.print("References to '{s}' ({d} found):\n", .{ pattern, locations.len });
+		for (locations) |loc| {
+			const path = lsp.uriToPath(loc.uri) orelse loc.uri;
+			try writer.print("  {s}:{d}:{d}\n", .{ path, loc.start_line + 1, loc.start_col });
+		}
+	}
+}
+
+fn runRename(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, new_name: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
+	// First, find the symbol position using tree-sitter
+	var result = extractFileAndTree(allocator, file_path) catch |err| {
+		if (err == error.UnsupportedFileType) {
+			try writer.print("error: unsupported file type for '{s}'\n", .{file_path});
+			return;
+		}
+		return err;
+	};
+	defer allocator.free(result.source);
+	defer result.tree.deinit(allocator);
+
+	const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
+		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+		return;
+	};
+	const sym_match = match orelse {
+		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+		return;
+	};
+
+	// Determine the language server binary
+	const ext = std.fs.path.extension(file_path);
+	const server_info = lsp.serverForExtension(ext) orelse {
+		try writer.print("error: no language server known for '{s}' files\n", .{ext});
+		return;
+	};
+
+	// Resolve absolute path and root URI
+	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
+	defer allocator.free(abs_path);
+
+	const root_dir = std.fs.path.dirname(abs_path) orelse "/";
+	const root_uri = try lsp.pathToUri(allocator, root_dir);
+	defer allocator.free(root_uri);
+
+	const file_uri = try lsp.pathToUri(allocator, abs_path);
+	defer allocator.free(file_uri);
+
+	// Start LSP, open file, request rename
+	var client = lsp.LspClient.start(allocator, server_info, root_uri) catch {
+		try writer.print("error: could not start language server '{s}' — is it installed and on PATH?\n", .{server_info.binary});
+		return;
+	};
+	defer client.deinit();
+
+	const lang_id = lsp.languageId(ext);
+	client.didOpen(file_uri, lang_id, result.source) catch {
+		try writer.print("error: failed to send didOpen to language server\n", .{});
+		return;
+	};
+
+	// LSP uses 0-based line/col
+	const line: u32 = @intCast(sym_match.start_line);
+	const col: u32 = 0;
+
+	const workspace_edit = client.rename(file_uri, line, col, new_name) catch {
+		try writer.print("error: rename request failed\n", .{});
+		return;
+	};
+
+	if (workspace_edit.file_edits.len == 0) {
+		try writer.print("No edits returned for rename of '{s}' to '{s}'\n", .{ pattern, new_name });
+		return;
+	}
+
+	// Apply edits to each file
+	var total_edits: usize = 0;
+	for (workspace_edit.file_edits) |fe| {
+		total_edits += fe.edits.len;
+	}
+
+	if (out_fmt == .json) {
+		try writer.writeAll("{\"edits\":[");
+		var first = true;
+		for (workspace_edit.file_edits) |fe| {
+			const path = lsp.uriToPath(fe.uri) orelse fe.uri;
+			for (fe.edits) |edit| {
+				if (!first) try writer.writeAll(",");
+				first = false;
+				try writer.print("{{\"file\":\"{s}\",\"start_line\":{d},\"end_line\":{d},\"new_text\":", .{
+					path, edit.start_line + 1, edit.end_line + 1,
+				});
+				try writeJsonString(edit.new_text, writer);
+				try writer.writeAll("}");
+			}
+		}
+		try writer.writeAll("]}\n");
+	} else {
+		try writer.print("Rename '{s}' -> '{s}' ({d} edits across {d} files):\n", .{
+			pattern, new_name, total_edits, workspace_edit.file_edits.len,
+		});
+		for (workspace_edit.file_edits) |fe| {
+			const path = lsp.uriToPath(fe.uri) orelse fe.uri;
+			for (fe.edits) |edit| {
+				try writer.print("  {s}:{d}:{d} -> \"{s}\"\n", .{
+					path, edit.start_line + 1, edit.start_col, edit.new_text,
+				});
+			}
+		}
+		try writer.print("\nnote: edits shown but not applied — use your editor or a script to apply them\n", .{});
+	}
+}
+
+fn matchesNamePath(pattern: []const u8, name_path: []const u8, name: []const u8) bool {
+	if (pattern.len == 0) return false;
+	// Absolute path: starts with "/"
+	if (pattern[0] == '/') {
+		return std.mem.eql(u8, pattern[1..], name_path);
+	}
+	// Relative path: contains "/"
+	if (std.mem.indexOf(u8, pattern, "/") != null) {
+		return std.mem.endsWith(u8, name_path, pattern);
+	}
+	// Simple name: matches the symbol's own name
+	return std.mem.eql(u8, pattern, name);
+}
+
+fn formatSymbolsWithHashes(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer, depth: usize) !void {
+	for (symbols) |*sym| {
+		for (0..depth) |_| try writer.writeAll("  ");
+
+		const start_idx = if (sym.start_line > 0) sym.start_line - 1 else 0;
+		const end_idx = if (sym.end_line > 0) sym.end_line - 1 else 0;
+
+		if (sym.start_line == sym.end_line) {
+			if (start_idx < all_hashes.len) {
+				try writer.print("{s} {s} ({d}:{s})\n", .{
+					sym.kind.label(), sym.name, sym.start_line, &all_hashes[start_idx],
+				});
+			} else {
+				try writer.print("{s} {s} ({d})\n", .{
+					sym.kind.label(), sym.name, sym.start_line,
+				});
+			}
+		} else {
+			if (start_idx < all_hashes.len and end_idx < all_hashes.len) {
+				try writer.print("{s} {s} ({d}:{s}-{d}:{s})\n", .{
+					sym.kind.label(), sym.name, sym.start_line, &all_hashes[start_idx], sym.end_line, &all_hashes[end_idx],
+				});
+			} else {
+				try writer.print("{s} {s} ({d}-{d})\n", .{
+					sym.kind.label(), sym.name, sym.start_line, sym.end_line,
+				});
+			}
+		}
+
+		if (sym.children.len > 0) {
+			try formatSymbolsWithHashes(sym.children, all_hashes, writer, depth + 1);
+		}
+	}
+}
+
+fn writeSymbolsJson(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer) !void {
+	try writer.writeAll("[");
+	for (symbols, 0..) |*sym, i| {
+		if (i > 0) try writer.writeAll(",");
+		try writeSymbolJson(sym, all_hashes, writer);
+	}
+	try writer.writeAll("]\n");
+}
+
+fn writeSymbolJson(sym: *const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer) !void {
+	try writer.writeAll("{\"name\":");
+	try writeJsonString(sym.name, writer);
+	try writer.print(",\"kind\":\"{s}\",\"start_line\":{d},\"end_line\":{d}", .{
+		sym.kind.label(), sym.start_line, sym.end_line,
+	});
+	const start_idx = if (sym.start_line > 0) sym.start_line - 1 else 0;
+	const end_idx = if (sym.end_line > 0) sym.end_line - 1 else 0;
+	if (start_idx < all_hashes.len) {
+		try writer.print(",\"start_hash\":\"{s}\"", .{&all_hashes[start_idx]});
+	}
+	if (end_idx < all_hashes.len) {
+		try writer.print(",\"end_hash\":\"{s}\"", .{&all_hashes[end_idx]});
+	}
+	if (sym.children.len > 0) {
+		try writer.writeAll(",\"children\":[");
+		for (sym.children, 0..) |*child, i| {
+			if (i > 0) try writer.writeAll(",");
+			try writeSymbolJson(child, all_hashes, writer);
+		}
+		try writer.writeAll("]");
+	}
+	try writer.writeAll("}");
+}
+
+fn writeJsonString(s: []const u8, writer: *std.Io.Writer) !void {
+	try writer.writeAll("\"");
+	for (s) |ch| {
+		switch (ch) {
+			'"' => try writer.writeAll("\\\""),
+			'\\' => try writer.writeAll("\\\\"),
+			'\n' => try writer.writeAll("\\n"),
+			'\r' => try writer.writeAll("\\r"),
+			'\t' => try writer.writeAll("\\t"),
+			0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
+				try writer.print("\\u{x:0>4}", .{@as(u16, ch)});
+			},
+			else => try writer.writeAll(&[_]u8{ch}),
+		}
+	}
+	try writer.writeAll("\"");
+}
 
 const usage =
 	\\codescan [command] [options]
 	\\
 	\\Commands:
-	\\  config [show|edit]  Show or edit project config
-	\\  index             Index codebase
-	\\  update            Rebuild index (currently full reindex)
-	\\  search <query>    Search indexed codebase
-	\\  serve             Start HTTP API server
+	\\  config [show|edit]       Show or edit project config
+	\\  index                    Index codebase
+	\\  update                   Incremental index (only new/modified/deleted)
+	\\  watch                    Watch for changes and re-index continuously
+	\\  search <query>           Search indexed codebase
+	\\  symbols <file>           Show symbol tree for a file
+	\\  find-symbol <pattern>    Find symbols by name path pattern
+	\\  replace-symbol <pattern> Replace a symbol's body (from stdin)
+	\\  insert-after <pattern>   Insert code after a symbol (from stdin)
+	\\  insert-before <pattern>  Insert code before a symbol (from stdin)
+	\\  replace-lines            Replace a range of lines (from stdin)
+	\\  insert-at <line:hash>    Insert code after a line (from stdin)
+	\\  references <pattern>    Find all references via LSP
+	\\  rename <pattern>        Rename symbol across codebase via LSP
+	\\  serve                    Start HTTP API server
 	\\
 	\\If no command is specified, codescan assumes `search`.
+	\\
+	\\Name path patterns (for find-symbol, replace-symbol, insert-*):
+	\\  init                     Match any symbol named 'init'
+	\\  MyStruct/init            Match suffix of name path
+	\\  /MyStruct/init           Match exact full name path
+	\\
+	\\Hashlines:
+	\\  Every line reference includes a 3-char chain hash (e.g. 45:r2p).
+	\\  Each hash depends on the line's content AND the previous line's hash,
+	\\  so any edit above cascades through all subsequent hashes. This means
+	\\  a stale reference (from a prior read) will fail with a mismatch error
+	\\  rather than silently editing the wrong line. Re-read the file to get
+	\\  current hashes before retrying.
+	\\
+	\\  Hashline format:  <line>:<hash>  (e.g. 45:r2p)
+	\\  Hash alphabet:    0-9 a-z (base-36, 46656 values, no case ambiguity)
+	\\  Used by:          replace-lines --from/--to, insert-at, symbols output
+	\\
+	\\Editing options:
+	\\  --file <path>            Target file for editing/LSP commands
+	\\  --from <line:hash>       Start of line range (replace-lines)
+	\\  --to <line:hash>         End of line range (replace-lines) / new name (rename)
+	\\  --include-body           Include source body with hashlines
+	\\
+	\\LSP commands (references, rename):
+	\\  Lazy-start a language server for the file's language.
+	\\  Requires the appropriate server on PATH (zls, rust-analyzer,
+	\\  clangd, typescript-language-server, pyright-langserver, gopls, etc.)
 	\\
 	\\Options:
 	\\  --root <path>           Root path (default: nearest .codescan ancestor or .)
@@ -653,6 +1832,7 @@ const usage =
 	\\  --http-host <host>      HTTP host (default 127.0.0.1)
 	\\  --http-port <port>      HTTP port (default 8123)
 	\\  --show-comments, --verbose   Show doc comments in human output (default: hidden)
+	\\  --interval <ms>          Watch poll interval milliseconds (default 2000)
 	\\  --json                  JSON output for CLI search/index
 	\\  -h, --help              Show help
 	\\
@@ -664,7 +1844,8 @@ fn isUsageError(err: anyerror) bool {
 		err == error.MissingValue or
 		err == error.InvalidMode or
 		err == error.UnexpectedArg or
-		err == error.TooManyArgs;
+		err == error.TooManyArgs or
+		err == error.InvalidNumber;
 }
 
 fn usageErrorMessage(err: anyerror) []const u8 {
@@ -674,6 +1855,7 @@ fn usageErrorMessage(err: anyerror) []const u8 {
 	if (err == error.InvalidMode) return "invalid mode";
 	if (err == error.UnexpectedArg) return "unexpected argument";
 	if (err == error.TooManyArgs) return "too many arguments";
+	if (err == error.InvalidNumber) return "invalid number";
 	return "invalid usage";
 }
 

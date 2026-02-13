@@ -2,3 +2,5 @@
 /zig-out/
 /.codescan/
 /.codescan-fixtures/
+/.serena/
+.DS_Store

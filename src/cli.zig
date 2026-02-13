@@ -13,6 +13,16 @@ pub const CommandTag = enum {
 	update,
 	search,
 	serve,
+	symbols,
+	find_symbol,
+	replace_symbol,
+	insert_after,
+	insert_before,
+	replace_lines,
+	insert_at,
+	references,
+	rename,
+	watch,
 };
 
 pub const ConfigAction = enum {
@@ -75,6 +85,14 @@ pub const Parsed = struct {
 	ext_filter: ?[]const u8,
 	type_filter: ?[]const u8,
 	lang_filter: ?[]const u8,
+	symbols_file: ?[]const u8,
+	find_symbol_pattern: ?[]const u8,
+	include_body: bool,
+	from_ref: ?[]const u8,
+	to_ref: ?[]const u8,
+	hashline_ref: ?[]const u8,
+	rename_to: ?[]const u8,
+	watch_interval: u64,
 	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
@@ -117,6 +135,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.ext_filter = null,
 		.type_filter = null,
 		.lang_filter = null,
+		.symbols_file = null,
+		.find_symbol_pattern = null,
+		.include_body = false,
+		.from_ref = null,
+		.to_ref = null,
+		.hashline_ref = null,
+		.rename_to = null,
+		.watch_interval = 2000,
 		.seen = .{},
 	};
 
@@ -147,6 +173,70 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "serve")) {
 		parsed.command = .serve;
+		i += 1;
+	} else if (std.mem.eql(u8, cmd, "symbols")) {
+		parsed.command = .symbols;
+		i += 1;
+		// Next non-flag arg is the file path
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.symbols_file = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "find-symbol")) {
+		parsed.command = .find_symbol;
+		i += 1;
+		// Next non-flag arg is the name path pattern
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "replace-symbol")) {
+		parsed.command = .replace_symbol;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "insert-after")) {
+		parsed.command = .insert_after;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "insert-before")) {
+		parsed.command = .insert_before;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "replace-lines")) {
+		parsed.command = .replace_lines;
+		i += 1;
+	} else if (std.mem.eql(u8, cmd, "insert-at")) {
+		parsed.command = .insert_at;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.hashline_ref = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "references")) {
+		parsed.command = .references;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "rename")) {
+		parsed.command = .rename;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "watch")) {
+		parsed.command = .watch;
 		i += 1;
 	} else {
 		parsed.command = .search;
@@ -336,6 +426,43 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			if (i >= args.len) return error.MissingValue;
 			parsed.lang_filter = args[i];
 			parsed.seen.lang_filter = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--include-body")) {
+			parsed.include_body = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--from")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.from_ref = args[i];
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--to")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			if (parsed.command == .rename) {
+				parsed.rename_to = args[i];
+			} else {
+				parsed.to_ref = args[i];
+			}
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--interval")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.watch_interval = std.fmt.parseInt(u64, args[i], 10) catch return error.InvalidNumber;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--file")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.symbols_file = args[i];
 			i += 1;
 			continue;
 		}

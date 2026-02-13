@@ -335,6 +335,54 @@ pub fn build(b: *std.Build) void {
 	linkCommon(extract_log_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(extract_log_tests).step);
 
+	const ts_symbols_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/ts_symbols.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, ts_symbols_tests.root_module);
+	addPcre2Includes(ts_symbols_tests.root_module, pcre2_lib);
+	linkCommon(ts_symbols_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(ts_symbols_tests).step);
+
+	const symbol_tree_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/symbol_tree.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, symbol_tree_tests.root_module);
+	addPcre2Includes(symbol_tree_tests.root_module, pcre2_lib);
+	linkCommon(symbol_tree_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(symbol_tree_tests).step);
+
+	const lsp_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/lsp.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, lsp_tests.root_module);
+	addPcre2Includes(lsp_tests.root_module, pcre2_lib);
+	linkCommon(lsp_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(lsp_tests).step);
+
+	const watcher_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/watcher.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, watcher_tests.root_module);
+	addPcre2Includes(watcher_tests.root_module, pcre2_lib);
+	linkCommon(watcher_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(watcher_tests).step);
+
 	const scan_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/scan.zig"),
@@ -406,6 +454,26 @@ pub fn build(b: *std.Build) void {
 	addPcre2Includes(server_tests.root_module, pcre2_lib);
 	linkCommon(server_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(server_tests).step);
+
+	const pidfile_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/pidfile.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	pidfile_tests.root_module.linkSystemLibrary("c", .{});
+	test_step.dependOn(&b.addRunArtifact(pidfile_tests).step);
+
+	const fs_watch_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/fs_watch.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	fs_watch_tests.root_module.linkSystemLibrary("c", .{});
+	test_step.dependOn(&b.addRunArtifact(fs_watch_tests).step);
 }
 
 fn addTreeSitterIncludes(b: *std.Build, module: *std.Build.Module) void {

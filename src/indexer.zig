@@ -169,6 +169,200 @@ pub fn indexAll(
 	return stats;
 }
 
+pub const IncrementalStats = struct {
+	new_files: usize,
+	modified_files: usize,
+	deleted_files: usize,
+	unchanged_files: usize,
+	symbols: usize,
+};
+
+pub fn indexIncremental(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	root_path: []const u8,
+	registry: plugin.Registry,
+	embedder: embedding.Embedder,
+	options: Options,
+) !IncrementalStats {
+	if (options.batch_size == 0) return error.InvalidBatchSize;
+
+	// Ensure schema exists (including indexed_files table)
+	try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
+
+	const debug = try debugEnabled(allocator);
+	const show_progress = options.show_progress and !debug;
+
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	const stderr = &stderr_writer.interface;
+
+	// 1. Scan filesystem for current files
+	const files = try scan.findFiles(allocator, root_path, registry, options.ignore);
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	// 2. Get previously indexed files
+	const indexed = try storage.getAllIndexedFiles(db, allocator);
+	defer {
+		for (indexed) |item| allocator.free(item.file_path);
+		allocator.free(indexed);
+	}
+
+	// Build lookup map of previously indexed files
+	var indexed_map = std.StringHashMap(i64).init(allocator);
+	defer indexed_map.deinit();
+	for (indexed) |item| {
+		try indexed_map.put(item.file_path, item.mtime_ns);
+	}
+
+	// Build set of current files for deletion detection
+	var current_set = std.StringHashMap(void).init(allocator);
+	defer current_set.deinit();
+	for (files) |path| {
+		try current_set.put(path, {});
+	}
+
+	var stats = IncrementalStats{
+		.new_files = 0,
+		.modified_files = 0,
+		.deleted_files = 0,
+		.unchanged_files = 0,
+		.symbols = 0,
+	};
+
+	// 3. Detect and process deleted files
+	for (indexed) |item| {
+		if (!current_set.contains(item.file_path)) {
+			if (debug) {
+				debugLog(stderr, "codescan: debug: deleted {s}\n", .{item.file_path});
+			}
+			try storage.deleteSymbolsByFile(db, item.file_path);
+			try storage.deleteIndexedFile(db, item.file_path);
+			stats.deleted_files += 1;
+		}
+	}
+
+	// 4. Process new and modified files
+	var batch_texts: std.ArrayListUnmanaged([]const u8) = .{};
+	var batch_rowids: std.ArrayListUnmanaged(i64) = .{};
+	var comment_texts: std.ArrayListUnmanaged([]const u8) = .{};
+	var comment_rowids: std.ArrayListUnmanaged(i64) = .{};
+	defer {
+		for (batch_texts.items) |text| allocator.free(text);
+		batch_texts.deinit(allocator);
+		batch_rowids.deinit(allocator);
+		for (comment_texts.items) |text| allocator.free(text);
+		comment_texts.deinit(allocator);
+		comment_rowids.deinit(allocator);
+	}
+
+	var progress_count: usize = 0;
+	if (show_progress) {
+		printProgress(stderr, 0, files.len, false);
+	}
+
+	for (files) |rel_path| {
+		progress_count += 1;
+		if (show_progress) {
+			if (shouldEmitProgress(progress_count, files.len, 1)) {
+				printProgress(stderr, progress_count, files.len, false);
+			}
+		}
+
+		const extractor = registry.find(rel_path) orelse continue;
+		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
+		if (!extAllowed(rel_path, options.allowed_exts)) continue;
+
+		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
+		defer allocator.free(full_path);
+
+		const file = std.fs.cwd().openFile(full_path, .{}) catch continue;
+		defer file.close();
+
+		const stat = try file.stat();
+		const size = stat.size;
+		if (options.max_file_size > 0 and size > options.max_file_size) continue;
+
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+		const current_size: i64 = @intCast(size);
+
+		// Check if file is unchanged
+		if (indexed_map.get(rel_path)) |prev_mtime| {
+			if (prev_mtime == current_mtime) {
+				stats.unchanged_files += 1;
+				continue;
+			}
+			// Modified: remove old symbols first
+			if (debug) {
+				debugLog(stderr, "codescan: debug: modified {s}\n", .{rel_path});
+			}
+			try storage.deleteSymbolsByFile(db, rel_path);
+			stats.modified_files += 1;
+		} else {
+			if (debug) {
+				debugLog(stderr, "codescan: debug: new {s}\n", .{rel_path});
+			}
+			stats.new_files += 1;
+		}
+
+		// Read and index the file
+		const source = file.readToEndAlloc(allocator, options.max_file_size) catch |err| {
+			if (err == error.FileTooBig) continue;
+			return err;
+		};
+		defer allocator.free(source);
+
+		const symbols = try extractor.extract(allocator, rel_path, source);
+		defer {
+			for (symbols) |*sym| sym.deinit(allocator);
+			allocator.free(symbols);
+		}
+
+		for (symbols) |sym| {
+			const rowid = try storage.insertSymbol(db, sym);
+			stats.symbols += 1;
+
+			const text = try buildSymbolText(allocator, sym, extractor.kind);
+			try batch_texts.append(allocator, text);
+			try batch_rowids.append(allocator, rowid);
+
+			if (batch_texts.items.len >= options.batch_size) {
+				try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+			}
+
+			if (sym.doc_comment) |doc| {
+				const comment_text = try buildCommentText(allocator, doc, .doc);
+				try comment_texts.append(allocator, comment_text);
+				try comment_rowids.append(allocator, rowid);
+
+				if (comment_texts.items.len >= options.batch_size) {
+					try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+				}
+			}
+		}
+
+		// Update file tracking
+		try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
+	}
+
+	// Flush remaining batches
+	if (batch_texts.items.len > 0) {
+		try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+	}
+	if (comment_texts.items.len > 0) {
+		try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+	}
+
+	if (show_progress) {
+		printProgress(stderr, progress_count, files.len, true);
+	}
+
+	return stats;
+}
+
 fn kindAllowed(kind_value: kind.Kind, allowed: []const kind.Kind) bool {
 	if (allowed.len == 0) return true;
 	for (allowed) |value| {
@@ -686,6 +880,80 @@ test "warnLargeFile includes limits" {
 
 	try std.testing.expect(std.mem.indexOf(u8, payload, "src/big.zig") != null);
 	try std.testing.expect(std.mem.indexOf(u8, payload, "max 2000000") != null);
+}
+
+test "indexIncremental indexes new files and skips unchanged" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = "pub fn add(a: i32, b: i32) i32 { return a + b; }\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	// First incremental index: everything is new
+	const stats1 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+	try std.testing.expectEqual(@as(usize, 1), stats1.new_files);
+	try std.testing.expectEqual(@as(usize, 0), stats1.modified_files);
+	try std.testing.expectEqual(@as(usize, 0), stats1.unchanged_files);
+	try std.testing.expect(stats1.symbols > 0);
+
+	// Second incremental index: everything unchanged (same mtime at second resolution)
+	const stats2 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+	try std.testing.expectEqual(@as(usize, 0), stats2.new_files);
+	try std.testing.expectEqual(@as(usize, 0), stats2.modified_files);
+	try std.testing.expectEqual(@as(usize, 1), stats2.unchanged_files);
+}
+
+test "indexIncremental detects deleted files" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.writeFile(.{ .sub_path = "src/a.zig", .data = "pub fn a() void {}\n" });
+	try tmp.dir.writeFile(.{ .sub_path = "src/b.zig", .data = "pub fn b() void {}\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	// Initial index
+	const stats1 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+	try std.testing.expectEqual(@as(usize, 2), stats1.new_files);
+	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "symbols"));
+
+	// Delete one file
+	try tmp.dir.deleteFile("src/b.zig");
+
+	// Re-index: should detect deletion
+	const stats2 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+	try std.testing.expectEqual(@as(usize, 1), stats2.deleted_files);
+	try std.testing.expectEqual(@as(usize, 1), stats2.unchanged_files);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
 }
 
 const FakeEmbedder = struct {
