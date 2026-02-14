@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 /// Minimal LSP client for cross-file operations (references, rename).
 /// Spawns a language server as a child process, communicates via JSON-RPC 2.0
@@ -228,11 +229,12 @@ pub const LspClient = struct {
 
 	fn sendInitialize(self: *LspClient, root_uri: []const u8) !void {
 		const id = self.nextId();
+		const pid: i64 = if (comptime builtin.os.tag == .windows) 0 else @intCast(std.c.getpid());
 
 		var buf: [4096]u8 = undefined;
 		const json_msg = std.fmt.bufPrint(&buf,
 			\\{{"jsonrpc":"2.0","id":{d},"method":"initialize","params":{{"processId":{d},"rootUri":"{s}","capabilities":{{"textDocument":{{"references":{{"dynamicRegistration":false}},"rename":{{"dynamicRegistration":false,"prepareSupport":false}}}}}}}}}}
-		, .{ id, std.c.getpid(), root_uri }) catch return error.InitializeFailed;
+		, .{ id, pid, root_uri }) catch return error.InitializeFailed;
 
 		try self.writeMessage(json_msg);
 

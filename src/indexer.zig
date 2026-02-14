@@ -399,6 +399,60 @@ pub fn indexIncremental(
 	return stats;
 }
 
+/// Re-index a single file after an edit operation.
+/// Deletes old symbols, re-extracts via tree-sitter, re-inserts symbols + FTS.
+/// Skips embedding (the background daemon will catch up on vectors).
+/// This is fast because it avoids any network calls.
+pub fn reindexFile(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	rel_path: []const u8,
+	root_path: []const u8,
+	registry: plugin.Registry,
+) !void {
+	const extractor = registry.find(rel_path) orelse return;
+
+	const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
+	defer allocator.free(full_path);
+
+	const file = try std.fs.cwd().openFile(full_path, .{});
+	defer file.close();
+
+	const stat = try file.stat();
+	const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	defer allocator.free(source);
+
+	const symbols = try extractor.extract(allocator, rel_path, source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	// Compute chain hashes
+	const hashes = computeFileHashes(allocator, source) catch null;
+	defer if (hashes) |h| allocator.free(h);
+
+	// Delete old data for this file
+	try storage.deleteSymbolsByFile(db, rel_path);
+
+	// Re-insert symbols (insertSymbol also handles FTS)
+	for (symbols) |sym| {
+		var sym_with_hash = sym;
+		if (hashes) |h| {
+			if (sym.start_line > 0 and sym.start_line <= h.len)
+				sym_with_hash.start_hash = h[sym.start_line - 1];
+			if (sym.end_line > 0 and sym.end_line <= h.len)
+				sym_with_hash.end_hash = h[sym.end_line - 1];
+		}
+		_ = try storage.insertSymbol(db, sym_with_hash);
+	}
+
+	// Update file metadata
+	const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+	const current_size: i64 = @intCast(stat.size);
+	try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
+}
+
 fn kindAllowed(kind_value: kind.Kind, allowed: []const kind.Kind) bool {
 	if (allowed.len == 0) return true;
 	for (allowed) |value| {

@@ -78,3 +78,10 @@
 
 ### Phase 4: Background Auto-Indexing
 - [ ] File watcher (kqueue/FSEvents) for incremental reindex on changes
+
+### Phase 5: Enhancements
+- [ ] `codescan symbols --depth N` — show N levels of nested symbols (e.g. struct methods without reading bodies)
+- [ ] CamelCase/snake_case normalization in lexical search (so `nameRelevance` matches `name_relevance`)
+- [ ] Auto-reindex after CLI edits (skip re-embedding, daemon catches up on vectors)
+- [ ] `codescan rename` applies edits by default (`--dry-run` for preview-only)
+- [ ] Hashlines in `codescan references` output for stale-edit protection

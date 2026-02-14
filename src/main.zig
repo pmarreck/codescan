@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const storage = @import("storage.zig");
@@ -521,6 +522,7 @@ pub fn main() !void {
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: replace-symbol requires --file <path>\n");
 			try runReplaceSymbol(allocator, file_path, pattern, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
 		.insert_after => {
@@ -529,6 +531,7 @@ pub fn main() !void {
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: insert-after requires --file <path>\n");
 			try runInsertAfter(allocator, file_path, pattern, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
 		.insert_before => {
@@ -537,6 +540,7 @@ pub fn main() !void {
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: insert-before requires --file <path>\n");
 			try runInsertBefore(allocator, file_path, pattern, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
 		.replace_lines => {
@@ -547,6 +551,7 @@ pub fn main() !void {
 			const to_ref = parsed.to_ref orelse
 				exitWithError("error: replace-lines requires --to <line:hash>\n");
 			try runReplaceLines(allocator, file_path, from_ref, to_ref, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
 		.insert_at => {
@@ -555,6 +560,7 @@ pub fn main() !void {
 			const ref = parsed.hashline_ref orelse
 				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
 			try runInsertAt(allocator, file_path, ref, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
 		.references => {
@@ -572,7 +578,7 @@ pub fn main() !void {
 				exitWithError("error: rename requires --file <path>\n");
 			const new_name = parsed.rename_to orelse
 				exitWithError("error: rename requires --to <new_name>\n");
-			try runRename(allocator, file_path, pattern, new_name, parsed.output, stdout);
+			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, stdout);
 			try stdout.flush();
 		},
 		.watch => {
@@ -580,29 +586,39 @@ pub fn main() !void {
 
 			switch (parsed.watch_action) {
 				.stop => {
-					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-						_ = std.c.kill(pid_val, std.posix.SIG.TERM);
-						try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+					if (comptime builtin.os.tag == .windows) {
+						try stdout.print("error: watch stop is not supported on Windows\n", .{});
 						try stdout.flush();
-						pidfile.removePid(allocator, codescan_dir);
 					} else {
-						try stdout.print("No watcher running\n", .{});
-						try stdout.flush();
+						if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+							_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+							try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+							try stdout.flush();
+							pidfile.removePid(allocator, codescan_dir);
+						} else {
+							try stdout.print("No watcher running\n", .{});
+							try stdout.flush();
+						}
 					}
 				},
 				.start => {
 					maybeStartWatcher(allocator, settings, stdout);
 				},
 				.restart => {
-					// Stop if running
-					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-						_ = std.c.kill(pid_val, std.posix.SIG.TERM);
-						try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
-						// Brief pause for process cleanup
-						std.Thread.sleep(200 * std.time.ns_per_ms);
-						pidfile.removePid(allocator, codescan_dir);
+					if (comptime builtin.os.tag == .windows) {
+						try stdout.print("error: watch restart is not supported on Windows\n", .{});
+						try stdout.flush();
+					} else {
+						// Stop if running
+						if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+							_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+							try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+							// Brief pause for process cleanup
+							std.Thread.sleep(200 * std.time.ns_per_ms);
+							pidfile.removePid(allocator, codescan_dir);
+						}
+						maybeStartWatcher(allocator, settings, stdout);
 					}
-					maybeStartWatcher(allocator, settings, stdout);
 				},
 				.status => {
 					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
@@ -637,17 +653,19 @@ pub fn main() !void {
 					defer index_filters.deinit(allocator);
 
 					g_stop_flag.store(false, .release);
-					const act = std.posix.Sigaction{
-						.handler = .{ .handler = struct {
-							fn handler(_: c_int) callconv(.c) void {
-								g_stop_flag.store(true, .release);
-							}
-						}.handler },
-						.mask = std.posix.sigemptyset(),
-						.flags = 0,
-					};
-					std.posix.sigaction(std.posix.SIG.INT, &act, null);
-					std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+					if (comptime builtin.os.tag != .windows) {
+						const act = std.posix.Sigaction{
+							.handler = .{ .handler = struct {
+								fn handler(_: c_int) callconv(.c) void {
+									g_stop_flag.store(true, .release);
+								}
+							}.handler },
+							.mask = std.posix.sigemptyset(),
+							.flags = 0,
+						};
+						std.posix.sigaction(std.posix.SIG.INT, &act, null);
+						std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+					}
 
 					try watcher.watchLoop(
 						allocator,
@@ -939,7 +957,11 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	child.spawn() catch return;
 
 	// Don't wait — let it run in background (init adopts on parent exit)
-	_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id}) catch {};
+	if (comptime builtin.os.tag == .windows) {
+		_ = stderr.print("note: Started background watcher\n", .{}) catch {};
+	} else {
+		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id}) catch {};
+	}
 	_ = stderr.flush() catch {};
 }
 
@@ -1134,9 +1156,60 @@ fn ensureConfigWithDefaults(path: []const u8) !void {
 	}
 }
 
+/// Try to reindex a file after an edit. Logs errors to stderr as warnings.
+/// Opens the DB, calls indexer.reindexFile, and closes the DB.
+/// If no index exists or any step fails, the edit is still successful —
+/// the background watcher will eventually catch up.
+fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: []const u8, file_path: []const u8, registry: plugin.Registry) void {
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	const stderr = &stderr_writer.interface;
+
+	const db = storage.openFileWithVec(allocator, db_path) catch |err| {
+		_ = stderr.print("warning: reindex skipped (could not open index): {}\n", .{err}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
+	defer storage.close(db);
+	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch |err| {
+		_ = stderr.print("warning: reindex skipped (could not resolve root): {}\n", .{err}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
+	defer allocator.free(abs_root);
+	const abs_file = std.fs.cwd().realpathAlloc(allocator, file_path) catch |err| {
+		_ = stderr.print("warning: reindex skipped (could not resolve file): {}\n", .{err}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
+	defer allocator.free(abs_file);
+	const rel_path = std.fs.path.relative(allocator, abs_root, abs_file) catch |err| {
+		_ = stderr.print("warning: reindex skipped (could not compute relative path): {}\n", .{err}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
+	defer allocator.free(rel_path);
+	indexer.reindexFile(allocator, db, rel_path, root_path, registry) catch |err| {
+		_ = stderr.print("warning: reindex failed for '{s}': {}\n", .{ file_path, err }) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
+}
+
 fn ensureParentDir(path: []const u8) !void {
 	const dir = std.fs.path.dirname(path) orelse return;
 	try std.fs.cwd().makePath(dir);
+}
+
+/// Compute the hashline hash for a specific 1-indexed line in a file.
+/// Returns the 3-char hash or null on any failure.
+fn computeHashAtLine(allocator: std.mem.Allocator, file_path: []const u8, line_1: usize) ?hashline.Hash {
+	const source = readFileContents(allocator, file_path) catch return null;
+	defer allocator.free(source);
+	const hashes = hashline.computeSourceHashes(allocator, source) catch return null;
+	defer allocator.free(hashes);
+	if (line_1 == 0 or line_1 > hashes.len) return null;
+	return hashes[line_1 - 1];
 }
 
 fn parseMode(value: []const u8) !search.SearchMode {
@@ -1491,9 +1564,16 @@ fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern
 	};
 
 	try spliceFile(allocator, file_path, match.start_byte, match.end_byte, new_body);
-	try writer.print("Replaced {s} (lines {d}-{d}, bytes {d}-{d})\n", .{
-		pattern, match.start_line, match.end_line, match.start_byte, match.end_byte,
-	});
+	// Compute new hashlines at the replacement boundaries
+	if (computeHashAtLine(allocator, file_path, match.start_line)) |start_hash| {
+		try writer.print("Replaced {s} (lines {d}:{s}-{d}, bytes {d}-{d})\n", .{
+			pattern, match.start_line, &start_hash, match.end_line, match.start_byte, match.end_byte,
+		});
+	} else {
+		try writer.print("Replaced {s} (lines {d}-{d}, bytes {d}-{d})\n", .{
+			pattern, match.start_line, match.end_line, match.start_byte, match.end_byte,
+		});
+	}
 }
 
 fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
@@ -1515,7 +1595,13 @@ fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: 
 	defer allocator.free(insert_content);
 
 	try spliceFile(allocator, file_path, match.end_byte, match.end_byte, insert_content);
-	try writer.print("Inserted after {s} (after line {d})\n", .{ pattern, match.end_line });
+	// The inserted content starts right after end_line, so line end_line+1 is the new content
+	const new_line = match.end_line + 1;
+	if (computeHashAtLine(allocator, file_path, new_line)) |h| {
+		try writer.print("Inserted after {s} (after line {d}, new content at {d}:{s})\n", .{ pattern, match.end_line, new_line, &h });
+	} else {
+		try writer.print("Inserted after {s} (after line {d})\n", .{ pattern, match.end_line });
+	}
 }
 
 fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
@@ -1537,7 +1623,12 @@ fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern:
 	defer allocator.free(insert_content);
 
 	try spliceFile(allocator, file_path, match.start_byte, match.start_byte, insert_content);
-	try writer.print("Inserted before {s} (before line {d})\n", .{ pattern, match.start_line });
+	// The inserted content is at start_line (original content shifted down)
+	if (computeHashAtLine(allocator, file_path, match.start_line)) |h| {
+		try writer.print("Inserted before {s} (new content at {d}:{s})\n", .{ pattern, match.start_line, &h });
+	} else {
+		try writer.print("Inserted before {s} (before line {d})\n", .{ pattern, match.start_line });
+	}
 }
 
 fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str: []const u8, to_str: []const u8, writer: *std.Io.Writer) !void {
@@ -1652,7 +1743,12 @@ fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []c
 	defer allocator.free(insert_content);
 
 	try spliceFile(allocator, file_path, insert_byte, insert_byte, insert_content);
-	try writer.print("Inserted after line {d}\n", .{ref.line});
+	const new_line = ref.line + 1;
+	if (computeHashAtLine(allocator, file_path, new_line)) |h| {
+		try writer.print("Inserted after line {d} (new content at {d}:{s})\n", .{ ref.line, new_line, &h });
+	} else {
+		try writer.print("Inserted after line {d}\n", .{ref.line});
+	}
 }
 
 fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
@@ -1726,26 +1822,76 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 		return;
 	}
 
+	// Build a cache of file path → chain hashes for hashline output
+	var hash_cache = std.StringHashMap([]const hashline.Hash).init(allocator);
+	defer {
+		var it = hash_cache.valueIterator();
+		while (it.next()) |hashes| allocator.free(hashes.*);
+		hash_cache.deinit();
+	}
+
+	for (locations) |loc| {
+		const path = lsp.uriToPath(loc.uri) orelse continue;
+		if (hash_cache.contains(path)) continue;
+		const source = readFileContents(allocator, path) catch continue;
+		defer allocator.free(source);
+		const hashes = hashline.computeSourceHashes(allocator, source) catch continue;
+		hash_cache.put(path, hashes) catch continue;
+	}
+
 	if (out_fmt == .json) {
 		try writer.writeAll("[");
 		for (locations, 0..) |loc, i| {
 			if (i > 0) try writer.writeAll(",");
 			const path = lsp.uriToPath(loc.uri) orelse loc.uri;
-			try writer.print("{{\"file\":\"{s}\",\"line\":{d},\"col\":{d}}}", .{
-				path, loc.start_line + 1, loc.start_col,
-			});
+			const line_1 = loc.start_line + 1;
+			const hash_str = getHashForLine(hash_cache, path, line_1);
+			if (hash_str) |h| {
+				try writer.print("{{\"file\":\"{s}\",\"line\":{d},\"hash\":\"{s}\",\"col\":{d}}}", .{
+					path, line_1, h, loc.start_col,
+				});
+			} else {
+				try writer.print("{{\"file\":\"{s}\",\"line\":{d},\"col\":{d}}}", .{
+					path, line_1, loc.start_col,
+				});
+			}
 		}
 		try writer.writeAll("]\n");
 	} else {
 		try writer.print("References to '{s}' ({d} found):\n", .{ pattern, locations.len });
 		for (locations) |loc| {
 			const path = lsp.uriToPath(loc.uri) orelse loc.uri;
-			try writer.print("  {s}:{d}:{d}\n", .{ path, loc.start_line + 1, loc.start_col });
+			const line_1 = loc.start_line + 1;
+			const hash_str = getHashForLine(hash_cache, path, line_1);
+			if (hash_str) |h| {
+				try writer.print("  {s}:{d}:{s}:{d}\n", .{ path, line_1, h, loc.start_col });
+			} else {
+				try writer.print("  {s}:{d}:{d}\n", .{ path, line_1, loc.start_col });
+			}
 		}
 	}
 }
 
-fn runRename(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, new_name: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
+/// Look up the hash for a 1-indexed line in the hash cache.
+fn getHashForLine(cache: std.StringHashMap([]const hashline.Hash), path: []const u8, line_1: u32) ?*const hashline.Hash {
+	const hashes = cache.get(path) orelse return null;
+	const idx = @as(usize, line_1) -| 1;
+	if (idx >= hashes.len) return null;
+	return &hashes[idx];
+}
+
+fn runRename(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	pattern: []const u8,
+	new_name: []const u8,
+	out_fmt: cli.OutputFormat,
+	dry_run: bool,
+	db_path: []const u8,
+	root_path: []const u8,
+	registry: plugin.Registry,
+	writer: *std.Io.Writer,
+) !void {
 	// First, find the symbol position using tree-sitter
 	var result = extractFileAndTree(allocator, file_path) catch |err| {
 		if (err == error.UnsupportedFileType) {
@@ -1820,42 +1966,140 @@ fn runRename(allocator: std.mem.Allocator, file_path: []const u8, pattern: []con
 		return;
 	}
 
-	// Apply edits to each file
 	var total_edits: usize = 0;
 	for (workspace_edit.file_edits) |fe| {
 		total_edits += fe.edits.len;
 	}
 
+	// Build hash cache for affected files (pre-edit hashes for stale detection)
+	var rename_hash_cache = std.StringHashMap([]const hashline.Hash).init(allocator);
+	defer {
+		var vit = rename_hash_cache.valueIterator();
+		while (vit.next()) |hashes| allocator.free(hashes.*);
+		rename_hash_cache.deinit();
+	}
+	for (workspace_edit.file_edits) |fe| {
+		const path = lsp.uriToPath(fe.uri) orelse continue;
+		if (rename_hash_cache.contains(path)) continue;
+		const src = readFileContents(allocator, path) catch continue;
+		defer allocator.free(src);
+		const hashes = hashline.computeSourceHashes(allocator, src) catch continue;
+		rename_hash_cache.put(path, hashes) catch continue;
+	}
+
 	if (out_fmt == .json) {
-		try writer.writeAll("{\"edits\":[");
+		const applied_str = if (dry_run) "false" else "true";
+		try writer.print("{{\"applied\":{s},\"edits\":[", .{applied_str});
 		var first = true;
 		for (workspace_edit.file_edits) |fe| {
 			const path = lsp.uriToPath(fe.uri) orelse fe.uri;
 			for (fe.edits) |edit| {
 				if (!first) try writer.writeAll(",");
 				first = false;
-				try writer.print("{{\"file\":\"{s}\",\"start_line\":{d},\"end_line\":{d},\"new_text\":", .{
-					path, edit.start_line + 1, edit.end_line + 1,
-				});
+				const start_hash = getHashForLine(rename_hash_cache, path, edit.start_line + 1);
+				if (start_hash) |h| {
+					try writer.print("{{\"file\":\"{s}\",\"start_line\":{d},\"start_hash\":\"{s}\",\"end_line\":{d},\"new_text\":", .{
+						path, edit.start_line + 1, h, edit.end_line + 1,
+					});
+				} else {
+					try writer.print("{{\"file\":\"{s}\",\"start_line\":{d},\"end_line\":{d},\"new_text\":", .{
+						path, edit.start_line + 1, edit.end_line + 1,
+					});
+				}
 				try writeJsonString(edit.new_text, writer);
 				try writer.writeAll("}");
 			}
 		}
 		try writer.writeAll("]}\n");
 	} else {
-		try writer.print("Rename '{s}' -> '{s}' ({d} edits across {d} files):\n", .{
-			pattern, new_name, total_edits, workspace_edit.file_edits.len,
-		});
+		if (dry_run) {
+			try writer.print("Rename '{s}' -> '{s}' ({d} edits across {d} files, dry run):\n", .{
+				pattern, new_name, total_edits, workspace_edit.file_edits.len,
+			});
+		} else {
+			try writer.print("Renamed '{s}' -> '{s}' ({d} edits across {d} files):\n", .{
+				pattern, new_name, total_edits, workspace_edit.file_edits.len,
+			});
+		}
 		for (workspace_edit.file_edits) |fe| {
 			const path = lsp.uriToPath(fe.uri) orelse fe.uri;
 			for (fe.edits) |edit| {
-				try writer.print("  {s}:{d}:{d} -> \"{s}\"\n", .{
-					path, edit.start_line + 1, edit.start_col, edit.new_text,
-				});
+				const edit_hash = getHashForLine(rename_hash_cache, path, edit.start_line + 1);
+				if (edit_hash) |h| {
+					try writer.print("  {s}:{d}:{s}:{d} -> \"{s}\"\n", .{
+						path, edit.start_line + 1, h, edit.start_col, edit.new_text,
+					});
+				} else {
+					try writer.print("  {s}:{d}:{d} -> \"{s}\"\n", .{
+						path, edit.start_line + 1, edit.start_col, edit.new_text,
+					});
+				}
 			}
 		}
-		try writer.print("\nnote: edits shown but not applied — use your editor or a script to apply them\n", .{});
 	}
+
+	// Apply edits unless dry run
+	if (!dry_run) {
+		for (workspace_edit.file_edits) |fe| {
+			const path = lsp.uriToPath(fe.uri) orelse continue;
+			applyTextEdits(allocator, path, fe.edits) catch |err| {
+				try writer.print("warning: failed to apply edits to {s}: {}\n", .{ path, err });
+				continue;
+			};
+			tryReindexFile(allocator, db_path, root_path, path, registry);
+		}
+	}
+}
+
+/// Apply LSP text edits to a file. Edits are applied in reverse document order
+/// (bottom-to-top) to avoid offset shifts.
+fn applyTextEdits(allocator: std.mem.Allocator, file_path: []const u8, edits: []const lsp.TextEdit) !void {
+	if (edits.len == 0) return;
+
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	// Compute line start offsets
+	const offsets = try lineByteOffsets(source, allocator);
+	defer allocator.free(offsets);
+
+	// Sort edits by position, reversed (bottom-to-top)
+	const sorted = try allocator.alloc(lsp.TextEdit, edits.len);
+	defer allocator.free(sorted);
+	@memcpy(sorted, edits);
+	std.sort.heap(lsp.TextEdit, sorted, {}, struct {
+		fn lessThan(_: void, a: lsp.TextEdit, b: lsp.TextEdit) bool {
+			// Reverse order: higher positions first
+			if (a.start_line != b.start_line) return a.start_line > b.start_line;
+			return a.start_col > b.start_col;
+		}
+	}.lessThan);
+
+	// Apply edits bottom-to-top on an in-memory copy
+	var buf = std.ArrayListUnmanaged(u8){};
+	defer buf.deinit(allocator);
+	try buf.appendSlice(allocator, source);
+
+	for (sorted) |edit| {
+		const start_byte = lineColToByte(offsets, source.len, edit.start_line, edit.start_col);
+		const end_byte = lineColToByte(offsets, source.len, edit.end_line, edit.end_col);
+		if (start_byte > buf.items.len or end_byte > buf.items.len or start_byte > end_byte) continue;
+
+		// Replace the range
+		buf.replaceRange(allocator, start_byte, end_byte - start_byte, edit.new_text) catch continue;
+	}
+
+	const file = try std.fs.cwd().createFile(file_path, .{});
+	defer file.close();
+	try file.writeAll(buf.items);
+}
+
+/// Convert 0-based line:col to byte offset using precomputed line start offsets.
+fn lineColToByte(offsets: []const usize, source_len: usize, line_0: u32, col_0: u32) usize {
+	const line = @as(usize, line_0);
+	if (line >= offsets.len) return source_len;
+	const byte = offsets[line] + @as(usize, col_0);
+	return @min(byte, source_len);
 }
 
 fn matchesNamePath(pattern: []const u8, name_path: []const u8, name: []const u8) bool {

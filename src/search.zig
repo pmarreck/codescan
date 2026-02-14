@@ -581,6 +581,9 @@ fn nameRelevance(allocator: std.mem.Allocator, query: []const u8, name: []const 
 	if (std.mem.indexOfScalar(u8, query, ' ') == null) {
 		if (std.ascii.eqlIgnoreCase(query, name)) return .exact;
 		if (std.ascii.indexOfIgnoreCase(name, query) != null) return .substring;
+		// Try cross-case match for single tokens (e.g. "nameRelevance" vs "name_relevance")
+		const cross = try crossCaseQueryMatch(allocator, query, name);
+		if (cross != .none) return cross;
 		return .none;
 	}
 
@@ -649,8 +652,56 @@ fn joinSnakeCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 	return parts.toOwnedSlice(allocator);
 }
 
+/// Split a camelCase or snake_case token into its component words (all lowercased).
+/// - "nameRelevance"  → ["name", "relevance"]
+/// - "name_relevance" → ["name", "relevance"]
+/// - "HTTPServer"     → ["http", "server"]
+/// - "parseJSON"      → ["parse", "json"]
+/// - "simple"         → ["simple"]
+fn splitCamelSnake(allocator: std.mem.Allocator, token: []const u8) ![][]u8 {
+	var parts = std.ArrayListUnmanaged([]u8){};
+	errdefer {
+		for (parts.items) |p| allocator.free(p);
+		parts.deinit(allocator);
+	}
+
+	var start: usize = 0;
+	var i: usize = 0;
+	while (i < token.len) : (i += 1) {
+		if (token[i] == '_') {
+			if (i > start) {
+				try parts.append(allocator, try toLowerDupe(allocator, token[start..i]));
+			}
+			start = i + 1;
+			continue;
+		}
+		if (i > start and std.ascii.isUpper(token[i])) {
+			// Check if this is start of a new word or an uppercase run
+			if (!std.ascii.isUpper(token[i - 1])) {
+				// camelCase boundary: "nameR" → split before 'R'
+				try parts.append(allocator, try toLowerDupe(allocator, token[start..i]));
+				start = i;
+			} else if (i + 1 < token.len and !std.ascii.isUpper(token[i + 1]) and token[i + 1] != '_') {
+				// End of uppercase run: "HTTPServer" → split before 'S' to get "HTTP" + "Server"
+				try parts.append(allocator, try toLowerDupe(allocator, token[start..i]));
+				start = i;
+			}
+		}
+	}
+	if (start < token.len) {
+		try parts.append(allocator, try toLowerDupe(allocator, token[start..]));
+	}
+
+	return parts.toOwnedSlice(allocator);
+}
+
+fn toLowerDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
+	const result = try allocator.alloc(u8, s.len);
+	for (s, 0..) |c, j| result[j] = std.ascii.toLower(c);
+	return result;
+}
+
 fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
-	_ = allocator;
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
 	var token_count: usize = 0;
 	var weighted_score: f32 = 0;
@@ -674,6 +725,11 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 				weighted_score += 0.5;
 			} else if (in_sig) {
 				weighted_score += 0.3;
+			} else {
+				// Try cross-case matching: split camelCase/snake_case token into parts
+				// and check if the joined variants match the symbol name
+				const cross_score = try crossCaseMatch(allocator, tok, symbol.name, symbol.signature);
+				if (cross_score > 0) weighted_score += cross_score;
 			}
 		}
 	}
@@ -691,11 +747,109 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 			} else if (query_trimmed.len >= 3 and std.ascii.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
 				// Full query is a substring of the name → moderate boost
 				base_score = @min(1.0, base_score + 0.2);
+			} else {
+				// Try cross-case exact/substring match for the full query
+				const cross = try crossCaseQueryMatch(allocator, query_trimmed, symbol.name);
+				if (cross == .exact) {
+					base_score = @min(1.0, base_score + 0.5);
+				} else if (cross == .substring) {
+					base_score = @min(1.0, base_score + 0.2);
+				}
 			}
 		}
 	}
 
 	return base_score;
+}
+
+/// Check if a single token (possibly camelCase or snake_case) matches a field
+/// via its alternate-case form. Returns the match weight (1.0 for name, 0.3 for sig, 0 for none).
+fn crossCaseMatch(allocator: std.mem.Allocator, tok: []const u8, name: []const u8, signature: []const u8) !f32 {
+	const parts = try splitCamelSnake(allocator, tok);
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	if (parts.len <= 1) return 0; // single word, no cross-case to try
+
+	// Try camelCase join
+	const camel = try joinPartsAsCamel(allocator, parts);
+	defer allocator.free(camel);
+	if (std.ascii.indexOfIgnoreCase(name, camel) != null) return 1.0;
+
+	// Try snake_case join
+	const snake = try joinPartsAsSnake(allocator, parts);
+	defer allocator.free(snake);
+	if (std.ascii.indexOfIgnoreCase(name, snake) != null) return 1.0;
+
+	// Check signature
+	if (std.ascii.indexOfIgnoreCase(signature, camel) != null) return 0.3;
+	if (std.ascii.indexOfIgnoreCase(signature, snake) != null) return 0.3;
+
+	// Check if all sub-parts appear individually in the name
+	var all_in_name = true;
+	for (parts) |p| {
+		if (std.ascii.indexOfIgnoreCase(name, p) == null) {
+			all_in_name = false;
+			break;
+		}
+	}
+	if (all_in_name) return 0.8;
+
+	return 0;
+}
+
+/// Check if a full query (single token, possibly camelCase/snake_case) matches a symbol
+/// name in its alternate case form.
+fn crossCaseQueryMatch(allocator: std.mem.Allocator, query: []const u8, name: []const u8) !NameRelevance {
+	const parts = try splitCamelSnake(allocator, query);
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	if (parts.len <= 1) return .none;
+
+	const camel = try joinPartsAsCamel(allocator, parts);
+	defer allocator.free(camel);
+	if (std.ascii.eqlIgnoreCase(camel, name)) return .exact;
+
+	const snake = try joinPartsAsSnake(allocator, parts);
+	defer allocator.free(snake);
+	if (std.ascii.eqlIgnoreCase(snake, name)) return .exact;
+
+	if (std.ascii.indexOfIgnoreCase(name, camel) != null) return .substring;
+	if (std.ascii.indexOfIgnoreCase(name, snake) != null) return .substring;
+
+	return .none;
+}
+
+/// Join pre-split parts as camelCase: ["name", "relevance"] → "nameRelevance"
+fn joinPartsAsCamel(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+	var buf = std.ArrayListUnmanaged(u8){};
+	defer buf.deinit(allocator);
+	for (parts, 0..) |part, idx| {
+		if (part.len == 0) continue;
+		if (idx == 0) {
+			try buf.appendSlice(allocator, part); // already lowercased
+		} else {
+			var upper: [1]u8 = .{std.ascii.toUpper(part[0])};
+			try buf.appendSlice(allocator, &upper);
+			if (part.len > 1) try buf.appendSlice(allocator, part[1..]);
+		}
+	}
+	return buf.toOwnedSlice(allocator);
+}
+
+/// Join pre-split parts as snake_case: ["name", "relevance"] → "name_relevance"
+fn joinPartsAsSnake(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+	var buf = std.ArrayListUnmanaged(u8){};
+	defer buf.deinit(allocator);
+	for (parts, 0..) |part, idx| {
+		if (part.len == 0) continue;
+		if (idx > 0) try buf.append(allocator, '_');
+		try buf.appendSlice(allocator, part);
+	}
+	return buf.toOwnedSlice(allocator);
 }
 
 fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
@@ -1347,6 +1501,111 @@ test "nameRelevance matches camelCase from multi-word query" {
 	try std.testing.expectEqual(NameRelevance.none, try nameRelevance(allocator, "draw rectangle", "colorPicker"));
 	// Case-insensitive exact
 	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "Draw Rectangle", "drawRectangle"));
+}
+
+test "splitCamelSnake splits camelCase" {
+	const allocator = std.testing.allocator;
+	const parts = try splitCamelSnake(allocator, "nameRelevance");
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	try std.testing.expectEqual(@as(usize, 2), parts.len);
+	try std.testing.expectEqualStrings("name", parts[0]);
+	try std.testing.expectEqualStrings("relevance", parts[1]);
+}
+
+test "splitCamelSnake splits snake_case" {
+	const allocator = std.testing.allocator;
+	const parts = try splitCamelSnake(allocator, "name_relevance");
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	try std.testing.expectEqual(@as(usize, 2), parts.len);
+	try std.testing.expectEqualStrings("name", parts[0]);
+	try std.testing.expectEqualStrings("relevance", parts[1]);
+}
+
+test "splitCamelSnake handles acronyms" {
+	const allocator = std.testing.allocator;
+	const parts = try splitCamelSnake(allocator, "HTTPServer");
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	try std.testing.expectEqual(@as(usize, 2), parts.len);
+	try std.testing.expectEqualStrings("http", parts[0]);
+	try std.testing.expectEqualStrings("server", parts[1]);
+}
+
+test "splitCamelSnake handles single word" {
+	const allocator = std.testing.allocator;
+	const parts = try splitCamelSnake(allocator, "simple");
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	try std.testing.expectEqual(@as(usize, 1), parts.len);
+	try std.testing.expectEqualStrings("simple", parts[0]);
+}
+
+test "splitCamelSnake handles trailing acronym" {
+	const allocator = std.testing.allocator;
+	const parts = try splitCamelSnake(allocator, "parseJSON");
+	defer {
+		for (parts) |p| allocator.free(p);
+		allocator.free(parts);
+	}
+	try std.testing.expectEqual(@as(usize, 2), parts.len);
+	try std.testing.expectEqualStrings("parse", parts[0]);
+	try std.testing.expectEqualStrings("json", parts[1]);
+}
+
+test "lexicalScore cross-case matching camelCase query vs snake_case name" {
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/search.zig"),
+		.name = try allocator.dupe(u8, "name_relevance"),
+		.signature = try allocator.dupe(u8, "fn name_relevance() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+
+	const score = try lexicalScore(allocator, "nameRelevance", symbol, false);
+	// Should get a positive score via cross-case matching
+	try std.testing.expect(score > 0.0);
+}
+
+test "lexicalScore cross-case matching snake_case query vs camelCase name" {
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/search.zig"),
+		.name = try allocator.dupe(u8, "nameRelevance"),
+		.signature = try allocator.dupe(u8, "fn nameRelevance() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+
+	const score = try lexicalScore(allocator, "name_relevance", symbol, false);
+	// Should get a positive score via cross-case matching
+	try std.testing.expect(score > 0.0);
+}
+
+test "nameRelevance single-token cross-case matching" {
+	const allocator = std.testing.allocator;
+	// camelCase query vs snake_case name
+	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "nameRelevance", "name_relevance"));
+	// snake_case query vs camelCase name
+	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "name_relevance", "nameRelevance"));
+	// camelCase query vs camelCase name (substring)
+	try std.testing.expectEqual(NameRelevance.substring, try nameRelevance(allocator, "nameRelevance", "myNameRelevanceHelper"));
 }
 
 const FakeEmbedder = struct {

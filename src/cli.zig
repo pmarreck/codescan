@@ -65,6 +65,7 @@ pub const Seen = struct {
 	type_filter: bool = false,
 	lang_filter: bool = false,
 	force: bool = false,
+	dry_run: bool = false,
 };
 
 pub const Parsed = struct {
@@ -106,6 +107,7 @@ pub const Parsed = struct {
 	watch_interval: u64,
 	watch_action: WatchAction,
 	force: bool,
+	dry_run: bool,
 	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
@@ -158,6 +160,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.watch_interval = 2000,
 		.watch_action = .run,
 		.force = false,
+		.dry_run = false,
 		.seen = .{},
 	};
 
@@ -521,6 +524,12 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) {
 			parsed.force = true;
 			parsed.seen.force = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--dry-run") or std.mem.eql(u8, arg, "-n")) {
+			parsed.dry_run = true;
+			parsed.seen.dry_run = true;
 			i += 1;
 			continue;
 		}
