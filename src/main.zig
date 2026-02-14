@@ -2443,10 +2443,17 @@ const usage =
 	\\  --regex                  Treat needle as PCRE2 regex (replace-content)
 	\\  --all                    Replace all occurrences (replace-content)
 	\\
+	\\Supported languages:
+	\\  Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir,
+	\\    Bash, Lua, Nix, Nim, Lean, Idris, Haskell
+	\\  LSP (references, rename): all of the above plus Go, Clojure, Ruby,
+	\\    OCaml, Swift, Assembly, Erlang
+	\\  Indexing/search: any text file (Markdown, logs, plain text, etc.)
+	\\
 	\\LSP commands (references, rename):
 	\\  Lazy-start a language server for the file's language.
 	\\  Requires the appropriate server on PATH (zls, rust-analyzer,
-	\\  clangd, typescript-language-server, pyright-langserver, gopls, etc.)
+	\\  clangd, typescript-language-server, gopls, elixir-ls, etc.)
 	\\
 	\\Options:
 	\\  --root <path>           Root path (default: nearest .codescan ancestor or .)

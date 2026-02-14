@@ -6,7 +6,8 @@ Semantic code search for local repositories.
 - Ollama embeddings (default: `bge-large`, override with `OLLAMA_MODEL`)
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
-- Language plugins (Zig, Elixir, C, TypeScript, Rust, Lean, Idris, Nix, Nim, Bash, Lua, Haskell via tree-sitter/best-effort)
+- Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua, Nix, Nim, Lean, Idris, Haskell
+- LSP (references, rename): all of the above plus Go, Clojure, Ruby, OCaml, Swift, Assembly, Erlang
 - Markdown/text/log indexing with semantic chunking
 
 ## Install
