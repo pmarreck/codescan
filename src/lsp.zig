@@ -372,7 +372,9 @@ pub const LspClient = struct {
 
 		for (result.array.items) |item| {
 			if (item != .object) continue;
-			const loc = parseOneLocation(item) orelse continue;
+			var loc = parseOneLocation(item) orelse continue;
+			// Dupe the URI so it outlives the JSON parse tree
+			loc.uri = try self.allocator.dupe(u8, loc.uri);
 			try locations.append(self.allocator, loc);
 		}
 
@@ -403,12 +405,14 @@ pub const LspClient = struct {
 
 			for (edits_val.array.items) |edit_val| {
 				if (edit_val != .object) continue;
-				const te = parseOneTextEdit(edit_val) orelse continue;
+				var te = parseOneTextEdit(edit_val) orelse continue;
+				// Dupe new_text so it outlives the JSON parse tree
+				te.new_text = try self.allocator.dupe(u8, te.new_text);
 				try edits.append(self.allocator, te);
 			}
 
 			try file_edits.append(self.allocator, .{
-				.uri = uri,
+				.uri = try self.allocator.dupe(u8, uri),
 				.edits = try edits.toOwnedSlice(self.allocator),
 			});
 		}

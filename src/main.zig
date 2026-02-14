@@ -1407,7 +1407,21 @@ const SymbolMatch = struct {
 	end_byte: usize,
 	start_line: usize,
 	end_line: usize,
+	name: []const u8, // points into SymbolNode.name (no ownership)
 };
+
+/// Given source text, a byte offset at the start of a line, and a symbol name,
+/// find the 0-based column where that name first appears on the line.
+/// Returns 0 as fallback if the name isn't found.
+fn findNameCol(source: []const u8, line_start_byte: usize, name: []const u8) u32 {
+	if (line_start_byte >= source.len or name.len == 0) return 0;
+	// Find end of this line
+	const line_end = std.mem.indexOfScalarPos(u8, source, line_start_byte, '\n') orelse source.len;
+	const line = source[line_start_byte..line_end];
+	// Find the name within the line
+	const col = std.mem.indexOf(u8, line, name) orelse return 0;
+	return @intCast(col);
+}
 
 fn findFirstMatch(
 	allocator: std.mem.Allocator,
@@ -1425,6 +1439,7 @@ fn findFirstMatch(
 				.end_byte = sym.end_byte,
 				.start_line = sym.start_line,
 				.end_line = sym.end_line,
+				.name = sym.name,
 			};
 		}
 
@@ -1692,15 +1707,18 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 		return;
 	};
 
-	// LSP uses 0-based line/col
+	// LSP uses 0-based line/col; we must point at the symbol name, not col 0
 	const line: u32 = @intCast(sym_match.start_line);
-	const col: u32 = 0;
+	const col: u32 = findNameCol(result.source, sym_match.start_byte, sym_match.name);
 
 	const locations = client.references(file_uri, line, col) catch {
 		try writer.print("error: references request failed\n", .{});
 		return;
 	};
-	defer allocator.free(locations);
+	defer {
+		for (locations) |loc| allocator.free(loc.uri);
+		allocator.free(locations);
+	}
 
 	if (locations.len == 0) {
 		try writer.print("No references found for '{s}'\n", .{pattern});
@@ -1778,14 +1796,22 @@ fn runRename(allocator: std.mem.Allocator, file_path: []const u8, pattern: []con
 		return;
 	};
 
-	// LSP uses 0-based line/col
+	// LSP uses 0-based line/col; we must point at the symbol name, not col 0
 	const line: u32 = @intCast(sym_match.start_line);
-	const col: u32 = 0;
+	const col: u32 = findNameCol(result.source, sym_match.start_byte, sym_match.name);
 
 	const workspace_edit = client.rename(file_uri, line, col, new_name) catch {
 		try writer.print("error: rename request failed\n", .{});
 		return;
 	};
+	defer {
+		for (workspace_edit.file_edits) |fe| {
+			allocator.free(fe.uri);
+			for (fe.edits) |edit| allocator.free(edit.new_text);
+			allocator.free(fe.edits);
+		}
+		allocator.free(workspace_edit.file_edits);
+	}
 
 	if (workspace_edit.file_edits.len == 0) {
 		try writer.print("No edits returned for rename of '{s}' to '{s}'\n", .{ pattern, new_name });
@@ -2321,4 +2347,32 @@ test "parseHashlineRef round-trips with computed hashes" {
 
 	try std.testing.expectEqual(@as(usize, 2), parsed_ref.line);
 	try std.testing.expectEqualStrings(&hashes[1], &parsed_ref.hash);
+}
+
+test "findNameCol locates symbol name column in source" {
+	const source =
+		\\const std = @import("std");
+		\\pub fn writePid(allocator: std.mem.Allocator) !void {
+		\\    const x = 42;
+		\\}
+	;
+	// "pub fn writePid" — name starts at col 7 (0-indexed) on line 2
+	// Line 2 starts after the first '\n' + 1
+	const line2_start = std.mem.indexOfScalar(u8, source, '\n').? + 1;
+	const col = findNameCol(source, line2_start, "writePid");
+	try std.testing.expectEqual(@as(u32, 7), col);
+
+	// Test with indented method
+	const source2 =
+		\\pub const Foo = struct {
+		\\    pub fn bar(self: *Foo) void {}
+		\\};
+	;
+	const line2_start2 = std.mem.indexOfScalar(u8, source2, '\n').? + 1;
+	const col2 = findNameCol(source2, line2_start2, "bar");
+	try std.testing.expectEqual(@as(u32, 11), col2);
+
+	// Test fallback when name not found on line — should return 0
+	const col3 = findNameCol(source, 0, "nonexistent");
+	try std.testing.expectEqual(@as(u32, 0), col3);
 }
