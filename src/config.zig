@@ -46,6 +46,10 @@ pub const default_template =
     \\#ignore=
     \\#ignore.zig=zig-cache,zig-out
     \\
+    \\# LSP binary overrides (key = language ID, e.g. zig, rust, clojure)
+    \\#lsp.zig=/custom/path/to/zls
+    \\#lsp.rust=/custom/path/to/rust-analyzer
+    \\
     \\# HTTP API server
     \\#http_host=127.0.0.1
     \\#http_port=8123
@@ -60,6 +64,17 @@ pub const IgnoreOverride = struct {
 		for (self.patterns.items) |pattern| allocator.free(pattern);
 		self.patterns.deinit(allocator);
 		allocator.free(self.language);
+		self.* = undefined;
+	}
+};
+
+pub const LspOverride = struct {
+	language: []const u8,
+	binary_path: []const u8,
+
+	pub fn deinit(self: *LspOverride, allocator: std.mem.Allocator) void {
+		allocator.free(self.language);
+		allocator.free(self.binary_path);
 		self.* = undefined;
 	}
 };
@@ -90,6 +105,7 @@ pub const Config = struct {
 	include_node_modules: ?bool = null,
 	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
 	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
+	lsp_overrides: std.ArrayListUnmanaged(LspOverride) = .{},
 	http_host: ?[]const u8 = null,
 	http_port: ?u16 = null,
 
@@ -110,6 +126,8 @@ pub const Config = struct {
 		self.ignore_global.deinit(allocator);
 		for (self.ignore_lang.items) |*entry| entry.deinit(allocator);
 		self.ignore_lang.deinit(allocator);
+		for (self.lsp_overrides.items) |*entry| entry.deinit(allocator);
+		self.lsp_overrides.deinit(allocator);
 		self.* = .{};
 	}
 };
@@ -199,6 +217,16 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			if (lang.len == 0) return error.InvalidValue;
 			var entry = try getOrCreateOverride(allocator, &config.ignore_lang, lang);
 			try appendPatterns(allocator, &entry.patterns, value);
+			continue;
+		}
+
+		if (std.mem.startsWith(u8, key, "lsp.")) {
+			const lang = key["lsp.".len..];
+			if (lang.len == 0) return error.InvalidValue;
+			try config.lsp_overrides.append(allocator, .{
+				.language = try allocator.dupe(u8, lang),
+				.binary_path = try allocator.dupe(u8, value),
+			});
 			continue;
 		}
 

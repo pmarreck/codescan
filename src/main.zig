@@ -74,6 +74,7 @@ const Settings = struct {
 	primary_lang: ?[]const u8,
 	ignore_global: []const []const u8,
 	ignore_lang: []const config.IgnoreOverride,
+	lsp_overrides: []const config.LspOverride,
 	http_host: []const u8,
 	http_port: u16,
 };
@@ -568,7 +569,7 @@ pub fn main() !void {
 				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: references requires --file <path>\n");
-			try runReferences(allocator, file_path, pattern, parsed.output, stdout);
+			try runReferences(allocator, file_path, pattern, parsed.output, settings.lsp_overrides, stdout);
 			try stdout.flush();
 		},
 		.rename => {
@@ -578,7 +579,7 @@ pub fn main() !void {
 				exitWithError("error: rename requires --file <path>\n");
 			const new_name = parsed.rename_to orelse
 				exitWithError("error: rename requires --to <new_name>\n");
-			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, stdout);
+			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, settings.lsp_overrides, stdout);
 			try stdout.flush();
 		},
 		.watch => {
@@ -730,6 +731,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.primary_lang = null,
 		.ignore_global = &[_][]const u8{},
 		.ignore_lang = &[_]config.IgnoreOverride{},
+		.lsp_overrides = &[_]config.LspOverride{},
 		.http_host = defaults.http_host,
 		.http_port = defaults.http_port,
 	};
@@ -767,6 +769,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.include_node_modules) |value| settings.include_node_modules = value;
 	settings.ignore_global = cfg.ignore_global.items;
 	settings.ignore_lang = cfg.ignore_lang.items;
+	settings.lsp_overrides = cfg.lsp_overrides.items;
 	if (cfg.http_host) |value| settings.http_host = value;
 	if (cfg.http_port) |value| settings.http_port = value;
 
@@ -1751,7 +1754,31 @@ fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []c
 	}
 }
 
-fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
+fn resolveServer(ext: []const u8, overrides: []const config.LspOverride) ?lsp.ServerInfo {
+	const lang_id = lsp.languageId(ext);
+	for (overrides) |ovr| {
+		if (std.mem.eql(u8, ovr.language, lang_id)) {
+			return .{
+				.binary = ovr.binary_path,
+				.args = &[_][]const u8{},
+			};
+		}
+	}
+	return lsp.serverForExtension(ext);
+}
+
+fn printLspNotFound(writer: *std.Io.Writer, ext: []const u8, server_info: lsp.ServerInfo) !void {
+	try writer.print("error: could not start language server '{s}' — is it installed and on PATH?\n", .{server_info.binary});
+	if (server_info.install_hint.len > 0) {
+		try writer.print("  install: {s}\n", .{server_info.install_hint});
+	}
+	if (server_info.install_url.len > 0) {
+		try writer.print("  docs:    {s}\n", .{server_info.install_url});
+	}
+	try writer.print("  note:    no reindex needed — LSP operations work on-demand for '{s}' files\n", .{ext});
+}
+
+fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, lsp_overrides: []const config.LspOverride, writer: *std.Io.Writer) !void {
 	// First, find the symbol position using tree-sitter
 	var result = extractFileAndTree(allocator, file_path) catch |err| {
 		if (err == error.UnsupportedFileType) {
@@ -1774,7 +1801,7 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 
 	// Determine the language server binary
 	const ext = std.fs.path.extension(file_path);
-	const server_info = lsp.serverForExtension(ext) orelse {
+	const server_info = resolveServer(ext, lsp_overrides) orelse {
 		try writer.print("error: no language server known for '{s}' files\n", .{ext});
 		return;
 	};
@@ -1792,7 +1819,7 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 
 	// Start LSP, open file, request references
 	var client = lsp.LspClient.start(allocator, server_info, root_uri) catch {
-		try writer.print("error: could not start language server '{s}' — is it installed and on PATH?\n", .{server_info.binary});
+		try printLspNotFound(writer, ext, server_info);
 		return;
 	};
 	defer client.deinit();
@@ -1890,6 +1917,7 @@ fn runRename(
 	db_path: []const u8,
 	root_path: []const u8,
 	registry: plugin.Registry,
+	lsp_overrides: []const config.LspOverride,
 	writer: *std.Io.Writer,
 ) !void {
 	// First, find the symbol position using tree-sitter
@@ -1914,7 +1942,7 @@ fn runRename(
 
 	// Determine the language server binary
 	const ext = std.fs.path.extension(file_path);
-	const server_info = lsp.serverForExtension(ext) orelse {
+	const server_info = resolveServer(ext, lsp_overrides) orelse {
 		try writer.print("error: no language server known for '{s}' files\n", .{ext});
 		return;
 	};
@@ -1932,7 +1960,7 @@ fn runRename(
 
 	// Start LSP, open file, request rename
 	var client = lsp.LspClient.start(allocator, server_info, root_uri) catch {
-		try writer.print("error: could not start language server '{s}' — is it installed and on PATH?\n", .{server_info.binary});
+		try printLspNotFound(writer, ext, server_info);
 		return;
 	};
 	defer client.deinit();

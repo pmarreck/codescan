@@ -19,51 +19,168 @@ pub const LspError = error{
 pub const ServerInfo = struct {
 	binary: []const u8,
 	args: []const []const u8,
+	install_hint: []const u8 = "",
+	install_url: []const u8 = "",
 };
 
 pub fn serverForExtension(ext: []const u8) ?ServerInfo {
-	const static = struct {
-		const zls_args = [_][]const u8{};
-		const ra_args = [_][]const u8{};
-		const clangd_args = [_][]const u8{};
-		const ts_args = [_][]const u8{"--stdio"};
-		const pyright_args = [_][]const u8{"--stdio"};
-		const gopls_args = [_][]const u8{"serve"};
-		const elixir_ls_args = [_][]const u8{};
-		const lua_ls_args = [_][]const u8{};
-		const nil_args = [_][]const u8{};
-		const hls_args = [_][]const u8{"--lsp"};
-		const bash_ls_args = [_][]const u8{"--stdio"};
-		const nim_args = [_][]const u8{};
+	const LspEntry = struct {
+		extensions: []const []const u8,
+		binary: []const u8,
+		args: []const []const u8,
+		install_hint: []const u8,
+		install_url: []const u8,
 	};
 
-	if (std.mem.eql(u8, ext, ".zig"))
-		return .{ .binary = "zls", .args = &static.zls_args };
-	if (std.mem.eql(u8, ext, ".rs"))
-		return .{ .binary = "rust-analyzer", .args = &static.ra_args };
-	if (std.mem.eql(u8, ext, ".c") or std.mem.eql(u8, ext, ".h") or
-		std.mem.eql(u8, ext, ".cpp") or std.mem.eql(u8, ext, ".hpp") or
-		std.mem.eql(u8, ext, ".cc") or std.mem.eql(u8, ext, ".cxx"))
-		return .{ .binary = "clangd", .args = &static.clangd_args };
-	if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".tsx") or
-		std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".jsx"))
-		return .{ .binary = "typescript-language-server", .args = &static.ts_args };
-	if (std.mem.eql(u8, ext, ".py"))
-		return .{ .binary = "pyright-langserver", .args = &static.pyright_args };
-	if (std.mem.eql(u8, ext, ".go"))
-		return .{ .binary = "gopls", .args = &static.gopls_args };
-	if (std.mem.eql(u8, ext, ".ex") or std.mem.eql(u8, ext, ".exs"))
-		return .{ .binary = "elixir-ls", .args = &static.elixir_ls_args };
-	if (std.mem.eql(u8, ext, ".lua"))
-		return .{ .binary = "lua-language-server", .args = &static.lua_ls_args };
-	if (std.mem.eql(u8, ext, ".nix"))
-		return .{ .binary = "nil", .args = &static.nil_args };
-	if (std.mem.eql(u8, ext, ".hs"))
-		return .{ .binary = "haskell-language-server-wrapper", .args = &static.hls_args };
-	if (std.mem.eql(u8, ext, ".sh") or std.mem.eql(u8, ext, ".bash"))
-		return .{ .binary = "bash-language-server", .args = &static.bash_ls_args };
-	if (std.mem.eql(u8, ext, ".nim"))
-		return .{ .binary = "nimlangserver", .args = &static.nim_args };
+	const static = struct {
+		const empty_args = [_][]const u8{};
+		const stdio_args = [_][]const u8{"--stdio"};
+		const serve_args = [_][]const u8{"serve"};
+		const lsp_args = [_][]const u8{"--lsp"};
+		const server_args = [_][]const u8{"--server"};
+
+		const table = [_]LspEntry{
+			.{
+				.extensions = &.{ ".zig" },
+				.binary = "zls",
+				.args = &empty_args,
+				.install_hint = "nix profile install nixpkgs#zls",
+				.install_url = "https://github.com/zigtools/zls",
+			},
+			.{
+				.extensions = &.{ ".rs" },
+				.binary = "rust-analyzer",
+				.args = &empty_args,
+				.install_hint = "rustup component add rust-analyzer",
+				.install_url = "https://rust-analyzer.github.io",
+			},
+			.{
+				.extensions = &.{ ".c", ".h", ".cpp", ".hpp", ".cc", ".cxx" },
+				.binary = "clangd",
+				.args = &empty_args,
+				.install_hint = "brew install llvm (macOS) / apt install clangd (Linux)",
+				.install_url = "https://clangd.llvm.org",
+			},
+			.{
+				.extensions = &.{ ".ts", ".tsx", ".js", ".jsx" },
+				.binary = "typescript-language-server",
+				.args = &stdio_args,
+				.install_hint = "npm i -g typescript-language-server typescript",
+				.install_url = "https://github.com/typescript-language-server/typescript-language-server",
+			},
+			.{
+				.extensions = &.{ ".go" },
+				.binary = "gopls",
+				.args = &serve_args,
+				.install_hint = "go install golang.org/x/tools/gopls@latest",
+				.install_url = "https://pkg.go.dev/golang.org/x/tools/gopls",
+			},
+			.{
+				.extensions = &.{ ".ex", ".exs" },
+				.binary = "elixir-ls",
+				.args = &empty_args,
+				.install_hint = "mix escript.install hex elixir_ls",
+				.install_url = "https://github.com/elixir-lsp/elixir-ls",
+			},
+			.{
+				.extensions = &.{ ".lua" },
+				.binary = "lua-language-server",
+				.args = &empty_args,
+				.install_hint = "brew install lua-language-server",
+				.install_url = "https://github.com/LuaLS/lua-language-server",
+			},
+			.{
+				.extensions = &.{ ".nix" },
+				.binary = "nil",
+				.args = &empty_args,
+				.install_hint = "nix profile install nixpkgs#nil",
+				.install_url = "https://github.com/oxalica/nil",
+			},
+			.{
+				.extensions = &.{ ".hs" },
+				.binary = "haskell-language-server-wrapper",
+				.args = &lsp_args,
+				.install_hint = "ghcup install hls",
+				.install_url = "https://haskell-language-server.readthedocs.io",
+			},
+			.{
+				.extensions = &.{ ".sh", ".bash" },
+				.binary = "bash-language-server",
+				.args = &stdio_args,
+				.install_hint = "npm i -g bash-language-server",
+				.install_url = "https://github.com/bash-lsp/bash-language-server",
+			},
+			.{
+				.extensions = &.{ ".nim" },
+				.binary = "nimlangserver",
+				.args = &empty_args,
+				.install_hint = "nimble install nimlangserver",
+				.install_url = "https://github.com/nim-lang/langserver",
+			},
+			.{
+				.extensions = &.{ ".clj", ".cljs", ".cljc", ".edn" },
+				.binary = "clojure-lsp",
+				.args = &empty_args,
+				.install_hint = "brew install clojure-lsp/brew/clojure-lsp-native",
+				.install_url = "https://clojure-lsp.io",
+			},
+			.{
+				.extensions = &.{ ".rb" },
+				.binary = "ruby-lsp",
+				.args = &empty_args,
+				.install_hint = "gem install ruby-lsp",
+				.install_url = "https://github.com/Shopify/ruby-lsp",
+			},
+			.{
+				.extensions = &.{ ".ml", ".mli" },
+				.binary = "ocamllsp",
+				.args = &empty_args,
+				.install_hint = "opam install ocaml-lsp-server",
+				.install_url = "https://github.com/ocaml/ocaml-lsp",
+			},
+			.{
+				.extensions = &.{ ".swift" },
+				.binary = "sourcekit-lsp",
+				.args = &empty_args,
+				.install_hint = "ships with Xcode toolchain",
+				.install_url = "https://github.com/swiftlang/sourcekit-lsp",
+			},
+			.{
+				.extensions = &.{ ".lean" },
+				.binary = "lean",
+				.args = &server_args,
+				.install_hint = "elan toolchain install leanprover/lean4:stable",
+				.install_url = "https://lean-lang.org",
+			},
+			.{
+				.extensions = &.{ ".s", ".S", ".asm" },
+				.binary = "asm-lsp",
+				.args = &empty_args,
+				.install_hint = "cargo install asm-lsp",
+				.install_url = "https://github.com/bergercookie/asm-lsp",
+			},
+			.{
+				.extensions = &.{ ".erl", ".hrl" },
+				.binary = "erlang_ls",
+				.args = &empty_args,
+				.install_hint = "rebar3 as default escriptize",
+				.install_url = "https://github.com/erlang-ls/erlang_ls",
+			},
+		};
+	};
+
+	for (&static.table) |*entry| {
+		for (entry.extensions) |table_ext| {
+			if (std.mem.eql(u8, ext, table_ext)) {
+				return .{
+					.binary = entry.binary,
+					.args = entry.args,
+					.install_hint = entry.install_hint,
+					.install_url = entry.install_url,
+				};
+			}
+		}
+	}
 	return null;
 }
 
@@ -546,7 +663,6 @@ pub fn languageId(ext: []const u8) []const u8 {
 	if (std.mem.eql(u8, ext, ".tsx")) return "typescriptreact";
 	if (std.mem.eql(u8, ext, ".js")) return "javascript";
 	if (std.mem.eql(u8, ext, ".jsx")) return "javascriptreact";
-	if (std.mem.eql(u8, ext, ".py")) return "python";
 	if (std.mem.eql(u8, ext, ".go")) return "go";
 	if (std.mem.eql(u8, ext, ".ex") or std.mem.eql(u8, ext, ".exs")) return "elixir";
 	if (std.mem.eql(u8, ext, ".lua")) return "lua";
@@ -554,6 +670,15 @@ pub fn languageId(ext: []const u8) []const u8 {
 	if (std.mem.eql(u8, ext, ".hs")) return "haskell";
 	if (std.mem.eql(u8, ext, ".sh") or std.mem.eql(u8, ext, ".bash")) return "shellscript";
 	if (std.mem.eql(u8, ext, ".nim")) return "nim";
+	if (std.mem.eql(u8, ext, ".clj") or std.mem.eql(u8, ext, ".cljs") or
+		std.mem.eql(u8, ext, ".cljc") or std.mem.eql(u8, ext, ".edn")) return "clojure";
+	if (std.mem.eql(u8, ext, ".rb")) return "ruby";
+	if (std.mem.eql(u8, ext, ".ml") or std.mem.eql(u8, ext, ".mli")) return "ocaml";
+	if (std.mem.eql(u8, ext, ".swift")) return "swift";
+	if (std.mem.eql(u8, ext, ".lean")) return "lean4";
+	if (std.mem.eql(u8, ext, ".s") or std.mem.eql(u8, ext, ".S") or
+		std.mem.eql(u8, ext, ".asm")) return "asm";
+	if (std.mem.eql(u8, ext, ".erl") or std.mem.eql(u8, ext, ".hrl")) return "erlang";
 	return "plaintext";
 }
 
@@ -581,16 +706,49 @@ test "uriToPath" {
 test "languageId" {
 	try std.testing.expectEqualStrings("zig", languageId(".zig"));
 	try std.testing.expectEqualStrings("rust", languageId(".rs"));
-	try std.testing.expectEqualStrings("python", languageId(".py"));
+	try std.testing.expectEqualStrings("clojure", languageId(".clj"));
+	try std.testing.expectEqualStrings("ruby", languageId(".rb"));
+	try std.testing.expectEqualStrings("ocaml", languageId(".ml"));
+	try std.testing.expectEqualStrings("swift", languageId(".swift"));
+	try std.testing.expectEqualStrings("lean4", languageId(".lean"));
+	try std.testing.expectEqualStrings("asm", languageId(".s"));
+	try std.testing.expectEqualStrings("erlang", languageId(".erl"));
 	try std.testing.expectEqualStrings("plaintext", languageId(".xyz"));
 }
 
 test "serverForExtension" {
 	const zig_server = serverForExtension(".zig").?;
 	try std.testing.expectEqualStrings("zls", zig_server.binary);
+	try std.testing.expect(zig_server.install_hint.len > 0);
+	try std.testing.expect(zig_server.install_url.len > 0);
 
 	const rust_server = serverForExtension(".rs").?;
 	try std.testing.expectEqualStrings("rust-analyzer", rust_server.binary);
+
+	// Python removed
+	try std.testing.expect(serverForExtension(".py") == null);
+
+	// New languages
+	const clj_server = serverForExtension(".clj").?;
+	try std.testing.expectEqualStrings("clojure-lsp", clj_server.binary);
+
+	const rb_server = serverForExtension(".rb").?;
+	try std.testing.expectEqualStrings("ruby-lsp", rb_server.binary);
+
+	const ml_server = serverForExtension(".ml").?;
+	try std.testing.expectEqualStrings("ocamllsp", ml_server.binary);
+
+	const swift_server = serverForExtension(".swift").?;
+	try std.testing.expectEqualStrings("sourcekit-lsp", swift_server.binary);
+
+	const lean_server = serverForExtension(".lean").?;
+	try std.testing.expectEqualStrings("lean", lean_server.binary);
+
+	const asm_server = serverForExtension(".s").?;
+	try std.testing.expectEqualStrings("asm-lsp", asm_server.binary);
+
+	const erl_server = serverForExtension(".erl").?;
+	try std.testing.expectEqualStrings("erlang_ls", erl_server.binary);
 
 	try std.testing.expect(serverForExtension(".unknown") == null);
 }
