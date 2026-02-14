@@ -4,3 +4,5 @@
 /.codescan-fixtures/
 /.serena/
 .DS_Store
+.zig-cache
+result
