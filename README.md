@@ -114,6 +114,37 @@ Set `DEBUG=1` to emit verbose indexing progress to stderr.
 
 Endpoints: `GET /health`, `GET /help`, `POST /index`, `POST /search`.
 
+## Semantic Editing
+
+codescan provides structural editing commands for AI agents and scripts.
+All editing commands read replacement text from stdin.
+
+### Content-based editing
+```bash
+echo 'new_name' | codescan replace-content 'old_name' --file src/lib.zig
+echo 'v2'       | codescan replace-content 'v1' --file src/lib.zig --all
+echo 'new impl' | codescan replace-content 'fn old\(.*?\)' --file src/lib.zig --regex
+```
+
+### Symbol-based editing
+```bash
+echo 'new body' | codescan replace-symbol MyStruct/init --file src/lib.zig
+echo 'new code' | codescan insert-after MyStruct --file src/lib.zig
+echo 'new code' | codescan insert-before MyStruct --file src/lib.zig
+```
+
+### Line-based editing (hashline-validated)
+```bash
+echo 'replacement' | codescan replace-lines --file src/lib.zig --from 45:r2p --to 47:3bw
+echo 'new code'    | codescan insert-at 42:abc --file src/lib.zig
+```
+
+### LSP operations
+```bash
+codescan references MyFunc --file src/lib.zig
+codescan rename MyFunc --file src/lib.zig --to newName [--dry-run]
+```
+
 ## Config
 
 Create `<root>/.codescan/config` to override defaults. Example:

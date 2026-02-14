@@ -19,6 +19,16 @@ pub const Error = error{
     OutOfMemory,
     WorkspaceOverflow,
     InvalidPattern,
+    SubstituteFailed,
+};
+
+/// A byte-offset match pair.
+pub const Match = struct { start: usize, end: usize };
+
+/// Result of a substitution operation.
+pub const SubstituteResult = struct {
+    output: []u8,
+    count: usize,
 };
 
 /// Compiled PCRE2 pattern for matching.
@@ -127,6 +137,75 @@ pub const Regex = struct {
             }
 
             return rc >= 0;
+        }
+    }
+
+    /// Find the byte-offset position of the first match at or after `start_offset`.
+    /// Uses the standard (NFA) matcher so that capture groups work correctly.
+    pub fn findPosition(self: *Self, subject: []const u8, start_offset: usize) ?Match {
+        const rc = c.pcre2_match_8(
+            self.code,
+            subject.ptr,
+            subject.len,
+            start_offset,
+            0,
+            self.match_data,
+            null,
+        );
+        if (rc < 0) return null;
+
+        const ovector = c.pcre2_get_ovector_pointer_8(self.match_data);
+        return Match{
+            .start = @intCast(ovector[0]),
+            .end = @intCast(ovector[1]),
+        };
+    }
+
+    /// Perform PCRE2 substitution, returning the result and match count.
+    /// Uses `pcre2_substitute_8` which handles backreferences ($1, $2, etc.).
+    /// Caller owns the returned `output` slice.
+    pub fn substituteOwned(self: *Self, allocator: Allocator, subject: []const u8, replacement: []const u8, global: bool) Error!SubstituteResult {
+        var options: u32 = c.PCRE2_SUBSTITUTE_OVERFLOW_LENGTH | c.PCRE2_SUBSTITUTE_EXTENDED;
+        if (global) options |= c.PCRE2_SUBSTITUTE_GLOBAL;
+
+        // First attempt with a reasonably-sized buffer
+        var buf_size: usize = subject.len + replacement.len + 256;
+        while (true) {
+            const buf = allocator.alloc(u8, buf_size) catch return Error.OutOfMemory;
+            var out_len: c.PCRE2_SIZE = buf.len;
+            const rc = c.pcre2_substitute_8(
+                self.code,
+                subject.ptr,
+                subject.len,
+                0, // start offset
+                options,
+                self.match_data,
+                null, // match context
+                replacement.ptr,
+                replacement.len,
+                buf.ptr,
+                &out_len,
+            );
+            if (rc == c.PCRE2_ERROR_NOMEMORY) {
+                allocator.free(buf);
+                // out_len now contains required size
+                buf_size = @intCast(out_len);
+                continue;
+            }
+            if (rc < 0) {
+                allocator.free(buf);
+                return Error.SubstituteFailed;
+            }
+            // rc = number of replacements made
+            const result_slice = allocator.dupe(u8, buf[0..@intCast(out_len)]) catch {
+                allocator.free(buf);
+                return Error.OutOfMemory;
+            };
+            allocator.free(buf);
+            return SubstituteResult{
+                .output = result_slice,
+                .count = @intCast(rc),
+            };
         }
     }
 
@@ -250,4 +329,95 @@ test "Regex: compile error" {
     // Invalid pattern - unmatched parenthesis
     const result = Regex.compile(allocator, "(unclosed");
     try std.testing.expectError(Error.CompileFailed, result);
+}
+
+test "Regex: findPosition basic" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "world");
+    defer re.deinit();
+
+    const m = re.findPosition("hello world", 0).?;
+    try std.testing.expectEqual(@as(usize, 6), m.start);
+    try std.testing.expectEqual(@as(usize, 11), m.end);
+}
+
+test "Regex: findPosition with start offset" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "ab");
+    defer re.deinit();
+
+    // "ab--ab--ab"
+    const subject = "ab--ab--ab";
+    const m1 = re.findPosition(subject, 0).?;
+    try std.testing.expectEqual(@as(usize, 0), m1.start);
+    try std.testing.expectEqual(@as(usize, 2), m1.end);
+
+    const m2 = re.findPosition(subject, 2).?;
+    try std.testing.expectEqual(@as(usize, 4), m2.start);
+    try std.testing.expectEqual(@as(usize, 6), m2.end);
+
+    const m3 = re.findPosition(subject, 6).?;
+    try std.testing.expectEqual(@as(usize, 8), m3.start);
+    try std.testing.expectEqual(@as(usize, 10), m3.end);
+
+    try std.testing.expect(re.findPosition(subject, 9) == null);
+}
+
+test "Regex: findPosition no match" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "xyz");
+    defer re.deinit();
+
+    try std.testing.expect(re.findPosition("hello world", 0) == null);
+}
+
+test "Regex: substituteOwned single" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "foo");
+    defer re.deinit();
+
+    const result = try re.substituteOwned(allocator, "foo bar foo", "baz", false);
+    defer allocator.free(result.output);
+    try std.testing.expectEqualStrings("baz bar foo", result.output);
+    try std.testing.expectEqual(@as(usize, 1), result.count);
+}
+
+test "Regex: substituteOwned global" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "foo");
+    defer re.deinit();
+
+    const result = try re.substituteOwned(allocator, "foo bar foo baz foo", "X", true);
+    defer allocator.free(result.output);
+    try std.testing.expectEqualStrings("X bar X baz X", result.output);
+    try std.testing.expectEqual(@as(usize, 3), result.count);
+}
+
+test "Regex: substituteOwned with backreferences" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "(\\w+)=(\\w+)");
+    defer re.deinit();
+
+    const result = try re.substituteOwned(allocator, "key=value", "$2:$1", false);
+    defer allocator.free(result.output);
+    try std.testing.expectEqualStrings("value:key", result.output);
+    try std.testing.expectEqual(@as(usize, 1), result.count);
+}
+
+test "Regex: substituteOwned no match returns original" {
+    const allocator = std.testing.allocator;
+
+    var re = try Regex.compile(allocator, "xyz");
+    defer re.deinit();
+
+    const result = try re.substituteOwned(allocator, "hello world", "replaced", false);
+    defer allocator.free(result.output);
+    try std.testing.expectEqualStrings("hello world", result.output);
+    try std.testing.expectEqual(@as(usize, 0), result.count);
 }

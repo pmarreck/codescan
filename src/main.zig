@@ -17,6 +17,7 @@ const symbol_tree = @import("symbol_tree.zig");
 const ts_symbols = @import("ts_symbols.zig");
 const hashline = @import("hashline.zig");
 const lsp = @import("lsp.zig");
+const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
 const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
@@ -561,6 +562,16 @@ pub fn main() !void {
 			const ref = parsed.hashline_ref orelse
 				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
 			try runInsertAt(allocator, file_path, ref, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			try stdout.flush();
+		},
+		.replace_content => {
+			const needle = parsed.find_symbol_pattern orelse
+				exitWithError("error: replace-content requires a pattern\n" ++
+				"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
+			const file_path = parsed.symbols_file orelse
+				exitWithError("error: replace-content requires --file <path>\n");
+			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -1754,6 +1765,158 @@ fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []c
 	}
 }
 
+fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, needle: []const u8, regex_mode: bool, replace_all: bool, writer: *std.Io.Writer) !void {
+	const replacement = try readStdin(allocator);
+	defer allocator.free(replacement);
+
+	// Strip trailing newline from replacement (stdin usually adds one)
+	const repl = if (replacement.len > 0 and replacement[replacement.len - 1] == '\n')
+		replacement[0 .. replacement.len - 1]
+	else
+		replacement;
+
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	if (regex_mode) {
+		// Regex mode: use PCRE2
+		var re = pcre2.Regex.compile(allocator, needle) catch {
+			try writer.print("error: invalid regex pattern '{s}'\n", .{needle});
+			return;
+		};
+		defer re.deinit();
+
+		// Count matches for validation
+		var match_count: usize = 0;
+		var match_positions = std.ArrayListUnmanaged(pcre2.Match){};
+		defer match_positions.deinit(allocator);
+		{
+			var offset: usize = 0;
+			while (re.findPosition(source, offset)) |m| {
+				try match_positions.append(allocator, m);
+				match_count += 1;
+				if (m.end > offset) {
+					offset = m.end;
+				} else {
+					offset += 1; // avoid infinite loop on zero-length matches
+				}
+			}
+		}
+
+		if (match_count == 0) {
+			try writer.print("error: no match found for '{s}' in {s}\n", .{ needle, file_path });
+			return;
+		}
+		if (match_count > 1 and !replace_all) {
+			try writer.print("error: found {d} matches; use --all to replace all, or refine your pattern\n", .{match_count});
+			return;
+		}
+
+		// Perform substitution
+		const result = re.substituteOwned(allocator, source, repl, replace_all) catch {
+			try writer.print("error: substitution failed\n", .{});
+			return;
+		};
+		defer allocator.free(result.output);
+
+		const file = try std.fs.cwd().createFile(file_path, .{});
+		defer file.close();
+		try file.writeAll(result.output);
+
+		// Report affected lines
+		if (match_count == 1) {
+			const line = byteOffsetToLine(source, match_positions.items[0].start);
+			if (computeHashAtLine(allocator, file_path, line)) |h| {
+				try writer.print("Replaced 1 occurrence in {s} (line {d}:{s})\n", .{ file_path, line, &h });
+			} else {
+				try writer.print("Replaced 1 occurrence in {s} (line {d})\n", .{ file_path, line });
+			}
+		} else {
+			try writer.print("Replaced {d} occurrences in {s} (lines", .{ result.count, file_path });
+			for (match_positions.items, 0..) |m, idx| {
+				const line = byteOffsetToLine(source, m.start);
+				if (idx > 0) try writer.writeAll(",");
+				try writer.print(" {d}", .{line});
+			}
+			try writer.writeAll(")\n");
+		}
+	} else {
+		// Literal mode: use std.mem.indexOf
+		var match_positions = std.ArrayListUnmanaged(usize){};
+		defer match_positions.deinit(allocator);
+		{
+			var offset: usize = 0;
+			while (offset <= source.len -| needle.len) {
+				if (std.mem.indexOf(u8, source[offset..], needle)) |pos| {
+					try match_positions.append(allocator, offset + pos);
+					offset = offset + pos + needle.len;
+				} else break;
+			}
+		}
+
+		const match_count = match_positions.items.len;
+		if (match_count == 0) {
+			try writer.print("error: no match found for '{s}' in {s}\n", .{ needle, file_path });
+			return;
+		}
+		if (match_count > 1 and !replace_all) {
+			try writer.print("error: found {d} matches; use --all to replace all, or refine your pattern\n", .{match_count});
+			return;
+		}
+
+		// Build result by splicing
+		const positions = if (replace_all) match_positions.items else match_positions.items[0..1];
+		const result_len = source.len - (positions.len * needle.len) + (positions.len * repl.len);
+		const result = try allocator.alloc(u8, result_len);
+		defer allocator.free(result);
+
+		var src_offset: usize = 0;
+		var dst_offset: usize = 0;
+		for (positions) |pos| {
+			const before_len = pos - src_offset;
+			@memcpy(result[dst_offset .. dst_offset + before_len], source[src_offset .. src_offset + before_len]);
+			dst_offset += before_len;
+			@memcpy(result[dst_offset .. dst_offset + repl.len], repl);
+			dst_offset += repl.len;
+			src_offset = pos + needle.len;
+		}
+		// Copy remainder
+		const tail_len = source.len - src_offset;
+		@memcpy(result[dst_offset .. dst_offset + tail_len], source[src_offset..]);
+
+		const file = try std.fs.cwd().createFile(file_path, .{});
+		defer file.close();
+		try file.writeAll(result);
+
+		// Report affected lines
+		if (positions.len == 1) {
+			const line = byteOffsetToLine(source, positions[0]);
+			if (computeHashAtLine(allocator, file_path, line)) |h| {
+				try writer.print("Replaced 1 occurrence in {s} (line {d}:{s})\n", .{ file_path, line, &h });
+			} else {
+				try writer.print("Replaced 1 occurrence in {s} (line {d})\n", .{ file_path, line });
+			}
+		} else {
+			try writer.print("Replaced {d} occurrences in {s} (lines", .{ positions.len, file_path });
+			for (positions, 0..) |pos, idx| {
+				const line = byteOffsetToLine(source, pos);
+				if (idx > 0) try writer.writeAll(",");
+				try writer.print(" {d}", .{line});
+			}
+			try writer.writeAll(")\n");
+		}
+	}
+}
+
+/// Convert a byte offset in source text to a 1-based line number.
+fn byteOffsetToLine(source: []const u8, byte_offset: usize) usize {
+	var line: usize = 1;
+	for (source[0..@min(byte_offset, source.len)]) |ch| {
+		if (ch == '\n') line += 1;
+	}
+	return line;
+}
+
 fn resolveServer(ext: []const u8, overrides: []const config.LspOverride) ?lsp.ServerInfo {
 	const lang_id = lsp.languageId(ext);
 	for (overrides) |ovr| {
@@ -2248,6 +2411,7 @@ const usage =
 	\\  insert-before <pattern>  Insert code before a symbol (from stdin)
 	\\  replace-lines            Replace a range of lines (from stdin)
 	\\  insert-at <line:hash>    Insert code after a line (from stdin)
+	\\  replace-content <needle> Replace matching content (from stdin)
 	\\  references <pattern>    Find all references via LSP
 	\\  rename <pattern>        Rename symbol across codebase via LSP
 	\\  serve                    Start HTTP API server
@@ -2276,6 +2440,8 @@ const usage =
 	\\  --from <line:hash>       Start of line range (replace-lines)
 	\\  --to <line:hash>         End of line range (replace-lines) / new name (rename)
 	\\  --include-body           Include source body with hashlines
+	\\  --regex                  Treat needle as PCRE2 regex (replace-content)
+	\\  --all                    Replace all occurrences (replace-content)
 	\\
 	\\LSP commands (references, rename):
 	\\  Lazy-start a language server for the file's language.

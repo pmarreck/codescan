@@ -21,6 +21,7 @@ pub const CommandTag = enum {
 	insert_before,
 	replace_lines,
 	insert_at,
+	replace_content,
 	references,
 	rename,
 	watch,
@@ -104,6 +105,8 @@ pub const Parsed = struct {
 	to_ref: ?[]const u8,
 	hashline_ref: ?[]const u8,
 	rename_to: ?[]const u8,
+	regex_mode: bool,
+	replace_all: bool,
 	watch_interval: u64,
 	watch_action: WatchAction,
 	force: bool,
@@ -157,6 +160,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.to_ref = null,
 		.hashline_ref = null,
 		.rename_to = null,
+		.regex_mode = false,
+		.replace_all = false,
 		.watch_interval = 2000,
 		.watch_action = .run,
 		.force = false,
@@ -240,6 +245,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.hashline_ref = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "replace-content")) {
+		parsed.command = .replace_content;
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.find_symbol_pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "references")) {
@@ -530,6 +542,16 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--dry-run") or std.mem.eql(u8, arg, "-n")) {
 			parsed.dry_run = true;
 			parsed.seen.dry_run = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--regex")) {
+			parsed.regex_mode = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--all")) {
+			parsed.replace_all = true;
 			i += 1;
 			continue;
 		}
