@@ -307,6 +307,13 @@ pub const LspClient = struct {
 						parsed.deinit();
 						return msg;
 					}
+					// Server-initiated request (has both "id" and "method") —
+					// send an empty acknowledgment so the server doesn't block.
+					if (parsed.value.object.get("method") != null) {
+						if (id_val == .integer) {
+							self.sendNullResponse(id_val.integer) catch {};
+						}
+					}
 				}
 			}
 
@@ -315,6 +322,15 @@ pub const LspClient = struct {
 			allocator.free(msg);
 		}
 		return error.Timeout;
+	}
+
+	/// Send a null result response to a server-initiated request.
+	fn sendNullResponse(self: *LspClient, id: i64) !void {
+		var buf: [128]u8 = undefined;
+		const json_msg = std.fmt.bufPrint(&buf,
+			\\{{"jsonrpc":"2.0","id":{d},"result":null}}
+		, .{id}) catch return error.RequestFailed;
+		try self.writeMessage(json_msg);
 	}
 
 	/// Read a single JSON-RPC message (Content-Length framed).
@@ -385,6 +401,8 @@ pub const LspClient = struct {
 		if (value != .object) return error.InvalidResponse;
 
 		const result = value.object.get("result") orelse return error.InvalidResponse;
+		// null result means the server can't rename at this position
+		if (result == .null) return WorkspaceEdit{ .file_edits = &.{} };
 		if (result != .object) return error.InvalidResponse;
 
 		const changes = result.object.get("changes") orelse

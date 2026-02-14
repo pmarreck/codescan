@@ -1708,7 +1708,8 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 	};
 
 	// LSP uses 0-based line/col; we must point at the symbol name, not col 0
-	const line: u32 = @intCast(sym_match.start_line);
+	// LSP uses 0-based line/col; start_line is 1-indexed so subtract 1
+	const line: u32 = @intCast(sym_match.start_line - 1);
 	const col: u32 = findNameCol(result.source, sym_match.start_byte, sym_match.name);
 
 	const locations = client.references(file_uri, line, col) catch {
@@ -1797,7 +1798,8 @@ fn runRename(allocator: std.mem.Allocator, file_path: []const u8, pattern: []con
 	};
 
 	// LSP uses 0-based line/col; we must point at the symbol name, not col 0
-	const line: u32 = @intCast(sym_match.start_line);
+	// LSP uses 0-based line/col; start_line is 1-indexed so subtract 1
+	const line: u32 = @intCast(sym_match.start_line - 1);
 	const col: u32 = findNameCol(result.source, sym_match.start_byte, sym_match.name);
 
 	const workspace_edit = client.rename(file_uri, line, col, new_name) catch {
