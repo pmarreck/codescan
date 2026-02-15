@@ -41,6 +41,7 @@ pub fn build(b: *std.Build) void {
 	const ts_erlang = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_erlang", "deps/tree-sitter-erlang/src", true);
 	const ts_ocaml = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ocaml", "deps/tree-sitter-ocaml/src", true);
 	const ts_swift = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_swift", "deps/tree-sitter-swift/src", true);
+	const ts_llvm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_llvm", "deps/tree-sitter-llvm/src", false);
 	const ts_langs = [_]*std.Build.Step.Compile{
 		tsc_lib,
 		ts_typescript,
@@ -58,6 +59,7 @@ pub fn build(b: *std.Build) void {
 		ts_erlang,
 		ts_ocaml,
 		ts_swift,
+		ts_llvm,
 	};
 
 	const exe = b.addExecutable(.{

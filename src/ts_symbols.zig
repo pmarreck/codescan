@@ -26,6 +26,7 @@ extern fn tree_sitter_ruby() *ts.TSLanguage;
 extern fn tree_sitter_erlang() *ts.TSLanguage;
 extern fn tree_sitter_ocaml() *ts.TSLanguage;
 extern fn tree_sitter_swift() *ts.TSLanguage;
+extern fn tree_sitter_llvm() *ts.TSLanguage;
 
 // ─── Language Configurations ─────────────────────────────────────────
 
@@ -46,6 +47,7 @@ pub const Language = enum {
 	erlang,
 	ocaml,
 	swift,
+	llvm,
 
 	pub fn tsLanguage(self: Language) *ts.TSLanguage {
 		return switch (self) {
@@ -65,6 +67,7 @@ pub const Language = enum {
 			.erlang => tree_sitter_erlang(),
 			.ocaml => tree_sitter_ocaml(),
 			.swift => tree_sitter_swift(),
+			.llvm => tree_sitter_llvm(),
 		};
 	}
 
@@ -85,6 +88,7 @@ pub const Language = enum {
 			.erlang => &erlang_mappings,
 			.ocaml => &ocaml_mappings,
 			.swift => &swift_mappings,
+			.llvm => &llvm_mappings,
 		};
 	}
 
@@ -112,6 +116,7 @@ pub const Language = enum {
 			.{ ".hrl", .erlang },
 			.{ ".ml", .ocaml },
 			.{ ".swift", .swift },
+			.{ ".ll", .llvm },
 		};
 		inline for (map) |entry| {
 			if (std.mem.eql(u8, ext, entry[0])) return entry[1];
@@ -260,6 +265,14 @@ const swift_mappings = [_]SymbolMapping{
 	.{ .node_type = "typealias_declaration", .kind = .type_alias, .name_field = .name },
 };
 
+// ── LLVM IR ──
+const llvm_mappings = [_]SymbolMapping{
+	.{ .node_type = "function_header", .kind = .function, .name_field = .name },
+	.{ .node_type = "global_global", .kind = .variable, .name_field = .first_identifier },
+	.{ .node_type = "global_type", .kind = .type_alias, .name_field = .first_identifier },
+	.{ .node_type = "alias", .kind = .variable, .name_field = .first_identifier },
+};
+
 // ─── Extraction ──────────────────────────────────────────────────────
 
 /// Extract a hierarchical symbol tree from source using tree-sitter.
@@ -389,6 +402,9 @@ fn isIdentifierLike(ty: []const u8) bool {
 		"class_name",
 		// Erlang
 		"atom",
+		// LLVM IR
+		"global_var",
+		"local_var",
 	};
 	for (ident_types) |t| {
 		if (std.mem.eql(u8, ty, t)) return true;
@@ -659,6 +675,7 @@ test "language detection from extension" {
 	try std.testing.expectEqual(Language.erlang, Language.fromExtension(".hrl").?);
 	try std.testing.expectEqual(Language.ocaml, Language.fromExtension(".ml").?);
 	try std.testing.expectEqual(Language.swift, Language.fromExtension(".swift").?);
+	try std.testing.expectEqual(Language.llvm, Language.fromExtension(".ll").?);
 	try std.testing.expect(Language.fromExtension(".zig") == null); // Zig uses native AST
 	try std.testing.expect(Language.fromExtension(".xyz") == null);
 }
@@ -768,4 +785,31 @@ test "swift: extracts function and class" {
 	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
 	try std.testing.expectEqualStrings("Greeter", tree.symbols[1].name);
 	try std.testing.expectEqual(SymbolKind.class, tree.symbols[1].kind);
+}
+
+test "llvm: extracts function and global" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\@msg = constant [6 x i8] c"hello\00"
+		\\
+		\\%Point = type { i32, i32 }
+		\\
+		\\define i32 @add(i32 %a, i32 %b) {
+		\\entry:
+		\\  %sum = add i32 %a, %b
+		\\  ret i32 %sum
+		\\}
+		\\
+		\\declare void @printf(ptr, ...)
+	;
+	var tree = try extract(allocator, source, .llvm);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 3);
+	try std.testing.expectEqualStrings("@msg", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.variable, tree.symbols[0].kind);
+	try std.testing.expectEqualStrings("%Point", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.type_alias, tree.symbols[1].kind);
+	try std.testing.expectEqualStrings("@add", tree.symbols[2].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[2].kind);
 }
