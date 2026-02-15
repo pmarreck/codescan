@@ -580,7 +580,7 @@ pub fn main() !void {
 				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: references requires --file <path>\n");
-			try runReferences(allocator, file_path, pattern, parsed.output, settings.lsp_overrides, stdout);
+			try runReferences(allocator, file_path, pattern, parsed.output, settings.root_path, settings.lsp_overrides, stdout);
 			try stdout.flush();
 		},
 		.rename => {
@@ -764,7 +764,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.embedding_dim) |value| settings.embedding_dim = value;
 	if (cfg.batch_size) |value| settings.batch_size = value;
 	if (cfg.max_file_size) |value| settings.max_file_size = value;
-	if (cfg.search_mode) |value| settings.search_mode = try parseMode(value);
+	if (cfg.search_mode) |value| settings.search_mode = try search.SearchMode.parse(value);
 	if (cfg.weight_vector) |value| settings.weight_vector = value;
 	if (cfg.weight_lexical) |value| settings.weight_lexical = value;
 	if (cfg.min_score) |value| settings.min_score = value;
@@ -1224,13 +1224,6 @@ fn computeHashAtLine(allocator: std.mem.Allocator, file_path: []const u8, line_1
 	defer allocator.free(hashes);
 	if (line_1 == 0 or line_1 > hashes.len) return null;
 	return hashes[line_1 - 1];
-}
-
-fn parseMode(value: []const u8) !search.SearchMode {
-	if (std.mem.eql(u8, value, "vector")) return .vector;
-	if (std.mem.eql(u8, value, "lexical")) return .lexical;
-	if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
-	return error.InvalidMode;
 }
 
 fn exitWithError(comptime msg: []const u8) noreturn {
@@ -1960,41 +1953,56 @@ fn printLspNotFound(writer: *std.Io.Writer, ext: []const u8, server_info: lsp.Se
 	try writer.print("  note:    no reindex needed — LSP operations work on-demand for '{s}' files\n", .{ext});
 }
 
-fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, lsp_overrides: []const config.LspOverride, writer: *std.Io.Writer) !void {
-	// Find symbol position — try tree-sitter first, fall back to text search
-	var source: []u8 = undefined;
-	var tree: ?symbol_tree.SymbolTree = null;
-	var line: u32 = undefined;
-	var col: u32 = undefined;
+const LocateResult = struct {
+	source: []u8,
+	tree: ?symbol_tree.SymbolTree,
+	line: u32,
+	col: u32,
+};
 
+/// Locate a symbol in a file: tries tree-sitter extraction first, falls back to text search.
+/// Returns null if the pattern was not found (caller should print the "not found" message).
+/// On null return, all resources are cleaned up internally.
+fn locateSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8) !?LocateResult {
 	if (extractFileAndTree(allocator, file_path)) |result| {
-		source = result.source;
-		tree = result.tree;
-
 		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch null;
 		if (match) |sym_match| {
-			line = @intCast(sym_match.start_line - 1);
-			col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+			return .{
+				.source = result.source,
+				.tree = result.tree,
+				.line = @intCast(sym_match.start_line - 1),
+				.col = findNameCol(result.source, sym_match.start_byte, sym_match.name),
+			};
 		} else {
 			// Symbol not in tree-sitter tree — fall back to text search (e.g. local variables)
 			const pos = findPatternPosition(result.source, pattern) orelse {
-				try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
-				return;
+				var t = result.tree;
+				t.deinit(allocator);
+				allocator.free(result.source);
+				return null;
 			};
-			line = pos.line;
-			col = pos.col;
+			return .{ .source = result.source, .tree = result.tree, .line = pos.line, .col = pos.col };
 		}
 	} else |err| {
 		if (err != error.UnsupportedFileType) return err;
-		source = try readFileContents(allocator, file_path);
+		const source = try readFileContents(allocator, file_path);
 		const pos = findPatternPosition(source, pattern) orelse {
-			try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
 			allocator.free(source);
-			return;
+			return null;
 		};
-		line = pos.line;
-		col = pos.col;
+		return .{ .source = source, .tree = null, .line = pos.line, .col = pos.col };
 	}
+}
+
+fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, root_path: []const u8, lsp_overrides: []const config.LspOverride, writer: *std.Io.Writer) !void {
+	const loc = try locateSymbol(allocator, file_path, pattern) orelse {
+		try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
+		return;
+	};
+	const source = loc.source;
+	var tree = loc.tree;
+	const line = loc.line;
+	const col = loc.col;
 	defer allocator.free(source);
 	defer if (tree) |*t| t.deinit(allocator);
 
@@ -2005,12 +2013,14 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 		return;
 	};
 
-	// Resolve absolute path and root URI
+	// Resolve absolute path and root URI (use project root, not file parent)
 	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
 	defer allocator.free(abs_path);
 
-	const root_dir = std.fs.path.dirname(abs_path) orelse "/";
-	const root_uri = try lsp.pathToUri(allocator, root_dir);
+	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch try allocator.dupe(u8, std.fs.path.dirname(abs_path) orelse "/");
+	defer allocator.free(abs_root);
+
+	const root_uri = try lsp.pathToUri(allocator, abs_root);
 	defer allocator.free(root_uri);
 
 	const file_uri = try lsp.pathToUri(allocator, abs_path);
@@ -2034,7 +2044,7 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 		return;
 	};
 	defer {
-		for (locations) |loc| allocator.free(loc.uri);
+		for (locations) |l| allocator.free(l.uri);
 		allocator.free(locations);
 	}
 
@@ -2051,8 +2061,8 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 		hash_cache.deinit();
 	}
 
-	for (locations) |loc| {
-		const path = lsp.uriToPath(loc.uri) orelse continue;
+	for (locations) |ref| {
+		const path = lsp.uriToPath(ref.uri) orelse continue;
 		if (hash_cache.contains(path)) continue;
 		const ref_source = readFileContents(allocator, path) catch continue;
 		defer allocator.free(ref_source);
@@ -2062,32 +2072,32 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 
 	if (out_fmt == .json) {
 		try writer.writeAll("[");
-		for (locations, 0..) |loc, i| {
+		for (locations, 0..) |ref, i| {
 			if (i > 0) try writer.writeAll(",");
-			const path = lsp.uriToPath(loc.uri) orelse loc.uri;
-			const line_1 = loc.start_line + 1;
+			const path = lsp.uriToPath(ref.uri) orelse ref.uri;
+			const line_1 = ref.start_line + 1;
 			const hash_str = getHashForLine(hash_cache, path, line_1);
 			if (hash_str) |h| {
 				try writer.print("{{\"file\":\"{s}\",\"line\":{d},\"hash\":\"{s}\",\"col\":{d}}}", .{
-					path, line_1, h, loc.start_col,
+					path, line_1, h, ref.start_col,
 				});
 			} else {
 				try writer.print("{{\"file\":\"{s}\",\"line\":{d},\"col\":{d}}}", .{
-					path, line_1, loc.start_col,
+					path, line_1, ref.start_col,
 				});
 			}
 		}
 		try writer.writeAll("]\n");
 	} else {
 		try writer.print("References to '{s}' ({d} found):\n", .{ pattern, locations.len });
-		for (locations) |loc| {
-			const path = lsp.uriToPath(loc.uri) orelse loc.uri;
-			const line_1 = loc.start_line + 1;
+		for (locations) |ref| {
+			const path = lsp.uriToPath(ref.uri) orelse ref.uri;
+			const line_1 = ref.start_line + 1;
 			const hash_str = getHashForLine(hash_cache, path, line_1);
 			if (hash_str) |h| {
-				try writer.print("  {s}:{d}:{s}:{d}\n", .{ path, line_1, h, loc.start_col });
+				try writer.print("  {s}:{d}:{s}:{d}\n", .{ path, line_1, h, ref.start_col });
 			} else {
-				try writer.print("  {s}:{d}:{d}\n", .{ path, line_1, loc.start_col });
+				try writer.print("  {s}:{d}:{d}\n", .{ path, line_1, ref.start_col });
 			}
 		}
 	}
@@ -2114,40 +2124,14 @@ fn runRename(
 	lsp_overrides: []const config.LspOverride,
 	writer: *std.Io.Writer,
 ) !void {
-	// Find symbol position — try tree-sitter first, fall back to text search
-	var source: []u8 = undefined;
-	var tree: ?symbol_tree.SymbolTree = null;
-	var line: u32 = undefined;
-	var col: u32 = undefined;
-
-	if (extractFileAndTree(allocator, file_path)) |result| {
-		source = result.source;
-		tree = result.tree;
-
-		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch null;
-		if (match) |sym_match| {
-			line = @intCast(sym_match.start_line - 1);
-			col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
-		} else {
-			// Symbol not in tree-sitter tree — fall back to text search (e.g. local variables)
-			const pos = findPatternPosition(result.source, pattern) orelse {
-				try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
-				return;
-			};
-			line = pos.line;
-			col = pos.col;
-		}
-	} else |err| {
-		if (err != error.UnsupportedFileType) return err;
-		source = try readFileContents(allocator, file_path);
-		const pos = findPatternPosition(source, pattern) orelse {
-			try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
-			allocator.free(source);
-			return;
-		};
-		line = pos.line;
-		col = pos.col;
-	}
+	const loc = try locateSymbol(allocator, file_path, pattern) orelse {
+		try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
+		return;
+	};
+	const source = loc.source;
+	var tree = loc.tree;
+	const line = loc.line;
+	const col = loc.col;
 	defer allocator.free(source);
 	defer if (tree) |*t| t.deinit(allocator);
 
@@ -2158,12 +2142,14 @@ fn runRename(
 		return;
 	};
 
-	// Resolve absolute path and root URI
+	// Resolve absolute path and root URI (use project root, not file parent)
 	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
 	defer allocator.free(abs_path);
 
-	const root_dir = std.fs.path.dirname(abs_path) orelse "/";
-	const root_uri = try lsp.pathToUri(allocator, root_dir);
+	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch try allocator.dupe(u8, std.fs.path.dirname(abs_path) orelse "/");
+	defer allocator.free(abs_root);
+
+	const root_uri = try lsp.pathToUri(allocator, abs_root);
 	defer allocator.free(root_uri);
 
 	const file_uri = try lsp.pathToUri(allocator, abs_path);
@@ -2771,10 +2757,12 @@ fn listContains(list: []const []const u8, value: []const u8) bool {
 	return false;
 }
 
-test "replace-lines rejects stale hashlines after file edit" {
+test "chain hash cascade detects stale content after edits" {
 	const allocator = std.testing.allocator;
 
-	// --- Setup: create a temp file with known content ---
+	// Validates the hash cascade that runReplaceLines relies on for staleness
+	// detection. When a line changes, all subsequent chain hashes must differ,
+	// causing runReplaceLines to reject the edit with a "stale hashlines" error.
 	const original_content = "fn foo() void {\n    return 42;\n}\n";
 
 	var tmp_dir = std.testing.tmpDir(.{});
@@ -2816,9 +2804,6 @@ test "replace-lines rejects stale hashlines after file edit" {
 
 	// Line 3 content unchanged but chain input differs — hash must differ (cascade)
 	try std.testing.expect(!std.mem.eql(u8, &to_hash, &new_hashes[2]));
-
-	// This is exactly the check runReplaceLines performs:
-	// it would reject the edit because to_hash no longer matches new_hashes[2]
 }
 
 test "parseHashlineRef round-trips with computed hashes" {

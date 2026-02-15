@@ -648,21 +648,107 @@ fn writeJsonStr(writer: *std.Io.Writer, s: []const u8) !void {
 	}
 }
 
-/// Convert a file system path to a file:// URI.
+/// Convert a file system path to a file:// URI with percent-encoding.
+/// Encodes spaces and other special characters per RFC 3986.
 pub fn pathToUri(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 	const prefix = "file://";
-	const uri = try allocator.alloc(u8, prefix.len + path.len);
+	// Count how many bytes we need (each special char becomes %XX = 3 bytes)
+	var encoded_len: usize = prefix.len;
+	for (path) |c| {
+		encoded_len += if (needsPercentEncoding(c)) @as(usize, 3) else 1;
+	}
+	const uri = try allocator.alloc(u8, encoded_len);
 	@memcpy(uri[0..prefix.len], prefix);
-	@memcpy(uri[prefix.len..], path);
+	var pos: usize = prefix.len;
+	for (path) |c| {
+		if (needsPercentEncoding(c)) {
+			uri[pos] = '%';
+			uri[pos + 1] = hexDigit(@truncate(c >> 4));
+			uri[pos + 2] = hexDigit(@truncate(c & 0x0f));
+			pos += 3;
+		} else {
+			uri[pos] = c;
+			pos += 1;
+		}
+	}
 	return uri;
 }
 
-/// Extract file path from a file:// URI.
+/// Extract file path from a file:// URI, decoding percent-encoded characters.
+/// Returns an allocated copy (caller must free) or null if not a file:// URI.
+pub fn uriToPathAlloc(allocator: std.mem.Allocator, uri: []const u8) !?[]u8 {
+	const prefix = "file://";
+	if (!std.mem.startsWith(u8, uri, prefix)) return null;
+	const encoded = uri[prefix.len..];
+	// Count decoded length
+	var decoded_len: usize = 0;
+	var i: usize = 0;
+	while (i < encoded.len) {
+		if (encoded[i] == '%' and i + 2 < encoded.len) {
+			i += 3;
+		} else {
+			i += 1;
+		}
+		decoded_len += 1;
+	}
+	const path = try allocator.alloc(u8, decoded_len);
+	i = 0;
+	var out: usize = 0;
+	while (i < encoded.len) {
+		if (encoded[i] == '%' and i + 2 < encoded.len) {
+			const hi = parseHexDigit(encoded[i + 1]) orelse {
+				path[out] = encoded[i];
+				i += 1;
+				out += 1;
+				continue;
+			};
+			const lo = parseHexDigit(encoded[i + 2]) orelse {
+				path[out] = encoded[i];
+				i += 1;
+				out += 1;
+				continue;
+			};
+			path[out] = (@as(u8, hi) << 4) | lo;
+			i += 3;
+		} else {
+			path[out] = encoded[i];
+			i += 1;
+		}
+		out += 1;
+	}
+	return path[0..out];
+}
+
+/// Extract file path from a file:// URI (zero-copy, no decoding).
+/// For URIs without percent-encoded characters, returns a slice into the URI.
+/// For URIs with percent-encoding, use uriToPathAlloc instead.
 pub fn uriToPath(uri: []const u8) ?[]const u8 {
 	const prefix = "file://";
 	if (std.mem.startsWith(u8, uri, prefix)) {
 		return uri[prefix.len..];
 	}
+	return null;
+}
+
+fn needsPercentEncoding(c: u8) bool {
+	// RFC 3986 unreserved characters: ALPHA / DIGIT / "-" / "." / "_" / "~"
+	// Plus "/" which is a path separator and should not be encoded
+	if (std.ascii.isAlphanumeric(c)) return false;
+	return switch (c) {
+		'-', '.', '_', '~', '/', ':', '@', '!' => false,
+		else => true,
+	};
+}
+
+fn hexDigit(v: u4) u8 {
+	const w: u8 = v;
+	return if (w < 10) '0' + w else 'A' + w - 10;
+}
+
+fn parseHexDigit(c: u8) ?u4 {
+	if (c >= '0' and c <= '9') return @intCast(c - '0');
+	if (c >= 'A' and c <= 'F') return @intCast(c - 'A' + 10);
+	if (c >= 'a' and c <= 'f') return @intCast(c - 'a' + 10);
 	return null;
 }
 
@@ -712,11 +798,31 @@ test "pathToUri" {
 	try std.testing.expectEqualStrings("file:///home/user/project", uri);
 }
 
+test "pathToUri encodes special characters" {
+	const uri = try pathToUri(std.testing.allocator, "/home/my user/project dir");
+	defer std.testing.allocator.free(uri);
+	try std.testing.expectEqualStrings("file:///home/my%20user/project%20dir", uri);
+}
+
 test "uriToPath" {
 	const path = uriToPath("file:///home/user/project").?;
 	try std.testing.expectEqualStrings("/home/user/project", path);
 
 	try std.testing.expect(uriToPath("https://example.com") == null);
+}
+
+test "uriToPathAlloc decodes percent-encoded characters" {
+	const path = (try uriToPathAlloc(std.testing.allocator, "file:///home/my%20user/project%20dir")).?;
+	defer std.testing.allocator.free(path);
+	try std.testing.expectEqualStrings("/home/my user/project dir", path);
+
+	// Non-file URIs return null
+	try std.testing.expect(try uriToPathAlloc(std.testing.allocator, "https://example.com") == null);
+
+	// No encoding needed — round-trips correctly
+	const plain = (try uriToPathAlloc(std.testing.allocator, "file:///home/user/project")).?;
+	defer std.testing.allocator.free(plain);
+	try std.testing.expectEqualStrings("/home/user/project", plain);
 }
 
 test "languageId" {

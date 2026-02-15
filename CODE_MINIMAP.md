@@ -3,8 +3,6 @@
 - AGENTS.md: project-specific agent instructions
 - PLAN.md: task checklist (includes semantic editing phases)
 - SEMANTIC_EDITING_PLAN.md: full architecture plan for symbol-level editing, hashlines, and LSP integration
-- PROJECT_PLAN.md: high-level milestones and objective
-- PROJECT_OVERVIEW.md: project goals and terminology
 - RULES.md: non-negotiable project rules
 - CODE_MINIMAP.md: overview of important files and their purpose
 - .gitignore: ignored paths for build outputs and local indexes

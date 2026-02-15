@@ -392,7 +392,9 @@ test "FsWatch wait detects file creation" {
 	const result = try w.wait(5000);
 	handle.join();
 
-	// On macOS with FSEvents this should detect the change.
-	// On polling backend it will always timeout, so we accept both.
-	_ = result;
+	// On platforms with a real file-system watcher (macOS FSEvents, Linux fanotify)
+	// the change must be detected. Only the polling fallback may timeout.
+	if (FsWatch.Backend != PollingBackend) {
+		try std.testing.expectEqual(FsWatch.WaitResult.changed, result);
+	}
 }

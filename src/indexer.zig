@@ -233,11 +233,12 @@ pub fn indexIncremental(
 		allocator.free(indexed);
 	}
 
-	// Build lookup map of previously indexed files
-	var indexed_map = std.StringHashMap(i64).init(allocator);
+	// Build lookup map of previously indexed files (mtime + size for change detection)
+	const MtimeAndSize = struct { mtime: i64, size: i64 };
+	var indexed_map = std.StringHashMap(MtimeAndSize).init(allocator);
 	defer indexed_map.deinit();
 	for (indexed) |item| {
-		try indexed_map.put(item.file_path, item.mtime_ns);
+		try indexed_map.put(item.file_path, .{ .mtime = item.mtime_ns, .size = item.size });
 	}
 
 	// Build set of current files for deletion detection
@@ -311,9 +312,9 @@ pub fn indexIncremental(
 		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
 		const current_size: i64 = @intCast(size);
 
-		// Check if file is unchanged
-		if (indexed_map.get(rel_path)) |prev_mtime| {
-			if (prev_mtime == current_mtime) {
+		// Check if file is unchanged (both mtime and size must match to catch same-second edits)
+		if (indexed_map.get(rel_path)) |prev| {
+			if (prev.mtime == current_mtime and prev.size == current_size) {
 				stats.unchanged_files += 1;
 				continue;
 			}

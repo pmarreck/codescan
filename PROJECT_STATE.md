@@ -3,6 +3,14 @@
 ## What this repo is
 `codescan` is a Zig CLI + HTTP server for semantic code search. It indexes function-like symbols via language plugins, stores embeddings in sqlite-vec, and supports vector/lexical/hybrid search. Defaults target Ollama `bge-large` on `http://localhost:11434` (override model via `OLLAMA_MODEL`).
 
+## Terminology
+- **Type**: high-level content kind (`code`, `doc`, `text`, `log`).
+- **Language**: plugin language id (e.g., `zig`, `elixir`, `c`).
+- **Extension**: file suffix filter (e.g., `zig`, `md`).
+- **Primary language**: most common code extension in the repo; used as default search scope.
+- **Docs**: markdown + README (README with or without extension).
+- **Comments**: doc comments extracted by language plugins (searchable via comment-only mode).
+
 ## Build + test
 - Build: `nix develop -c zig build`
 - Unit tests: `./test`

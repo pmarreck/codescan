@@ -296,7 +296,7 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 
 	if (obj.get("mode")) |mode| {
 		if (mode != .string) return error.InvalidMode;
-		req.mode = try parseMode(mode.string);
+		req.mode = try search.SearchMode.parse(mode.string);
 	}
 
 	if (obj.get("weight_vector")) |weight| {
@@ -384,13 +384,6 @@ pub fn parseIndexRequest(allocator: std.mem.Allocator, body: []const u8) !IndexR
 		req.include_node_modules = flag.bool;
 	}
 	return req;
-}
-
-fn parseMode(value: []const u8) !search.SearchMode {
-	if (std.mem.eql(u8, value, "vector")) return .vector;
-	if (std.mem.eql(u8, value, "lexical")) return .lexical;
-	if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
-	return error.InvalidMode;
 }
 
 fn parseWeight(value: std.json.Value) !f32 {

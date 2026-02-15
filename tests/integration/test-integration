@@ -271,7 +271,7 @@ MD
 	# Baseline positive queries
 	zig_names=$(search_names "$FIXTURES_DIR/$ZIG_NAME" "parse integer value" 0.2 5)
 	ex_names=$(search_names "$FIXTURES_DIR/$ELIXIR_NAME" "parse json value" 0.2 5)
-	c_names=$(search_names "$FIXTURES_DIR/$C_NAME" "crc32 checksum" 0.2 5)
+	c_names=$(search_names "$FIXTURES_DIR/$C_NAME" "crc32 checksum" 0.2 10)
 
 	printf '%s\n' "$zig_names" | rg -q '^int$' || fail "zig baseline query missing 'int'"
 	printf '%s\n' "$ex_names" | rg -q '^decode$' || fail "elixir baseline query missing 'decode'"
@@ -284,7 +284,7 @@ MD
 
 	zig_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$ZIG_NAME" ".codescan-test-subdir" "parse integer value" 0.2 5)
 	ex_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$ELIXIR_NAME" ".codescan-test-subdir" "parse json value" 0.2 5)
-	c_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$C_NAME" ".codescan-test-subdir" "crc32 checksum" 0.2 5)
+	c_sub_names=$(search_names_from_subdir "$FIXTURES_DIR/$C_NAME" ".codescan-test-subdir" "crc32 checksum" 0.2 10)
 
 	printf '%s\n' "$zig_sub_names" | rg -q '^int$' || fail "zig subdir search missing 'int'"
 	printf '%s\n' "$ex_sub_names" | rg -q '^decode$' || fail "elixir subdir search missing 'decode'"

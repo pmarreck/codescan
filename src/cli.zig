@@ -443,7 +443,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--mode")) {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
-			parsed.search_mode = try parseMode(args[i]);
+			parsed.search_mode = try search.SearchMode.parse(args[i]);
 			parsed.seen.search_mode = true;
 			i += 1;
 			continue;
@@ -605,13 +605,6 @@ fn joinArgs(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
 		}
 	}
 	return buf;
-}
-
-fn parseMode(value: []const u8) !search.SearchMode {
-	if (std.mem.eql(u8, value, "vector")) return .vector;
-	if (std.mem.eql(u8, value, "lexical")) return .lexical;
-	if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
-	return error.InvalidMode;
 }
 
 test "parse with no args requires query" {

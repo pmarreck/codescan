@@ -10,6 +10,13 @@ pub const SearchMode = enum {
 	vector,
 	lexical,
 	hybrid,
+
+	pub fn parse(value: []const u8) !SearchMode {
+		if (std.mem.eql(u8, value, "vector")) return .vector;
+		if (std.mem.eql(u8, value, "lexical")) return .lexical;
+		if (std.mem.eql(u8, value, "hybrid")) return .hybrid;
+		return error.InvalidMode;
+	}
 };
 
 pub const Options = struct {
@@ -91,10 +98,23 @@ pub fn search(
 		allocator.free(vector_results);
 
 		if (options.mode == .hybrid) {
+			// Build seen-set from vector results for O(1) dedup lookups.
+			var seen = std.AutoHashMap(i64, void).init(allocator);
+			defer seen.deinit();
+			for (results.items) |res| {
+				try seen.put(res.id, {});
+			}
+
 			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only);
 			defer allocator.free(lexical);
 			for (lexical) |res| {
-				try appendUnique(allocator, &results, res);
+				if (seen.contains(res.id)) {
+					var tmp = res;
+					tmp.deinit(allocator);
+				} else {
+					try seen.put(res.id, {});
+					try results.append(allocator, res);
+				}
 			}
 		}
 	}
@@ -136,8 +156,23 @@ pub fn search(
 	}
 
 	const query_trimmed = std.mem.trim(u8, query, " \t\r\n");
+
+	// Pre-tokenize the query once rather than re-tokenizing per result.
+	var token_buf: [64][]const u8 = undefined;
+	var query_token_count: usize = 0;
+	{
+		var tokenizer = std.mem.tokenizeAny(u8, query, " \t\r\n");
+		while (tokenizer.next()) |tok| {
+			if (query_token_count < token_buf.len) {
+				token_buf[query_token_count] = tok;
+				query_token_count += 1;
+			}
+		}
+	}
+	const query_tokens = token_buf[0..query_token_count];
+
 	for (results.items) |*res| {
-		const lexical = try lexicalScore(allocator, query, res.symbol, options.comments_only);
+		const lexical = try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
 		res.lexical = lexical;
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
 		if (options.mode == .vector) {
@@ -208,21 +243,6 @@ pub fn freeResults(allocator: std.mem.Allocator, results: []Result) void {
 
 fn sortByScoreDesc(_: void, a: Result, b: Result) bool {
 	return a.score > b.score;
-}
-
-fn appendUnique(
-	allocator: std.mem.Allocator,
-	results: *std.ArrayListUnmanaged(Result),
-	res: Result,
-) !void {
-	for (results.items) |*existing| {
-		if (existing.id == res.id) {
-			var tmp = res;
-			tmp.deinit(allocator);
-			return;
-		}
-	}
-	try results.append(allocator, res);
 }
 
 fn matchesFilters(symbol: model.Symbol, options: Options) bool {
@@ -701,18 +721,14 @@ fn toLowerDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 	return result;
 }
 
-fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
-	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
-	var token_count: usize = 0;
+fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, query_trimmed: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
 	var weighted_score: f32 = 0;
 
 	// Weight matches by where the query term appears:
 	//   name match    → 1.0  (this symbol IS the thing)
 	//   doc comment   → 0.5  (described in docs)
 	//   signature only → 0.3 (just referenced/called in body)
-	while (tokens.next()) |tok| {
-		token_count += 1;
-
+	for (query_tokens) |tok| {
 		const in_doc = if (symbol.doc_comment) |doc| std.ascii.indexOfIgnoreCase(doc, tok) != null else false;
 		if (comments_only) {
 			if (in_doc) weighted_score += 1.0;
@@ -734,27 +750,24 @@ fn lexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.S
 		}
 	}
 
-	if (token_count == 0) return 0;
-	var base_score = weighted_score / @as(f32, @floatFromInt(token_count));
+	if (query_tokens.len == 0) return 0;
+	var base_score = weighted_score / @as(f32, @floatFromInt(query_tokens.len));
 
 	// Exact-match and substring bonuses (only for non-comment-only mode)
-	if (!comments_only) {
-		const query_trimmed = std.mem.trim(u8, query, " \t\r\n");
-		if (query_trimmed.len > 0) {
-			if (std.ascii.eqlIgnoreCase(query_trimmed, symbol.name)) {
-				// Exact name match → strong boost
+	if (!comments_only and query_trimmed.len > 0) {
+		if (std.ascii.eqlIgnoreCase(query_trimmed, symbol.name)) {
+			// Exact name match → strong boost
+			base_score = @min(1.0, base_score + 0.5);
+		} else if (query_trimmed.len >= 3 and std.ascii.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
+			// Full query is a substring of the name → moderate boost
+			base_score = @min(1.0, base_score + 0.2);
+		} else {
+			// Try cross-case exact/substring match for the full query
+			const cross = try crossCaseQueryMatch(allocator, query_trimmed, symbol.name);
+			if (cross == .exact) {
 				base_score = @min(1.0, base_score + 0.5);
-			} else if (query_trimmed.len >= 3 and std.ascii.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
-				// Full query is a substring of the name → moderate boost
+			} else if (cross == .substring) {
 				base_score = @min(1.0, base_score + 0.2);
-			} else {
-				// Try cross-case exact/substring match for the full query
-				const cross = try crossCaseQueryMatch(allocator, query_trimmed, symbol.name);
-				if (cross == .exact) {
-					base_score = @min(1.0, base_score + 0.5);
-				} else if (cross == .substring) {
-					base_score = @min(1.0, base_score + 0.2);
-				}
 			}
 		}
 	}
@@ -912,6 +925,21 @@ fn ftsAvailable(db: storage.Db) !bool {
 	return error.SqlStepFailed;
 }
 
+/// Test helper: tokenizes a query string and calls lexicalScore.
+fn testLexicalScore(allocator: std.mem.Allocator, query: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
+	const trimmed = std.mem.trim(u8, query, " \t\r\n");
+	var buf: [64][]const u8 = undefined;
+	var count: usize = 0;
+	var tok = std.mem.tokenizeAny(u8, query, " \t\r\n");
+	while (tok.next()) |t| {
+		if (count < buf.len) {
+			buf[count] = t;
+			count += 1;
+		}
+	}
+	return lexicalScore(allocator, buf[0..count], trimmed, symbol, comments_only);
+}
+
 test "lexicalScore matches query tokens" {
 	const allocator = std.testing.allocator;
 	var symbol = model.Symbol{
@@ -926,7 +954,7 @@ test "lexicalScore matches query tokens" {
 	defer symbol.deinit(allocator);
 
 	// Both tokens match only in doc_comment (0.5 weight each) → 0.5
-	const score = try lexicalScore(allocator, "hash functions", symbol, false);
+	const score = try testLexicalScore(allocator, "hash functions", symbol, false);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.5), score, 0.0001);
 }
 
@@ -943,7 +971,7 @@ test "lexicalScore comments_only ignores name and signature" {
 	};
 	defer symbol.deinit(allocator);
 
-	const score = try lexicalScore(allocator, "checksum", symbol, true);
+	const score = try testLexicalScore(allocator, "checksum", symbol, true);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.0), score, 0.0001);
 }
 
@@ -1443,8 +1471,8 @@ test "exact symbol name match scores higher than partial match" {
 	};
 	defer sym_partial.deinit(allocator);
 
-	const score_exact = try lexicalScore(allocator, "insertSymbol", sym_exact, false);
-	const score_partial = try lexicalScore(allocator, "insertSymbol", sym_partial, false);
+	const score_exact = try testLexicalScore(allocator, "insertSymbol", sym_exact, false);
+	const score_partial = try testLexicalScore(allocator, "insertSymbol", sym_partial, false);
 
 	// Exact name match should score higher than partial (both have "Symbol" in name)
 	try std.testing.expect(score_exact > score_partial);
@@ -1476,8 +1504,8 @@ test "lexicalScore name substring bonus for contained query" {
 	};
 	defer sym_no_match.deinit(allocator);
 
-	const score_contains = try lexicalScore(allocator, "Insert", sym_contains, false);
-	const score_none = try lexicalScore(allocator, "Insert", sym_no_match, false);
+	const score_contains = try testLexicalScore(allocator, "Insert", sym_contains, false);
+	const score_none = try testLexicalScore(allocator, "Insert", sym_no_match, false);
 
 	// Name containing the full query should get substring bonus
 	try std.testing.expect(score_contains > score_none);
@@ -1575,7 +1603,7 @@ test "lexicalScore cross-case matching camelCase query vs snake_case name" {
 	};
 	defer symbol.deinit(allocator);
 
-	const score = try lexicalScore(allocator, "nameRelevance", symbol, false);
+	const score = try testLexicalScore(allocator, "nameRelevance", symbol, false);
 	// Should get a positive score via cross-case matching
 	try std.testing.expect(score > 0.0);
 }
@@ -1593,7 +1621,7 @@ test "lexicalScore cross-case matching snake_case query vs camelCase name" {
 	};
 	defer symbol.deinit(allocator);
 
-	const score = try lexicalScore(allocator, "name_relevance", symbol, false);
+	const score = try testLexicalScore(allocator, "name_relevance", symbol, false);
 	// Should get a positive score via cross-case matching
 	try std.testing.expect(score > 0.0);
 }
