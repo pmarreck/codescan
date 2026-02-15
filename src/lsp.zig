@@ -167,6 +167,13 @@ pub fn serverForExtension(ext: []const u8) ?ServerInfo {
 				.install_url = "https://github.com/erlang-ls/erlang_ls",
 			},
 			.{
+				.extensions = &.{ ".ll" },
+				.binary = "llvm-lsp",
+				.args = &empty_args,
+				.install_hint = "nix build github:pmarreck/llvm-lsp",
+				.install_url = "https://github.com/pmarreck/llvm-lsp",
+			},
+			.{
 				.extensions = &.{ ".idr" },
 				.binary = "idris2-lsp",
 				.args = &empty_args,
@@ -686,6 +693,7 @@ pub fn languageId(ext: []const u8) []const u8 {
 	if (std.mem.eql(u8, ext, ".s") or std.mem.eql(u8, ext, ".S") or
 		std.mem.eql(u8, ext, ".asm")) return "asm";
 	if (std.mem.eql(u8, ext, ".erl") or std.mem.eql(u8, ext, ".hrl")) return "erlang";
+	if (std.mem.eql(u8, ext, ".ll")) return "llvm";
 	if (std.mem.eql(u8, ext, ".idr")) return "idris";
 	return "plaintext";
 }
@@ -721,6 +729,7 @@ test "languageId" {
 	try std.testing.expectEqualStrings("lean4", languageId(".lean"));
 	try std.testing.expectEqualStrings("asm", languageId(".s"));
 	try std.testing.expectEqualStrings("erlang", languageId(".erl"));
+	try std.testing.expectEqualStrings("llvm", languageId(".ll"));
 	try std.testing.expectEqualStrings("idris", languageId(".idr"));
 	try std.testing.expectEqualStrings("plaintext", languageId(".xyz"));
 }
@@ -758,6 +767,9 @@ test "serverForExtension" {
 
 	const erl_server = serverForExtension(".erl").?;
 	try std.testing.expectEqualStrings("erlang_ls", erl_server.binary);
+
+	const ll_server = serverForExtension(".ll").?;
+	try std.testing.expectEqualStrings("llvm-lsp", ll_server.binary);
 
 	const idr_server = serverForExtension(".idr").?;
 	try std.testing.expectEqualStrings("idris2-lsp", idr_server.binary);

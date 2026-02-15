@@ -1510,6 +1510,23 @@ fn findNameCol(source: []const u8, line_start_byte: usize, name: []const u8) u32
 	return @intCast(col);
 }
 
+/// Fallback symbol finder for files without tree-sitter support (e.g. .ll).
+/// Searches source text for the pattern and returns 0-based line and column.
+fn findPatternPosition(source: []const u8, pattern: []const u8) ?struct { line: u32, col: u32 } {
+	const pos = std.mem.indexOf(u8, source, pattern) orelse return null;
+	// Count newlines before pos to get line number
+	var line: u32 = 0;
+	var last_newline: usize = 0;
+	for (source[0..pos], 0..) |c, i| {
+		if (c == '\n') {
+			line += 1;
+			last_newline = i + 1;
+		}
+	}
+	const col: u32 = @intCast(pos - last_newline);
+	return .{ .line = line, .col = col };
+}
+
 fn findFirstMatch(
 	allocator: std.mem.Allocator,
 	symbols: []const symbol_tree.SymbolNode,
@@ -1942,25 +1959,40 @@ fn printLspNotFound(writer: *std.Io.Writer, ext: []const u8, server_info: lsp.Se
 }
 
 fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, lsp_overrides: []const config.LspOverride, writer: *std.Io.Writer) !void {
-	// First, find the symbol position using tree-sitter
-	var result = extractFileAndTree(allocator, file_path) catch |err| {
-		if (err == error.UnsupportedFileType) {
-			try writer.print("error: unsupported file type for '{s}'\n", .{file_path});
-			return;
-		}
-		return err;
-	};
-	defer allocator.free(result.source);
-	defer result.tree.deinit(allocator);
+	// Find symbol position — try tree-sitter first, fall back to text search
+	var source: []u8 = undefined;
+	var tree: ?symbol_tree.SymbolTree = null;
+	var line: u32 = undefined;
+	var col: u32 = undefined;
 
-	const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
-		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-		return;
-	};
-	const sym_match = match orelse {
-		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-		return;
-	};
+	if (extractFileAndTree(allocator, file_path)) |result| {
+		source = result.source;
+		tree = result.tree;
+
+		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
+			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+			return;
+		};
+		const sym_match = match orelse {
+			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+			return;
+		};
+		line = @intCast(sym_match.start_line - 1);
+		col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+	} else |err| {
+		if (err != error.UnsupportedFileType) return err;
+		// Fallback: read source and do plain text search for the pattern
+		source = try readFileContents(allocator, file_path);
+		const pos = findPatternPosition(source, pattern) orelse {
+			try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
+			allocator.free(source);
+			return;
+		};
+		line = pos.line;
+		col = pos.col;
+	}
+	defer allocator.free(source);
+	defer if (tree) |*t| t.deinit(allocator);
 
 	// Determine the language server binary
 	const ext = std.fs.path.extension(file_path);
@@ -1988,15 +2020,10 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 	defer client.deinit();
 
 	const lang_id = lsp.languageId(ext);
-	client.didOpen(file_uri, lang_id, result.source) catch {
+	client.didOpen(file_uri, lang_id, source) catch {
 		try writer.print("error: failed to send didOpen to language server\n", .{});
 		return;
 	};
-
-	// LSP uses 0-based line/col; we must point at the symbol name, not col 0
-	// LSP uses 0-based line/col; start_line is 1-indexed so subtract 1
-	const line: u32 = @intCast(sym_match.start_line - 1);
-	const col: u32 = findNameCol(result.source, sym_match.start_byte, sym_match.name);
 
 	const locations = client.references(file_uri, line, col) catch {
 		try writer.print("error: references request failed\n", .{});
@@ -2023,9 +2050,9 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 	for (locations) |loc| {
 		const path = lsp.uriToPath(loc.uri) orelse continue;
 		if (hash_cache.contains(path)) continue;
-		const source = readFileContents(allocator, path) catch continue;
-		defer allocator.free(source);
-		const hashes = hashline.computeSourceHashes(allocator, source) catch continue;
+		const ref_source = readFileContents(allocator, path) catch continue;
+		defer allocator.free(ref_source);
+		const hashes = hashline.computeSourceHashes(allocator, ref_source) catch continue;
 		hash_cache.put(path, hashes) catch continue;
 	}
 
@@ -2083,25 +2110,40 @@ fn runRename(
 	lsp_overrides: []const config.LspOverride,
 	writer: *std.Io.Writer,
 ) !void {
-	// First, find the symbol position using tree-sitter
-	var result = extractFileAndTree(allocator, file_path) catch |err| {
-		if (err == error.UnsupportedFileType) {
-			try writer.print("error: unsupported file type for '{s}'\n", .{file_path});
-			return;
-		}
-		return err;
-	};
-	defer allocator.free(result.source);
-	defer result.tree.deinit(allocator);
+	// Find symbol position — try tree-sitter first, fall back to text search
+	var source: []u8 = undefined;
+	var tree: ?symbol_tree.SymbolTree = null;
+	var line: u32 = undefined;
+	var col: u32 = undefined;
 
-	const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
-		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-		return;
-	};
-	const sym_match = match orelse {
-		try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-		return;
-	};
+	if (extractFileAndTree(allocator, file_path)) |result| {
+		source = result.source;
+		tree = result.tree;
+
+		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
+			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+			return;
+		};
+		const sym_match = match orelse {
+			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
+			return;
+		};
+		line = @intCast(sym_match.start_line - 1);
+		col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+	} else |err| {
+		if (err != error.UnsupportedFileType) return err;
+		// Fallback: read source and do plain text search for the pattern
+		source = try readFileContents(allocator, file_path);
+		const pos = findPatternPosition(source, pattern) orelse {
+			try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
+			allocator.free(source);
+			return;
+		};
+		line = pos.line;
+		col = pos.col;
+	}
+	defer allocator.free(source);
+	defer if (tree) |*t| t.deinit(allocator);
 
 	// Determine the language server binary
 	const ext = std.fs.path.extension(file_path);
@@ -2129,15 +2171,10 @@ fn runRename(
 	defer client.deinit();
 
 	const lang_id = lsp.languageId(ext);
-	client.didOpen(file_uri, lang_id, result.source) catch {
+	client.didOpen(file_uri, lang_id, source) catch {
 		try writer.print("error: failed to send didOpen to language server\n", .{});
 		return;
 	};
-
-	// LSP uses 0-based line/col; we must point at the symbol name, not col 0
-	// LSP uses 0-based line/col; start_line is 1-indexed so subtract 1
-	const line: u32 = @intCast(sym_match.start_line - 1);
-	const col: u32 = findNameCol(result.source, sym_match.start_byte, sym_match.name);
 
 	const workspace_edit = client.rename(file_uri, line, col, new_name) catch {
 		try writer.print("error: rename request failed\n", .{});
@@ -2822,4 +2859,33 @@ test "findNameCol locates symbol name column in source" {
 	// Test fallback when name not found on line — should return 0
 	const col3 = findNameCol(source, 0, "nonexistent");
 	try std.testing.expectEqual(@as(u32, 0), col3);
+}
+
+test "findPatternPosition locates text in source" {
+	const source =
+		\\source_filename = "test.c"
+		\\
+		\\define i32 @main() {
+		\\entry:
+		\\  %0 = alloca i32
+		\\  ret i32 0
+		\\}
+	;
+	// @main is on line 2, col 11 ("define i32 " = 11 chars)
+	const pos1 = findPatternPosition(source, "@main").?;
+	try std.testing.expectEqual(@as(u32, 2), pos1.line);
+	try std.testing.expectEqual(@as(u32, 11), pos1.col);
+
+	// %0 is on line 4, col 2
+	const pos2 = findPatternPosition(source, "%0").?;
+	try std.testing.expectEqual(@as(u32, 4), pos2.line);
+	try std.testing.expectEqual(@as(u32, 2), pos2.col);
+
+	// entry is on line 3, col 0
+	const pos3 = findPatternPosition(source, "entry").?;
+	try std.testing.expectEqual(@as(u32, 3), pos3.line);
+	try std.testing.expectEqual(@as(u32, 0), pos3.col);
+
+	// Not found
+	try std.testing.expect(findPatternPosition(source, "@nonexistent") == null);
 }
