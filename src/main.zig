@@ -1482,8 +1482,7 @@ fn extractFileAndTree(allocator: std.mem.Allocator, file_path: []const u8) !stru
 	}
 
 	if (!tree_valid) {
-		allocator.free(source);
-		return error.UnsupportedFileType;
+		return error.UnsupportedFileType; // errdefer frees source
 	}
 
 	return .{ .source = source, .tree = tree };
