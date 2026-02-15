@@ -2481,9 +2481,10 @@ const usage =
 	\\
 	\\Supported languages:
 	\\  Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir,
-	\\    Bash, Lua, Nix, Nim, Lean, Idris, Haskell
-	\\  LSP (references, rename): all of the above plus Go, Clojure, Ruby,
-	\\    OCaml, Swift, Assembly, Erlang
+	\\    Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang,
+	\\    OCaml, Swift
+	\\  LSP (references, rename): all of the above plus Clojure, Assembly,
+	\\    LLVM IR
 	\\  Indexing/search: any text file (Markdown, logs, plain text, etc.)
 	\\
 	\\LSP commands (references, rename):

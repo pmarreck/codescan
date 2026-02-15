@@ -21,6 +21,11 @@ extern fn tree_sitter_nim() *ts.TSLanguage;
 extern fn tree_sitter_lean() *ts.TSLanguage;
 extern fn tree_sitter_idris2() *ts.TSLanguage;
 extern fn tree_sitter_haskell() *ts.TSLanguage;
+extern fn tree_sitter_go() *ts.TSLanguage;
+extern fn tree_sitter_ruby() *ts.TSLanguage;
+extern fn tree_sitter_erlang() *ts.TSLanguage;
+extern fn tree_sitter_ocaml() *ts.TSLanguage;
+extern fn tree_sitter_swift() *ts.TSLanguage;
 
 // ─── Language Configurations ─────────────────────────────────────────
 
@@ -36,6 +41,11 @@ pub const Language = enum {
 	lean,
 	idris,
 	haskell,
+	go,
+	ruby,
+	erlang,
+	ocaml,
+	swift,
 
 	pub fn tsLanguage(self: Language) *ts.TSLanguage {
 		return switch (self) {
@@ -50,6 +60,11 @@ pub const Language = enum {
 			.lean => tree_sitter_lean(),
 			.idris => tree_sitter_idris2(),
 			.haskell => tree_sitter_haskell(),
+			.go => tree_sitter_go(),
+			.ruby => tree_sitter_ruby(),
+			.erlang => tree_sitter_erlang(),
+			.ocaml => tree_sitter_ocaml(),
+			.swift => tree_sitter_swift(),
 		};
 	}
 
@@ -65,6 +80,11 @@ pub const Language = enum {
 			.lean => &lean_mappings,
 			.idris => &idris_mappings,
 			.haskell => &haskell_mappings,
+			.go => &go_mappings,
+			.ruby => &ruby_mappings,
+			.erlang => &erlang_mappings,
+			.ocaml => &ocaml_mappings,
+			.swift => &swift_mappings,
 		};
 	}
 
@@ -86,6 +106,12 @@ pub const Language = enum {
 			.{ ".lean", .lean },
 			.{ ".idr", .idris },
 			.{ ".hs", .haskell },
+			.{ ".go", .go },
+			.{ ".rb", .ruby },
+			.{ ".erl", .erlang },
+			.{ ".hrl", .erlang },
+			.{ ".ml", .ocaml },
+			.{ ".swift", .swift },
 		};
 		inline for (map) |entry| {
 			if (std.mem.eql(u8, ext, entry[0])) return entry[1];
@@ -193,6 +219,45 @@ const haskell_mappings = [_]SymbolMapping{
 	.{ .node_type = "type_synomym", .kind = .type_alias, .name_field = .name },
 	.{ .node_type = "class", .kind = .class, .name_field = .name },
 	.{ .node_type = "instance", .kind = .impl_block, .name_field = .name },
+};
+
+// ── Go ──
+const go_mappings = [_]SymbolMapping{
+	.{ .node_type = "function_declaration", .kind = .function, .name_field = .name },
+	.{ .node_type = "method_declaration", .kind = .function, .name_field = .name },
+	.{ .node_type = "type_spec", .kind = .type_alias, .name_field = .name },
+};
+
+// ── Ruby ──
+const ruby_mappings = [_]SymbolMapping{
+	.{ .node_type = "method", .kind = .function, .name_field = .name },
+	.{ .node_type = "singleton_method", .kind = .function, .name_field = .name },
+	.{ .node_type = "class", .kind = .class, .name_field = .name },
+	.{ .node_type = "module", .kind = .module, .name_field = .name },
+};
+
+// ── Erlang ──
+const erlang_mappings = [_]SymbolMapping{
+	.{ .node_type = "function_clause", .kind = .function, .name_field = .name },
+	.{ .node_type = "type_alias", .kind = .type_alias, .name_field = .name },
+	.{ .node_type = "record_decl", .kind = .struct_decl, .name_field = .name },
+};
+
+// ── OCaml ──
+const ocaml_mappings = [_]SymbolMapping{
+	.{ .node_type = "let_binding", .kind = .function, .name_field = .first_identifier },
+	.{ .node_type = "type_binding", .kind = .type_alias, .name_field = .name },
+	.{ .node_type = "module_binding", .kind = .module, .name_field = .first_identifier },
+	.{ .node_type = "class_binding", .kind = .class, .name_field = .first_identifier },
+	.{ .node_type = "external", .kind = .function, .name_field = .first_identifier },
+};
+
+// ── Swift ──
+const swift_mappings = [_]SymbolMapping{
+	.{ .node_type = "function_declaration", .kind = .function, .name_field = .name },
+	.{ .node_type = "class_declaration", .kind = .class, .name_field = .name },
+	.{ .node_type = "protocol_declaration", .kind = .interface, .name_field = .name },
+	.{ .node_type = "typealias_declaration", .kind = .type_alias, .name_field = .name },
 };
 
 // ─── Extraction ──────────────────────────────────────────────────────
@@ -313,16 +378,31 @@ fn extractDeclaratorName(source: []const u8, node: ts.TSNode) ?[]const u8 {
 	return null;
 }
 
+fn isIdentifierLike(ty: []const u8) bool {
+	const ident_types = [_][]const u8{
+		"identifier",
+		"qualified_identifier",
+		"double_quoted_name",
+		// OCaml
+		"value_name",
+		"module_name",
+		"class_name",
+		// Erlang
+		"atom",
+	};
+	for (ident_types) |t| {
+		if (std.mem.eql(u8, ty, t)) return true;
+	}
+	return false;
+}
+
 fn findFirstIdentifier(source: []const u8, root: ts.TSNode) ?[]const u8 {
 	const count = ts.ts_node_child_count(root);
 	var i: u32 = 0;
 	while (i < count) : (i += 1) {
 		const child = ts.ts_node_child(root, i);
 		const ty = std.mem.span(ts.ts_node_type(child));
-		if (std.mem.eql(u8, ty, "identifier") or
-			std.mem.eql(u8, ty, "qualified_identifier") or
-			std.mem.eql(u8, ty, "double_quoted_name"))
-		{
+		if (isIdentifierLike(ty)) {
 			return nodeText(source, child);
 		}
 	}
@@ -335,10 +415,7 @@ fn findFirstIdentifier(source: []const u8, root: ts.TSNode) ?[]const u8 {
 		while (j < grandchild_count) : (j += 1) {
 			const gc = ts.ts_node_child(child, j);
 			const ty = std.mem.span(ts.ts_node_type(gc));
-			if (std.mem.eql(u8, ty, "identifier") or
-				std.mem.eql(u8, ty, "qualified_identifier") or
-				std.mem.eql(u8, ty, "double_quoted_name"))
-			{
+			if (isIdentifierLike(ty)) {
 				return nodeText(source, gc);
 			}
 		}
@@ -576,6 +653,119 @@ test "language detection from extension" {
 	try std.testing.expectEqual(Language.bash, Language.fromExtension(".sh").?);
 	try std.testing.expectEqual(Language.lua, Language.fromExtension(".lua").?);
 	try std.testing.expectEqual(Language.haskell, Language.fromExtension(".hs").?);
+	try std.testing.expectEqual(Language.go, Language.fromExtension(".go").?);
+	try std.testing.expectEqual(Language.ruby, Language.fromExtension(".rb").?);
+	try std.testing.expectEqual(Language.erlang, Language.fromExtension(".erl").?);
+	try std.testing.expectEqual(Language.erlang, Language.fromExtension(".hrl").?);
+	try std.testing.expectEqual(Language.ocaml, Language.fromExtension(".ml").?);
+	try std.testing.expectEqual(Language.swift, Language.fromExtension(".swift").?);
 	try std.testing.expect(Language.fromExtension(".zig") == null); // Zig uses native AST
 	try std.testing.expect(Language.fromExtension(".xyz") == null);
+}
+
+test "go: extracts function and type" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\package main
+		\\
+		\\func Add(a, b int) int {
+		\\    return a + b
+		\\}
+		\\
+		\\type Point struct {
+		\\    X int
+		\\    Y int
+		\\}
+	;
+	var tree = try extract(allocator, source, .go);
+	defer tree.deinit(allocator);
+
+	try std.testing.expectEqual(@as(usize, 2), tree.symbols.len);
+	try std.testing.expectEqualStrings("Add", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	try std.testing.expectEqualStrings("Point", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.type_alias, tree.symbols[1].kind);
+}
+
+test "ruby: extracts class with methods" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\class Greeter
+		\\  def greet
+		\\    puts "hello"
+		\\  end
+		\\
+		\\  def self.create
+		\\    new
+		\\  end
+		\\end
+	;
+	var tree = try extract(allocator, source, .ruby);
+	defer tree.deinit(allocator);
+
+	try std.testing.expectEqual(@as(usize, 1), tree.symbols.len);
+	try std.testing.expectEqualStrings("Greeter", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.class, tree.symbols[0].kind);
+	try std.testing.expectEqual(@as(usize, 2), tree.symbols[0].children.len);
+	try std.testing.expectEqualStrings("greet", tree.symbols[0].children[0].name);
+	try std.testing.expectEqualStrings("create", tree.symbols[0].children[1].name);
+}
+
+test "erlang: extracts function" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\-module(hello).
+		\\
+		\\greet() ->
+		\\    io:format("hello~n").
+		\\
+		\\add(A, B) ->
+		\\    A + B.
+	;
+	var tree = try extract(allocator, source, .erlang);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 2);
+	try std.testing.expectEqualStrings("greet", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	try std.testing.expectEqualStrings("add", tree.symbols[1].name);
+}
+
+test "ocaml: extracts let binding and type" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\let greet name =
+		\\  print_endline ("Hello " ^ name)
+		\\
+		\\type point = { x: int; y: int }
+	;
+	var tree = try extract(allocator, source, .ocaml);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 2);
+	try std.testing.expectEqualStrings("greet", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	try std.testing.expectEqualStrings("point", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.type_alias, tree.symbols[1].kind);
+}
+
+test "swift: extracts function and class" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\func greet(name: String) -> String {
+		\\    return "Hello, " + name
+		\\}
+		\\
+		\\class Greeter {
+		\\    func sayHi() {}
+		\\}
+	;
+	var tree = try extract(allocator, source, .swift);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 2);
+	try std.testing.expectEqualStrings("greet", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	try std.testing.expectEqualStrings("Greeter", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.class, tree.symbols[1].kind);
 }

@@ -36,6 +36,11 @@ pub fn build(b: *std.Build) void {
 	const ts_lean = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lean", "deps/tree-sitter-lean/src", true);
 	const ts_idris = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_idris2", "deps/tree-sitter-idris2/src", false);
 	const ts_haskell = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_haskell", "deps/tree-sitter-haskell/src", true);
+	const ts_go = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_go", "deps/tree-sitter-go/src", false);
+	const ts_ruby = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ruby", "deps/tree-sitter-ruby/src", true);
+	const ts_erlang = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_erlang", "deps/tree-sitter-erlang/src", true);
+	const ts_ocaml = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ocaml", "deps/tree-sitter-ocaml/src", true);
+	const ts_swift = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_swift", "deps/tree-sitter-swift/src", true);
 	const ts_langs = [_]*std.Build.Step.Compile{
 		tsc_lib,
 		ts_typescript,
@@ -48,6 +53,11 @@ pub fn build(b: *std.Build) void {
 		ts_lean,
 		ts_idris,
 		ts_haskell,
+		ts_go,
+		ts_ruby,
+		ts_erlang,
+		ts_ocaml,
+		ts_swift,
 	};
 
 	const exe = b.addExecutable(.{
