@@ -1496,15 +1496,18 @@ const SymbolMatch = struct {
 	name: []const u8, // points into SymbolNode.name (no ownership)
 };
 
-/// Given source text, a byte offset at the start of a line, and a symbol name,
-/// find the 0-based column where that name first appears on the line.
+/// Given source text, a byte offset within a line, and a symbol name,
+/// find the 0-based column where that name first appears on that line.
+/// The byte offset can be anywhere on the line (not just the start).
 /// Returns 0 as fallback if the name isn't found.
-fn findNameCol(source: []const u8, line_start_byte: usize, name: []const u8) u32 {
-	if (line_start_byte >= source.len or name.len == 0) return 0;
+fn findNameCol(source: []const u8, byte_offset: usize, name: []const u8) u32 {
+	if (byte_offset >= source.len or name.len == 0) return 0;
+	// Find the actual start of the line containing byte_offset
+	const line_start = if (std.mem.lastIndexOfScalar(u8, source[0..byte_offset], '\n')) |nl| nl + 1 else 0;
 	// Find end of this line
-	const line_end = std.mem.indexOfScalarPos(u8, source, line_start_byte, '\n') orelse source.len;
-	const line = source[line_start_byte..line_end];
-	// Find the name within the line
+	const line_end = std.mem.indexOfScalarPos(u8, source, byte_offset, '\n') orelse source.len;
+	const line = source[line_start..line_end];
+	// Find the name within the full line
 	const col = std.mem.indexOf(u8, line, name) orelse return 0;
 	return @intCast(col);
 }
@@ -1968,19 +1971,21 @@ fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: [
 		source = result.source;
 		tree = result.tree;
 
-		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
-			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-			return;
-		};
-		const sym_match = match orelse {
-			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-			return;
-		};
-		line = @intCast(sym_match.start_line - 1);
-		col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch null;
+		if (match) |sym_match| {
+			line = @intCast(sym_match.start_line - 1);
+			col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+		} else {
+			// Symbol not in tree-sitter tree — fall back to text search (e.g. local variables)
+			const pos = findPatternPosition(result.source, pattern) orelse {
+				try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
+				return;
+			};
+			line = pos.line;
+			col = pos.col;
+		}
 	} else |err| {
 		if (err != error.UnsupportedFileType) return err;
-		// Fallback: read source and do plain text search for the pattern
 		source = try readFileContents(allocator, file_path);
 		const pos = findPatternPosition(source, pattern) orelse {
 			try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
@@ -2119,19 +2124,21 @@ fn runRename(
 		source = result.source;
 		tree = result.tree;
 
-		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch {
-			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-			return;
-		};
-		const sym_match = match orelse {
-			try writer.print("error: symbol '{s}' not found in '{s}'\n", .{ pattern, file_path });
-			return;
-		};
-		line = @intCast(sym_match.start_line - 1);
-		col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+		const match = findFirstMatch(allocator, result.tree.symbols, pattern, "") catch null;
+		if (match) |sym_match| {
+			line = @intCast(sym_match.start_line - 1);
+			col = findNameCol(result.source, sym_match.start_byte, sym_match.name);
+		} else {
+			// Symbol not in tree-sitter tree — fall back to text search (e.g. local variables)
+			const pos = findPatternPosition(result.source, pattern) orelse {
+				try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
+				return;
+			};
+			line = pos.line;
+			col = pos.col;
+		}
 	} else |err| {
 		if (err != error.UnsupportedFileType) return err;
-		// Fallback: read source and do plain text search for the pattern
 		source = try readFileContents(allocator, file_path);
 		const pos = findPatternPosition(source, pattern) orelse {
 			try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
@@ -2888,4 +2895,26 @@ test "findPatternPosition locates text in source" {
 
 	// Not found
 	try std.testing.expect(findPatternPosition(source, "@nonexistent") == null);
+}
+
+test "findNameCol returns correct column even when byte_offset is mid-line" {
+	// Simulates LLVM IR where function_header node starts mid-line
+	// "define i32 @main() {\n..."
+	//  ^byte 0    ^byte 11 = @main
+	//        ^byte 7 = tree-sitter function_header start (at "i32")
+	const source = "define i32 @main() {\nentry:\n  %needle = add i32 1, 2\n";
+
+	// When byte_offset is mid-line (byte 7 = "i32 @main..."),
+	// findNameCol must still return column 11 (from line start), not 4 (from byte_offset)
+	const col = findNameCol(source, 7, "@main");
+	try std.testing.expectEqual(@as(u32, 11), col);
+
+	// When byte_offset IS the line start, should work normally
+	const col2 = findNameCol(source, 0, "define");
+	try std.testing.expectEqual(@as(u32, 0), col2);
+
+	// Mid-line on second line: "  %needle" with byte_offset pointing to %
+	const line3_start = std.mem.indexOf(u8, source, "  %needle").?;
+	const col3 = findNameCol(source, line3_start + 2, "%needle"); // +2 points to '%'
+	try std.testing.expectEqual(@as(u32, 2), col3); // column 2 from line start
 }

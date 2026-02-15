@@ -400,7 +400,7 @@ pub const LspClient = struct {
 			\\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"{s}","version":1,"text":"
 		, .{ file_uri, language_id_str });
 		try writeJsonStr(w, source);
-		try w.writeAll("\"}}}}");
+		try w.writeAll("\"}}}");
 
 		try self.writeMessage(aw.written());
 	}
@@ -783,4 +783,38 @@ test "writeJsonStr escaping" {
 	try writeJsonStr(&aw.writer, "hello\n\"world\"\t\\end");
 	const result = aw.written();
 	try std.testing.expectEqualStrings("hello\\n\\\"world\\\"\\t\\\\end", result);
+}
+
+test "didOpen produces valid JSON" {
+	// Verify the didOpen message is valid JSON (regression: extra closing brace)
+	var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+	defer aw.deinit();
+	const w = &aw.writer;
+
+	const uri = "file:///test.ll";
+	const lang = "llvm";
+	const source = "define i32 @main() {\nentry:\n  ret i32 0\n}\n";
+
+	try w.print(
+		\\{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"{s}","languageId":"{s}","version":1,"text":"
+	, .{ uri, lang });
+	try writeJsonStr(w, source);
+	try w.writeAll("\"}}}");
+
+	const msg = aw.written();
+
+	// Must parse as valid JSON
+	const parsed = std.json.parseFromSlice(std.json.Value, std.testing.allocator, msg, .{}) catch |err| {
+		std.debug.print("didOpen JSON parse error: {}\nmessage: {s}\n", .{ err, msg });
+		return error.TestUnexpectedResult;
+	};
+	defer parsed.deinit();
+
+	// Verify structure
+	try std.testing.expect(parsed.value == .object);
+	const params = parsed.value.object.get("params").?;
+	const text_doc = params.object.get("textDocument").?;
+	const text_val = text_doc.object.get("text").?;
+	try std.testing.expect(text_val == .string);
+	try std.testing.expect(std.mem.startsWith(u8, text_val.string, "define i32 @main()"));
 }
