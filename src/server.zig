@@ -8,6 +8,8 @@ const plugin = @import("plugin.zig");
 const ollama = @import("ollama.zig");
 const config = @import("config.zig");
 const filters = @import("filters.zig");
+const main = @import("main.zig");
+const cli = @import("cli.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
@@ -36,6 +38,7 @@ pub const Settings = struct {
 	include_node_modules: bool,
 	http_host: []const u8,
 	http_port: u16,
+	lsp_overrides: []const config.LspOverride = &[_]config.LspOverride{},
 };
 
 pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
@@ -206,6 +209,480 @@ fn handleRequest(
 		const payload = try out.toOwnedSlice();
 		defer allocator.free(payload);
 
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/symbols")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		const file_path = blk: {
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			break :blk try allocator.dupe(u8, f.string);
+		};
+		defer allocator.free(file_path);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runSymbols(allocator, file_path, .json, &out.writer) catch {
+			try req.respond("{\"error\":\"failed to extract symbols\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/find-symbol")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var pattern: []const u8 = undefined;
+		var include_body_flag: bool = false;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const p = obj.get("pattern") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			pattern = try allocator.dupe(u8, p.string);
+			if (obj.get("include_body")) |ib| {
+				include_body_flag = ib.bool;
+			}
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(pattern);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runFindSymbol(allocator, file_path, pattern, include_body_flag, .json, &out.writer) catch {
+			try req.respond("{\"error\":\"failed to find symbol\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/replace-symbol")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var pattern: []const u8 = undefined;
+		var new_body: []const u8 = undefined;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const p = obj.get("pattern") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			pattern = try allocator.dupe(u8, p.string);
+			const b = obj.get("body") orelse {
+				allocator.free(file_path);
+				allocator.free(pattern);
+				try req.respond("{\"error\":\"missing 'body' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_body = try allocator.dupe(u8, b.string);
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(pattern);
+		defer allocator.free(new_body);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runReplaceSymbol(allocator, file_path, pattern, new_body, &out.writer) catch {
+			try req.respond("{\"error\":\"replace-symbol failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/insert-after")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var pattern: []const u8 = undefined;
+		var new_body: []const u8 = undefined;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const p = obj.get("pattern") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			pattern = try allocator.dupe(u8, p.string);
+			const b = obj.get("body") orelse {
+				allocator.free(file_path);
+				allocator.free(pattern);
+				try req.respond("{\"error\":\"missing 'body' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_body = try allocator.dupe(u8, b.string);
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(pattern);
+		defer allocator.free(new_body);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runInsertAfter(allocator, file_path, pattern, new_body, &out.writer) catch {
+			try req.respond("{\"error\":\"insert-after failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/insert-before")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var pattern: []const u8 = undefined;
+		var new_body: []const u8 = undefined;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const p = obj.get("pattern") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			pattern = try allocator.dupe(u8, p.string);
+			const b = obj.get("body") orelse {
+				allocator.free(file_path);
+				allocator.free(pattern);
+				try req.respond("{\"error\":\"missing 'body' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_body = try allocator.dupe(u8, b.string);
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(pattern);
+		defer allocator.free(new_body);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runInsertBefore(allocator, file_path, pattern, new_body, &out.writer) catch {
+			try req.respond("{\"error\":\"insert-before failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/replace-lines")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var from_str: []const u8 = undefined;
+		var to_str: []const u8 = undefined;
+		var new_body: []const u8 = undefined;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const fr = obj.get("from") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'from' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			from_str = try allocator.dupe(u8, fr.string);
+			const to = obj.get("to") orelse {
+				allocator.free(file_path);
+				allocator.free(from_str);
+				try req.respond("{\"error\":\"missing 'to' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			to_str = try allocator.dupe(u8, to.string);
+			const b = obj.get("body") orelse {
+				allocator.free(file_path);
+				allocator.free(from_str);
+				allocator.free(to_str);
+				try req.respond("{\"error\":\"missing 'body' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_body = try allocator.dupe(u8, b.string);
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(from_str);
+		defer allocator.free(to_str);
+		defer allocator.free(new_body);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runReplaceLines(allocator, file_path, from_str, to_str, new_body, &out.writer) catch {
+			try req.respond("{\"error\":\"replace-lines failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/insert-at")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var ref_str: []const u8 = undefined;
+		var new_body: []const u8 = undefined;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const r = obj.get("ref") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'ref' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			ref_str = try allocator.dupe(u8, r.string);
+			const b = obj.get("body") orelse {
+				allocator.free(file_path);
+				allocator.free(ref_str);
+				try req.respond("{\"error\":\"missing 'body' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_body = try allocator.dupe(u8, b.string);
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(ref_str);
+		defer allocator.free(new_body);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runInsertAt(allocator, file_path, ref_str, new_body, &out.writer) catch {
+			try req.respond("{\"error\":\"insert-at failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/replace-content")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var needle: []const u8 = undefined;
+		var new_body: []const u8 = undefined;
+		var regex_mode: bool = false;
+		var replace_all_flag: bool = false;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const n = obj.get("needle") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'needle' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			needle = try allocator.dupe(u8, n.string);
+			const b = obj.get("body") orelse {
+				allocator.free(file_path);
+				allocator.free(needle);
+				try req.respond("{\"error\":\"missing 'body' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_body = try allocator.dupe(u8, b.string);
+			if (obj.get("regex")) |r| regex_mode = r.bool;
+			if (obj.get("all")) |a| replace_all_flag = a.bool;
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(needle);
+		defer allocator.free(new_body);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runReplaceContent(allocator, file_path, needle, regex_mode, replace_all_flag, new_body, &out.writer) catch {
+			try req.respond("{\"error\":\"replace-content failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/rename")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var pattern: []const u8 = undefined;
+		var new_name: []const u8 = undefined;
+		var dry_run: bool = false;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const p = obj.get("pattern") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			pattern = try allocator.dupe(u8, p.string);
+			const t = obj.get("to") orelse {
+				allocator.free(file_path);
+				allocator.free(pattern);
+				try req.respond("{\"error\":\"missing 'to' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			new_name = try allocator.dupe(u8, t.string);
+			if (obj.get("dry_run")) |d| dry_run = d.bool;
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(pattern);
+		defer allocator.free(new_name);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runRename(allocator, file_path, pattern, new_name, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, &out.writer) catch {
+			try req.respond("{\"error\":\"rename failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
+
+	if (req.head.method == .POST and std.mem.eql(u8, path, "/references")) {
+		const body = try readBody(allocator, req, 1024 * 1024);
+		defer allocator.free(body);
+
+		var file_path: []const u8 = undefined;
+		var pattern: []const u8 = undefined;
+		{
+			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
+				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			defer parsed.deinit();
+			const obj = parsed.value.object;
+			const f = obj.get("file") orelse {
+				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			file_path = try allocator.dupe(u8, f.string);
+			const p = obj.get("pattern") orelse {
+				allocator.free(file_path);
+				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
+				return;
+			};
+			pattern = try allocator.dupe(u8, p.string);
+		}
+		defer allocator.free(file_path);
+		defer allocator.free(pattern);
+
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runReferences(allocator, file_path, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch {
+			try req.respond("{\"error\":\"references request failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
 		try respondJson(req, payload);
 		return;
 	}
@@ -421,6 +898,7 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 		if (n == 0) break;
 		if (out.items.len + n > max_size) return error.StreamTooLong;
 		try out.appendSlice(allocator, buf[0..n]);
+		if (n < buf.len) break; // Short read indicates end of content
 	}
 
 	return out.toOwnedSlice(allocator);
@@ -504,7 +982,7 @@ test "handleRequest responds to /help" {
 
 	const request_bytes = "GET /help HTTP/1.1\r\nHost: localhost\r\n\r\n";
 	var reader = std.Io.Reader.fixed(request_bytes);
-	var out_buf: [512]u8 = undefined;
+	var out_buf: [4096]u8 = undefined;
 	var writer = std.Io.Writer.fixed(&out_buf);
 	var http_server = std.http.Server.init(&reader, &writer);
 
@@ -581,7 +1059,446 @@ const help_text =
 	"POST /index\n" ++
 	"  fields: ext, type, include_node_modules\n" ++
 	"\n" ++
+	"POST /symbols\n" ++
+	"  fields: file\n" ++
+	"\n" ++
+	"POST /find-symbol\n" ++
+	"  fields: file, pattern, include_body?\n" ++
+	"\n" ++
+	"POST /replace-symbol\n" ++
+	"  fields: file, pattern, body\n" ++
+	"\n" ++
+	"POST /insert-after\n" ++
+	"  fields: file, pattern, body\n" ++
+	"\n" ++
+	"POST /insert-before\n" ++
+	"  fields: file, pattern, body\n" ++
+	"\n" ++
+	"POST /replace-lines\n" ++
+	"  fields: file, from, to, body\n" ++
+	"\n" ++
+	"POST /insert-at\n" ++
+	"  fields: file, ref, body\n" ++
+	"\n" ++
+	"POST /replace-content\n" ++
+	"  fields: file, needle, body, regex?, all?\n" ++
+	"\n" ++
+	"POST /references\n" ++
+	"  fields: file, pattern\n" ++
+	"\n" ++
+	"POST /rename\n" ++
+	"  fields: file, pattern, to, dry_run?\n" ++
+	"\n" ++
 	"GET /health\n" ++
 	"GET /help\n" ++
 	"\n" ++
 	"cli note: --show-comments/--verbose shows doc comments in human output (default: hidden)\n";
+
+test "handleRequest responds to POST /symbols" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	// Create a temp .zig file with known content
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const zig_content = "const x = 42;\npub fn foo() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	// Build HTTP POST request with JSON body
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /symbols HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "application/json") != null);
+	// Should contain symbol names from the zig file
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"x\"") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"foo\"") != null);
+}
+
+test "handleRequest responds to POST /find-symbol" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	// Create a temp .zig file
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const zig_content = "const x = 42;\npub fn foo() void {}\npub fn bar() u32 { return 1; }\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	// Search for symbol "foo"
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /find-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "application/json") != null);
+	// Should find the "foo" symbol
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"foo\"") != null);
+	// Should NOT contain "bar" since we searched for "foo"
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"bar\"") == null);
+}
+
+test "handleRequest responds to POST /replace-symbol" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn foo() u32 {{ return 99; }}\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /replace-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	// Verify the file was modified
+	const modified = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	defer allocator.free(modified);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "return 99") != null);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "return 42") == null);
+}
+
+test "handleRequest responds to POST /insert-after" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /insert-after HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	// Verify baz was inserted into the file
+	const modified = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	defer allocator.free(modified);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "baz") != null);
+}
+
+test "handleRequest responds to POST /insert-before" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /insert-before HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	// Verify baz was inserted into the file
+	const modified = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	defer allocator.free(modified);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "baz") != null);
+}
+
+test "handleRequest responds to POST /replace-lines" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Write a file with known lines
+	const content = "line1\nline2\nline3\nline4\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Hashline refs computed for "line1\nline2\nline3\nline4\n": line2=ql8, line3=zrk
+	// Replace lines 2-3 with new text
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"from\":\"2:ql8\",\"to\":\"3:zrk\",\"body\":\"replaced\\n\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /replace-lines HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	// Verify the file was modified
+	const modified = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	defer allocator.free(modified);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "replaced") != null);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "line2") == null);
+}
+
+test "handleRequest responds to POST /insert-at" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const content = "line1\nline2\nline3\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Hashline ref computed for "line1\nline2\nline3\n": line2=ql8
+	// Insert after line 2
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"ref\":\"2:ql8\",\"body\":\"inserted\\n\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /insert-at HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	const modified = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	defer allocator.free(modified);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "inserted") != null);
+}
+
+test "handleRequest responds to POST /replace-content" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const content = "hello world\ngoodbye world\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Replace "hello" with "howdy" using literal mode
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"needle\":\"hello\",\"body\":\"howdy\"}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /replace-content HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	const modified = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	defer allocator.free(modified);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "howdy world") != null);
+	try std.testing.expect(std.mem.indexOf(u8, modified, "hello") == null);
+}
+
+test "handleRequest responds to POST /rename" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Use a pattern that won't match any symbol — locateSymbol returns null,
+	// so rename returns error msg without starting an LSP server
+	const zig_content = "pub fn foo() u32 { return 42; }\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"nonexistent_symbol\",\"to\":\"quux\",\"dry_run\":true}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /rename HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	// Endpoint reached and returned a response (200 with error in body, since .xyz has no LSP)
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+}
+
+test "handleRequest responds to POST /find-symbol with include_body" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const zig_content = "pub fn foo() u32 { return 42; }\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"include_body\":true}}", .{abs_path});
+	defer allocator.free(body);
+
+	const header = try std.fmt.allocPrint(allocator, "POST /find-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
+	defer allocator.free(header);
+
+	const request_bytes = try std.mem.concat(allocator, u8, &.{ header, body });
+	defer allocator.free(request_bytes);
+
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [8192]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), testSettings());
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
+	// With include_body, the response should contain the function body
+	try std.testing.expect(std.mem.indexOf(u8, response, "return 42") != null);
+}

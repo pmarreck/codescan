@@ -467,6 +467,18 @@ pub fn build(b: *std.Build) void {
 	linkCommon(server_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(server_tests).step);
 
+	const mcp_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/mcp.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, mcp_tests.root_module);
+	addPcre2Includes(mcp_tests.root_module, pcre2_lib);
+	linkCommon(mcp_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(mcp_tests).step);
+
 	const pidfile_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/pidfile.zig"),

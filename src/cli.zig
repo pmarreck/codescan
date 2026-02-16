@@ -25,6 +25,7 @@ pub const CommandTag = enum {
 	references,
 	rename,
 	watch,
+	mcp_serve,
 };
 
 pub const ConfigAction = enum {
@@ -268,6 +269,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			parsed.find_symbol_pattern = args[i];
 			i += 1;
 		}
+	} else if (std.mem.eql(u8, cmd, "mcp-serve")) {
+		parsed.command = .mcp_serve;
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "watch")) {
 		parsed.command = .watch;
 		i += 1;

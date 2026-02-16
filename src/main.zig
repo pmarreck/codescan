@@ -502,6 +502,7 @@ pub fn main() !void {
 				.include_node_modules = settings.include_node_modules,
 				.http_host = settings.http_host,
 				.http_port = settings.http_port,
+				.lsp_overrides = settings.lsp_overrides,
 			});
 		},
 		.symbols => {
@@ -523,7 +524,9 @@ pub fn main() !void {
 				exitWithError("error: replace-symbol requires a name path\nusage: echo 'new body' | codescan replace-symbol <name_path> --file <path>\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: replace-symbol requires --file <path>\n");
-			try runReplaceSymbol(allocator, file_path, pattern, stdout);
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runReplaceSymbol(allocator, file_path, pattern, input_text, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -532,7 +535,9 @@ pub fn main() !void {
 				exitWithError("error: insert-after requires a name path\nusage: echo 'code' | codescan insert-after <name_path> --file <path>\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: insert-after requires --file <path>\n");
-			try runInsertAfter(allocator, file_path, pattern, stdout);
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runInsertAfter(allocator, file_path, pattern, input_text, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -541,7 +546,9 @@ pub fn main() !void {
 				exitWithError("error: insert-before requires a name path\nusage: echo 'code' | codescan insert-before <name_path> --file <path>\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: insert-before requires --file <path>\n");
-			try runInsertBefore(allocator, file_path, pattern, stdout);
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runInsertBefore(allocator, file_path, pattern, input_text, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -552,7 +559,9 @@ pub fn main() !void {
 				exitWithError("error: replace-lines requires --from <line:hash>\n");
 			const to_ref = parsed.to_ref orelse
 				exitWithError("error: replace-lines requires --to <line:hash>\n");
-			try runReplaceLines(allocator, file_path, from_ref, to_ref, stdout);
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runReplaceLines(allocator, file_path, from_ref, to_ref, input_text, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -561,7 +570,9 @@ pub fn main() !void {
 				exitWithError("error: insert-at requires --file <path>\n");
 			const ref = parsed.hashline_ref orelse
 				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
-			try runInsertAt(allocator, file_path, ref, stdout);
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runInsertAt(allocator, file_path, ref, input_text, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -571,7 +582,9 @@ pub fn main() !void {
 				"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: replace-content requires --file <path>\n");
-			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, stdout);
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
 			try stdout.flush();
 		},
@@ -592,6 +605,14 @@ pub fn main() !void {
 				exitWithError("error: rename requires --to <new_name>\n");
 			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, settings.lsp_overrides, stdout);
 			try stdout.flush();
+		},
+		.mcp_serve => {
+			const mcp = @import("mcp.zig");
+			try mcp.serve(allocator, .{
+				.root_path = settings.root_path,
+				.db_path = settings.db_path,
+				.lsp_overrides = settings.lsp_overrides,
+			});
 		},
 		.watch => {
 			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
@@ -1241,7 +1262,7 @@ fn readFileContents(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 	return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
 }
 
-fn runSymbols(allocator: std.mem.Allocator, file_path: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
+pub fn runSymbols(allocator: std.mem.Allocator, file_path: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
 
@@ -1282,7 +1303,7 @@ fn runSymbols(allocator: std.mem.Allocator, file_path: []const u8, out_fmt: cli.
 	}
 }
 
-fn runFindSymbol(
+pub fn runFindSymbol(
 	allocator: std.mem.Allocator,
 	file_path: []const u8,
 	pattern: []const u8,
@@ -1575,10 +1596,7 @@ fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 
 // ─── Editing Command Implementations ─────────────────────────────────
 
-fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
-	const new_body = try readStdin(allocator);
-	defer allocator.free(new_body);
-
+pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
 	defer tree.deinit(allocator);
@@ -1589,7 +1607,7 @@ fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern
 		return;
 	};
 
-	try spliceFile(allocator, file_path, match.start_byte, match.end_byte, new_body);
+	try spliceFile(allocator, file_path, match.start_byte, match.end_byte, input_text);
 	// Compute new hashlines at the replacement boundaries
 	if (computeHashAtLine(allocator, file_path, match.start_line)) |start_hash| {
 		try writer.print("Replaced {s} (lines {d}:{s}-{d}, bytes {d}-{d})\n", .{
@@ -1602,10 +1620,7 @@ fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern
 	}
 }
 
-fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
-	const new_body = try readStdin(allocator);
-	defer allocator.free(new_body);
-
+pub fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
 	defer tree.deinit(allocator);
@@ -1617,7 +1632,7 @@ fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: 
 	};
 
 	// Insert after the symbol's end byte with a newline separator
-	const insert_content = try std.fmt.allocPrint(allocator, "\n{s}", .{new_body});
+	const insert_content = try std.fmt.allocPrint(allocator, "\n{s}", .{input_text});
 	defer allocator.free(insert_content);
 
 	try spliceFile(allocator, file_path, match.end_byte, match.end_byte, insert_content);
@@ -1630,10 +1645,7 @@ fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: 
 	}
 }
 
-fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, writer: *std.Io.Writer) !void {
-	const new_body = try readStdin(allocator);
-	defer allocator.free(new_body);
-
+pub fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
 	defer tree.deinit(allocator);
@@ -1645,7 +1657,7 @@ fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern:
 	};
 
 	// Insert before the symbol's start byte with a newline separator
-	const insert_content = try std.fmt.allocPrint(allocator, "{s}\n", .{new_body});
+	const insert_content = try std.fmt.allocPrint(allocator, "{s}\n", .{input_text});
 	defer allocator.free(insert_content);
 
 	try spliceFile(allocator, file_path, match.start_byte, match.start_byte, insert_content);
@@ -1657,7 +1669,7 @@ fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern:
 	}
 }
 
-fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str: []const u8, to_str: []const u8, writer: *std.Io.Writer) !void {
+pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str: []const u8, to_str: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
 	const from = parseHashlineRef(from_str) catch {
 		try writer.print("error: invalid --from hashline ref '{s}' (expected format: line:hash, e.g. 45:r2p)\n", .{from_str});
 		return;
@@ -1671,9 +1683,6 @@ fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str
 		try writer.print("error: --from line ({d}) must be <= --to line ({d})\n", .{ from.line, to.line });
 		return;
 	}
-
-	const new_body = try readStdin(allocator);
-	defer allocator.free(new_body);
 
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
@@ -1719,18 +1728,15 @@ fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str
 	const start_byte = offsets[from_idx];
 	const end_byte = if (to_idx + 1 < offsets.len) offsets[to_idx + 1] else source.len;
 
-	try spliceFile(allocator, file_path, start_byte, end_byte, new_body);
+	try spliceFile(allocator, file_path, start_byte, end_byte, input_text);
 	try writer.print("Replaced lines {d}-{d}\n", .{ from.line, to.line });
 }
 
-fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []const u8, writer: *std.Io.Writer) !void {
+pub fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
 	const ref = parseHashlineRef(ref_str) catch {
 		try writer.print("error: invalid hashline ref '{s}' (expected format: line:hash, e.g. 47:3bw)\n", .{ref_str});
 		return;
 	};
-
-	const new_body = try readStdin(allocator);
-	defer allocator.free(new_body);
 
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
@@ -1762,10 +1768,10 @@ fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []c
 	const insert_byte = if (ref_idx + 1 < offsets.len) offsets[ref_idx + 1] else source.len;
 
 	// Ensure new content ends with newline for clean insertion
-	const insert_content = if (new_body.len > 0 and new_body[new_body.len - 1] != '\n')
-		try std.fmt.allocPrint(allocator, "{s}\n", .{new_body})
+	const insert_content = if (input_text.len > 0 and input_text[input_text.len - 1] != '\n')
+		try std.fmt.allocPrint(allocator, "{s}\n", .{input_text})
 	else
-		try allocator.dupe(u8, new_body);
+		try allocator.dupe(u8, input_text);
 	defer allocator.free(insert_content);
 
 	try spliceFile(allocator, file_path, insert_byte, insert_byte, insert_content);
@@ -1777,15 +1783,12 @@ fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []c
 	}
 }
 
-fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, needle: []const u8, regex_mode: bool, replace_all: bool, writer: *std.Io.Writer) !void {
-	const replacement = try readStdin(allocator);
-	defer allocator.free(replacement);
-
+pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, needle: []const u8, regex_mode: bool, replace_all: bool, input_text: []const u8, writer: *std.Io.Writer) !void {
 	// Strip trailing newline from replacement (stdin usually adds one)
-	const repl = if (replacement.len > 0 and replacement[replacement.len - 1] == '\n')
-		replacement[0 .. replacement.len - 1]
+	const repl = if (input_text.len > 0 and input_text[input_text.len - 1] == '\n')
+		input_text[0 .. input_text.len - 1]
 	else
-		replacement;
+		input_text;
 
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
@@ -1994,7 +1997,7 @@ fn locateSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []
 	}
 }
 
-fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, root_path: []const u8, lsp_overrides: []const config.LspOverride, writer: *std.Io.Writer) !void {
+pub fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, out_fmt: cli.OutputFormat, root_path: []const u8, lsp_overrides: []const config.LspOverride, writer: *std.Io.Writer) !void {
 	const loc = try locateSymbol(allocator, file_path, pattern) orelse {
 		try writer.print("error: '{s}' not found in '{s}'\n", .{ pattern, file_path });
 		return;
@@ -2111,7 +2114,7 @@ fn getHashForLine(cache: std.StringHashMap([]const hashline.Hash), path: []const
 	return &hashes[idx];
 }
 
-fn runRename(
+pub fn runRename(
 	allocator: std.mem.Allocator,
 	file_path: []const u8,
 	pattern: []const u8,
@@ -2444,6 +2447,7 @@ const usage =
 	\\  references <pattern>    Find all references via LSP
 	\\  rename <pattern>        Rename symbol across codebase via LSP
 	\\  serve                    Start HTTP API server
+	\\  mcp-serve                Start MCP (Model Context Protocol) server
 	\\
 	\\If no command is specified, codescan assumes `search`.
 	\\
