@@ -28,9 +28,20 @@ pub fn watchLoop(
 	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
-	// Write PID file if codescan dir is provided
+	// Acquire PID file — reject if another watcher is already running
 	if (options.codescan_dir) |dir| {
-		pidfile.writePid(allocator, dir) catch {};
+		pidfile.tryAcquirePid(allocator, dir) catch |err| switch (err) {
+			error.WatcherAlreadyRunning => {
+				if (pidfile.readAndCheckPid(allocator, dir) catch null) |existing_pid| {
+					_ = stderr.print("error: watcher already running for this directory (PID {d})\n", .{existing_pid}) catch {};
+				} else {
+					_ = stderr.print("error: watcher already running for this directory\n", .{}) catch {};
+				}
+				_ = stderr.flush() catch {};
+				return error.WatcherAlreadyRunning;
+			},
+			else => {}, // Non-critical: proceed without pidfile
+		};
 	}
 	defer if (options.codescan_dir) |dir| pidfile.removePid(allocator, dir);
 

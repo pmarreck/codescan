@@ -48,7 +48,13 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	const result = std.c.kill(pid, 0);
 	if (result == 0) return pid;
 
-	// Process doesn't exist (ESRCH) or we can't signal it — treat as dead
+	// Check errno: EPERM means process exists but we lack permission (still alive)
+	if (result == -1) {
+		const err = std.c._errno().*;
+		if (err == 1) return pid; // EPERM = 1 on both Linux and macOS
+	}
+
+	// ESRCH or other error — process doesn't exist, treat as dead
 	return null;
 }
 
@@ -58,6 +64,19 @@ const PidType = if (is_posix) std.posix.pid_t else i32;
 pub fn isWatcherRunning(allocator: std.mem.Allocator, codescan_dir: []const u8) bool {
 	const pid = readAndCheckPid(allocator, codescan_dir) catch return false;
 	return pid != null;
+}
+
+/// Atomically checks for an existing watcher and writes the current PID.
+/// Returns error.WatcherAlreadyRunning if another live watcher owns the pidfile.
+pub fn tryAcquirePid(allocator: std.mem.Allocator, codescan_dir: []const u8) !void {
+	if (!is_posix) return;
+	if (readAndCheckPid(allocator, codescan_dir) catch null) |existing_pid| {
+		// Another live process holds the pidfile — check it's not us
+		if (existing_pid != std.c.getpid()) {
+			return error.WatcherAlreadyRunning;
+		}
+	}
+	try writePid(allocator, codescan_dir);
 }
 
 fn pidPath(allocator: std.mem.Allocator, codescan_dir: []const u8) ![]u8 {
@@ -173,4 +192,58 @@ test "isWatcherRunning returns false for missing file" {
 	defer allocator.free(dir_path);
 
 	try std.testing.expect(!isWatcherRunning(allocator, dir_path));
+}
+
+test "tryAcquirePid succeeds when no watcher running" {
+	if (!is_posix) return;
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(dir_path);
+
+	try tryAcquirePid(allocator, dir_path);
+
+	// Verify our PID was written
+	const pid = try readAndCheckPid(allocator, dir_path);
+	try std.testing.expect(pid != null);
+	try std.testing.expectEqual(std.c.getpid(), pid.?);
+}
+
+test "tryAcquirePid fails when watcher already running" {
+	if (!is_posix) return;
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(dir_path);
+
+	// Write PID 1 (init/launchd — always alive, not us)
+	const file = try tmp.dir.createFile("watcher.pid", .{});
+	defer file.close();
+	try file.writeAll("1");
+
+	// Acquire should fail since PID 1 is alive and not our process
+	const result = tryAcquirePid(allocator, dir_path);
+	try std.testing.expectError(error.WatcherAlreadyRunning, result);
+}
+
+test "tryAcquirePid succeeds when stale PID in file" {
+	if (!is_posix) return;
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(dir_path);
+
+	// Write a stale PID (process that doesn't exist)
+	const file = try tmp.dir.createFile("watcher.pid", .{});
+	defer file.close();
+	try file.writeAll("99999999");
+
+	// Should succeed since stale PID's process is dead
+	try tryAcquirePid(allocator, dir_path);
 }

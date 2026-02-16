@@ -635,7 +635,16 @@ pub fn main() !void {
 					}
 				},
 				.start => {
-					maybeStartWatcher(allocator, settings, stdout);
+					if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+						if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |existing_pid| {
+							try stdout.print("Watcher already running (PID {d})\n", .{existing_pid});
+						} else {
+							try stdout.print("Watcher already running\n", .{});
+						}
+						try stdout.flush();
+					} else {
+						maybeStartWatcher(allocator, settings, stdout);
+					}
 				},
 				.restart => {
 					if (comptime builtin.os.tag == .windows) {
@@ -700,7 +709,7 @@ pub fn main() !void {
 						std.posix.sigaction(std.posix.SIG.TERM, &act, null);
 					}
 
-					try watcher.watchLoop(
+					watcher.watchLoop(
 						allocator,
 						db,
 						settings.root_path,
@@ -724,7 +733,10 @@ pub fn main() !void {
 							},
 						},
 						&g_stop_flag,
-					);
+					) catch |err| switch (err) {
+						error.WatcherAlreadyRunning => return, // message already printed
+						else => return err,
+					};
 				},
 			}
 		},
