@@ -38,6 +38,7 @@ pub const Result = struct {
 	score: f32,
 	distance: f32,
 	lexical: f32,
+	bm25: f32, // raw FTS5 bm25 score (negative; 0 = no FTS data)
 
 	pub fn deinit(self: *Result, allocator: std.mem.Allocator) void {
 		self.symbol.deinit(allocator);
@@ -171,8 +172,26 @@ pub fn search(
 	}
 	const query_tokens = token_buf[0..query_token_count];
 
+	// Normalize BM25 scores to [0, 1] for FTS candidates.
+	// FTS5 bm25() returns negative values (more negative = better match).
+	var best_bm25: f32 = 0; // most negative
+	var worst_bm25: f32 = -std.math.inf(f32); // least negative
+	for (results.items) |res| {
+		if (res.bm25 != 0) {
+			if (res.bm25 < best_bm25) best_bm25 = res.bm25;
+			if (res.bm25 > worst_bm25) worst_bm25 = res.bm25;
+		}
+	}
+	const bm25_range = worst_bm25 - best_bm25; // positive number
+
 	for (results.items) |*res| {
-		const lexical = try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
+		const lexical = if (res.bm25 != 0) blk: {
+			// Use normalized BM25 as the lexical score for FTS candidates.
+			break :blk if (bm25_range > 0)
+				(worst_bm25 - res.bm25) / bm25_range // best → 1.0, worst → 0.0
+			else
+				@as(f32, 1.0); // single result or all same score
+		} else try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
 		res.lexical = lexical;
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
 		if (options.mode == .vector) {
@@ -468,10 +487,11 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
-		++ "0.0 AS distance "
+		++ "0.0 AS distance, "
+		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
-		++ "ORDER BY bm25(symbols_fts) "
+		++ "ORDER BY bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) "
 		++ "LIMIT {d};",
 		.{ escaped, limit },
 	);
@@ -480,7 +500,8 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
-		++ "0.0 AS distance "
+		++ "0.0 AS distance, "
+		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
 		++ "LIMIT {d};",
@@ -505,7 +526,8 @@ fn ftsCandidates(
 	while (true) {
 		const rc = sqlite.sqlite3_step(stmt.?);
 		if (rc == sqlite.SQLITE_ROW) {
-			const res = try readResultRow(allocator, stmt.?);
+			var res = try readResultRow(allocator, stmt.?);
+			res.bm25 = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt.?, 11)));
 			try results.append(allocator, res);
 		} else if (rc == sqlite.SQLITE_DONE) {
 			break;
@@ -546,6 +568,7 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 		.score = 0,
 		.distance = distance,
 		.lexical = 0,
+		.bm25 = 0,
 	};
 }
 
@@ -1672,4 +1695,141 @@ test "buildFtsQuery single word has no operator" {
 	const result = try buildFtsQuery(allocator, "hash");
 	defer allocator.free(result);
 	try std.testing.expectEqualStrings("\"hash\"", result);
+}
+
+test "ftsCandidates captures bm25 scores" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/hash.zig"),
+		.name = try allocator.dupe(u8, "crc32"),
+		.signature = try allocator.dupe(u8, "pub fn crc32(data: []const u8) u32"),
+		.doc_comment = try allocator.dupe(u8, "Hash functions for checksums"),
+		.start_line = 1,
+		.end_line = 10,
+	};
+	defer sym1.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym1);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+
+	if (!(ftsAvailable(db) catch false)) return; // skip if FTS not available
+
+	const results = try ftsCandidates(allocator, db, "hash", 10);
+	defer freeResults(allocator, results);
+
+	try std.testing.expect(results.len > 0);
+	// BM25 scores from FTS5 are negative (more negative = better match)
+	try std.testing.expect(results[0].bm25 < 0);
+}
+
+test "bm25 normalization produces values in 0-1 range" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Insert two symbols with different relevance to "hash"
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/hash.zig"),
+		.name = try allocator.dupe(u8, "hash"),
+		.signature = try allocator.dupe(u8, "pub fn hash(data: []const u8) u32"),
+		.doc_comment = try allocator.dupe(u8, "Primary hash function"),
+		.start_line = 1,
+		.end_line = 10,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/utils.zig"),
+		.name = try allocator.dupe(u8, "helper"),
+		.signature = try allocator.dupe(u8, "pub fn helper() void"),
+		.doc_comment = try allocator.dupe(u8, "General helper with hash support"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym2.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym1);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym2);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+
+	if (!(ftsAvailable(db) catch false)) return;
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "hash", .{
+		.top_n = 10,
+		.mode = .lexical,
+		.min_score = 0.0,
+		.score_dropoff = 0.0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expect(sr.results.len >= 2);
+	// Lexical scores should be in [0, 1] range
+	for (sr.results) |res| {
+		try std.testing.expect(res.lexical >= 0.0);
+		try std.testing.expect(res.lexical <= 1.0);
+	}
+}
+
+test "bm25 column weights rank name match above doc_comment match" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// sym_name: "hash" appears in the symbol name (weight 10)
+	var sym_name = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "hash"),
+		.signature = try allocator.dupe(u8, "pub fn hash() void"),
+		.doc_comment = try allocator.dupe(u8, "does stuff"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_name.deinit(allocator);
+
+	// sym_doc: "hash" appears only in the doc_comment (weight 5)
+	var sym_doc = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "compute"),
+		.signature = try allocator.dupe(u8, "pub fn compute() void"),
+		.doc_comment = try allocator.dupe(u8, "uses hash internally"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_doc.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym_name);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym_doc);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+
+	if (!(ftsAvailable(db) catch false)) return;
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "hash", .{
+		.top_n = 10,
+		.mode = .lexical,
+		.min_score = 0.0,
+		.score_dropoff = 0.0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expect(sr.results.len >= 2);
+	// The symbol with "hash" in its name should rank first
+	try std.testing.expectEqualStrings("hash", sr.results[0].symbol.name);
 }

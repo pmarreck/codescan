@@ -85,6 +85,7 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		score: f32,
 		distance: f32,
 		lexical: f32,
+		bm25: f32,
 	};
 
 	const Payload = struct {
@@ -110,6 +111,7 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 			.score = res.score,
 			.distance = res.distance,
 			.lexical = res.lexical,
+			.bm25 = res.bm25,
 		};
 	}
 
@@ -138,6 +140,7 @@ test "writeResults emits json payload" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
@@ -175,6 +178,7 @@ test "writeResults emits human output" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
@@ -206,6 +210,7 @@ test "writeResults hides doc comments by default" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
@@ -236,6 +241,7 @@ test "writeResults includes doc comments when enabled" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
@@ -310,6 +316,7 @@ test "human output includes hashlines when hashes present" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
@@ -343,6 +350,7 @@ test "json output includes hashlines when hashes present" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
@@ -375,6 +383,7 @@ test "human output shows plain line range when hashes absent" {
 		.score = 0.9,
 		.distance = 0.1,
 		.lexical = 1.0,
+		.bm25 = 0,
 	};
 	defer res.deinit(allocator);
 
