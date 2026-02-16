@@ -7,7 +7,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Nix
+        shell: bash
+        run: ./scripts/ci-setup-nix
+
+      - name: Run tests
+        shell: bash
+        run: nix develop -c zig build test
+
   build:
+    needs: test
     strategy:
       fail-fast: false
       matrix:
@@ -33,6 +49,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
 
       - name: Setup Nix
         shell: bash
