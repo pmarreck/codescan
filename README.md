@@ -98,6 +98,7 @@ If `--root` is omitted, `codescan` searches upward from the current directory fo
 directory and uses that as the root (otherwise it falls back to the current directory).
 
 Search defaults to the primary code language by file count unless a filter is supplied.
+Multi-word queries use OR semantics in lexical/hybrid search — results matching any term surface, with BM25 ranking results matching all terms higher.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
 Index/update defaults to code + docs unless `--type`/`index_type` is set.
