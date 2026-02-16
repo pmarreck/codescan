@@ -33,6 +33,7 @@ pub const OllamaEmbedder = struct {
 
 test "OllamaEmbedder uses live Ollama" {
 	const allocator = std.testing.allocator;
+	try ollama.skipIfNoOllama(allocator);
 	const inputs = [_][]const u8{ "hash functions" };
 
 	var transport = ollama.StdHttpTransport.init(allocator);

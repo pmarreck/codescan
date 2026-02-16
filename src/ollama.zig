@@ -246,6 +246,8 @@ test "parseEmbeddings reads vectors" {
 
 test "ensureModelAvailable reports missing model" {
 	const allocator = std.testing.allocator;
+	try skipIfNoOllama(allocator);
+
 	var transport = StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
@@ -260,6 +262,8 @@ test "ensureModelAvailable reports missing model" {
 
 test "embed uses live Ollama" {
 	const allocator = std.testing.allocator;
+	try skipIfNoOllama(allocator);
+
 	var transport = StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
@@ -283,4 +287,23 @@ fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const
 		else => return err,
 	};
 	return value;
+}
+
+/// Skip test if Ollama is not reachable (for CI environments without Ollama).
+pub fn skipIfNoOllama(allocator: std.mem.Allocator) !void {
+	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	defer allocator.free(url);
+
+	var transport = StdHttpTransport.init(allocator);
+	defer transport.deinit();
+
+	// Try a lightweight request via the Transport interface — if connection refused, skip.
+	const t = transport.transport();
+	const resp = t.send(t.ctx, allocator, .{
+		.method = "GET",
+		.url = url,
+		.headers = &.{},
+		.body = "",
+	}) catch return error.SkipZigTest;
+	allocator.free(resp.body);
 }

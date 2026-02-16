@@ -824,6 +824,7 @@ test "buildSymbolText truncates long inputs" {
 
 test "doc truncation avoids Ollama context length errors" {
 	const allocator = std.testing.allocator;
+	try ollama.skipIfNoOllama(allocator);
 	const doc =
 		"## Images\n\n" ++
 		"| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |\n" ++
