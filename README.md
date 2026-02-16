@@ -6,8 +6,8 @@ Semantic code search for local repositories.
 - Ollama embeddings (default: `bge-large`, override with `OLLAMA_MODEL`)
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
-- Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift
-- LSP (references, rename): all of the above plus Clojure, Assembly, LLVM IR
+- Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift, LLVM IR
+- LSP (references, rename): all of the above plus Clojure, Assembly
 - Markdown/text/log indexing with semantic chunking
 
 ## Install
@@ -119,6 +119,24 @@ Endpoints: `GET /health`, `GET /help`, `POST /index`, `POST /search`.
 
 codescan provides structural editing commands for AI agents and scripts.
 All editing commands read replacement text from stdin.
+
+### Hashlines
+
+Every codescan command that outputs source lines annotates them with a 3-character
+base-36 content-chain hash:
+
+```
+44:k7m|fn init(self: *Self) void {
+45:r2p|    self.count = 0;
+46:a9x|    self.buffer = undefined;
+47:3bw|    self.ready = false;
+48:npq|}
+```
+
+Each hash incorporates the previous line's hash, forming a chain. If any line above
+changes, all subsequent hashes cascade — so a stale `line:hash` reference is always
+detected. This lets AI agents and scripts target exact line ranges without the silent
+corruption risk of bare line numbers.
 
 ### Content-based editing
 ```bash
