@@ -2,7 +2,7 @@
 
 Semantic code search for local repositories.
 
-- Zig CLI + HTTP API
+- Zig CLI + HTTP API + MCP server
 - Ollama embeddings (default: `bge-large`, override with `OLLAMA_MODEL`)
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
@@ -113,7 +113,73 @@ Set `DEBUG=1` to emit verbose indexing progress to stderr.
 ./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123
 ```
 
-Endpoints: `GET /health`, `GET /help`, `POST /index`, `POST /search`.
+Endpoints:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/health` | GET | Health check |
+| `/help` | GET | List all endpoints |
+| `/search` | POST | Semantic code search |
+| `/index` | POST | Index/reindex repository |
+| `/symbols` | POST | List symbols in a file |
+| `/find-symbol` | POST | Find symbol by name path |
+| `/replace-symbol` | POST | Replace a symbol's body |
+| `/insert-after` | POST | Insert code after a symbol |
+| `/insert-before` | POST | Insert code before a symbol |
+| `/replace-lines` | POST | Replace hashline-validated line range |
+| `/insert-at` | POST | Insert after hashline-validated line |
+| `/replace-content` | POST | Find/replace text or regex |
+| `/references` | POST | Find references via LSP |
+| `/rename` | POST | Rename symbol via LSP |
+
+```bash
+# examples
+curl -s localhost:8123/symbols -d '{"file":"src/main.zig"}'
+curl -s localhost:8123/find-symbol -d '{"file":"src/main.zig","pattern":"runSearch","include_body":true}'
+curl -s localhost:8123/replace-content -d '{"file":"src/lib.zig","needle":"old","body":"new","all":true}'
+```
+
+## Run (MCP)
+
+codescan includes an [MCP](https://modelcontextprotocol.io/) server for direct LLM tool integration.
+It communicates via JSON-RPC 2.0 over stdio (newline-delimited).
+
+```bash
+codescan mcp-serve --root <path>
+```
+
+### Claude Desktop / Claude Code configuration
+
+Add to your MCP settings:
+
+```json
+{
+  "mcpServers": {
+    "codescan": {
+      "command": "/path/to/codescan",
+      "args": ["mcp-serve", "--root", "/path/to/your/project"]
+    }
+  }
+}
+```
+
+### Available MCP tools
+
+| Tool | Description |
+|------|-------------|
+| `codescan_search` | Semantic code search |
+| `codescan_index` | Index/reindex repository |
+| `codescan_symbols` | List symbols in a file |
+| `codescan_find_symbol` | Find symbol by name path |
+| `codescan_replace_symbol` | Replace a symbol's body |
+| `codescan_insert_after` | Insert code after a symbol |
+| `codescan_insert_before` | Insert code before a symbol |
+| `codescan_replace_lines` | Replace hashline-validated line range |
+| `codescan_insert_at` | Insert after hashline-validated line |
+| `codescan_replace_content` | Find/replace text or regex |
+| `codescan_references` | Find references via LSP |
+| `codescan_rename` | Rename symbol via LSP |
+| `codescan_config` | Show configuration |
 
 ## Semantic Editing
 
