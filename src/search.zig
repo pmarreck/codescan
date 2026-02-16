@@ -874,7 +874,7 @@ fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 	while (tokens.next()) |tok| {
 		if (tok.len == 0) continue;
 		if (token_count > 0) {
-			try out.appendSlice(allocator, " AND ");
+			try out.appendSlice(allocator, " OR ");
 		}
 		try out.append(allocator, '"');
 		try out.appendSlice(allocator, tok);
@@ -1659,3 +1659,17 @@ const FakeEmbedder = struct {
 		allocator.free(embeddings);
 	}
 };
+
+test "buildFtsQuery uses OR for multi-word queries" {
+	const allocator = std.testing.allocator;
+	const result = try buildFtsQuery(allocator, "hash functions");
+	defer allocator.free(result);
+	try std.testing.expectEqualStrings("\"hash\" OR \"functions\"", result);
+}
+
+test "buildFtsQuery single word has no operator" {
+	const allocator = std.testing.allocator;
+	const result = try buildFtsQuery(allocator, "hash");
+	defer allocator.free(result);
+	try std.testing.expectEqualStrings("\"hash\"", result);
+}
