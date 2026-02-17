@@ -20,6 +20,7 @@ const IgnoreSet = struct {
 };
 
 const node_modules_pattern = "**/node_modules/**";
+const bin_pattern = "**/bin/**";
 
 const default_ignore_global = &[_][]const u8{
 	"**/.git/**",
@@ -88,7 +89,8 @@ pub fn findFiles(
 	var walker = try dir.walk(allocator);
 	defer walker.deinit();
 
-	const ignore_sets = try buildIgnoreSets(allocator, registry, ignore_cfg);
+	const skip_bin_ignore = isBashProject(dir);
+	const ignore_sets = try buildIgnoreSets(allocator, registry, ignore_cfg, skip_bin_ignore);
 	defer deinitIgnoreSets(allocator, ignore_sets);
 
 	var results = std.ArrayListUnmanaged([]const u8){};
@@ -98,7 +100,9 @@ pub fn findFiles(
 	}
 
 	while (try walker.next()) |entry| {
-		if (entry.kind != .file) continue;
+		const is_file = entry.kind == .file or
+			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
+		if (!is_file) continue;
 		var extractor = registry.find(entry.path);
 		if (extractor == null) {
 			if (detectShebangLanguage(dir, entry.path)) |language| {
@@ -111,6 +115,21 @@ pub fn findFiles(
 	}
 
 	return results.toOwnedSlice(allocator);
+}
+
+/// Returns true if the project root contains typical bash dotfiles,
+/// indicating bin/ likely contains shell scripts rather than build artifacts.
+fn isBashProject(dir: std.fs.Dir) bool {
+	const markers = [_][]const u8{ ".bashrc", ".bash_profile", ".profile", ".bash_aliases" };
+	for (&markers) |name| {
+		if (dir.statFile(name)) |_| return true else |_| {}
+	}
+	return false;
+}
+
+fn isSymlinkToFile(dir: std.fs.Dir, rel_path: []const u8) bool {
+	const stat = dir.statFile(rel_path) catch return false;
+	return stat.kind == .file;
 }
 
 fn detectShebangLanguage(dir: std.fs.Dir, rel_path: []const u8) ?[]const u8 {
@@ -174,6 +193,7 @@ fn buildIgnoreSets(
 	allocator: std.mem.Allocator,
 	registry: plugin.Registry,
 	ignore_cfg: IgnoreConfig,
+	skip_bin_ignore: bool,
 ) ![]IgnoreSet {
 	var sets = std.ArrayListUnmanaged(IgnoreSet){};
 	errdefer {
@@ -191,7 +211,7 @@ fn buildIgnoreSets(
 			patterns.deinit(allocator);
 		}
 
-		try appendDefaultPatterns(allocator, &patterns, ignore_cfg.include_node_modules);
+		try appendDefaultPatterns(allocator, &patterns, ignore_cfg.include_node_modules, skip_bin_ignore);
 		try appendPatterns(allocator, &patterns, ignore_cfg.global);
 		try appendPatterns(allocator, &patterns, extractor.ignore_patterns);
 		if (findOverrides(ignore_cfg.per_language, extractor.language)) |override| {
@@ -221,9 +241,11 @@ fn appendDefaultPatterns(
 	allocator: std.mem.Allocator,
 	patterns: *std.ArrayListUnmanaged(IgnorePattern),
 	include_node_modules: bool,
+	skip_bin_ignore: bool,
 ) !void {
 	for (default_ignore_global) |raw| {
 		if (include_node_modules and std.mem.eql(u8, raw, node_modules_pattern)) continue;
+		if (skip_bin_ignore and std.mem.eql(u8, raw, bin_pattern)) continue;
 		try appendPattern(allocator, patterns, raw);
 	}
 }
@@ -470,4 +492,130 @@ test "findFiles includes node_modules when enabled" {
 	}
 
 	try std.testing.expectEqual(@as(usize, 2), files.len);
+}
+
+test "findFiles matches bash dotfile names" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.writeFile(.{ .sub_path = ".bashrc", .data = "# bash config\n" });
+	try tmp.dir.writeFile(.{ .sub_path = ".bash_profile", .data = "# profile\n" });
+	try tmp.dir.writeFile(.{ .sub_path = ".profile", .data = "# profile\n" });
+	try tmp.dir.writeFile(.{ .sub_path = ".bash_aliases", .data = "# aliases\n" });
+	try tmp.dir.writeFile(.{ .sub_path = ".vimrc", .data = "\" vim config\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	// Should find .bashrc, .bash_profile, .profile, .bash_aliases but NOT .vimrc
+	try std.testing.expectEqual(@as(usize, 4), files.len);
+	var found_bashrc = false;
+	var found_profile = false;
+	for (files) |path| {
+		if (std.mem.eql(u8, path, ".bashrc")) found_bashrc = true;
+		if (std.mem.eql(u8, path, ".profile")) found_profile = true;
+	}
+	try std.testing.expect(found_bashrc);
+	try std.testing.expect(found_profile);
+}
+
+test "findFiles follows symlinks to files" {
+	if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.writeFile(.{ .sub_path = "real.sh", .data = "#!/bin/bash\n" });
+	try std.posix.symlinkat("real.sh", tmp.dir.fd, "link.sh");
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	// Should find both real.sh and the symlink link.sh
+	try std.testing.expectEqual(@as(usize, 2), files.len);
+}
+
+test "findFiles includes bin/ in bash-heavy projects" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Create a bash-heavy project root (has .bashrc)
+	try tmp.dir.writeFile(.{ .sub_path = ".bashrc", .data = "# config\n" });
+	try tmp.dir.makePath("bin");
+	try tmp.dir.writeFile(.{ .sub_path = "bin/my-script.sh", .data = "#!/bin/bash\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	// Should find .bashrc AND bin/my-script.sh (bin/ not ignored in bash projects)
+	var found_script = false;
+	var found_bashrc = false;
+	for (files) |path| {
+		if (std.mem.eql(u8, path, "bin/my-script.sh")) found_script = true;
+		if (std.mem.eql(u8, path, ".bashrc")) found_bashrc = true;
+	}
+	try std.testing.expect(found_bashrc);
+	try std.testing.expect(found_script);
+}
+
+test "findFiles ignores bin/ in non-bash projects" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Normal project (no bash dotfiles in root)
+	try tmp.dir.makePath("src");
+	try tmp.dir.makePath("bin");
+	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = "bin/output.zig", .data = "" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	// Should only find src/main.zig — bin/ should be ignored
+	try std.testing.expectEqual(@as(usize, 1), files.len);
+	try std.testing.expectEqualStrings("src/main.zig", files[0]);
 }

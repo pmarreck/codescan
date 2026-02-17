@@ -26,6 +26,7 @@ pub const CommandTag = enum {
 	rename,
 	watch,
 	mcp_serve,
+	clean,
 };
 
 pub const ConfigAction = enum {
@@ -68,6 +69,7 @@ pub const Seen = struct {
 	lang_filter: bool = false,
 	force: bool = false,
 	dry_run: bool = false,
+	confirm: bool = false,
 };
 
 pub const Parsed = struct {
@@ -112,6 +114,7 @@ pub const Parsed = struct {
 	watch_action: WatchAction,
 	force: bool,
 	dry_run: bool,
+	confirm: bool,
 	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
@@ -167,6 +170,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.watch_action = .run,
 		.force = false,
 		.dry_run = false,
+		.confirm = false,
 		.seen = .{},
 	};
 
@@ -295,6 +299,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 				i += 1;
 			}
 		}
+	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
+		parsed.command = .clean;
+		i += 1;
 	} else {
 		parsed.command = .search;
 		parsed.assumed_search = true;
@@ -540,6 +547,12 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) {
 			parsed.force = true;
 			parsed.seen.force = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--confirm") or std.mem.eql(u8, arg, "-y")) {
+			parsed.confirm = true;
+			parsed.seen.confirm = true;
 			i += 1;
 			continue;
 		}
@@ -876,4 +889,36 @@ test "parse init -f shorthand" {
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.init, parsed.command);
 	try std.testing.expect(parsed.force);
+}
+
+test "parse clean command" {
+	const args = [_][]const u8{ "codescan", "clean" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.clean, parsed.command);
+	try std.testing.expect(!parsed.confirm);
+}
+
+test "parse clear as alias for clean" {
+	const args = [_][]const u8{ "codescan", "clear" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.clean, parsed.command);
+}
+
+test "parse clean --confirm" {
+	const args = [_][]const u8{ "codescan", "clean", "--confirm" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.clean, parsed.command);
+	try std.testing.expect(parsed.confirm);
+	try std.testing.expect(parsed.seen.confirm);
+}
+
+test "parse clear -y" {
+	const args = [_][]const u8{ "codescan", "clear", "-y" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.clean, parsed.command);
+	try std.testing.expect(parsed.confirm);
 }

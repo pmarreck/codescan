@@ -173,6 +173,7 @@ pub fn defaultRegistry() Registry {
 				.kind = bash_plugin.kind,
 				.extensions = bash_plugin.extensions,
 				.ignore_patterns = bash_plugin.ignore_patterns,
+				.matches_path = bash_plugin.matchesPath,
 				.extract = extract_bash.extract,
 			},
 			.{

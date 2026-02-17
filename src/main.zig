@@ -34,7 +34,7 @@ const Defaults = struct {
 	ollama_model: []const u8 = "bge-large",
 	embedding_dim: usize = 1024,
 	batch_size: usize = 16,
-	max_file_size: usize = 2 * 1024 * 1024,
+	max_file_size: usize = 5 * 1024 * 1024,
 	search_mode: search.SearchMode = .hybrid,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
@@ -579,7 +579,7 @@ pub fn main() !void {
 		.replace_content => {
 			const needle = parsed.find_symbol_pattern orelse
 				exitWithError("error: replace-content requires a pattern\n" ++
-				"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
+					"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
 			const file_path = parsed.symbols_file orelse
 				exitWithError("error: replace-content requires --file <path>\n");
 			const input_text = try readStdin(allocator);
@@ -739,6 +739,50 @@ pub fn main() !void {
 					};
 				},
 			}
+		},
+		.clean => {
+			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+
+			// Require confirmation to prevent accidental data loss
+			if (!parsed.confirm) {
+				if (std.fs.File.stdin().isTty()) {
+					var stderr_buf: [4096]u8 = undefined;
+					var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+					const stderr = &stderr_writer.interface;
+					_ = stderr.print("This will stop the watcher and delete {s}/. Continue? [y/N] ", .{codescan_dir}) catch {};
+					_ = stderr.flush() catch {};
+					var input_buf: [16]u8 = undefined;
+					const n = std.fs.File.stdin().read(&input_buf) catch 0;
+					if (n == 0 or (input_buf[0] != 'y' and input_buf[0] != 'Y')) {
+						try stdout.print("Aborted.\n", .{});
+						try stdout.flush();
+						return;
+					}
+				} else {
+					try stdout.print("error: clean/clear requires confirmation in non-interactive mode\n", .{});
+					try stdout.print("usage: codescan clean --confirm\n", .{});
+					try stdout.flush();
+					std.process.exit(1);
+				}
+			}
+
+			// Stop watcher if running
+			if (comptime builtin.os.tag != .windows) {
+				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+					_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+					try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+					pidfile.removePid(allocator, codescan_dir);
+				}
+			}
+
+			// Delete .codescan/ directory
+			std.fs.cwd().deleteTree(codescan_dir) catch |err| {
+				try stdout.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) });
+				try stdout.flush();
+				std.process.exit(1);
+			};
+			try stdout.print("Removed {s}/\n", .{codescan_dir});
+			try stdout.flush();
 		},
 		.help => {},
 	}
@@ -1285,7 +1329,7 @@ pub fn runSymbols(allocator: std.mem.Allocator, file_path: []const u8, out_fmt: 
 	if (std.mem.eql(u8, ext, ".zig")) {
 		tree = try symbol_tree.extractZig(allocator, source);
 		tree_valid = true;
-	} else if (ts_symbols.Language.fromExtension(ext)) |lang| {
+	} else if (ts_symbols.Language.fromExtension(ext) orelse ts_symbols.Language.fromShebang(source)) |lang| {
 		tree = try ts_symbols.extract(allocator, source, lang);
 		tree_valid = true;
 	}
@@ -1333,7 +1377,7 @@ pub fn runFindSymbol(
 	if (std.mem.eql(u8, ext, ".zig")) {
 		tree = try symbol_tree.extractZig(allocator, source);
 		tree_valid = true;
-	} else if (ts_symbols.Language.fromExtension(ext)) |lang| {
+	} else if (ts_symbols.Language.fromExtension(ext) orelse ts_symbols.Language.fromShebang(source)) |lang| {
 		tree = try ts_symbols.extract(allocator, source, lang);
 		tree_valid = true;
 	}
@@ -1502,7 +1546,7 @@ fn extractFileAndTree(allocator: std.mem.Allocator, file_path: []const u8) !stru
 	if (std.mem.eql(u8, ext, ".zig")) {
 		tree = try symbol_tree.extractZig(allocator, source);
 		tree_valid = true;
-	} else if (ts_symbols.Language.fromExtension(ext)) |lang| {
+	} else if (ts_symbols.Language.fromExtension(ext) orelse ts_symbols.Language.fromShebang(source)) |lang| {
 		tree = try ts_symbols.extract(allocator, source, lang);
 		tree_valid = true;
 	}
@@ -2447,6 +2491,11 @@ const usage =
 	\\  index                    Index codebase
 	\\  update                   Incremental index (only new/modified/deleted)
 	\\  watch                    Watch for changes and re-index continuously
+	\\    watch start            Start watcher as background daemon
+	\\    watch stop             Stop background watcher
+	\\    watch restart          Restart background watcher
+	\\    watch status           Show watcher status
+	\\    watch pid              Print watcher PID
 	\\  search <query>           Search indexed codebase
 	\\  symbols <file>           Show symbol tree for a file
 	\\  find-symbol <pattern>    Find symbols by name path pattern
@@ -2460,6 +2509,8 @@ const usage =
 	\\  rename <pattern>        Rename symbol across codebase via LSP
 	\\  serve                    Start HTTP API server
 	\\  mcp-serve                Start MCP (Model Context Protocol) server
+	\\  clean, clear              Stop watcher and remove all codescan data (.codescan/)
+	\\                           Requires confirmation (interactive prompt or --confirm)
 	\\
 	\\If no command is specified, codescan assumes `search`.
 	\\
@@ -2491,9 +2542,11 @@ const usage =
 	\\Supported languages:
 	\\  Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir,
 	\\    Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang,
-	\\    OCaml, Swift, LLVM IR
-	\\  LSP (references, rename): all of the above plus Clojure, Assembly
+	\\    OCaml, Swift, LLVM IR, Clojure, Assembly
+	\\  LSP (references, rename): all of the above
 	\\  Indexing/search: any text file (Markdown, logs, plain text, etc.)
+	\\  Extensionless scripts with shebangs (#!/usr/bin/env bash, etc.)
+	\\  are auto-detected for bash, lua, node/deno/bun, and ruby.
 	\\
 	\\LSP commands (references, rename):
 	\\  Lazy-start a language server for the file's language.
@@ -2501,31 +2554,32 @@ const usage =
 	\\  clangd, typescript-language-server, gopls, elixir-ls, etc.)
 	\\
 	\\Options:
-	\\  --root <path>           Root path (default: nearest .codescan ancestor or .)
-	\\  --db <path>             DB path (default .codescan/index.sqlite3)
-	\\  --ollama-url <url>      Ollama base URL (default http://localhost:11434)
-	\\  --ollama-model <name>   Embedding model (default bge-large or $OLLAMA_MODEL)
-	\\  --embedding-dim <n>     Embedding dimension (default 1024)
-	\\  --batch <n>             Embedding batch size (default 16)
-	\\  --max-file-size <n>     Max file size bytes (default 2097152)
-	\\  --top <n>               Search top N (default 10)
+	\\  --root <path>                   Root path (default: nearest .codescan ancestor or .)
+	\\  --db <path>                     DB path (default .codescan/index.sqlite3)
+	\\  --ollama-url <url>              Ollama base URL (default http://localhost:11434)
+	\\  --ollama-model <name>           Embedding model (default bge-large or $OLLAMA_MODEL)
+	\\  --embedding-dim <n>             Embedding dimension (default 1024)
+	\\  --batch <n>                     Embedding batch size (default 16)
+	\\  --max-file-size <n>             Max file size bytes (default 5242880)
+	\\  --top <n>                       Search top N (default 10)
 	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
-	\\  --weight-vector <n>     Hybrid weight for vector score (default 0.7)
-	\\  --weight-lexical <n>    Hybrid weight for lexical score (default 0.3)
-	\\  --min-score <n>         Minimum score threshold (default 0.0)
-	\\  --ext <csv>             Restrict to extensions (comma-separated)
-	\\  --type <csv>            Restrict to types: code,doc,text,log
-	\\  --lang <csv>            Restrict search to languages
-	\\  --include-docs          Include markdown/README when defaulting to primary language
-	\\  --docs, --only-docs     Only return markdown/README results
-	\\  --comments, --only-comments  Only return doc-comment results
-	\\  --include-node-modules  Include node_modules during indexing
-	\\  --http-host <host>      HTTP host (default 127.0.0.1)
-	\\  --http-port <port>      HTTP port (default 8123)
-	\\  --show-comments, --verbose   Show doc comments in human output (default: hidden)
-	\\  --interval <ms>          Watch poll interval milliseconds (default 2000)
-	\\  --json                  JSON output for CLI search/index
-	\\  -h, --help              Show help
+	\\  --weight-vector <n>             Hybrid weight for vector score (default 0.7)
+	\\  --weight-lexical <n>            Hybrid weight for lexical score (default 0.3)
+	\\  --min-score <n>                 Minimum score threshold (default 0.0)
+	\\  --ext <csv>                     Restrict to extensions (comma-separated)
+	\\  --type <csv>                    Restrict to types: code,doc,text,log
+	\\  --lang <csv>                    Restrict search to languages
+	\\  --include-docs                  Include markdown/README when defaulting to primary language
+	\\  --docs, --only-docs             Only return markdown/README results
+	\\  --comments, --only-comments     Only return doc-comment results
+	\\  --include-node-modules          Include node_modules during indexing
+	\\  --http-host <host>              HTTP host (default 127.0.0.1)
+	\\  --http-port <port>              HTTP port (default 8123)
+	\\  --show-comments, --verbose      Show doc comments in human output (default: hidden)
+	\\  --interval <ms>                 Watch poll interval milliseconds (default 2000)
+	\\  --json                          JSON output for CLI search/index
+	\\  --confirm, -y                   Skip confirmation prompt (for clean/clear)
+	\\  -h, --help                      Show help
 	\\
 ;
 

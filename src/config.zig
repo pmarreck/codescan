@@ -21,8 +21,8 @@ pub const default_template =
     \\#embedding_dim=1024
     \\#batch_size=16
     \\
-    \\# Maximum file size to index (bytes, default 2 MiB)
-    \\#max_file_size=2097152
+    \\# Maximum file size to index (bytes, default 5 MiB)
+    \\#max_file_size=5242880
     \\
     \\# Search tuning
     \\#search_mode=hybrid
