@@ -140,7 +140,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.comments_only = false,
 		.include_node_modules = false,
 		.query = null,
-		.top_n = 10,
+		.top_n = 5,
 		.root_path = ".",
 		.db_path = ".codescan/index.sqlite3",
 		.ollama_url = "http://localhost:11434",
@@ -696,7 +696,7 @@ test "parse search with query defaults" {
 	try std.testing.expect(parsed.show_comments == false);
 	try std.testing.expect(parsed.comments_only == false);
 	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
-	try std.testing.expectEqual(@as(usize, 10), parsed.top_n);
+	try std.testing.expectEqual(@as(usize, 5), parsed.top_n);
 	try std.testing.expectEqualStrings(".", parsed.root_path);
 	try std.testing.expectEqualStrings(".codescan/index.sqlite3", parsed.db_path);
 	try std.testing.expectEqualStrings("http://localhost:11434", parsed.ollama_url);

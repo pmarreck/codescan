@@ -27,7 +27,7 @@ var g_stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
 
 const Defaults = struct {
 	output: cli.OutputFormat = .human,
-	top_n: usize = 10,
+	top_n: usize = 5,
 	root_path: []const u8 = ".",
 	db_path: []const u8 = ".codescan/index.sqlite3",
 	ollama_url: []const u8 = "http://localhost:11434",
@@ -453,10 +453,18 @@ pub fn main() !void {
 			defer search.freeResults(allocator, sr.results);
 
 			if (sr.results.len == 0) {
-				_ = stderr.print(
-					"note: no results found; consider re-indexing with `codescan update`.\n",
-					.{},
-				) catch {};
+				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+				if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+					_ = stderr.print(
+						"note: no results found (watcher is running and index is up to date).\n",
+						.{},
+					) catch {};
+				} else {
+					_ = stderr.print(
+						"note: no results found; consider re-indexing with `codescan update` or starting the watcher with `codescan watch start`.\n",
+						.{},
+					) catch {};
+				}
 				_ = stderr.flush() catch {};
 			}
 
@@ -909,6 +917,9 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	}
 	if (parsed.seen.http_host) settings.http_host = parsed.http_host;
 	if (parsed.seen.http_port) settings.http_port = parsed.http_port;
+
+	// --comments / --only-comments implies --show-comments
+	if (settings.comments_only) settings.show_comments = true;
 
 	if (!std.fs.path.isAbsolute(settings.db_path) and !std.mem.eql(u8, settings.root_path, ".")) {
 		settings.db_path = try std.fs.path.join(allocator, &.{ settings.root_path, settings.db_path });
@@ -2561,14 +2572,18 @@ const usage =
 	\\  --embedding-dim <n>             Embedding dimension (default 1024)
 	\\  --batch <n>                     Embedding batch size (default 16)
 	\\  --max-file-size <n>             Max file size bytes (default 5242880)
-	\\  --top <n>                       Search top N (default 10)
+	\\  --top <n>                       Search top N (default 5)
 	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
 	\\  --weight-vector <n>             Hybrid weight for vector score (default 0.7)
 	\\  --weight-lexical <n>            Hybrid weight for lexical score (default 0.3)
 	\\  --min-score <n>                 Minimum score threshold (default 0.0)
 	\\  --ext <csv>                     Restrict to extensions (comma-separated)
 	\\  --type <csv>                    Restrict to types: code,doc,text,log
-	\\  --lang <csv>                    Restrict search to languages
+	\\  --lang <csv>                    Restrict search to languages:
+	\\                                    zig, c, typescript, rust, elixir, bash, lua,
+	\\                                    nix, nim, lean, idris, haskell, go, ruby,
+	\\                                    erlang, ocaml, swift, llvm, clojure, assembly,
+	\\                                    markdown, text, log
 	\\  --include-docs                  Include markdown/README when defaulting to primary language
 	\\  --docs, --only-docs             Only return markdown/README results
 	\\  --comments, --only-comments     Only return doc-comment results
