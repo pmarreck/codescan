@@ -587,6 +587,32 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			continue;
 		}
 
+		// Collect positional args for commands that expect them
+		switch (parsed.command) {
+			.find_symbol, .replace_symbol, .insert_after, .insert_before, .replace_content, .references, .rename => {
+				if (parsed.find_symbol_pattern == null) {
+					parsed.find_symbol_pattern = arg;
+					i += 1;
+					continue;
+				}
+			},
+			.symbols => {
+				if (parsed.symbols_file == null) {
+					parsed.symbols_file = arg;
+					i += 1;
+					continue;
+				}
+			},
+			.insert_at => {
+				if (parsed.hashline_ref == null) {
+					parsed.hashline_ref = arg;
+					i += 1;
+					continue;
+				}
+			},
+			else => {},
+		}
+
 		return error.UnexpectedArg;
 	}
 
@@ -921,4 +947,13 @@ test "parse clear -y" {
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.clean, parsed.command);
 	try std.testing.expect(parsed.confirm);
+}
+
+test "parse find-symbol with --file before pattern" {
+	const args = [_][]const u8{ "codescan", "find-symbol", "--file", "src/main.zig", "_git_show" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.find_symbol, parsed.command);
+	try std.testing.expectEqualStrings("src/main.zig", parsed.symbols_file.?);
+	try std.testing.expectEqualStrings("_git_show", parsed.find_symbol_pattern.?);
 }
