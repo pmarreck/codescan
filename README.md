@@ -92,6 +92,10 @@ nix develop -c ./tests/integration/test-integration
 
 # index node_modules too
 ./zig-out/bin/codescan index --include-node-modules
+
+# show index and watcher status
+./zig-out/bin/codescan status
+./zig-out/bin/codescan status --json
 ```
 
 If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
@@ -132,6 +136,7 @@ Endpoints:
 | `/replace-content` | POST | Find/replace text or regex |
 | `/references` | POST | Find references via LSP |
 | `/rename` | POST | Rename symbol via LSP |
+| `/status` | GET | Index and watcher status |
 
 ```bash
 # examples
@@ -181,6 +186,7 @@ Add to your MCP settings:
 | `codescan_references` | Find references via LSP |
 | `codescan_rename` | Rename symbol via LSP |
 | `codescan_config` | Show configuration |
+| `codescan_status` | Index and watcher status |
 
 ## Semantic Editing
 

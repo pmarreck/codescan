@@ -215,6 +215,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		try out.writer.writeAll("error: index via MCP requires a running Ollama instance (not yet wired)");
 	} else if (std.mem.eql(u8, name, "codescan_config")) {
 		try out.writer.writeAll("error: config display not yet implemented via MCP");
+	} else if (std.mem.eql(u8, name, "codescan_status")) {
+		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch return error.ToolFailed;
 	} else {
 		return error.UnknownTool;
 	}
@@ -299,7 +301,8 @@ const tools_list_json =
 	\\{"name":"codescan_replace_content","description":"Find and replace text or regex in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"}},"required":["file","needle","body"]}},
 	\\{"name":"codescan_references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
 	\\{"name":"codescan_rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
-	\\{"name":"codescan_config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}}
+	\\{"name":"codescan_config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
+		\\{"name":"codescan_status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}}
 	\\]}
 ;
 
@@ -344,7 +347,7 @@ test "handleInitialize returns server info" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":1") != null);
 }
 
-test "handleToolsList returns all 13 tools" {
+test "handleToolsList returns all 14 tools" {
 	const allocator = std.testing.allocator;
 	const response = try handleToolsList(allocator, 1);
 	defer allocator.free(response);
@@ -364,6 +367,7 @@ test "handleToolsList returns all 13 tools" {
 		"codescan_references",
 		"codescan_rename",
 		"codescan_config",
+		"codescan_status",
 	};
 	for (tool_names) |tool_name| {
 		try std.testing.expect(std.mem.indexOf(u8, response, tool_name) != null);

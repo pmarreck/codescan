@@ -58,7 +58,7 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	return null;
 }
 
-const PidType = if (is_posix) std.posix.pid_t else i32;
+pub const PidType = if (is_posix) std.posix.pid_t else i32;
 
 /// Convenience: returns true if a watcher process is currently running.
 pub fn isWatcherRunning(allocator: std.mem.Allocator, codescan_dir: []const u8) bool {

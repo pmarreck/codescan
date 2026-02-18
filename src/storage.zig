@@ -415,6 +415,68 @@ pub fn primaryLanguage(
 	return error.SqlStepFailed;
 }
 
+pub const LangStat = struct {
+	language: []const u8,
+	file_count: i64,
+	symbol_count: i64,
+};
+
+/// Returns language stats ordered by file_count DESC.
+/// Caller must free the returned slice and each language string with the given allocator.
+pub fn languageStats(db: Db, allocator: std.mem.Allocator) ![]LangStat {
+	const sql: [:0]const u8 = "SELECT lang, COUNT(DISTINCT file_path), COUNT(*) FROM symbols GROUP BY lang ORDER BY 2 DESC;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	var results: std.ArrayListUnmanaged(LangStat) = .{};
+	errdefer {
+		for (results.items) |item| allocator.free(item.language);
+		results.deinit(allocator);
+	}
+
+	while (c.sqlite3_step(stmt.?) == c.SQLITE_ROW) {
+		const lang_ptr = c.sqlite3_column_text(stmt.?, 0) orelse continue;
+		const lang_slice = std.mem.span(lang_ptr);
+		const lang = try allocator.dupe(u8, lang_slice);
+		try results.append(allocator, .{
+			.language = lang,
+			.file_count = c.sqlite3_column_int64(stmt.?, 1),
+			.symbol_count = c.sqlite3_column_int64(stmt.?, 2),
+		});
+	}
+
+	return results.toOwnedSlice(allocator);
+}
+
+pub const LastIndexedResult = struct {
+	file_path: []const u8,
+	indexed_at: i64,
+};
+
+/// Returns the most recently indexed file and its indexed_at epoch (seconds).
+/// Caller must free the returned file_path with the given allocator.
+pub fn lastIndexedFile(db: Db, allocator: std.mem.Allocator) !?LastIndexedResult {
+	const sql: [:0]const u8 = "SELECT file_path, indexed_at FROM indexed_files ORDER BY indexed_at DESC LIMIT 1;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	if (c.sqlite3_step(stmt.?) == c.SQLITE_ROW) {
+		const path_ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
+		const path_slice = std.mem.span(path_ptr);
+		return .{
+			.file_path = try allocator.dupe(u8, path_slice),
+			.indexed_at = c.sqlite3_column_int64(stmt.?, 1),
+		};
+	}
+	return null;
+}
+
 fn logSqliteError(db: Db, context: []const u8) void {
 	const msg = c.sqlite3_errmsg(db);
 	if (msg != null) {
@@ -791,6 +853,88 @@ test "primaryLanguage selects most common language" {
 
 	try std.testing.expect(primary != null);
 	try std.testing.expectEqualStrings("zig", primary.?);
+}
+
+test "languageStats returns grouped data" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "b"),
+		.signature = try allocator.dupe(u8, "fn b() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym2.deinit(allocator);
+
+	var sym3 = model.Symbol{
+		.language = try allocator.dupe(u8, "rust"),
+		.file_path = try allocator.dupe(u8, "src/lib.rs"),
+		.name = try allocator.dupe(u8, "c"),
+		.signature = try allocator.dupe(u8, "fn c()"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym3.deinit(allocator);
+
+	_ = try insertSymbol(db, sym1);
+	_ = try insertSymbol(db, sym2);
+	_ = try insertSymbol(db, sym3);
+
+	const stats = try languageStats(db, allocator);
+	defer {
+		for (stats) |s| allocator.free(s.language);
+		allocator.free(stats);
+	}
+
+	try std.testing.expectEqual(@as(usize, 2), stats.len);
+	// zig has 2 files, should be first (ordered by file_count DESC)
+	try std.testing.expectEqualStrings("zig", stats[0].language);
+	try std.testing.expectEqual(@as(i64, 2), stats[0].file_count);
+	try std.testing.expectEqual(@as(i64, 2), stats[0].symbol_count);
+	try std.testing.expectEqualStrings("rust", stats[1].language);
+	try std.testing.expectEqual(@as(i64, 1), stats[1].file_count);
+	try std.testing.expectEqual(@as(i64, 1), stats[1].symbol_count);
+}
+
+test "lastIndexedFile returns most recent entry" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// No files yet
+	const empty = try lastIndexedFile(db, allocator);
+	try std.testing.expect(empty == null);
+
+	// Insert an indexed file
+	try upsertIndexedFile(db, "src/a.zig", 100, 50);
+
+	const result = try lastIndexedFile(db, allocator);
+	try std.testing.expect(result != null);
+	defer allocator.free(result.?.file_path);
+	try std.testing.expectEqualStrings("src/a.zig", result.?.file_path);
+	// indexed_at should be a recent epoch (just check it's > 0)
+	try std.testing.expect(result.?.indexed_at > 0);
 }
 
 test "isIndexPopulated returns false on empty DB" {

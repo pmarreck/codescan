@@ -27,6 +27,7 @@ pub const CommandTag = enum {
 	watch,
 	mcp_serve,
 	clean,
+	status,
 };
 
 pub const ConfigAction = enum {
@@ -299,6 +300,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 				i += 1;
 			}
 		}
+	} else if (std.mem.eql(u8, cmd, "status")) {
+		parsed.command = .status;
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
 		parsed.command = .clean;
 		i += 1;
@@ -915,6 +919,22 @@ test "parse init -f shorthand" {
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.init, parsed.command);
 	try std.testing.expect(parsed.force);
+}
+
+
+test "parse status command" {
+	const args = [_][]const u8{ "codescan", "status" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.status, parsed.command);
+}
+
+test "parse status --json" {
+	const args = [_][]const u8{ "codescan", "status", "--json" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.status, parsed.command);
+	try std.testing.expectEqual(OutputFormat.json, parsed.output);
 }
 
 test "parse clean command" {

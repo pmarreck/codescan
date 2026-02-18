@@ -748,6 +748,10 @@ pub fn main() !void {
 				},
 			}
 		},
+		.status => {
+			try runStatus(allocator, settings.db_path, settings.root_path, parsed.output, stdout);
+			try stdout.flush();
+		},
 		.clean => {
 			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 
@@ -2520,6 +2524,7 @@ const usage =
 	\\  rename <pattern>        Rename symbol across codebase via LSP
 	\\  serve                    Start HTTP API server
 	\\  mcp-serve                Start MCP (Model Context Protocol) server
+	\\  status                   Show index and watcher status
 	\\  clean, clear              Stop watcher and remove all codescan data (.codescan/)
 	\\                           Requires confirmation (interactive prompt or --confirm)
 	\\
@@ -2617,6 +2622,214 @@ fn usageErrorMessage(err: anyerror) []const u8 {
 	if (err == error.TooManyArgs) return "too many arguments";
 	if (err == error.InvalidNumber) return "invalid number";
 	return "invalid usage";
+}
+
+
+pub fn runStatus(
+	allocator: std.mem.Allocator,
+	db_path: []const u8,
+	root_path: []const u8,
+	format: cli.OutputFormat,
+	writer: *std.Io.Writer,
+) !void {
+	const db = storage.openFileWithVec(allocator, db_path) catch {
+		if (format == .json) {
+			try writer.writeAll("{\"error\":\"no index found\"}\n");
+		} else {
+			try writer.writeAll("No codescan index found. Run `codescan init` first.\n");
+		}
+		return;
+	};
+	defer storage.close(db);
+
+	// Gather stats
+	const file_count = storage.countDistinctFiles(db, allocator) catch 0;
+	const symbol_count = storage.countRows(db, allocator, "symbols") catch 0;
+	const embedding_count = storage.countRows(db, allocator, "embeddings") catch 0;
+	const comment_embedding_count = storage.countRows(db, allocator, "embeddings_comment") catch 0;
+
+	var lang_stats_buf: []storage.LangStat = &.{};
+	var lang_stats_owned = false;
+	if (storage.languageStats(db, allocator)) |stats| {
+		lang_stats_buf = stats;
+		lang_stats_owned = true;
+	} else |_| {}
+	defer if (lang_stats_owned) {
+		for (lang_stats_buf) |s| allocator.free(s.language);
+		allocator.free(lang_stats_buf);
+	};
+	const lang_stats = lang_stats_buf;
+
+	const last_indexed = storage.lastIndexedFile(db, allocator) catch null;
+	defer if (last_indexed) |li| allocator.free(li.file_path);
+
+	// Watcher status
+	const codescan_dir = std.fs.path.dirname(db_path) orelse ".codescan";
+	const watcher_pid = pidfile.readAndCheckPid(allocator, codescan_dir) catch null;
+
+	// DB file size
+	const db_size: u64 = blk: {
+		const stat = std.fs.cwd().statFile(db_path) catch break :blk 0;
+		break :blk stat.size;
+	};
+
+	if (format == .json) {
+		try writeStatusJson(writer, root_path, db_path, db_size, watcher_pid, file_count, symbol_count, embedding_count, comment_embedding_count, lang_stats, last_indexed);
+	} else {
+		try writeStatusHuman(writer, root_path, db_path, db_size, watcher_pid, file_count, symbol_count, embedding_count, comment_embedding_count, lang_stats, last_indexed);
+	}
+}
+
+fn writeStatusJson(
+	writer: *std.Io.Writer,
+	root_path: []const u8,
+	db_path: []const u8,
+	db_size: u64,
+	watcher_pid: ?pidfile.PidType,
+	file_count: i64,
+	symbol_count: i64,
+	embedding_count: i64,
+	comment_embedding_count: i64,
+	lang_stats: []const storage.LangStat,
+	last_indexed: ?storage.LastIndexedResult,
+) !void {
+	try writer.writeAll("{");
+
+	// Root
+	try writer.writeAll("\"root\":");
+	try writeJsonString(root_path, writer);
+	try writer.writeAll(",");
+
+	// DB
+	try writer.writeAll("\"db_path\":");
+	try writeJsonString(db_path, writer);
+	try writer.print(",\"db_size_bytes\":{d},", .{db_size});
+
+	// Watcher
+	if (watcher_pid) |pid| {
+		try writer.print("\"watcher\":{{\"running\":true,\"pid\":{d}}},", .{pid});
+	} else {
+		try writer.writeAll("\"watcher\":{\"running\":false},");
+	}
+
+	// Index stats
+	try writer.print("\"index\":{{\"files\":{d},\"symbols\":{d},\"embeddings\":{d},\"comment_embeddings\":{d}}},", .{
+		file_count, symbol_count, embedding_count, comment_embedding_count,
+	});
+
+	// Languages
+	try writer.writeAll("\"languages\":[");
+	for (lang_stats, 0..) |ls, idx| {
+		if (idx > 0) try writer.writeAll(",");
+		try writer.writeAll("{\"language\":");
+		try writeJsonString(ls.language, writer);
+		try writer.print(",\"files\":{d},\"symbols\":{d}}}", .{ ls.file_count, ls.symbol_count });
+	}
+	try writer.writeAll("],");
+
+	// Last indexed
+	if (last_indexed) |li| {
+		try writer.writeAll("\"last_indexed\":{\"file\":");
+		try writeJsonString(li.file_path, writer);
+		try writer.writeAll(",\"timestamp_utc\":\"");
+		try writeIso8601(writer, li.indexed_at);
+		try writer.print("\",\"epoch\":{d}}}", .{li.indexed_at});
+	} else {
+		try writer.writeAll("\"last_indexed\":null");
+	}
+
+	try writer.writeAll("}\n");
+}
+
+fn writeStatusHuman(
+	writer: *std.Io.Writer,
+	root_path: []const u8,
+	db_path: []const u8,
+	db_size: u64,
+	watcher_pid: ?pidfile.PidType,
+	file_count: i64,
+	symbol_count: i64,
+	embedding_count: i64,
+	comment_embedding_count: i64,
+	lang_stats: []const storage.LangStat,
+	last_indexed: ?storage.LastIndexedResult,
+) !void {
+	// Root
+	try writer.print("Root:       {s}\n", .{root_path});
+
+	// DB path + size
+	try writer.writeAll("DB:         ");
+	try writer.writeAll(db_path);
+	if (db_size > 0) {
+		try writer.writeAll(" (");
+		try writeHumanSize(writer, db_size);
+		try writer.writeAll(")");
+	}
+	try writer.writeAll("\n");
+
+	// Watcher
+	if (watcher_pid) |pid| {
+		try writer.print("Watcher:    running (PID {d})\n", .{pid});
+	} else {
+		try writer.writeAll("Watcher:    stopped\n");
+	}
+
+	try writer.writeAll("\nIndex:\n");
+	try writer.print("  Files:      {d}\n", .{file_count});
+	try writer.print("  Symbols:    {d}\n", .{symbol_count});
+	try writer.print("  Embeddings: {d} code + {d} comment\n", .{ embedding_count, comment_embedding_count });
+
+	if (lang_stats.len > 0) {
+		try writer.writeAll("\nLanguages:\n");
+		for (lang_stats) |ls| {
+			// Pad language name to 14 chars
+			try writer.writeAll("  ");
+			try writer.writeAll(ls.language);
+			var pad: usize = if (ls.language.len < 14) 14 - ls.language.len else 1;
+			while (pad > 0) : (pad -= 1) {
+				try writer.writeAll(" ");
+			}
+			try writer.print("{d} files   {d} symbols\n", .{ ls.file_count, ls.symbol_count });
+		}
+	}
+
+	if (last_indexed) |li| {
+		try writer.print("\nLast indexed: {s}\n", .{li.file_path});
+		try writer.writeAll("  ");
+		try writeIso8601(writer, li.indexed_at);
+		try writer.writeAll(" UTC\n");
+	}
+}
+
+fn writeIso8601(writer: *std.Io.Writer, epoch_secs: i64) !void {
+	const es = std.time.epoch.EpochSeconds{ .secs = @intCast(epoch_secs) };
+	const day = es.getEpochDay();
+	const yd = day.calculateYearDay();
+	const md = yd.calculateMonthDay();
+	const ds = es.getDaySeconds();
+	try writer.print("{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
+		yd.year,
+		@as(u32, @intFromEnum(md.month)) + 1,
+		@as(u32, md.day_index) + 1,
+		ds.getHoursIntoDay(),
+		ds.getMinutesIntoHour(),
+		ds.getSecondsIntoMinute(),
+	});
+}
+
+fn writeHumanSize(writer: *std.Io.Writer, size: u64) !void {
+	if (size < 1024) {
+		try writer.print("{d} B", .{size});
+	} else if (size < 1024 * 1024) {
+		const kb = @as(f64, @floatFromInt(size)) / 1024.0;
+		try writer.print("{d:.1} KB", .{kb});
+	} else if (size < 1024 * 1024 * 1024) {
+		const mb = @as(f64, @floatFromInt(size)) / (1024.0 * 1024.0);
+		try writer.print("{d:.1} MB", .{mb});
+	} else {
+		const gb = @as(f64, @floatFromInt(size)) / (1024.0 * 1024.0 * 1024.0);
+		try writer.print("{d:.1} GB", .{gb});
+	}
 }
 
 fn printUsage(writer: *std.Io.Writer) !void {

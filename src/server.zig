@@ -121,6 +121,18 @@ fn handleRequest(
 		try respondText(req, help_text);
 		return;
 	}
+	if (req.head.method == .GET and std.mem.eql(u8, path, "/status")) {
+		var out: std.io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch {
+			try req.respond("{\"error\":\"status failed\"}\n", .{ .status = .internal_server_error });
+			return;
+		};
+		const payload = try out.toOwnedSlice();
+		defer allocator.free(payload);
+		try respondJson(req, payload);
+		return;
+	}
 
 	if (req.head.method == .POST and std.mem.eql(u8, path, "/search")) {
 		const body = try readBody(allocator, req, 1024 * 1024);
