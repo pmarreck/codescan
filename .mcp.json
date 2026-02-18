@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codescan": {
+      "command": "./zig-out/bin/codescan",
+      "args": ["mcp-serve"]
+    }
+  }
+}
