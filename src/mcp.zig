@@ -3,11 +3,32 @@ const main = @import("main.zig");
 const cli = @import("cli.zig");
 const plugin = @import("plugin.zig");
 const config = @import("config.zig");
+const storage = @import("storage.zig");
+const embedding = @import("embedding.zig");
+const indexer = @import("indexer.zig");
+const search = @import("search.zig");
+const output = @import("output.zig");
+const ollama = @import("ollama.zig");
+const filters = @import("filters.zig");
+const kind = @import("kind.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
 	db_path: []const u8,
 	lsp_overrides: []const config.LspOverride = &[_]config.LspOverride{},
+	ollama_url: []const u8 = "http://localhost:11434",
+	ollama_model: []const u8 = "bge-large",
+	embedding_dim: usize = 1024,
+	batch_size: usize = 16,
+	max_file_size: usize = 1024 * 1024,
+	search_top_n: usize = 20,
+	search_mode: search.SearchMode = .hybrid,
+	search_weight_vector: f32 = 0.7,
+	search_weight_lexical: f32 = 0.3,
+	search_min_score: f32 = 0.0,
+	ignore_global: []const []const u8 = &[_][]const u8{},
+	ignore_lang: []const config.IgnoreOverride = &[_]config.IgnoreOverride{},
+	include_node_modules: bool = false,
 };
 
 /// Read a single JSON-RPC message from the reader.
@@ -166,6 +187,11 @@ fn formatToolResult(allocator: std.mem.Allocator, id: ?std.json.Value, text: []c
 	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}}}", .{ id_str, escaped_text });
 }
 
+fn ensureParentDir(path: []const u8) !void {
+	const dir = std.fs.path.dirname(path) orelse return;
+	try std.fs.cwd().makePath(dir);
+}
+
 fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings) ![]u8 {
 	var out: std.io.Writer.Allocating = .init(allocator);
 	errdefer out.deinit();
@@ -223,13 +249,112 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const dry_run = getArgBool(args, "dry_run");
 		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, &out.writer) catch return error.ToolFailed;
 	} else if (std.mem.eql(u8, name, "codescan_search") or std.mem.eql(u8, name, "codescan_query")) {
-		// Search requires embedder — not available in MCP context without Ollama config
-		// For now, return a descriptive error; full search needs the embedder wired in
-		try out.writer.writeAll("error: search via MCP requires a running Ollama instance (not yet wired)");
+		const query = getArg(args, "query") orelse return error.MissingArgument;
+		try ensureParentDir(settings.db_path);
+		const db = storage.openFileWithVec(allocator, settings.db_path) catch return error.ToolFailed;
+		defer storage.close(db);
+
+		var http_client = ollama.StdHttpTransport.init(allocator);
+		defer http_client.deinit();
+
+		// Auto-index if DB is empty
+		var effective_search_mode = settings.search_mode;
+		if (!storage.isIndexPopulated(db)) {
+			ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch {
+				effective_search_mode = .lexical;
+			};
+			var embedder_for_index = embedding.OllamaEmbedder{
+				.transport = http_client.transport(),
+				.base_url = settings.ollama_url,
+				.model = settings.ollama_model,
+			};
+			storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
+			_ = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
+				.embedding_dim = settings.embedding_dim,
+				.batch_size = settings.batch_size,
+				.max_file_size = settings.max_file_size,
+				.allowed_exts = &[_][]const u8{},
+				.allowed_kinds = &[_]kind.Kind{},
+				.ignore = .{
+					.global = settings.ignore_global,
+					.per_language = settings.ignore_lang,
+					.include_node_modules = settings.include_node_modules,
+				},
+				.show_progress = false,
+			}) catch return error.ToolFailed;
+		} else {
+			if (effective_search_mode != .lexical) {
+				ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch {
+					effective_search_mode = .lexical;
+				};
+			}
+		}
+
+		var embedder_adapter = embedding.OllamaEmbedder{
+			.transport = http_client.transport(),
+			.base_url = settings.ollama_url,
+			.model = settings.ollama_model,
+		};
+
+		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, .{
+			.top_n = settings.search_top_n,
+			.mode = effective_search_mode,
+			.weight_vector = settings.search_weight_vector,
+			.weight_lexical = settings.search_weight_lexical,
+			.min_score = settings.search_min_score,
+			.allowed_langs = &[_][]const u8{},
+			.allowed_exts = &[_][]const u8{},
+			.comments_only = false,
+		}) catch return error.ToolFailed;
+		defer search.freeResults(allocator, sr.results);
+
+		output.writeResults(allocator, &out.writer, .json, sr.results, .{
+			.show_comments = false,
+			.use_color = false,
+			.total_relevant = sr.total_relevant,
+			.top_n = settings.search_top_n,
+		}) catch return error.ToolFailed;
 	} else if (std.mem.eql(u8, name, "codescan_index")) {
-		try out.writer.writeAll("error: index via MCP requires a running Ollama instance (not yet wired)");
+		try ensureParentDir(settings.db_path);
+		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch return error.ToolFailed;
+		defer storage.close(db);
+
+		var http_client = ollama.StdHttpTransport.init(allocator);
+		defer http_client.deinit();
+		ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
+			try out.writer.print("error: Ollama model '{s}' not available: {}", .{ settings.ollama_model, err });
+			return out.toOwnedSlice();
+		};
+
+		var embedder_adapter = embedding.OllamaEmbedder{
+			.transport = http_client.transport(),
+			.base_url = settings.ollama_url,
+			.model = settings.ollama_model,
+		};
+
+		const stats = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
+			.embedding_dim = settings.embedding_dim,
+			.batch_size = settings.batch_size,
+			.max_file_size = settings.max_file_size,
+			.allowed_exts = &[_][]const u8{},
+			.allowed_kinds = &[_]kind.Kind{},
+			.ignore = .{
+				.global = settings.ignore_global,
+				.per_language = settings.ignore_lang,
+				.include_node_modules = settings.include_node_modules,
+			},
+			.show_progress = false,
+		}) catch return error.ToolFailed;
+
+		try out.writer.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}", .{ stats.files, stats.symbols });
 	} else if (std.mem.eql(u8, name, "codescan_config")) {
-		try out.writer.writeAll("error: config display not yet implemented via MCP");
+		try out.writer.print("{{\"root\":\"{s}\",\"db_path\":\"{s}\",\"ollama_url\":\"{s}\",\"ollama_model\":\"{s}\",\"embedding_dim\":{d}}}", .{
+			settings.root_path,
+			settings.db_path,
+			settings.ollama_url,
+			settings.ollama_model,
+			settings.embedding_dim,
+		});
 	} else if (std.mem.eql(u8, name, "codescan_status")) {
 		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch return error.ToolFailed;
 	} else {
@@ -469,9 +594,9 @@ test "writeMessage strips embedded newlines" {
 	var w: std.io.Writer.Allocating = .init(allocator);
 	defer w.deinit();
 	try writeMessage(&w.writer, "line1\nline2\nline3");
-	const output = w.written();
+	const written = w.written();
 	// Should be a single line with no embedded newlines, terminated by \n
-	try std.testing.expectEqualStrings("line1line2line3\n", output);
+	try std.testing.expectEqualStrings("line1line2line3\n", written);
 }
 
 test "handleToolsList response is single-line valid JSON" {
@@ -482,16 +607,83 @@ test "handleToolsList response is single-line valid JSON" {
 	const response = try handleToolsList(allocator, .{ .integer = 1 });
 	defer allocator.free(response);
 	try writeMessage(&w.writer, response);
-	const output = w.written();
+	const written = w.written();
 	// Should end with exactly one newline
-	try std.testing.expect(output.len > 0);
-	try std.testing.expect(output[output.len - 1] == '\n');
+	try std.testing.expect(written.len > 0);
+	try std.testing.expect(written[written.len - 1] == '\n');
 	// The content before the newline should have no embedded newlines
-	const content = output[0 .. output.len - 1];
+	const content = written[0 .. written.len - 1];
 	try std.testing.expect(std.mem.indexOf(u8, content, "\n") == null);
 	// And it should be valid JSON
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
 	defer parsed.deinit();
+}
+
+test "handleToolsCall dispatches codescan_config with settings" {
+	const allocator = std.testing.allocator;
+	const params_str = "{\"name\":\"codescan_config\",\"arguments\":{}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = "/test/root",
+		.db_path = "/test/db",
+		.ollama_url = "http://localhost:11434",
+		.ollama_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	// Response should contain config JSON with all settings
+	try std.testing.expect(std.mem.indexOf(u8, response, "/test/root") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "/test/db") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "bge-large") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "11434") != null);
+}
+
+test "handleToolsCall dispatches codescan_index and codescan_search" {
+	const allocator = std.testing.allocator;
+
+	// Create a temp dir with a test file
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(.{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+
+	// DB path inside temp dir
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	const test_settings: Settings = .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.ollama_url = "http://localhost:11434",
+		.ollama_model = "bge-large",
+	};
+
+	// Index
+	const index_params_str = "{\"name\":\"codescan_index\",\"arguments\":{}}";
+	var index_parsed = try std.json.parseFromSlice(std.json.Value, allocator, index_params_str, .{});
+	defer index_parsed.deinit();
+
+	const index_response = try handleToolsCall(allocator, .{ .integer = 1 }, index_parsed.value, test_settings);
+	defer allocator.free(index_response);
+
+	// Response is wrapped in MCP format, so text content is JSON-escaped
+	try std.testing.expect(std.mem.indexOf(u8, index_response, "status") != null);
+	try std.testing.expect(std.mem.indexOf(u8, index_response, "ok") != null);
+	try std.testing.expect(std.mem.indexOf(u8, index_response, "files") != null);
+
+	// Now search
+	const search_params_str = "{\"name\":\"codescan_search\",\"arguments\":{\"query\":\"greet\"}}";
+	var search_parsed = try std.json.parseFromSlice(std.json.Value, allocator, search_params_str, .{});
+	defer search_parsed.deinit();
+
+	const search_response = try handleToolsCall(allocator, .{ .integer = 2 }, search_parsed.value, test_settings);
+	defer allocator.free(search_response);
+
+	// Should contain results with our function
+	try std.testing.expect(std.mem.indexOf(u8, search_response, "greet") != null);
 }
 
 test "formatError produces valid JSON-RPC error" {
