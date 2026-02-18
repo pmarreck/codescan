@@ -196,7 +196,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 	var out: std.io.Writer.Allocating = .init(allocator);
 	errdefer out.deinit();
 
-	if (std.mem.eql(u8, name, "codescan_symbols")) {
+	if (std.mem.eql(u8, name, "symbols")) {
 		var files = getArgStringArray(allocator, args, "file") catch return error.ToolFailed;
 		defer {
 			for (files.items) |f| allocator.free(f);
@@ -205,50 +205,50 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const pattern = getArg(args, "pattern");
 		const include_body = getArgBool(args, "include_body");
 		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_replace_symbol")) {
+	} else if (std.mem.eql(u8, name, "replace_symbol")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		main.runReplaceSymbol(allocator, file, pattern, body, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_insert_after")) {
+	} else if (std.mem.eql(u8, name, "insert_after")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		main.runInsertAfter(allocator, file, pattern, body, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_insert_before")) {
+	} else if (std.mem.eql(u8, name, "insert_before")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		main.runInsertBefore(allocator, file, pattern, body, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_replace_lines")) {
+	} else if (std.mem.eql(u8, name, "replace_lines")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const from = getArg(args, "from") orelse return error.MissingArgument;
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		main.runReplaceLines(allocator, file, from, to, body, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_insert_at")) {
+	} else if (std.mem.eql(u8, name, "insert_at")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const ref = getArg(args, "ref") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		main.runInsertAt(allocator, file, ref, body, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_replace_content")) {
+	} else if (std.mem.eql(u8, name, "replace_content")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const needle = getArg(args, "needle") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		const regex = getArgBool(args, "regex");
 		const all = getArgBool(args, "all");
 		main.runReplaceContent(allocator, file, needle, regex, all, body, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_references")) {
+	} else if (std.mem.eql(u8, name, "references")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		main.runReferences(allocator, file, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_rename")) {
+	} else if (std.mem.eql(u8, name, "rename")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const dry_run = getArgBool(args, "dry_run");
 		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_search") or std.mem.eql(u8, name, "codescan_query")) {
+	} else if (std.mem.eql(u8, name, "search") or std.mem.eql(u8, name, "query")) {
 		const query = getArg(args, "query") orelse return error.MissingArgument;
 		try ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVec(allocator, settings.db_path) catch return error.ToolFailed;
@@ -314,7 +314,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.total_relevant = sr.total_relevant,
 			.top_n = settings.search_top_n,
 		}) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_index")) {
+	} else if (std.mem.eql(u8, name, "index")) {
 		try ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch return error.ToolFailed;
 		defer storage.close(db);
@@ -347,7 +347,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		}) catch return error.ToolFailed;
 
 		try out.writer.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}", .{ stats.files, stats.symbols });
-	} else if (std.mem.eql(u8, name, "codescan_config")) {
+	} else if (std.mem.eql(u8, name, "config")) {
 		try out.writer.print("{{\"root\":\"{s}\",\"db_path\":\"{s}\",\"ollama_url\":\"{s}\",\"ollama_model\":\"{s}\",\"embedding_dim\":{d}}}", .{
 			settings.root_path,
 			settings.db_path,
@@ -355,7 +355,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			settings.ollama_model,
 			settings.embedding_dim,
 		});
-	} else if (std.mem.eql(u8, name, "codescan_status")) {
+	} else if (std.mem.eql(u8, name, "status")) {
 		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch return error.ToolFailed;
 	} else {
 		return error.UnknownTool;
@@ -452,20 +452,20 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 // Tool definitions for MCP tools/list
 const tools_list_json =
 	\\{"tools":[
-	\\{"name":"codescan_search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
-	\\{"name":"codescan_query","description":"Alias for codescan_search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
-	\\{"name":"codescan_index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
-	\\{"name":"codescan_symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
-	\\{"name":"codescan_replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"}},"required":["file","pattern","body"]}},
-	\\{"name":"codescan_insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
-	\\{"name":"codescan_insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
-	\\{"name":"codescan_replace_lines","description":"Replace a hashline-validated line range","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"from":{"type":"string","description":"Start hashline ref (e.g. 10:k7m)"},"to":{"type":"string","description":"End hashline ref (e.g. 20:x9a)"},"body":{"type":"string","description":"Replacement text"}},"required":["file","from","to","body"]}},
-	\\{"name":"codescan_insert_at","description":"Insert code after a hashline-validated line","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"ref":{"type":"string","description":"Hashline ref (e.g. 47:3bw)"},"body":{"type":"string","description":"Code to insert"}},"required":["file","ref","body"]}},
-	\\{"name":"codescan_replace_content","description":"Find and replace text or regex in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"}},"required":["file","needle","body"]}},
-	\\{"name":"codescan_references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
-	\\{"name":"codescan_rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
-	\\{"name":"codescan_config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
-		\\{"name":"codescan_status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}}
+	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
+	\\{"name":"query","description":"Alias for codescan_search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
+	\\{"name":"index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
+	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
+	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"}},"required":["file","pattern","body"]}},
+	\\{"name":"insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
+	\\{"name":"insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
+	\\{"name":"replace_lines","description":"Replace a hashline-validated line range","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"from":{"type":"string","description":"Start hashline ref (e.g. 10:k7m)"},"to":{"type":"string","description":"End hashline ref (e.g. 20:x9a)"},"body":{"type":"string","description":"Replacement text"}},"required":["file","from","to","body"]}},
+	\\{"name":"insert_at","description":"Insert code after a hashline-validated line","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"ref":{"type":"string","description":"Hashline ref (e.g. 47:3bw)"},"body":{"type":"string","description":"Code to insert"}},"required":["file","ref","body"]}},
+	\\{"name":"replace_content","description":"Find and replace text or regex in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"}},"required":["file","needle","body"]}},
+	\\{"name":"references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
+	\\{"name":"rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
+	\\{"name":"config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
+		\\{"name":"status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}}
 	\\]}
 ;
 
@@ -519,34 +519,34 @@ test "handleInitialize with string ID echoes it back" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"protocolVersion\"") != null);
 }
 
-test "handleToolsList returns all 14 tools" {
+test "handleToolsList returns all tools" {
 	const allocator = std.testing.allocator;
 	const response = try handleToolsList(allocator, .{ .integer = 1 });
 	defer allocator.free(response);
 
 	// Verify all tool names are present
 	const tool_names = [_][]const u8{
-		"codescan_search",
-		"codescan_query",
-		"codescan_index",
-		"codescan_symbols",
-		"codescan_replace_symbol",
-		"codescan_insert_after",
-		"codescan_insert_before",
-		"codescan_replace_lines",
-		"codescan_insert_at",
-		"codescan_replace_content",
-		"codescan_references",
-		"codescan_rename",
-		"codescan_config",
-		"codescan_status",
+		"search",
+		"query",
+		"index",
+		"symbols",
+		"replace_symbol",
+		"insert_after",
+		"insert_before",
+		"replace_lines",
+		"insert_at",
+		"replace_content",
+		"references",
+		"rename",
+		"config",
+		"status",
 	};
 	for (tool_names) |tool_name| {
 		try std.testing.expect(std.mem.indexOf(u8, response, tool_name) != null);
 	}
 }
 
-test "handleToolsCall dispatches codescan_symbols" {
+test "handleToolsCall dispatches symbols" {
 	const allocator = std.testing.allocator;
 
 	// Create a temp Zig file
@@ -557,7 +557,7 @@ test "handleToolsCall dispatches codescan_symbols" {
 	defer allocator.free(abs_path);
 
 	// Build params JSON
-	const params_str = try std.fmt.allocPrint(allocator, "{{\"name\":\"codescan_symbols\",\"arguments\":{{\"file\":\"{s}\"}}}}", .{abs_path});
+	const params_str = try std.fmt.allocPrint(allocator, "{{\"name\":\"symbols\",\"arguments\":{{\"file\":\"{s}\"}}}}", .{abs_path});
 	defer allocator.free(params_str);
 
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
@@ -619,9 +619,9 @@ test "handleToolsList response is single-line valid JSON" {
 	defer parsed.deinit();
 }
 
-test "handleToolsCall dispatches codescan_config with settings" {
+test "handleToolsCall dispatches config with settings" {
 	const allocator = std.testing.allocator;
-	const params_str = "{\"name\":\"codescan_config\",\"arguments\":{}}";
+	const params_str = "{\"name\":\"config\",\"arguments\":{}}";
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
 	defer parsed.deinit();
 
@@ -640,7 +640,7 @@ test "handleToolsCall dispatches codescan_config with settings" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "11434") != null);
 }
 
-test "handleToolsCall dispatches codescan_index and codescan_search" {
+test "handleToolsCall dispatches index and search" {
 	const allocator = std.testing.allocator;
 
 	// Create a temp dir with a test file
@@ -662,7 +662,7 @@ test "handleToolsCall dispatches codescan_index and codescan_search" {
 	};
 
 	// Index
-	const index_params_str = "{\"name\":\"codescan_index\",\"arguments\":{}}";
+	const index_params_str = "{\"name\":\"index\",\"arguments\":{}}";
 	var index_parsed = try std.json.parseFromSlice(std.json.Value, allocator, index_params_str, .{});
 	defer index_parsed.deinit();
 
@@ -675,7 +675,7 @@ test "handleToolsCall dispatches codescan_index and codescan_search" {
 	try std.testing.expect(std.mem.indexOf(u8, index_response, "files") != null);
 
 	// Now search
-	const search_params_str = "{\"name\":\"codescan_search\",\"arguments\":{\"query\":\"greet\"}}";
+	const search_params_str = "{\"name\":\"search\",\"arguments\":{\"query\":\"greet\"}}";
 	var search_parsed = try std.json.parseFromSlice(std.json.Value, allocator, search_params_str, .{});
 	defer search_parsed.deinit();
 
