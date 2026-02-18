@@ -686,6 +686,185 @@ test "handleToolsCall dispatches codescan_index and codescan_search" {
 	try std.testing.expect(std.mem.indexOf(u8, search_response, "greet") != null);
 }
 
+test "MCP protocol compliance: full handshake with string IDs" {
+	// This test simulates exactly what Claude Code does when connecting:
+	// 1. Sends initialize with a STRING id
+	// 2. Sends notifications/initialized (no id, no response expected)
+	// 3. Sends tools/list with a STRING id
+	// Each response must be:
+	//   - A single line (no embedded newlines before terminator)
+	//   - Valid JSON
+	//   - Echo back the exact id (string, not coerced to integer)
+	const allocator = std.testing.allocator;
+
+	// Simulate the full MCP handshake through the serve loop's message handling
+	const input =
+		"{\"jsonrpc\":\"2.0\",\"id\":\"init-42\",\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"claude-code\",\"version\":\"1.0\"}}}\n" ++
+		"{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n" ++
+		"{\"jsonrpc\":\"2.0\",\"id\":\"list-7\",\"method\":\"tools/list\",\"params\":{}}\n";
+
+	// Feed through readMessage + parseRequest + handler, collecting responses via writeMessage
+	var reader = std.Io.Reader.fixed(input);
+	var w: std.io.Writer.Allocating = .init(allocator);
+	defer w.deinit();
+
+	var response_count: usize = 0;
+	while (true) {
+		const msg = readMessage(allocator, &reader) catch |err| switch (err) {
+			error.EndOfStream => break,
+			else => return err,
+		};
+		defer allocator.free(msg);
+		if (msg.len == 0) continue;
+
+		const result = try parseRequest(allocator, msg);
+		var parsed = result.parsed;
+		defer parsed.deinit();
+		const req = result.req;
+
+		if (std.mem.eql(u8, req.method, "notifications/initialized")) continue;
+
+		const response = if (std.mem.eql(u8, req.method, "initialize"))
+			try handleInitialize(allocator, req.id)
+		else if (std.mem.eql(u8, req.method, "tools/list"))
+			try handleToolsList(allocator, req.id)
+		else
+			try formatError(allocator, req.id, -32601, "method not found");
+		defer allocator.free(response);
+
+		try writeMessage(&w.writer, response);
+		response_count += 1;
+	}
+
+	// We should have exactly 2 responses (initialize + tools/list)
+	try std.testing.expectEqual(@as(usize, 2), response_count);
+
+	// Parse the collected output line by line
+	const all_output = w.written();
+	var line_iter = std.mem.splitScalar(u8, all_output, '\n');
+
+	// Response 1: initialize — must echo string id "init-42"
+	const line1 = line_iter.next() orelse return error.MissingResponse;
+	try std.testing.expect(line1.len > 0);
+	// Must be valid JSON
+	var json1 = try std.json.parseFromSlice(std.json.Value, allocator, line1, .{});
+	defer json1.deinit();
+	// Must have string id echoed back
+	const id1 = json1.value.object.get("id") orelse return error.MissingId;
+	try std.testing.expect(id1 == .string);
+	try std.testing.expectEqualStrings("init-42", id1.string);
+	// Must have result with protocolVersion
+	try std.testing.expect(json1.value.object.get("result") != null);
+
+	// Response 2: tools/list — must echo string id "list-7"
+	const line2 = line_iter.next() orelse return error.MissingResponse;
+	try std.testing.expect(line2.len > 0);
+	// Must be valid JSON
+	var json2 = try std.json.parseFromSlice(std.json.Value, allocator, line2, .{});
+	defer json2.deinit();
+	// Must have string id echoed back
+	const id2 = json2.value.object.get("id") orelse return error.MissingId;
+	try std.testing.expect(id2 == .string);
+	try std.testing.expectEqualStrings("list-7", id2.string);
+	// Must have result.tools array
+	const result2 = json2.value.object.get("result") orelse return error.MissingResult;
+	const tools = result2.object.get("tools") orelse return error.MissingTools;
+	try std.testing.expect(tools == .array);
+	try std.testing.expect(tools.array.items.len > 0);
+}
+
+test "MCP protocol compliance: integer IDs also work" {
+	const allocator = std.testing.allocator;
+
+	const input = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0\"}}}\n";
+
+	var reader = std.Io.Reader.fixed(input);
+	var w: std.io.Writer.Allocating = .init(allocator);
+	defer w.deinit();
+
+	const msg = try readMessage(allocator, &reader);
+	defer allocator.free(msg);
+	const result = try parseRequest(allocator, msg);
+	var parsed = result.parsed;
+	defer parsed.deinit();
+
+	const response = try handleInitialize(allocator, result.req.id);
+	defer allocator.free(response);
+	try writeMessage(&w.writer, response);
+
+	const line = w.written();
+	// Strip trailing newline for JSON parse
+	const json_str = if (line.len > 0 and line[line.len - 1] == '\n') line[0 .. line.len - 1] else line;
+	var json_parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+	defer json_parsed.deinit();
+
+	const id = json_parsed.value.object.get("id") orelse return error.MissingId;
+	try std.testing.expect(id == .integer);
+	try std.testing.expectEqual(@as(i64, 99), id.integer);
+}
+
+test "MCP protocol compliance: every response line is valid single-line JSON" {
+	// Regression test: tools/list was multi-line due to Zig multiline string literals.
+	// This would have caught the bug immediately.
+	const allocator = std.testing.allocator;
+
+	const methods = [_]struct { method: []const u8, id: []const u8 }{
+		.{ .method = "initialize", .id = "a" },
+		.{ .method = "tools/list", .id = "b" },
+	};
+
+	for (methods) |m| {
+		const input = try std.fmt.allocPrint(
+			allocator,
+			"{{\"jsonrpc\":\"2.0\",\"id\":\"{s}\",\"method\":\"{s}\",\"params\":{{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{{}},\"clientInfo\":{{\"name\":\"test\",\"version\":\"1.0\"}}}}}}\n",
+			.{ m.id, m.method },
+		);
+		defer allocator.free(input);
+
+		var reader = std.Io.Reader.fixed(input);
+		var w: std.io.Writer.Allocating = .init(allocator);
+		defer w.deinit();
+
+		const msg = try readMessage(allocator, &reader);
+		defer allocator.free(msg);
+		const result = try parseRequest(allocator, msg);
+		var parsed = result.parsed;
+		defer parsed.deinit();
+
+		const response = if (std.mem.eql(u8, result.req.method, "initialize"))
+			try handleInitialize(allocator, result.req.id)
+		else
+			try handleToolsList(allocator, result.req.id);
+		defer allocator.free(response);
+
+		try writeMessage(&w.writer, response);
+		const written = w.written();
+
+		// Must end with exactly one newline
+		try std.testing.expect(written.len > 1);
+		try std.testing.expect(written[written.len - 1] == '\n');
+
+		// Content before newline must have NO embedded newlines
+		const content = written[0 .. written.len - 1];
+		if (std.mem.indexOf(u8, content, "\n")) |pos| {
+			std.debug.print("MULTI-LINE RESPONSE for {s} at byte {d}: {s}\n", .{ m.method, pos, content[0..@min(200, content.len)] });
+		}
+		try std.testing.expect(std.mem.indexOf(u8, content, "\n") == null);
+
+		// Must be valid JSON
+		var json_parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |err| {
+			std.debug.print("INVALID JSON for {s}: {}\ncontent: {s}\n", .{ m.method, err, content[0..@min(200, content.len)] });
+			return err;
+		};
+		defer json_parsed.deinit();
+
+		// ID must match
+		const id = json_parsed.value.object.get("id") orelse return error.MissingId;
+		try std.testing.expect(id == .string);
+		try std.testing.expectEqualStrings(m.id, id.string);
+	}
+}
+
 test "formatError produces valid JSON-RPC error" {
 	const allocator = std.testing.allocator;
 	const response = try formatError(allocator, .{ .integer = 5 }, -32601, "method not found");
