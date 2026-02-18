@@ -58,8 +58,9 @@
 ## Semantic Editing (see SEMANTIC_EDITING_PLAN.md for full details)
 
 ### Phase 1: Tree-sitter Read-Only
-- [x] `codescan symbols <file>` — list symbols grouped by kind
-- [x] `codescan find-symbol <name_path>` — name path pattern matching over AST
+- [x] `codescan symbols [pattern] [--file ...]` — unified symbol listing/search (multi-file, optional pattern)
+- [x] Merged `find-symbol` into `symbols` (`find-symbol` kept as CLI/HTTP alias)
+- [x] `query` added as alias for `search` (CLI, HTTP, MCP)
 - [x] Hashline output format (3-char base-36 per-symbol chain hashes on code lines)
 - [x] Name path resolution from tree-sitter AST hierarchy
 
@@ -80,7 +81,7 @@
 - [x] File watcher (kqueue/FSEvents) for incremental reindex on changes
 
 ### Phase 5: Enhancements
-- [ ] `codescan symbols --depth N` — show N levels of nested symbols (e.g. struct methods without reading bodies)
+- [ ] `codescan symbols --depth N` — limit nesting depth in output (e.g. struct methods without reading bodies)
 - [ ] CamelCase/snake_case normalization in lexical search (so `nameRelevance` matches `name_relevance`)
 - [x] Auto-reindex after CLI edits (skip re-embedding, daemon catches up on vectors)
 - [x] `codescan rename` applies edits by default (`--dry-run` for preview-only)
