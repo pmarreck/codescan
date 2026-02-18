@@ -35,9 +35,11 @@ pub fn writeMessage(writer: *std.Io.Writer, msg: []const u8) !void {
 }
 
 /// Parse a JSON-RPC request and extract method, id, and params.
+/// The id is kept as a raw JSON value to support both string and integer IDs
+/// per JSON-RPC 2.0 spec.
 pub const RpcRequest = struct {
 	method: []const u8,
-	id: ?i64,
+	id: ?std.json.Value,
 	params: ?std.json.Value,
 };
 
@@ -51,39 +53,44 @@ pub fn parseRequest(allocator: std.mem.Allocator, msg: []const u8) !struct { par
 	const method_val = obj.get("method") orelse return error.MissingMethod;
 	if (method_val != .string) return error.InvalidMethod;
 
-	const id: ?i64 = if (obj.get("id")) |id_val| switch (id_val) {
-		.integer => |v| v,
-		else => null,
-	} else null;
-
 	const params = obj.get("params");
 
 	return .{
 		.parsed = parsed,
 		.req = .{
 			.method = method_val.string,
-			.id = id,
+			.id = obj.get("id"),
 			.params = params,
 		},
 	};
 }
 
+/// Format a JSON id value as a string (handles int, string, or null).
+fn formatId(allocator: std.mem.Allocator, id: ?std.json.Value) ![]u8 {
+	const id_val = id orelse return allocator.dupe(u8, "null");
+	return switch (id_val) {
+		.integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}),
+		.string => |s| std.fmt.allocPrint(allocator, "\"{s}\"", .{s}),
+		else => allocator.dupe(u8, "null"),
+	};
+}
+
 /// Format a JSON-RPC success response.
-pub fn formatResult(allocator: std.mem.Allocator, id: i64, result_json: []const u8) ![]u8 {
-	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}", .{ id, result_json });
+pub fn formatResult(allocator: std.mem.Allocator, id: ?std.json.Value, result_json: []const u8) ![]u8 {
+	const id_str = try formatId(allocator, id);
+	defer allocator.free(id_str);
+	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{s}}}", .{ id_str, result_json });
 }
 
 /// Format a JSON-RPC error response.
-pub fn formatError(allocator: std.mem.Allocator, id: ?i64, code: i64, message: []const u8) ![]u8 {
-	if (id) |i| {
-		return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ i, code, message });
-	} else {
-		return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ code, message });
-	}
+pub fn formatError(allocator: std.mem.Allocator, id: ?std.json.Value, code: i64, message: []const u8) ![]u8 {
+	const id_str = try formatId(allocator, id);
+	defer allocator.free(id_str);
+	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ id_str, code, message });
 }
 
 /// Build the initialize response.
-pub fn handleInitialize(allocator: std.mem.Allocator, id: i64) ![]u8 {
+pub fn handleInitialize(allocator: std.mem.Allocator, id: ?std.json.Value) ![]u8 {
 	const result =
 		\\{"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":false}},"serverInfo":{"name":"codescan","version":"0.1.0"}}
 	;
@@ -91,12 +98,12 @@ pub fn handleInitialize(allocator: std.mem.Allocator, id: i64) ![]u8 {
 }
 
 /// Build the tools/list response.
-pub fn handleToolsList(allocator: std.mem.Allocator, id: i64) ![]u8 {
+pub fn handleToolsList(allocator: std.mem.Allocator, id: ?std.json.Value) ![]u8 {
 	return formatResult(allocator, id, tools_list_json);
 }
 
 /// Handle a tools/call request. Returns the JSON-RPC response.
-pub fn handleToolsCall(allocator: std.mem.Allocator, id: i64, params: ?std.json.Value, settings: Settings) ![]u8 {
+pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params: ?std.json.Value, settings: Settings) ![]u8 {
 	const p = params orelse return formatError(allocator, id, -32602, "missing params");
 	if (p != .object) return formatError(allocator, id, -32602, "params must be object");
 	const obj = p.object;
@@ -124,7 +131,7 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: i64, params: ?std.json.
 	return formatToolResult(allocator, id, result);
 }
 
-fn formatToolResult(allocator: std.mem.Allocator, id: i64, text: []const u8) ![]u8 {
+fn formatToolResult(allocator: std.mem.Allocator, id: ?std.json.Value, text: []const u8) ![]u8 {
 	// Escape the text for JSON string embedding
 	var escaped = std.ArrayListUnmanaged(u8){};
 	defer escaped.deinit(allocator);
@@ -149,7 +156,9 @@ fn formatToolResult(allocator: std.mem.Allocator, id: i64, text: []const u8) ![]
 	const escaped_text = try escaped.toOwnedSlice(allocator);
 	defer allocator.free(escaped_text);
 
-	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}}}", .{ id, escaped_text });
+	const id_str = try formatId(allocator, id);
+	defer allocator.free(id_str);
+	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}}}", .{ id_str, escaped_text });
 }
 
 fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings) ![]u8 {
@@ -293,15 +302,15 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		const req = result.req;
 
 		const response = if (std.mem.eql(u8, req.method, "initialize"))
-			try handleInitialize(allocator, req.id orelse 0)
+			try handleInitialize(allocator, req.id)
 		else if (std.mem.eql(u8, req.method, "tools/list"))
-			try handleToolsList(allocator, req.id orelse 0)
+			try handleToolsList(allocator, req.id)
 		else if (std.mem.eql(u8, req.method, "tools/call"))
-			try handleToolsCall(allocator, req.id orelse 0, req.params, settings)
+			try handleToolsCall(allocator, req.id, req.params, settings)
 		else if (std.mem.eql(u8, req.method, "notifications/initialized"))
 			continue // notification, no response
 		else if (std.mem.eql(u8, req.method, "shutdown"))
-			try formatResult(allocator, req.id orelse 0, "null")
+			try formatResult(allocator, req.id, "null")
 		else
 			try formatError(allocator, req.id, -32601, "method not found");
 
@@ -359,21 +368,30 @@ test "parseRequest extracts method and id" {
 	var parsed = result.parsed;
 	defer parsed.deinit();
 	try std.testing.expectEqualStrings("tools/list", result.req.method);
-	try std.testing.expectEqual(@as(i64, 42), result.req.id.?);
+	try std.testing.expectEqual(@as(i64, 42), result.req.id.?.integer);
 }
 
 test "handleInitialize returns server info" {
 	const allocator = std.testing.allocator;
-	const response = try handleInitialize(allocator, 1);
+	// Test with integer ID
+	const response = try handleInitialize(allocator, .{ .integer = 1 });
 	defer allocator.free(response);
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"protocolVersion\"") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"codescan\"") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":1") != null);
 }
 
+test "handleInitialize with string ID echoes it back" {
+	const allocator = std.testing.allocator;
+	const response = try handleInitialize(allocator, .{ .string = "init-1" });
+	defer allocator.free(response);
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":\"init-1\"") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"protocolVersion\"") != null);
+}
+
 test "handleToolsList returns all 14 tools" {
 	const allocator = std.testing.allocator;
-	const response = try handleToolsList(allocator, 1);
+	const response = try handleToolsList(allocator, .{ .integer = 1 });
 	defer allocator.free(response);
 
 	// Verify all tool names are present
@@ -415,7 +433,7 @@ test "handleToolsCall dispatches codescan_symbols" {
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
 	defer parsed.deinit();
 
-	const response = try handleToolsCall(allocator, 1, parsed.value, .{
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
 		.root_path = ".",
 		.db_path = ":memory:",
 	});
@@ -431,7 +449,7 @@ test "handleToolsCall returns error for unknown tool" {
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
 	defer parsed.deinit();
 
-	const response = try handleToolsCall(allocator, 1, parsed.value, .{
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
 		.root_path = ".",
 		.db_path = ":memory:",
 	});
@@ -443,7 +461,7 @@ test "handleToolsCall returns error for unknown tool" {
 
 test "formatError produces valid JSON-RPC error" {
 	const allocator = std.testing.allocator;
-	const response = try formatError(allocator, 5, -32601, "method not found");
+	const response = try formatError(allocator, .{ .integer = 5 }, -32601, "method not found");
 	defer allocator.free(response);
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":5") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "-32601") != null);
