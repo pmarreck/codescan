@@ -5,6 +5,10 @@ const cli = @import("cli.zig");
 /// All values are commented out; uncomment to override defaults.
 pub const default_template =
     \\# codescan project configuration
+    \\# https://github.com/pmarreck/codescan
+    \\#
+    \\# This file lives in .codescan/config at the root of an indexed project.
+    \\# It is safe to commit — it contains no secrets, only search preferences.
     \\# Uncomment and modify values as needed.
     \\# Changes take effect on the next command invocation.
     \\# See: codescan --help
