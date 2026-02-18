@@ -2797,7 +2797,10 @@ fn writeStatusHuman(
 		try writer.print("\nLast indexed: {s}\n", .{li.file_path});
 		try writer.writeAll("  ");
 		try writeIso8601(writer, li.indexed_at);
-		try writer.writeAll(" UTC\n");
+		try writer.writeAll(" UTC");
+		// Also show local time
+		try writeLocalTime(writer, li.indexed_at);
+		try writer.writeAll("\n");
 	}
 }
 
@@ -2815,6 +2818,36 @@ fn writeIso8601(writer: *std.Io.Writer, epoch_secs: i64) !void {
 		ds.getMinutesIntoHour(),
 		ds.getSecondsIntoMinute(),
 	});
+}
+
+fn writeLocalTime(writer: *std.Io.Writer, epoch_secs: i64) !void {
+	const c_time = @cImport(@cInclude("time.h"));
+	const time_val: c_time.time_t = @intCast(epoch_secs);
+	var local: c_time.struct_tm = undefined;
+	const result = c_time.localtime_r(&time_val, &local);
+	if (result == null) return;
+
+	// Format: " (2026-02-17 12:55:00 EST)"
+	try writer.writeAll(" (");
+	try writer.print("{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{
+		@as(i32, local.tm_year) + 1900,
+		@as(u32, @intCast(local.tm_mon)) + 1,
+		@as(u32, @intCast(local.tm_mday)),
+		@as(u32, @intCast(local.tm_hour)),
+		@as(u32, @intCast(local.tm_min)),
+		@as(u32, @intCast(local.tm_sec)),
+	});
+
+	// Append timezone abbreviation if available
+	const tz: ?[*:0]const u8 = local.tm_zone;
+	if (tz) |tz_ptr| {
+		const tz_str = std.mem.span(tz_ptr);
+		if (tz_str.len > 0) {
+			try writer.print(" {s}", .{tz_str});
+		}
+	}
+
+	try writer.writeAll(")");
 }
 
 fn writeHumanSize(writer: *std.Io.Writer, size: u64) !void {
