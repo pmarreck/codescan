@@ -80,6 +80,15 @@
 ### Phase 4: Background Auto-Indexing
 - [x] File watcher (kqueue/FSEvents) for incremental reindex on changes
 
+### Phase 4b: MCP Server
+- [x] `codescan mcp-serve` — JSON-RPC 2.0 stdio MCP server exposing all tools
+- [x] String + integer JSON-RPC ID support (required by Claude Code)
+- [x] Single-line JSON responses (newline-delimited protocol compliance)
+- [x] Wire `codescan_search` and `codescan_index` through MCP (with auto-index)
+- [x] Wire `codescan_config` through MCP (returns live settings as JSON)
+- [x] MCP protocol compliance test suite (string IDs, single-line JSON, full handshake)
+- [x] Project `.mcp.json` for Claude Code auto-discovery
+
 ### Phase 5: Enhancements
 - [ ] `codescan symbols --depth N` — limit nesting depth in output (e.g. struct methods without reading bodies)
 - [ ] CamelCase/snake_case normalization in lexical search (so `nameRelevance` matches `name_relevance`)
