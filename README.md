@@ -177,19 +177,19 @@ Add to your MCP settings:
 
 | Tool | Description |
 |------|-------------|
-| `codescan_search` | Semantic code search (`codescan_query` is an alias) |
-| `codescan_index` | Index/reindex repository |
-| `codescan_symbols` | List or find symbols (optional `file`, `pattern`, `include_body`) |
-| `codescan_replace_symbol` | Replace a symbol's body |
-| `codescan_insert_after` | Insert code after a symbol |
-| `codescan_insert_before` | Insert code before a symbol |
-| `codescan_replace_lines` | Replace hashline-validated line range |
-| `codescan_insert_at` | Insert after hashline-validated line |
-| `codescan_replace_content` | Find/replace text or regex |
-| `codescan_references` | Find references via LSP |
-| `codescan_rename` | Rename symbol via LSP |
-| `codescan_config` | Show configuration |
-| `codescan_status` | Index and watcher status |
+| `search` | Semantic code search (`query` is an alias) |
+| `index` | Index/reindex repository |
+| `symbols` | List or find symbols (optional `file`, `pattern`, `include_body`) |
+| `replace_symbol` | Replace a symbol's body |
+| `insert_after` | Insert code after a symbol |
+| `insert_before` | Insert code before a symbol |
+| `replace_lines` | Replace hashline-validated line range |
+| `insert_at` | Insert after hashline-validated line |
+| `replace_content` | Find/replace text or regex |
+| `references` | Find references via LSP |
+| `rename` | Rename symbol via LSP |
+| `config` | Show configuration |
+| `status` | Index and watcher status |
 
 ## Semantic Editing
 
