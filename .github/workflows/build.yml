@@ -35,11 +35,11 @@ jobs:
             artifact: codescan-linux-x86_64.tar.gz
             pkgdir: codescan-linux-x86_64
           - os: ubuntu-latest
-            target: x86_64-windows-gnu
-            archive: zip
-            ext: ".exe"
-            artifact: codescan-windows-x86_64.zip
-            pkgdir: codescan-windows-x86_64
+            target: aarch64-linux-musl
+            archive: tar
+            ext: ""
+            artifact: codescan-linux-arm64.tar.gz
+            pkgdir: codescan-linux-arm64
           - os: macos-14
             target: aarch64-macos
             archive: tar
@@ -83,6 +83,6 @@ jobs:
         with:
           files: |
             dist/**/codescan-linux-x86_64.tar.gz
+            dist/**/codescan-linux-arm64.tar.gz
             dist/**/codescan-macos-arm64.tar.gz
-            dist/**/codescan-windows-x86_64.zip
           generate_release_notes: true
