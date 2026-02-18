@@ -58,30 +58,50 @@
 ## Semantic Editing (see SEMANTIC_EDITING_PLAN.md for full details)
 
 ### Phase 1: Tree-sitter Read-Only
-- [ ] `codescan symbols <file>` — list symbols grouped by kind
-- [ ] `codescan find-symbol <name_path>` — name path pattern matching over AST
-- [ ] Hashline output format (3-char base-36 per-symbol chain hashes on code lines)
-- [ ] Name path resolution from tree-sitter AST hierarchy
+- [x] `codescan symbols <file>` — list symbols grouped by kind
+- [x] `codescan find-symbol <name_path>` — name path pattern matching over AST
+- [x] Hashline output format (3-char base-36 per-symbol chain hashes on code lines)
+- [x] Name path resolution from tree-sitter AST hierarchy
 
 ### Phase 2: Tree-sitter Editing
-- [ ] `codescan replace-symbol <name_path> --file <path>` — byte-precise symbol body replacement
-- [ ] `codescan insert-after <name_path> --file <path>` — insert code after named symbol
-- [ ] `codescan insert-before <name_path> --file <path>` — insert code before named symbol
-- [ ] `codescan replace-lines --from <line:hash> --to <line:hash>` — hashline-anchored edits
-- [ ] `codescan insert-at <line:hash> --file <path>` — hashline-anchored insertion
-- [ ] Stdin body input for all editing commands
+- [x] `codescan replace-symbol <name_path> --file <path>` — byte-precise symbol body replacement
+- [x] `codescan insert-after <name_path> --file <path>` — insert code after named symbol
+- [x] `codescan insert-before <name_path> --file <path>` — insert code before named symbol
+- [x] `codescan replace-lines --from <line:hash> --to <line:hash>` — hashline-anchored edits
+- [x] `codescan insert-at <line:hash> --file <path>` — hashline-anchored insertion
+- [x] Stdin body input for all editing commands
 
 ### Phase 3: Optional LSP Integration
-- [ ] `codescan references <name_path> --file <path>` — cross-file reference lookup
-- [ ] `codescan rename <name_path> --file <path> --to <new_name>` — cross-file rename
-- [ ] Auto-detect language and lazy-start appropriate LSP server
+- [x] `codescan references <name_path> --file <path>` — cross-file reference lookup
+- [x] `codescan rename <name_path> --file <path> --to <new_name>` — cross-file rename
+- [x] Auto-detect language and lazy-start appropriate LSP server
 
 ### Phase 4: Background Auto-Indexing
-- [ ] File watcher (kqueue/FSEvents) for incremental reindex on changes
+- [x] File watcher (kqueue/FSEvents) for incremental reindex on changes
 
 ### Phase 5: Enhancements
 - [ ] `codescan symbols --depth N` — show N levels of nested symbols (e.g. struct methods without reading bodies)
 - [ ] CamelCase/snake_case normalization in lexical search (so `nameRelevance` matches `name_relevance`)
-- [ ] Auto-reindex after CLI edits (skip re-embedding, daemon catches up on vectors)
-- [ ] `codescan rename` applies edits by default (`--dry-run` for preview-only)
-- [ ] Hashlines in `codescan references` output for stale-edit protection
+- [x] Auto-reindex after CLI edits (skip re-embedding, daemon catches up on vectors)
+- [x] `codescan rename` applies edits by default (`--dry-run` for preview-only)
+- [x] Hashlines in `codescan references` output for stale-edit protection
+
+### Phase 6: New Language Grammars
+- [x] Add Clojure tree-sitter grammar + symbol mappings (`.clj`, `.cljs`, `.cljc`, `.edn`) — custom list_lit extraction for defn/def/ns/etc.
+- [x] Add Assembly tree-sitter grammar + symbol mappings (`.s`, `.S`, `.asm`) — labels + constants via RubixDev/tree-sitter-asm
+- [x] Add LLVM IR indexer plugin (`extract_llvm.zig`) — `.ll` files indexed with function/global extraction
+
+### Phase 7: LLM-Generated Code Comments
+- [ ] `codescan add-relevant-comments <file>` — use local Ollama LLM to generate descriptive comments for symbols lacking them
+  - Walks symbols in the file, skips those already having a comment above
+  - Generates a concise comment describing the symbol's purpose via a code-understanding LLM (e.g. CodeLlama, DeepSeek-Coder)
+  - Inserts the comment into the actual source file (language-appropriate comment syntax)
+  - Output is a modified file — developer reviews diff and commits what they like
+- [ ] `codescan add-relevant-comments <file> <hashline>` — target a single symbol definition
+  - Hashline must be the head of a symbol definition, errors otherwise
+  - Generates and inserts a comment for just that symbol
+- [ ] Config: `describe.model` — which Ollama model to use for description generation
+- [ ] Config: `describe.language` — natural language for comments (default: English)
+- [ ] Respect existing comments — if a symbol already has a comment block above it, skip or offer to enhance
+- [ ] `--dry-run` flag — print generated comments to stdout without modifying files
+- [ ] `--force` flag — regenerate even for symbols that already have comments

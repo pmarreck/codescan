@@ -27,6 +27,8 @@ extern fn tree_sitter_erlang() *ts.TSLanguage;
 extern fn tree_sitter_ocaml() *ts.TSLanguage;
 extern fn tree_sitter_swift() *ts.TSLanguage;
 extern fn tree_sitter_llvm() *ts.TSLanguage;
+extern fn tree_sitter_clojure() *ts.TSLanguage;
+extern fn tree_sitter_asm() *ts.TSLanguage;
 
 // ─── Language Configurations ─────────────────────────────────────────
 
@@ -48,6 +50,8 @@ pub const Language = enum {
 	ocaml,
 	swift,
 	llvm,
+	clojure,
+	assembly,
 
 	pub fn tsLanguage(self: Language) *ts.TSLanguage {
 		return switch (self) {
@@ -68,6 +72,8 @@ pub const Language = enum {
 			.ocaml => tree_sitter_ocaml(),
 			.swift => tree_sitter_swift(),
 			.llvm => tree_sitter_llvm(),
+			.clojure => tree_sitter_clojure(),
+			.assembly => tree_sitter_asm(),
 		};
 	}
 
@@ -89,7 +95,64 @@ pub const Language = enum {
 			.ocaml => &ocaml_mappings,
 			.swift => &swift_mappings,
 			.llvm => &llvm_mappings,
+			.clojure => &[_]SymbolMapping{}, // Uses custom extractClojureForm
+			.assembly => &asm_mappings,
 		};
+	}
+
+	/// Detect language from shebang line in source content.
+	pub fn fromShebang(source: []const u8) ?Language {
+		if (source.len < 2 or source[0] != '#' or source[1] != '!') return null;
+
+		const line_end = std.mem.indexOfScalar(u8, source, '\n') orelse source.len;
+		var rest = std.mem.trimLeft(u8, source[2..line_end], " \t");
+
+		// Skip /usr/bin/env (or similar) to get the actual interpreter
+		const token = nextShebangToken(rest);
+		const name = shebangBasename(token);
+		const interpreter = if (std.mem.eql(u8, name, "env")) blk: {
+			rest = rest[token.len..];
+			rest = std.mem.trimLeft(u8, rest, " \t");
+			// Skip env flags like -S
+			while (rest.len > 0 and rest[0] == '-') {
+				const flag = nextShebangToken(rest);
+				rest = rest[flag.len..];
+				rest = std.mem.trimLeft(u8, rest, " \t");
+			}
+			break :blk shebangBasename(nextShebangToken(rest));
+		} else name;
+
+		const map = .{
+			.{ "bash", .bash },
+			.{ "sh", .bash },
+			.{ "zsh", .bash },
+			.{ "dash", .bash },
+			.{ "ash", .bash },
+			.{ "ksh", .bash },
+			.{ "lua", .lua },
+			.{ "luajit", .lua },
+			.{ "node", .typescript },
+			.{ "nodejs", .typescript },
+			.{ "deno", .typescript },
+			.{ "bun", .typescript },
+			.{ "ruby", .ruby },
+			.{ "irb", .ruby },
+		};
+		inline for (map) |entry| {
+			if (std.mem.eql(u8, interpreter, entry[0])) return entry[1];
+		}
+		return null;
+	}
+
+	fn nextShebangToken(text: []const u8) []const u8 {
+		const trimmed = std.mem.trimLeft(u8, text, " \t");
+		const end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
+		return trimmed[0..end];
+	}
+
+	fn shebangBasename(path: []const u8) []const u8 {
+		const pos = std.mem.lastIndexOfScalar(u8, path, '/');
+		return if (pos) |p| path[p + 1 ..] else path;
 	}
 
 	/// Detect language from file extension.
@@ -117,6 +180,13 @@ pub const Language = enum {
 			.{ ".ml", .ocaml },
 			.{ ".swift", .swift },
 			.{ ".ll", .llvm },
+			.{ ".clj", .clojure },
+			.{ ".cljs", .clojure },
+			.{ ".cljc", .clojure },
+			.{ ".edn", .clojure },
+			.{ ".s", .assembly },
+			.{ ".S", .assembly },
+			.{ ".asm", .assembly },
 		};
 		inline for (map) |entry| {
 			if (std.mem.eql(u8, ext, entry[0])) return entry[1];
@@ -267,10 +337,17 @@ const swift_mappings = [_]SymbolMapping{
 
 // ── LLVM IR ──
 const llvm_mappings = [_]SymbolMapping{
-	.{ .node_type = "function_header", .kind = .function, .name_field = .name },
+	.{ .node_type = "fn_define", .kind = .function, .name_field = .first_identifier },
+	.{ .node_type = "declare", .kind = .function, .name_field = .first_identifier },
 	.{ .node_type = "global_global", .kind = .variable, .name_field = .first_identifier },
 	.{ .node_type = "global_type", .kind = .type_alias, .name_field = .first_identifier },
 	.{ .node_type = "alias", .kind = .variable, .name_field = .first_identifier },
+};
+
+// ── Assembly ──
+const asm_mappings = [_]SymbolMapping{
+	.{ .node_type = "label", .kind = .function, .name_field = .first_identifier },
+	.{ .node_type = "const", .kind = .variable, .name_field = .name },
 };
 
 // ─── Extraction ──────────────────────────────────────────────────────
@@ -306,7 +383,12 @@ pub fn extract(allocator: std.mem.Allocator, source: []const u8, lang: Language)
 		const node = ts.ts_tree_cursor_current_node(&cursor);
 		const node_type = std.mem.span(ts.ts_node_type(node));
 
-		if (findMapping(lang_mappings, node_type)) |mapping| {
+		// Clojure: match list_lit forms like (defn ...), (def ...), (ns ...)
+		if (lang == .clojure) {
+			if (extractClojureForm(source, node)) |sym| {
+				try flat.append(allocator, sym);
+			}
+		} else if (findMapping(lang_mappings, node_type)) |mapping| {
 			if (extractName(source, node, mapping.name_field)) |name| {
 				const start_point = ts.ts_node_start_point(node);
 				const end_point = ts.ts_node_end_point(node);
@@ -405,6 +487,8 @@ fn isIdentifierLike(ty: []const u8) bool {
 		// LLVM IR
 		"global_var",
 		"local_var",
+		// Assembly
+		"ident",
 	};
 	for (ident_types) |t| {
 		if (std.mem.eql(u8, ty, t)) return true;
@@ -444,6 +528,71 @@ fn nodeText(source: []const u8, node: ts.TSNode) ?[]const u8 {
 	const end = ts.ts_node_end_byte(node);
 	if (start >= source.len or end > source.len or start >= end) return null;
 	return source[start..end];
+}
+
+// ─── Clojure Extraction ─────────────────────────────────────────────
+
+/// Match (defn name ...), (def name ...), (ns name ...) etc. in Clojure.
+/// The tree-sitter-clojure grammar is syntax-only — all forms are list_lit
+/// with sym_lit children, so we pattern-match the first symbol to determine kind.
+fn extractClojureForm(source: []const u8, node: ts.TSNode) ?FlatSymbol {
+	const node_type = std.mem.span(ts.ts_node_type(node));
+	if (!std.mem.eql(u8, node_type, "list_lit")) return null;
+
+	const count = ts.ts_node_child_count(node);
+	var form_name: ?[]const u8 = null;
+	var sym_name: ?[]const u8 = null;
+	var sym_count: u32 = 0;
+
+	var i: u32 = 0;
+	while (i < count) : (i += 1) {
+		const child = ts.ts_node_child(node, i);
+		const child_type = std.mem.span(ts.ts_node_type(child));
+		if (std.mem.eql(u8, child_type, "sym_lit")) {
+			if (sym_count == 0) {
+				form_name = nodeText(source, child);
+			} else if (sym_count == 1) {
+				sym_name = nodeText(source, child);
+				break;
+			}
+			sym_count += 1;
+		}
+	}
+
+	const form = form_name orelse return null;
+	const name = sym_name orelse return null;
+	const kind = clojureFormKind(form) orelse return null;
+
+	const start_point = ts.ts_node_start_point(node);
+	const end_point = ts.ts_node_end_point(node);
+	return FlatSymbol{
+		.name = name,
+		.kind = kind,
+		.start_line = start_point.row + 1,
+		.end_line = end_point.row + 1,
+		.start_byte = ts.ts_node_start_byte(node),
+		.end_byte = ts.ts_node_end_byte(node),
+	};
+}
+
+fn clojureFormKind(form: []const u8) ?SymbolKind {
+	const forms = .{
+		.{ "defn", SymbolKind.function },
+		.{ "defn-", SymbolKind.function },
+		.{ "defmacro", SymbolKind.function },
+		.{ "defmulti", SymbolKind.function },
+		.{ "defmethod", SymbolKind.function },
+		.{ "def", SymbolKind.variable },
+		.{ "defonce", SymbolKind.variable },
+		.{ "ns", SymbolKind.module },
+		.{ "defprotocol", SymbolKind.interface },
+		.{ "defrecord", SymbolKind.struct_decl },
+		.{ "deftype", SymbolKind.type_alias },
+	};
+	inline for (forms) |entry| {
+		if (std.mem.eql(u8, form, entry[0])) return entry[1];
+	}
+	return null;
 }
 
 // ─── Hierarchy Builder ───────────────────────────────────────────────
@@ -676,8 +825,43 @@ test "language detection from extension" {
 	try std.testing.expectEqual(Language.ocaml, Language.fromExtension(".ml").?);
 	try std.testing.expectEqual(Language.swift, Language.fromExtension(".swift").?);
 	try std.testing.expectEqual(Language.llvm, Language.fromExtension(".ll").?);
+	try std.testing.expectEqual(Language.clojure, Language.fromExtension(".clj").?);
+	try std.testing.expectEqual(Language.clojure, Language.fromExtension(".cljs").?);
+	try std.testing.expectEqual(Language.clojure, Language.fromExtension(".cljc").?);
+	try std.testing.expectEqual(Language.clojure, Language.fromExtension(".edn").?);
+	try std.testing.expectEqual(Language.assembly, Language.fromExtension(".s").?);
+	try std.testing.expectEqual(Language.assembly, Language.fromExtension(".S").?);
+	try std.testing.expectEqual(Language.assembly, Language.fromExtension(".asm").?);
 	try std.testing.expect(Language.fromExtension(".zig") == null); // Zig uses native AST
 	try std.testing.expect(Language.fromExtension(".xyz") == null);
+}
+
+test "language detection from shebang" {
+	// bash variants
+	try std.testing.expectEqual(Language.bash, Language.fromShebang("#!/bin/bash\nexit 0\n").?);
+	try std.testing.expectEqual(Language.bash, Language.fromShebang("#!/usr/bin/env bash\nexit 0\n").?);
+	try std.testing.expectEqual(Language.bash, Language.fromShebang("#!/bin/sh\nexit 0\n").?);
+	try std.testing.expectEqual(Language.bash, Language.fromShebang("#!/usr/bin/env zsh\nexit 0\n").?);
+
+	// lua
+	try std.testing.expectEqual(Language.lua, Language.fromShebang("#!/usr/bin/env lua\nprint('hi')\n").?);
+	try std.testing.expectEqual(Language.lua, Language.fromShebang("#!/usr/bin/env luajit\nprint('hi')\n").?);
+
+	// node/JS → typescript parser
+	try std.testing.expectEqual(Language.typescript, Language.fromShebang("#!/usr/bin/env node\nconsole.log('hi')\n").?);
+	try std.testing.expectEqual(Language.typescript, Language.fromShebang("#!/usr/bin/env deno\n").?);
+	try std.testing.expectEqual(Language.typescript, Language.fromShebang("#!/usr/bin/env bun\n").?);
+
+	// ruby
+	try std.testing.expectEqual(Language.ruby, Language.fromShebang("#!/usr/bin/env ruby\nputs 'hi'\n").?);
+	try std.testing.expectEqual(Language.ruby, Language.fromShebang("#!/usr/bin/ruby\n").?);
+
+	// no shebang
+	try std.testing.expect(Language.fromShebang("no shebang here\n") == null);
+	try std.testing.expect(Language.fromShebang("") == null);
+
+	// unknown interpreter
+	try std.testing.expect(Language.fromShebang("#!/usr/bin/env python3\nimport sys\n") == null);
 }
 
 test "go: extracts function and type" {
@@ -811,5 +995,137 @@ test "llvm: extracts function and global" {
 	try std.testing.expectEqualStrings("%Point", tree.symbols[1].name);
 	try std.testing.expectEqual(SymbolKind.type_alias, tree.symbols[1].kind);
 	try std.testing.expectEqualStrings("@add", tree.symbols[2].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[2].kind);
+}
+
+test "llvm: define function captures full body range" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\define i32 @add(i32 %a, i32 %b) {
+		\\entry:
+		\\  %sum = add i32 %a, %b
+		\\  ret i32 %sum
+		\\}
+	;
+	var tree = try extract(allocator, source, .llvm);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 1);
+	try std.testing.expectEqualStrings("@add", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	// Lines are 1-indexed: define on line 1, closing } on line 5
+	// Before the fix (function_header), both would be 1 (single-line)
+	try std.testing.expectEqual(@as(u32, 1), tree.symbols[0].start_line);
+	try std.testing.expect(tree.symbols[0].end_line > tree.symbols[0].start_line);
+	try std.testing.expectEqual(@as(u32, 5), tree.symbols[0].end_line);
+}
+
+test "llvm: declare functions are extracted" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\declare void @printf(ptr, ...)
+		\\declare i32 @puts(ptr)
+	;
+	var tree = try extract(allocator, source, .llvm);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 2);
+	try std.testing.expectEqualStrings("@printf", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	try std.testing.expectEqualStrings("@puts", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[1].kind);
+}
+
+test "clojure: extracts defn, def, defmacro, ns" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\(ns myapp.core)
+		\\
+		\\(def max-retries 3)
+		\\
+		\\(defn greet [name]
+		\\  (str "Hello, " name))
+		\\
+		\\(defmacro when-let [bindings & body]
+		\\  `(let [~(first bindings) ~(second bindings)]
+		\\     (when ~(first bindings)
+		\\       ~@body)))
+	;
+	var tree = try extract(allocator, source, .clojure);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 4);
+
+	// ns
+	try std.testing.expectEqualStrings("myapp.core", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.module, tree.symbols[0].kind);
+
+	// def
+	try std.testing.expectEqualStrings("max-retries", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.variable, tree.symbols[1].kind);
+
+	// defn — should span multiple lines
+	try std.testing.expectEqualStrings("greet", tree.symbols[2].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[2].kind);
+	try std.testing.expect(tree.symbols[2].end_line > tree.symbols[2].start_line);
+
+	// defmacro
+	try std.testing.expectEqualStrings("when-let", tree.symbols[3].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[3].kind);
+}
+
+test "clojure: extracts defprotocol, defrecord, defmulti" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\(defprotocol Greetable
+		\\  (greet [this]))
+		\\
+		\\(defrecord Person [name age])
+		\\
+		\\(defmulti area :shape)
+	;
+	var tree = try extract(allocator, source, .clojure);
+	defer tree.deinit(allocator);
+
+	try std.testing.expect(tree.symbols.len >= 3);
+
+	try std.testing.expectEqualStrings("Greetable", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.interface, tree.symbols[0].kind);
+
+	try std.testing.expectEqualStrings("Person", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.struct_decl, tree.symbols[1].kind);
+
+	try std.testing.expectEqualStrings("area", tree.symbols[2].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[2].kind);
+}
+
+test "assembly: extracts labels and constants" {
+	const allocator = std.testing.allocator;
+	const source =
+		\\.global _start
+		\\
+		\\const MAX_SIZE 1024
+		\\
+		\\_start:
+		\\  mov rax, 60
+		\\  xor rdi, rdi
+		\\  syscall
+		\\
+		\\helper:
+		\\  ret
+	;
+	var tree = try extract(allocator, source, .assembly);
+	defer tree.deinit(allocator);
+
+	// Should extract labels and constants
+	try std.testing.expect(tree.symbols.len >= 3);
+
+	try std.testing.expectEqualStrings("MAX_SIZE", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.variable, tree.symbols[0].kind);
+
+	try std.testing.expectEqualStrings("_start", tree.symbols[1].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[1].kind);
+
+	try std.testing.expectEqualStrings("helper", tree.symbols[2].name);
 	try std.testing.expectEqual(SymbolKind.function, tree.symbols[2].kind);
 }
