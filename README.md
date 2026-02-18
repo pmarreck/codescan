@@ -127,10 +127,9 @@ Endpoints:
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/help` | GET | List all endpoints |
-| `/search` | POST | Semantic code search |
+| `/search` | POST | Semantic code search (`/query` is an alias) |
 | `/index` | POST | Index/reindex repository |
-| `/symbols` | POST | List symbols in a file |
-| `/find-symbol` | POST | Find symbol by name path |
+| `/symbols` | POST | List or find symbols (`/find-symbol` is an alias) |
 | `/replace-symbol` | POST | Replace a symbol's body |
 | `/insert-after` | POST | Insert code after a symbol |
 | `/insert-before` | POST | Insert code before a symbol |
@@ -144,7 +143,9 @@ Endpoints:
 ```bash
 # examples
 curl -s localhost:8123/symbols -d '{"file":"src/main.zig"}'
-curl -s localhost:8123/find-symbol -d '{"file":"src/main.zig","pattern":"runSearch","include_body":true}'
+curl -s localhost:8123/symbols -d '{"file":"src/main.zig","pattern":"runSearch","include_body":true}'
+curl -s localhost:8123/symbols -d '{"file":["src/main.zig","src/cli.zig"],"pattern":"parse"}'
+curl -s localhost:8123/symbols -d '{"pattern":"init"}'
 curl -s localhost:8123/replace-content -d '{"file":"src/lib.zig","needle":"old","body":"new","all":true}'
 ```
 
@@ -176,10 +177,9 @@ Add to your MCP settings:
 
 | Tool | Description |
 |------|-------------|
-| `codescan_search` | Semantic code search |
+| `codescan_search` | Semantic code search (`codescan_query` is an alias) |
 | `codescan_index` | Index/reindex repository |
-| `codescan_symbols` | List symbols in a file |
-| `codescan_find_symbol` | Find symbol by name path |
+| `codescan_symbols` | List or find symbols (optional `file`, `pattern`, `include_body`) |
 | `codescan_replace_symbol` | Replace a symbol's body |
 | `codescan_insert_after` | Insert code after a symbol |
 | `codescan_insert_before` | Insert code before a symbol |
