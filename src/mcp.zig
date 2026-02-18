@@ -28,8 +28,13 @@ pub fn readMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
 }
 
 /// Write a JSON-RPC message followed by a newline.
+/// Strips any embedded newlines from msg to ensure one-JSON-per-line protocol.
 pub fn writeMessage(writer: *std.Io.Writer, msg: []const u8) !void {
-	try writer.writeAll(msg);
+	for (msg) |c| {
+		if (c != '\n' and c != '\r') {
+			try writer.writeByte(c);
+		}
+	}
 	try writer.writeAll("\n");
 	try writer.flush();
 }
@@ -457,6 +462,36 @@ test "handleToolsCall returns error for unknown tool" {
 
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"error\"") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "tool execution failed") != null);
+}
+
+test "writeMessage strips embedded newlines" {
+	const allocator = std.testing.allocator;
+	var w: std.io.Writer.Allocating = .init(allocator);
+	defer w.deinit();
+	try writeMessage(&w.writer, "line1\nline2\nline3");
+	const output = w.written();
+	// Should be a single line with no embedded newlines, terminated by \n
+	try std.testing.expectEqualStrings("line1line2line3\n", output);
+}
+
+test "handleToolsList response is single-line valid JSON" {
+	const allocator = std.testing.allocator;
+	// Write the tools/list response through writeMessage
+	var w: std.io.Writer.Allocating = .init(allocator);
+	defer w.deinit();
+	const response = try handleToolsList(allocator, .{ .integer = 1 });
+	defer allocator.free(response);
+	try writeMessage(&w.writer, response);
+	const output = w.written();
+	// Should end with exactly one newline
+	try std.testing.expect(output.len > 0);
+	try std.testing.expect(output[output.len - 1] == '\n');
+	// The content before the newline should have no embedded newlines
+	const content = output[0 .. output.len - 1];
+	try std.testing.expect(std.mem.indexOf(u8, content, "\n") == null);
+	// And it should be valid JSON
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+	defer parsed.deinit();
 }
 
 test "formatError produces valid JSON-RPC error" {
