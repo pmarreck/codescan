@@ -134,7 +134,7 @@ fn handleRequest(
 		return;
 	}
 
-	if (req.head.method == .POST and std.mem.eql(u8, path, "/search")) {
+	if (req.head.method == .POST and (std.mem.eql(u8, path, "/search") or std.mem.eql(u8, path, "/query"))) {
 		const body = try readBody(allocator, req, 1024 * 1024);
 		defer allocator.free(body);
 
@@ -225,43 +225,17 @@ fn handleRequest(
 		return;
 	}
 
-	if (req.head.method == .POST and std.mem.eql(u8, path, "/symbols")) {
+	if (req.head.method == .POST and (std.mem.eql(u8, path, "/symbols") or std.mem.eql(u8, path, "/find-symbol"))) {
 		const body = try readBody(allocator, req, 1024 * 1024);
 		defer allocator.free(body);
 
-		const file_path = blk: {
-			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
-				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
-				return;
-			};
-			defer parsed.deinit();
-			const obj = parsed.value.object;
-			const f = obj.get("file") orelse {
-				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
-				return;
-			};
-			break :blk try allocator.dupe(u8, f.string);
-		};
-		defer allocator.free(file_path);
-
-		var out: std.io.Writer.Allocating = .init(allocator);
-		defer out.deinit();
-		main.runSymbols(allocator, file_path, .json, &out.writer) catch {
-			try req.respond("{\"error\":\"failed to extract symbols\"}\n", .{ .status = .internal_server_error });
-			return;
-		};
-		const payload = try out.toOwnedSlice();
-		defer allocator.free(payload);
-		try respondJson(req, payload);
-		return;
-	}
-
-	if (req.head.method == .POST and std.mem.eql(u8, path, "/find-symbol")) {
-		const body = try readBody(allocator, req, 1024 * 1024);
-		defer allocator.free(body);
-
-		var file_path: []const u8 = undefined;
-		var pattern: []const u8 = undefined;
+		var files = std.ArrayListUnmanaged([]const u8){};
+		defer {
+			for (files.items) |f| allocator.free(f);
+			files.deinit(allocator);
+		}
+		var pattern_owned: ?[]const u8 = null;
+		defer if (pattern_owned) |p| allocator.free(p);
 		var include_body_flag: bool = false;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
@@ -270,28 +244,36 @@ fn handleRequest(
 			};
 			defer parsed.deinit();
 			const obj = parsed.value.object;
-			const f = obj.get("file") orelse {
-				try req.respond("{\"error\":\"missing 'file' field\"}\n", .{ .status = .bad_request });
-				return;
-			};
-			file_path = try allocator.dupe(u8, f.string);
-			const p = obj.get("pattern") orelse {
-				allocator.free(file_path);
-				try req.respond("{\"error\":\"missing 'pattern' field\"}\n", .{ .status = .bad_request });
-				return;
-			};
-			pattern = try allocator.dupe(u8, p.string);
+
+			// "file" can be a string or an array of strings (or absent)
+			if (obj.get("file")) |f| {
+				switch (f) {
+					.string => |s| try files.append(allocator, try allocator.dupe(u8, s)),
+					.array => |arr| {
+						for (arr.items) |item| {
+							if (item == .string) {
+								try files.append(allocator, try allocator.dupe(u8, item.string));
+							}
+						}
+					},
+					else => {},
+				}
+			}
+
+			if (obj.get("pattern")) |p| {
+				if (p == .string) {
+					pattern_owned = try allocator.dupe(u8, p.string);
+				}
+			}
 			if (obj.get("include_body")) |ib| {
-				include_body_flag = ib.bool;
+				if (ib == .bool) include_body_flag = ib.bool;
 			}
 		}
-		defer allocator.free(file_path);
-		defer allocator.free(pattern);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runFindSymbol(allocator, file_path, pattern, include_body_flag, .json, &out.writer) catch {
-			try req.respond("{\"error\":\"failed to find symbol\"}\n", .{ .status = .internal_server_error });
+		main.runSymbols(allocator, files.items, pattern_owned, include_body_flag, .json, &out.writer, settings.root_path) catch {
+			try req.respond("{\"error\":\"failed to extract symbols\"}\n", .{ .status = .internal_server_error });
 			return;
 		};
 		const payload = try out.toOwnedSlice();
@@ -1064,18 +1046,15 @@ fn testSettings() Settings {
 const help_text =
 	"codescan http api\n" ++
 	"\n" ++
-	"POST /search\n" ++
+	"POST /search (also /query)\n" ++
 	"  fields: query, top_n, mode, weight_vector, weight_lexical, min_score\n" ++
 	"          ext, type, lang, include_docs, docs/only_docs, comments/only_comments\n" ++
 	"\n" ++
 	"POST /index\n" ++
 	"  fields: ext, type, include_node_modules\n" ++
 	"\n" ++
-	"POST /symbols\n" ++
-	"  fields: file\n" ++
-	"\n" ++
-	"POST /find-symbol\n" ++
-	"  fields: file, pattern, include_body?\n" ++
+	"POST /symbols (also /find-symbol)\n" ++
+	"  fields: file (string or array, optional), pattern?, include_body?\n" ++
 	"\n" ++
 	"POST /replace-symbol\n" ++
 	"  fields: file, pattern, body\n" ++

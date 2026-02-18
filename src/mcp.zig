@@ -157,13 +157,14 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 	errdefer out.deinit();
 
 	if (std.mem.eql(u8, name, "codescan_symbols")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		main.runSymbols(allocator, file, .json, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_find_symbol")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
+		var files = getArgStringArray(allocator, args, "file") catch return error.ToolFailed;
+		defer {
+			for (files.items) |f| allocator.free(f);
+			files.deinit(allocator);
+		}
+		const pattern = getArg(args, "pattern");
 		const include_body = getArgBool(args, "include_body");
-		main.runFindSymbol(allocator, file, pattern, include_body, .json, &out.writer) catch return error.ToolFailed;
+		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path) catch return error.ToolFailed;
 	} else if (std.mem.eql(u8, name, "codescan_replace_symbol")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
@@ -207,7 +208,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const dry_run = getArgBool(args, "dry_run");
 		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, &out.writer) catch return error.ToolFailed;
-	} else if (std.mem.eql(u8, name, "codescan_search")) {
+	} else if (std.mem.eql(u8, name, "codescan_search") or std.mem.eql(u8, name, "codescan_query")) {
 		// Search requires embedder — not available in MCP context without Ollama config
 		// For now, return a descriptive error; full search needs the embedder wired in
 		try out.writer.writeAll("error: search via MCP requires a running Ollama instance (not yet wired)");
@@ -236,6 +237,29 @@ fn getArgBool(args: ?std.json.ObjectMap, key: []const u8) bool {
 	const val = a.get(key) orelse return false;
 	if (val != .bool) return false;
 	return val.bool;
+}
+
+/// Extract a string-or-array-of-strings arg into an owned ArrayList.
+fn getArgStringArray(allocator: std.mem.Allocator, args: ?std.json.ObjectMap, key: []const u8) !std.ArrayListUnmanaged([]const u8) {
+	var result = std.ArrayListUnmanaged([]const u8){};
+	errdefer {
+		for (result.items) |f| allocator.free(f);
+		result.deinit(allocator);
+	}
+	const a = args orelse return result;
+	const val = a.get(key) orelse return result;
+	switch (val) {
+		.string => |s| try result.append(allocator, try allocator.dupe(u8, s)),
+		.array => |arr| {
+			for (arr.items) |item| {
+				if (item == .string) {
+					try result.append(allocator, try allocator.dupe(u8, item.string));
+				}
+			}
+		},
+		else => {},
+	}
+	return result;
 }
 
 /// Main MCP server loop. Reads JSON-RPC messages from stdin, writes responses to stdout.
@@ -290,9 +314,9 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 const tools_list_json =
 	\\{"tools":[
 	\\{"name":"codescan_search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
+	\\{"name":"codescan_query","description":"Alias for codescan_search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
 	\\{"name":"codescan_index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
-	\\{"name":"codescan_symbols","description":"List all symbols (functions, classes, etc.) in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"}},"required":["file"]}},
-	\\{"name":"codescan_find_symbol","description":"Find a symbol by name path pattern in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path pattern"},"include_body":{"type":"boolean","description":"Include symbol source code"}},"required":["file","pattern"]}},
+	\\{"name":"codescan_symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
 	\\{"name":"codescan_replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"}},"required":["file","pattern","body"]}},
 	\\{"name":"codescan_insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
 	\\{"name":"codescan_insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
@@ -352,12 +376,12 @@ test "handleToolsList returns all 14 tools" {
 	const response = try handleToolsList(allocator, 1);
 	defer allocator.free(response);
 
-	// Verify all 13 tool names are present
+	// Verify all tool names are present
 	const tool_names = [_][]const u8{
 		"codescan_search",
+		"codescan_query",
 		"codescan_index",
 		"codescan_symbols",
-		"codescan_find_symbol",
 		"codescan_replace_symbol",
 		"codescan_insert_after",
 		"codescan_insert_before",

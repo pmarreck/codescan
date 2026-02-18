@@ -15,7 +15,6 @@ pub const CommandTag = enum {
 	search,
 	serve,
 	symbols,
-	find_symbol,
 	replace_symbol,
 	insert_after,
 	insert_before,
@@ -102,8 +101,8 @@ pub const Parsed = struct {
 	ext_filter: ?[]const u8,
 	type_filter: ?[]const u8,
 	lang_filter: ?[]const u8,
-	symbols_file: ?[]const u8,
-	find_symbol_pattern: ?[]const u8,
+	symbols_files: std.ArrayListUnmanaged([]const u8),
+	pattern: ?[]const u8,
 	include_body: bool,
 	from_ref: ?[]const u8,
 	to_ref: ?[]const u8,
@@ -122,6 +121,7 @@ pub const Parsed = struct {
 		if (self.query_owned and self.query != null) {
 			allocator.free(self.query.?);
 		}
+		self.symbols_files.deinit(allocator);
 	}
 };
 
@@ -158,8 +158,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.ext_filter = null,
 		.type_filter = null,
 		.lang_filter = null,
-		.symbols_file = null,
-		.find_symbol_pattern = null,
+		.symbols_files = .{},
+		.pattern = null,
 		.include_body = false,
 		.from_ref = null,
 		.to_ref = null,
@@ -200,47 +200,39 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	} else if (std.mem.eql(u8, cmd, "update")) {
 		parsed.command = .update;
 		i += 1;
-	} else if (std.mem.eql(u8, cmd, "search")) {
+	} else if (std.mem.eql(u8, cmd, "search") or std.mem.eql(u8, cmd, "query")) {
 		parsed.command = .search;
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "serve")) {
 		parsed.command = .serve;
 		i += 1;
-	} else if (std.mem.eql(u8, cmd, "symbols")) {
+	} else if (std.mem.eql(u8, cmd, "symbols") or std.mem.eql(u8, cmd, "find-symbol")) {
 		parsed.command = .symbols;
 		i += 1;
-		// Next non-flag arg is the file path
+		// Next non-flag arg is the pattern (optional)
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.symbols_file = args[i];
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "find-symbol")) {
-		parsed.command = .find_symbol;
-		i += 1;
-		// Next non-flag arg is the name path pattern
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "replace-symbol")) {
 		parsed.command = .replace_symbol;
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "insert-after")) {
 		parsed.command = .insert_after;
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "insert-before")) {
 		parsed.command = .insert_before;
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "replace-lines")) {
@@ -257,21 +249,21 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		parsed.command = .replace_content;
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "references")) {
 		parsed.command = .references;
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "rename")) {
 		parsed.command = .rename;
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.find_symbol_pattern = args[i];
+			parsed.pattern = args[i];
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "mcp-serve")) {
@@ -544,7 +536,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--file")) {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
-			parsed.symbols_file = args[i];
+			try parsed.symbols_files.append(allocator, args[i]);
 			i += 1;
 			continue;
 		}
@@ -593,16 +585,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 
 		// Collect positional args for commands that expect them
 		switch (parsed.command) {
-			.find_symbol, .replace_symbol, .insert_after, .insert_before, .replace_content, .references, .rename => {
-				if (parsed.find_symbol_pattern == null) {
-					parsed.find_symbol_pattern = arg;
-					i += 1;
-					continue;
-				}
-			},
-			.symbols => {
-				if (parsed.symbols_file == null) {
-					parsed.symbols_file = arg;
+			.symbols, .replace_symbol, .insert_after, .insert_before, .replace_content, .references, .rename => {
+				if (parsed.pattern == null) {
+					parsed.pattern = arg;
 					i += 1;
 					continue;
 				}
@@ -973,7 +958,55 @@ test "parse find-symbol with --file before pattern" {
 	const args = [_][]const u8{ "codescan", "find-symbol", "--file", "src/main.zig", "_git_show" };
 	var parsed = try parse(std.testing.allocator, &args);
 	defer parsed.deinit(std.testing.allocator);
-	try std.testing.expectEqual(CommandTag.find_symbol, parsed.command);
-	try std.testing.expectEqualStrings("src/main.zig", parsed.symbols_file.?);
-	try std.testing.expectEqualStrings("_git_show", parsed.find_symbol_pattern.?);
+	try std.testing.expectEqual(CommandTag.symbols, parsed.command);
+	try std.testing.expect(parsed.symbols_files.items.len == 1);
+	try std.testing.expectEqualStrings("src/main.zig", parsed.symbols_files.items[0]);
+	try std.testing.expectEqualStrings("_git_show", parsed.pattern.?);
+}
+
+test "parse symbols with pattern and multiple --file args" {
+	const args = [_][]const u8{ "codescan", "symbols", "init", "--file", "src/main.zig", "--file", "src/cli.zig" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.symbols, parsed.command);
+	try std.testing.expect(parsed.symbols_files.items.len == 2);
+	try std.testing.expectEqualStrings("src/main.zig", parsed.symbols_files.items[0]);
+	try std.testing.expectEqualStrings("src/cli.zig", parsed.symbols_files.items[1]);
+	try std.testing.expectEqualStrings("init", parsed.pattern.?);
+}
+
+test "parse symbols with pattern but no --file" {
+	const args = [_][]const u8{ "codescan", "symbols", "init" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.symbols, parsed.command);
+	try std.testing.expect(parsed.symbols_files.items.len == 0);
+	try std.testing.expectEqualStrings("init", parsed.pattern.?);
+}
+
+test "parse symbols with no args (list all from CWD)" {
+	const args = [_][]const u8{ "codescan", "symbols" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.symbols, parsed.command);
+	try std.testing.expect(parsed.symbols_files.items.len == 0);
+	try std.testing.expect(parsed.pattern == null);
+}
+
+test "parse find-symbol alias still works" {
+	const args = [_][]const u8{ "codescan", "find-symbol", "myFunc", "--file", "src/main.zig" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.symbols, parsed.command);
+	try std.testing.expectEqualStrings("myFunc", parsed.pattern.?);
+	try std.testing.expect(parsed.symbols_files.items.len == 1);
+	try std.testing.expectEqualStrings("src/main.zig", parsed.symbols_files.items[0]);
+}
+
+test "parse query as alias for search" {
+	const args = [_][]const u8{ "codescan", "query", "hash functions" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
 }

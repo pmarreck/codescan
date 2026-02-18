@@ -514,23 +514,13 @@ pub fn main() !void {
 			});
 		},
 		.symbols => {
-			const file_path = parsed.symbols_file orelse
-				exitWithError("error: symbols command requires a file path\nusage: codescan symbols <file>\n");
-			try runSymbols(allocator, file_path, parsed.output, stdout);
-			try stdout.flush();
-		},
-		.find_symbol => {
-			const pattern = parsed.find_symbol_pattern orelse
-				exitWithError("error: find-symbol requires a name path pattern\nusage: codescan find-symbol <pattern> --file <path>\n");
-			const file_path = parsed.symbols_file orelse
-				exitWithError("error: find-symbol requires --file <path>\n");
-			try runFindSymbol(allocator, file_path, pattern, parsed.include_body, parsed.output, stdout);
+			try runSymbols(allocator, parsed.symbols_files.items, parsed.pattern, parsed.include_body, parsed.output, stdout, settings.root_path);
 			try stdout.flush();
 		},
 		.replace_symbol => {
-			const pattern = parsed.find_symbol_pattern orelse
+			const pattern = parsed.pattern orelse
 				exitWithError("error: replace-symbol requires a name path\nusage: echo 'new body' | codescan replace-symbol <name_path> --file <path>\n");
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: replace-symbol requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
@@ -539,9 +529,9 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.insert_after => {
-			const pattern = parsed.find_symbol_pattern orelse
+			const pattern = parsed.pattern orelse
 				exitWithError("error: insert-after requires a name path\nusage: echo 'code' | codescan insert-after <name_path> --file <path>\n");
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: insert-after requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
@@ -550,9 +540,9 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.insert_before => {
-			const pattern = parsed.find_symbol_pattern orelse
+			const pattern = parsed.pattern orelse
 				exitWithError("error: insert-before requires a name path\nusage: echo 'code' | codescan insert-before <name_path> --file <path>\n");
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: insert-before requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
@@ -561,7 +551,7 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.replace_lines => {
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: replace-lines requires --file <path>\n");
 			const from_ref = parsed.from_ref orelse
 				exitWithError("error: replace-lines requires --from <line:hash>\n");
@@ -574,7 +564,7 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.insert_at => {
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: insert-at requires --file <path>\n");
 			const ref = parsed.hashline_ref orelse
 				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
@@ -585,10 +575,10 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.replace_content => {
-			const needle = parsed.find_symbol_pattern orelse
+			const needle = parsed.pattern orelse
 				exitWithError("error: replace-content requires a pattern\n" ++
 					"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: replace-content requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
@@ -597,17 +587,17 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.references => {
-			const pattern = parsed.find_symbol_pattern orelse
+			const pattern = parsed.pattern orelse
 				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: references requires --file <path>\n");
 			try runReferences(allocator, file_path, pattern, parsed.output, settings.root_path, settings.lsp_overrides, stdout);
 			try stdout.flush();
 		},
 		.rename => {
-			const pattern = parsed.find_symbol_pattern orelse
+			const pattern = parsed.pattern orelse
 				exitWithError("error: rename requires a name path pattern\nusage: codescan rename <pattern> --file <path> --to <new_name>\n");
-			const file_path = parsed.symbols_file orelse
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
 				exitWithError("error: rename requires --file <path>\n");
 			const new_name = parsed.rename_to orelse
 				exitWithError("error: rename requires --to <new_name>\n");
@@ -1333,96 +1323,144 @@ fn readFileContents(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 	return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
 }
 
-pub fn runSymbols(allocator: std.mem.Allocator, file_path: []const u8, out_fmt: cli.OutputFormat, writer: *std.Io.Writer) !void {
-	const source = try readFileContents(allocator, file_path);
-	defer allocator.free(source);
-
-	const ext = std.fs.path.extension(file_path);
-	var tree: symbol_tree.SymbolTree = undefined;
-	var tree_valid = false;
-
-	if (std.mem.eql(u8, ext, ".zig")) {
-		tree = try symbol_tree.extractZig(allocator, source);
-		tree_valid = true;
-	} else if (ts_symbols.Language.fromExtension(ext) orelse ts_symbols.Language.fromShebang(source)) |lang| {
-		tree = try ts_symbols.extract(allocator, source, lang);
-		tree_valid = true;
-	}
-
-	if (!tree_valid) {
-		try writer.print("error: unsupported file type '{s}'\n", .{ext});
-		return;
-	}
-	defer tree.deinit(allocator);
-
-	// Compute per-file chain hashes for auto-expiry on symbol references
-	var lines_list: std.ArrayListUnmanaged([]const u8) = .{};
-	defer lines_list.deinit(allocator);
-	{
-		var it = std.mem.splitScalar(u8, source, '\n');
-		while (it.next()) |line| {
-			try lines_list.append(allocator, line);
-		}
-	}
-	const all_hashes = try hashline.computeChainHashes(allocator, lines_list.items);
-	defer allocator.free(all_hashes);
-
-	if (out_fmt == .json) {
-		try writeSymbolsJson(tree.symbols, all_hashes, writer);
-	} else {
-		try formatSymbolsWithHashes(tree.symbols, all_hashes, writer, 0);
-	}
-}
-
-pub fn runFindSymbol(
+pub fn runSymbols(
 	allocator: std.mem.Allocator,
-	file_path: []const u8,
-	pattern: []const u8,
+	files: []const []const u8,
+	pattern: ?[]const u8,
 	include_body: bool,
 	out_fmt: cli.OutputFormat,
 	writer: *std.Io.Writer,
+	root_path: ?[]const u8,
 ) !void {
-	const source = try readFileContents(allocator, file_path);
-	defer allocator.free(source);
+	// If no files specified, discover all code files under root
+	var discovered_files: ?[]const []const u8 = null;
+	defer if (discovered_files) |df| {
+		for (df) |f| allocator.free(f);
+		allocator.free(df);
+	};
 
-	const ext = std.fs.path.extension(file_path);
-	var tree: symbol_tree.SymbolTree = undefined;
-	var tree_valid = false;
+	const file_list: []const []const u8 = if (files.len > 0)
+		files
+	else blk: {
+		discovered_files = scan.findFiles(allocator, root_path orelse ".", plugin.defaultRegistry(), .{
+			.global = &.{},
+			.per_language = &.{},
+			.include_node_modules = false,
+		}) catch {
+			try writer.writeAll("error: failed to scan files\n");
+			return;
+		};
+		break :blk discovered_files.?;
+	};
 
-	if (std.mem.eql(u8, ext, ".zig")) {
-		tree = try symbol_tree.extractZig(allocator, source);
-		tree_valid = true;
-	} else if (ts_symbols.Language.fromExtension(ext) orelse ts_symbols.Language.fromShebang(source)) |lang| {
-		tree = try ts_symbols.extract(allocator, source, lang);
-		tree_valid = true;
+	const multi = file_list.len > 1;
+
+	if (out_fmt == .json and multi) {
+		try writer.writeAll("[");
 	}
 
-	if (!tree_valid) {
-		try writer.print("error: unsupported file type '{s}'\n", .{ext});
-		return;
-	}
-	defer tree.deinit(allocator);
+	var first_file = true;
+	var any_found = false;
+	for (file_list) |file_path| {
+		const source = readFileContents(allocator, file_path) catch continue;
+		defer allocator.free(source);
 
-	// Split source into lines and compute per-file chain hashes
-	var lines_list: std.ArrayListUnmanaged([]const u8) = .{};
-	defer lines_list.deinit(allocator);
-	{
-		var it = std.mem.splitScalar(u8, source, '\n');
-		while (it.next()) |line| {
-			try lines_list.append(allocator, line);
+		const ext = std.fs.path.extension(file_path);
+		var tree: symbol_tree.SymbolTree = undefined;
+		var tree_valid = false;
+
+		if (std.mem.eql(u8, ext, ".zig")) {
+			tree = symbol_tree.extractZig(allocator, source) catch continue;
+			tree_valid = true;
+		} else if (ts_symbols.Language.fromExtension(ext) orelse ts_symbols.Language.fromShebang(source)) |lang| {
+			tree = ts_symbols.extract(allocator, source, lang) catch continue;
+			tree_valid = true;
+		}
+
+		if (!tree_valid) continue;
+		defer tree.deinit(allocator);
+
+		// Compute per-file chain hashes
+		var lines_list: std.ArrayListUnmanaged([]const u8) = .{};
+		defer lines_list.deinit(allocator);
+		{
+			var it = std.mem.splitScalar(u8, source, '\n');
+			while (it.next()) |line| {
+				try lines_list.append(allocator, line);
+			}
+		}
+		const lines = lines_list.items;
+		const all_hashes = try hashline.computeChainHashes(allocator, lines);
+		defer allocator.free(all_hashes);
+
+		if (pattern) |pat| {
+			// Find matching symbols
+			var found = false;
+			if (out_fmt == .json) {
+				if (multi) {
+					// In multi-file JSON, each match is a separate object with file field
+					for (tree.symbols) |*sym| {
+						try findAndPrintMatchMulti(allocator, sym, pat, null, include_body, lines, all_hashes, file_path, out_fmt, writer, &found, &first_file);
+					}
+				} else {
+					for (tree.symbols) |*sym| {
+						try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+					}
+				}
+			} else {
+				if (multi and tree.symbols.len > 0) {
+					// Check if any matches exist before printing header
+					var file_found = false;
+					for (tree.symbols) |*sym| {
+						try findAndPrintMatchCheck(sym, pat, null, &file_found);
+					}
+					if (file_found) {
+						try writer.print("\n==> {s} <==\n", .{file_path});
+						for (tree.symbols) |*sym| {
+							try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+						}
+					}
+				} else {
+					for (tree.symbols) |*sym| {
+						try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+					}
+				}
+			}
+			if (found) any_found = true;
+		} else {
+			// List all symbols
+			any_found = true;
+			if (out_fmt == .json) {
+				if (multi) {
+					if (!first_file) try writer.writeAll(",");
+					first_file = false;
+					try writer.writeAll("{\"file\":");
+					try writeJsonString(file_path, writer);
+					try writer.writeAll(",\"symbols\":");
+					try writeSymbolsJson(tree.symbols, all_hashes, writer);
+					try writer.writeAll("}");
+				} else {
+					try writeSymbolsJson(tree.symbols, all_hashes, writer);
+				}
+			} else {
+				if (multi) {
+					try writer.print("\n==> {s} <==\n", .{file_path});
+				}
+				try formatSymbolsWithHashes(tree.symbols, all_hashes, writer, 0);
+			}
 		}
 	}
-	const lines = lines_list.items;
-	const all_hashes = try hashline.computeChainHashes(allocator, lines);
-	defer allocator.free(all_hashes);
 
-	var found = false;
-	for (tree.symbols) |*sym| {
-		try findAndPrintMatch(allocator, sym, pattern, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+	if (out_fmt == .json and multi) {
+		try writer.writeAll("]\n");
 	}
 
-	if (!found and out_fmt != .json) {
-		try writer.print("No symbols matching '{s}' found in {s}\n", .{ pattern, file_path });
+	if (pattern != null and !any_found and out_fmt != .json) {
+		if (files.len == 1) {
+			try writer.print("No symbols matching '{s}' found in {s}\n", .{ pattern.?, files[0] });
+		} else {
+			try writer.print("No symbols matching '{s}' found\n", .{pattern.?});
+		}
 	}
 }
 
@@ -1504,6 +1542,85 @@ fn findAndPrintMatch(
 
 	for (sym.children) |*child| {
 		try findAndPrintMatch(allocator, child, pattern, name_path, include_body, lines, all_hashes, out_fmt, writer, found);
+	}
+}
+
+/// Like findAndPrintMatch but adds "file" field to JSON output for multi-file results.
+fn findAndPrintMatchMulti(
+	allocator: std.mem.Allocator,
+	sym: *const symbol_tree.SymbolNode,
+	pattern: []const u8,
+	parent_path: ?[]const u8,
+	include_body: bool,
+	lines: []const []const u8,
+	all_hashes: []const hashline.Hash,
+	file_path: []const u8,
+	out_fmt: cli.OutputFormat,
+	writer: *std.Io.Writer,
+	found: *bool,
+	first_file: *bool,
+) !void {
+	_ = out_fmt;
+	const name_path = try sym.namePath(allocator, parent_path);
+	defer allocator.free(name_path);
+
+	const start_idx = if (sym.start_line > 0) sym.start_line - 1 else 0;
+	const end_idx = if (sym.end_line > 0) sym.end_line - 1 else 0;
+
+	if (matchesNamePath(pattern, name_path, sym.name)) {
+		found.* = true;
+		if (!first_file.*) try writer.writeAll(",");
+		first_file.* = false;
+		try writer.writeAll("{\"file\":");
+		try writeJsonString(file_path, writer);
+		try writer.writeAll(",\"name_path\":");
+		try writeJsonString(name_path, writer);
+		try writer.print(",\"kind\":\"{s}\",\"start_line\":{d},\"end_line\":{d}", .{
+			sym.kind.label(), sym.start_line, sym.end_line,
+		});
+		if (start_idx < all_hashes.len) {
+			try writer.print(",\"start_hash\":\"{s}\"", .{&all_hashes[start_idx]});
+		}
+		if (end_idx < all_hashes.len) {
+			try writer.print(",\"end_hash\":\"{s}\"", .{&all_hashes[end_idx]});
+		}
+		if (include_body) {
+			const start = start_idx;
+			const end = @min(sym.end_line, lines.len);
+			try writer.writeAll(",\"body\":[");
+			for (lines[start..end], 0..) |line, li| {
+				if (li > 0) try writer.writeAll(",");
+				try writeJsonString(line, writer);
+			}
+			try writer.writeAll("]");
+		}
+		try writer.writeAll("}");
+	}
+
+	for (sym.children) |*child| {
+		try findAndPrintMatchMulti(allocator, child, pattern, name_path, include_body, lines, all_hashes, file_path, .json, writer, found, first_file);
+	}
+}
+
+/// Check if any symbols match without printing (for deciding whether to show file header).
+fn findAndPrintMatchCheck(
+	sym: *const symbol_tree.SymbolNode,
+	pattern: []const u8,
+	parent_path: ?[]const u8,
+	found: *bool,
+) !void {
+	if (found.*) return; // short-circuit once found
+	const name_path = try sym.namePath(std.heap.page_allocator, parent_path);
+	defer std.heap.page_allocator.free(name_path);
+
+	if (matchesNamePath(pattern, name_path, sym.name)) {
+		found.* = true;
+		return;
+	}
+
+	for (sym.children) |*child| {
+		try findAndPrintMatchCheck(child, pattern, name_path, found);
+		if (found.*) return;
 	}
 }
 
@@ -2511,9 +2628,9 @@ const usage =
 	\\    watch restart          Restart background watcher
 	\\    watch status           Show watcher status
 	\\    watch pid              Print watcher PID
-	\\  search <query>           Search indexed codebase
-	\\  symbols <file>           Show symbol tree for a file
-	\\  find-symbol <pattern>    Find symbols by name path pattern
+	\\  search <query>           Search indexed codebase (query is an alias)
+	\\  symbols [pattern]         List or find symbols (across files, or all if no --file)
+	\\                           find-symbol is an alias for symbols
 	\\  replace-symbol <pattern> Replace a symbol's body (from stdin)
 	\\  insert-after <pattern>   Insert code after a symbol (from stdin)
 	\\  insert-before <pattern>  Insert code before a symbol (from stdin)
@@ -2530,7 +2647,7 @@ const usage =
 	\\
 	\\If no command is specified, codescan assumes `search`.
 	\\
-	\\Name path patterns (for find-symbol, replace-symbol, insert-*):
+	\\Name path patterns (for symbols, replace-symbol, insert-*):
 	\\  init                     Match any symbol named 'init'
 	\\  MyStruct/init            Match suffix of name path
 	\\  /MyStruct/init           Match exact full name path
@@ -2548,7 +2665,7 @@ const usage =
 	\\  Used by:          replace-lines --from/--to, insert-at, symbols output
 	\\
 	\\Editing options:
-	\\  --file <path>            Target file for editing/LSP commands
+	\\  --file <path>            Target file (repeatable for symbols; editing/LSP commands)
 	\\  --from <line:hash>       Start of line range (replace-lines)
 	\\  --to <line:hash>         End of line range (replace-lines) / new name (rename)
 	\\  --include-body           Include source body with hashlines
