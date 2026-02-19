@@ -24,6 +24,8 @@ pub const Settings = struct {
 	max_file_size: usize = 1024 * 1024,
 	search_top_n: usize = 20,
 	search_mode: search.SearchMode = .hybrid,
+	search_fusion: search.FusionMode = .weighted_sum,
+	search_rrf_k: f32 = 60,
 	search_weight_vector: f32 = 0.7,
 	search_weight_lexical: f32 = 0.3,
 	search_min_score: f32 = 0.0,
@@ -317,6 +319,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, .{
 			.top_n = settings.search_top_n,
 			.mode = effective_search_mode,
+			.fusion = settings.search_fusion,
+			.rrf_k = settings.search_rrf_k,
 			.weight_vector = settings.search_weight_vector,
 			.weight_lexical = settings.search_weight_lexical,
 			.min_score = settings.search_min_score,

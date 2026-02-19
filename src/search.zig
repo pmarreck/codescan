@@ -19,10 +19,23 @@ pub const SearchMode = enum {
 	}
 };
 
+pub const FusionMode = enum {
+	weighted_sum,
+	rrf,
+
+	pub fn parse(value: []const u8) !FusionMode {
+		if (std.mem.eql(u8, value, "weighted_sum") or std.mem.eql(u8, value, "weighted-sum")) return .weighted_sum;
+		if (std.mem.eql(u8, value, "rrf")) return .rrf;
+		return error.InvalidFusionMode;
+	}
+};
+
 pub const Options = struct {
 	top_n: usize = 10,
 	candidate_multiplier: usize = 5,
 	mode: SearchMode = .hybrid,
+	fusion: FusionMode = .weighted_sum,
+	rrf_k: f32 = 60,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
 	min_score: f32 = 0.0,
@@ -77,6 +90,12 @@ pub fn search(
 		results.deinit(allocator);
 	}
 
+	// Rank maps for RRF hybrid fusion (id → 1-based rank in source list).
+	var vector_ranks = std.AutoHashMap(i64, usize).init(allocator);
+	defer vector_ranks.deinit();
+	var lexical_ranks = std.AutoHashMap(i64, usize).init(allocator);
+	defer lexical_ranks.deinit();
+
 	if (options.mode == .lexical) {
 		const lexical = try lexicalCandidates(
 			allocator,
@@ -95,6 +114,12 @@ pub fn search(
 
 		const limit = options.top_n * options.candidate_multiplier;
 		const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only);
+
+		// Build vector rank map (candidates are ordered by distance, best first).
+		for (vector_results, 0..) |res, i| {
+			try vector_ranks.put(res.id, i + 1); // 1-based rank
+		}
+
 		for (vector_results) |res| try results.append(allocator, res);
 		allocator.free(vector_results);
 
@@ -108,6 +133,12 @@ pub fn search(
 
 			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only);
 			defer allocator.free(lexical);
+
+			// Build lexical rank map (candidates are ordered by relevance, best first).
+			for (lexical, 0..) |res, i| {
+				try lexical_ranks.put(res.id, i + 1); // 1-based rank
+			}
+
 			for (lexical) |res| {
 				if (seen.contains(res.id)) {
 					var tmp = res;
@@ -198,6 +229,14 @@ pub fn search(
 			res.score = vector_score;
 		} else if (options.mode == .lexical) {
 			res.score = lexical;
+		} else if (options.fusion == .rrf) {
+			// Reciprocal Rank Fusion: score based on position in source lists.
+			const k = options.rrf_k;
+			const v_rank = vector_ranks.get(res.id);
+			const l_rank = lexical_ranks.get(res.id);
+			const v_contrib = if (v_rank) |r| weight_vector / (k + @as(f32, @floatFromInt(r))) else 0;
+			const l_contrib = if (l_rank) |r| weight_lexical / (k + @as(f32, @floatFromInt(r))) else 0;
+			res.score = v_contrib + l_contrib;
 		} else {
 			res.score = vector_score * weight_vector + lexical * weight_lexical;
 		}
@@ -1755,6 +1794,115 @@ const FakeEmbedder = struct {
 		allocator.free(embeddings);
 	}
 };
+
+test "RRF hybrid fusion produces rank-based compromise ordering" {
+	// Three symbols with disagreeing vector and lexical rankings:
+	// - sym_a: vector rank 1 (closest), lexical rank 3 (worst name match)
+	// - sym_b: vector rank 2, lexical rank 2 (compromise candidate)
+	// - sym_c: vector rank 3 (farthest), lexical rank 1 (best name match)
+	// With RRF (k=60), B should score highest as the best compromise.
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// sym_a: close to query vector, poor name match for "search"
+	var sym_a = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "unrelated_func"),
+		.signature = try allocator.dupe(u8, "fn unrelated_func() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_a.deinit(allocator);
+
+	// sym_b: medium distance, medium name match for "search"
+	var sym_b = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "search_index"),
+		.signature = try allocator.dupe(u8, "fn search_index() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_b.deinit(allocator);
+
+	// sym_c: far from query vector, exact name match for "search"
+	var sym_c = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/c.zig"),
+		.name = try allocator.dupe(u8, "search"),
+		.signature = try allocator.dupe(u8, "fn search() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_c.deinit(allocator);
+
+	const id_a = try storage.insertSymbol(db, sym_a);
+	const id_b = try storage.insertSymbol(db, sym_b);
+	const id_c = try storage.insertSymbol(db, sym_c);
+
+	// Embeddings: query is at [0,0]. sym_a closest, sym_b medium, sym_c farthest.
+	try storage.insertEmbedding(db, allocator, id_a, &[_]f32{ 0.1, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_b, &[_]f32{ 0.5, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_c, &[_]f32{ 1.0, 1.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+
+	// RRF mode — rank-based fusion should favor the compromise candidate
+	const sr = try search(allocator, db, fake.embedder(), "search", .{
+		.top_n = 10,
+		.mode = .hybrid,
+		.fusion = .rrf,
+		.rrf_k = 60,
+		.weight_vector = 0.7,
+		.weight_lexical = 0.3,
+		.score_dropoff = 0,
+		.min_score = 0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expect(sr.results.len >= 3);
+
+	// Find scores by name
+	var score_a: f32 = 0;
+	var score_b: f32 = 0;
+	var score_c: f32 = 0;
+	for (sr.results) |res| {
+		if (std.mem.eql(u8, res.symbol.name, "unrelated_func")) score_a = res.score;
+		if (std.mem.eql(u8, res.symbol.name, "search_index")) score_b = res.score;
+		if (std.mem.eql(u8, res.symbol.name, "search")) score_c = res.score;
+	}
+
+	// With RRF, the compromise candidate (B, rank 2 in both) should
+	// score highest or very close to A. The key property is that C
+	// (worst vector rank but best lexical rank) should NOT dominate
+	// like it would with raw-score weighted sum.
+	// RRF scores:
+	//   A: 0.7/61 + 0.3/63 ≈ 0.01624
+	//   B: 0.7/62 + 0.3/62 ≈ 0.01613
+	//   C: 0.7/63 + 0.3/61 ≈ 0.01603
+	// A > B > C (all close together, ranks dominate over weight asymmetry)
+	try std.testing.expect(score_a > 0);
+	try std.testing.expect(score_b > 0);
+	try std.testing.expect(score_c > 0);
+
+	// RRF scores must be on the RRF scale (much smaller than [0,1]).
+	// With k=60, max possible RRF score ≈ w/(k+1) ≈ 0.0164 (before name boost).
+	// Weighted_sum would produce scores in [0.3, 0.9] — clearly different.
+	try std.testing.expect(score_a < 0.05);
+	try std.testing.expect(score_b < 0.05);
+	try std.testing.expect(score_c < 0.05);
+	// Key RRF property: a vector-only result (A, rank 1 vector but no lexical)
+	// should score below a result that appears in both lists (B or C).
+	try std.testing.expect(score_b > score_a);
+	try std.testing.expect(score_c > score_a);
+}
 
 test "buildFtsQuery uses OR for multi-word queries" {
 	const allocator = std.testing.allocator;

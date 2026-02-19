@@ -61,6 +61,8 @@ pub const Seen = struct {
 	http_host: bool = false,
 	http_port: bool = false,
 	search_mode: bool = false,
+	fusion: bool = false,
+	rrf_k: bool = false,
 	weight_vector: bool = false,
 	weight_lexical: bool = false,
 	min_score: bool = false,
@@ -95,6 +97,8 @@ pub const Parsed = struct {
 	http_host: []const u8,
 	http_port: u16,
 	search_mode: search.SearchMode,
+	fusion: search.FusionMode,
+	rrf_k: f32,
 	weight_vector: f32,
 	weight_lexical: f32,
 	min_score: f32,
@@ -152,6 +156,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.http_host = "127.0.0.1",
 		.http_port = 8123,
 		.search_mode = .hybrid,
+		.fusion = .weighted_sum,
+		.rrf_k = 60,
 		.weight_vector = 0.7,
 		.weight_lexical = 0.3,
 		.min_score = 0.0,
@@ -452,6 +458,22 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			if (i >= args.len) return error.MissingValue;
 			parsed.search_mode = try search.SearchMode.parse(args[i]);
 			parsed.seen.search_mode = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--fusion")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.fusion = try search.FusionMode.parse(args[i]);
+			parsed.seen.fusion = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--rrf-k")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.rrf_k = try std.fmt.parseFloat(f32, args[i]);
+			parsed.seen.rrf_k = true;
 			i += 1;
 			continue;
 		}

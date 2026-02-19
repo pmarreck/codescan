@@ -30,6 +30,8 @@ pub const default_template =
     \\
     \\# Search tuning
     \\#search_mode=hybrid
+    \\#fusion=weighted_sum
+    \\#rrf_k=60
     \\#weight_vector=0.7
     \\#weight_lexical=0.3
     \\#min_score=0.0
@@ -94,6 +96,8 @@ pub const Config = struct {
 	batch_size: ?usize = null,
 	max_file_size: ?usize = null,
 	search_mode: ?[]const u8 = null,
+	fusion: ?[]const u8 = null,
+	rrf_k: ?f32 = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
 	min_score: ?f32 = null,
@@ -119,6 +123,7 @@ pub const Config = struct {
 		if (self.ollama_url) |value| allocator.free(value);
 		if (self.ollama_model) |value| allocator.free(value);
 		if (self.search_mode) |value| allocator.free(value);
+		if (self.fusion) |value| allocator.free(value);
 		if (self.index_ext) |value| allocator.free(value);
 		if (self.index_type) |value| allocator.free(value);
 		if (self.search_ext) |value| allocator.free(value);
@@ -208,6 +213,17 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		if (std.mem.eql(u8, key, "search_mode")) {
 			if (!validMode(value)) return error.InvalidValue;
 			config.search_mode = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "fusion")) {
+			if (!validFusion(value)) return error.InvalidValue;
+			config.fusion = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "rrf_k")) {
+			config.rrf_k = std.fmt.parseFloat(f32, value) catch return error.InvalidValue;
 			continue;
 		}
 
@@ -384,6 +400,10 @@ fn getOrCreateOverride(
 
 fn validMode(value: []const u8) bool {
 	return std.mem.eql(u8, value, "vector") or std.mem.eql(u8, value, "lexical") or std.mem.eql(u8, value, "hybrid");
+}
+
+fn validFusion(value: []const u8) bool {
+	return std.mem.eql(u8, value, "weighted_sum") or std.mem.eql(u8, value, "weighted-sum") or std.mem.eql(u8, value, "rrf");
 }
 
 test "parseText empty yields defaults" {

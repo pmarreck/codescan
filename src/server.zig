@@ -30,6 +30,8 @@ pub const Settings = struct {
 	comments_only: bool,
 	search_top_n: usize,
 	search_mode: search.SearchMode,
+	search_fusion: search.FusionMode,
+	search_rrf_k: f32,
 	search_weight_vector: f32,
 	search_weight_lexical: f32,
 	search_min_score: f32,
@@ -155,6 +157,8 @@ fn handleRequest(
 		const sr = try search.search(allocator, db, embedder, parsed.query, .{
 			.top_n = top_n,
 			.mode = parsed.mode orelse settings.search_mode,
+			.fusion = parsed.fusion orelse settings.search_fusion,
+			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
 			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
 			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
 			.min_score = parsed.min_score orelse settings.search_min_score,
@@ -727,6 +731,8 @@ pub const SearchRequest = struct {
 	query: []const u8,
 	top_n: ?usize = null,
 	mode: ?search.SearchMode = null,
+	fusion: ?search.FusionMode = null,
+	rrf_k: ?f32 = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
 	min_score: ?f32 = null,
@@ -768,6 +774,15 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 	if (obj.get("mode")) |mode| {
 		if (mode != .string) return error.InvalidMode;
 		req.mode = try search.SearchMode.parse(mode.string);
+	}
+
+	if (obj.get("fusion")) |fusion| {
+		if (fusion != .string) return error.InvalidRequest;
+		req.fusion = try search.FusionMode.parse(fusion.string);
+	}
+
+	if (obj.get("rrf_k")) |rrf_k_val| {
+		req.rrf_k = try parseWeight(rrf_k_val);
 	}
 
 	if (obj.get("weight_vector")) |weight| {
@@ -1032,6 +1047,8 @@ fn testSettings() Settings {
 		.comments_only = false,
 		.search_top_n = 5,
 		.search_mode = .vector,
+		.search_fusion = .weighted_sum,
+		.search_rrf_k = 60,
 		.search_weight_vector = 1.0,
 		.search_weight_lexical = 0.0,
 		.search_min_score = 0.0,
