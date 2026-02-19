@@ -65,9 +65,9 @@
 - src/extract_text.zig: Plain text paragraph/line/sentence extractor + tests
 - src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
-- src/scan.zig: file walker + ignore matching (built-in + global + per-language globs, node_modules opt-in) + shebang detection for extensionless bash/lua scripts + tests
+- src/scan.zig: file walker + ignore matching (built-in + global + per-language globs, `.gitignore` parity via git allowlist at repo roots, hard ignore for `.git`/`.jj`, node_modules opt-in) + shebang detection for extensionless bash/lua scripts + tests
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), embedding truncation (sentence/line-aware), TTY progress counter, DEBUG progress logs, large-file warnings + tests
-- src/search.zig: vector/lexical/hybrid search + weighted_sum/RRF fusion + FTS candidate generation + natural-language local/generic symbol demotion + duplicate signature diversity penalty + tests
+- src/search.zig: vector/lexical/hybrid search + weighted_sum/RRF fusion + lower default score dropoff threshold (0.3) + FTS candidate generation + natural-language local/generic symbol demotion + duplicate signature diversity penalty + tests
 - src/output.zig: human/json output formatting for results + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests
 - src/filters.zig: shared parsing + filter logic for ext/lang/type and primary language defaults

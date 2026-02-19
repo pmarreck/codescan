@@ -24,6 +24,7 @@ const bin_pattern = "**/bin/**";
 
 const default_ignore_global = &[_][]const u8{
 	"**/.git/**",
+	"**/.jj/**",
 	"**/.hg/**",
 	"**/.svn/**",
 	"**/.bzr/**",
@@ -93,6 +94,9 @@ pub fn findFiles(
 	const ignore_sets = try buildIgnoreSets(allocator, registry, ignore_cfg, skip_bin_ignore);
 	defer deinitIgnoreSets(allocator, ignore_sets);
 
+	var git_allow = try buildGitAllowSet(allocator, root_path);
+	defer if (git_allow) |*set| deinitGitAllowSet(allocator, set);
+
 	var results = std.ArrayListUnmanaged([]const u8){};
 	errdefer {
 		for (results.items) |path| allocator.free(path);
@@ -103,6 +107,9 @@ pub fn findFiles(
 		const is_file = entry.kind == .file or
 			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
 		if (!is_file) continue;
+		if (git_allow) |*set| {
+			if (!set.contains(entry.path)) continue;
+		}
 		var extractor = registry.find(entry.path);
 		if (extractor == null) {
 			if (detectShebangLanguage(dir, entry.path)) |language| {
@@ -115,6 +122,71 @@ pub fn findFiles(
 	}
 
 	return results.toOwnedSlice(allocator);
+}
+
+fn buildGitAllowSet(allocator: std.mem.Allocator, root_path: []const u8) !?std.StringHashMapUnmanaged(void) {
+	// Delegate .gitignore semantics to Git directly. If unavailable or not a repo,
+	// fall back to existing scanner ignore logic.
+	var root_dir = std.fs.cwd().openDir(root_path, .{}) catch return null;
+	defer root_dir.close();
+	_ = root_dir.statFile(".git") catch return null;
+
+	const root_abs = std.fs.cwd().realpathAlloc(allocator, root_path) catch return null;
+	defer allocator.free(root_abs);
+	const top_level_raw = gitCaptureStdout(
+		allocator,
+		&[_][]const u8{ "git", "-C", root_path, "rev-parse", "--show-toplevel" },
+	) catch return null;
+	defer allocator.free(top_level_raw);
+	const top_level = std.mem.trimRight(u8, top_level_raw, "\r\n");
+	if (!std.mem.eql(u8, top_level, root_abs)) return null;
+
+	const stdout = gitCaptureStdout(
+		allocator,
+		&[_][]const u8{ "git", "-C", root_path, "ls-files", "-z", "--cached", "--others", "--exclude-standard" },
+	) catch return null;
+	defer allocator.free(stdout);
+
+	var allow = std.StringHashMapUnmanaged(void){};
+	errdefer deinitGitAllowSet(allocator, &allow);
+
+	var i: usize = 0;
+	while (i < stdout.len) {
+		const start = i;
+		while (i < stdout.len and stdout[i] != 0) : (i += 1) {}
+		if (i > start) {
+			const rel = stdout[start..i];
+			try allow.put(allocator, try allocator.dupe(u8, rel), {});
+		}
+		if (i < stdout.len and stdout[i] == 0) i += 1;
+	}
+
+	return allow;
+}
+
+fn gitCaptureStdout(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+	var child = std.process.Child.init(argv, allocator);
+	child.stdin_behavior = .Close;
+	child.stdout_behavior = .Pipe;
+	child.stderr_behavior = .Ignore;
+
+	try child.spawn();
+	const stdout = try child.stdout.?.readToEndAlloc(allocator, 256 * 1024 * 1024);
+	errdefer allocator.free(stdout);
+
+	const term = try child.wait();
+	switch (term) {
+		.Exited => |code| if (code != 0) return error.ChildProcessFailed,
+		else => return error.ChildProcessFailed,
+	}
+
+	return stdout;
+}
+
+fn deinitGitAllowSet(allocator: std.mem.Allocator, set: *std.StringHashMapUnmanaged(void)) void {
+	var it = set.keyIterator();
+	while (it.next()) |key_ptr| allocator.free(key_ptr.*);
+	set.deinit(allocator);
 }
 
 /// Returns true if the project root contains typical bash dotfiles,
@@ -439,12 +511,14 @@ test "findFiles ignores built-in paths" {
 
 	try tmp.dir.makePath("src");
 	try tmp.dir.makePath(".git");
+	try tmp.dir.makePath(".jj");
 	try tmp.dir.makePath(".codescan");
 	try tmp.dir.makePath(".codescan-fixtures/fixture");
 	try tmp.dir.makePath("deps/lib");
 	try tmp.dir.makePath("node_modules/pkg");
 	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = ".git/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = ".jj/ignored.zig", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = ".codescan/index.sqlite3", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
 	try tmp.dir.writeFile(.{ .sub_path = "deps/lib/ignored.zig", .data = "" });
@@ -453,6 +527,93 @@ test "findFiles ignores built-in paths" {
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realpathAlloc(allocator, ".");
 	defer allocator.free(root);
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), files.len);
+	try std.testing.expectEqualStrings("src/main.zig", files[0]);
+}
+
+test "findFiles respects .gitignore for untracked files" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.makePath("generated");
+	try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "generated/\n" });
+	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(.{ .sub_path = "generated/skip.zig", .data = "" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	var init_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "init", "-q" }, allocator);
+	init_child.stdin_behavior = .Close;
+	init_child.stdout_behavior = .Ignore;
+	init_child.stderr_behavior = .Ignore;
+	init_child.spawn() catch return error.SkipZigTest;
+	const init_term = try init_child.wait();
+	switch (init_term) {
+		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		else => return error.SkipZigTest,
+	}
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), files.len);
+	try std.testing.expectEqualStrings("src/main.zig", files[0]);
+}
+
+test "findFiles still includes tracked files even if matched by .gitignore" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "*.zig\n" });
+	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	var init_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "init", "-q" }, allocator);
+	init_child.stdin_behavior = .Close;
+	init_child.stdout_behavior = .Ignore;
+	init_child.stderr_behavior = .Ignore;
+	init_child.spawn() catch return error.SkipZigTest;
+	const init_term = try init_child.wait();
+	switch (init_term) {
+		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		else => return error.SkipZigTest,
+	}
+
+	var add_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "add", ".gitignore", "src/main.zig" }, allocator);
+	add_child.stdin_behavior = .Close;
+	add_child.stdout_behavior = .Ignore;
+	add_child.stderr_behavior = .Ignore;
+	add_child.spawn() catch return error.SkipZigTest;
+	const add_term = try add_child.wait();
+	switch (add_term) {
+		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		else => return error.SkipZigTest,
+	}
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
 		.global = &[_][]const u8{},

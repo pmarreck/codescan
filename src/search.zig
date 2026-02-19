@@ -53,7 +53,7 @@ pub const Options = struct {
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
 	min_score: f32 = 0.0,
-	score_dropoff: f32 = 0.65,
+	score_dropoff: f32 = 0.3,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
 	allowed_exts: []const []const u8 = &[_][]const u8{},
 	comments_only: bool = false,
@@ -1656,11 +1656,11 @@ test "search omits low-relevance results below score dropoff" {
 	const results = (try search(allocator, db, fake.embedder(), "query", .{
 		.top_n = 10,
 		.mode = .vector,
-		.score_dropoff = 0.65,
+		.score_dropoff = 0.3,
 	})).results;
 	defer freeResults(allocator, results);
 
-	// sym3 scores ~0.01, top score is 1.0, floor is 0.65 — sym3 should be dropped
+	// sym3 scores ~0.01, top score is 1.0, floor is 0.3 — sym3 should be dropped
 	try std.testing.expect(results.len < 3);
 	try std.testing.expect(results.len >= 1);
 	// First result should be the closest
