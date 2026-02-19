@@ -124,7 +124,7 @@ pub fn main() !void {
 	defer if (discovered_root) |path| allocator.free(path);
 
 	var config_root = parsed.root_path;
-	if (!parsed.seen.root_path) {
+	if (!parsed.seen.root_path and parsed.command != .init and parsed.command != .clean) {
 		discovered_root = try findRepoRoot(allocator, parsed.root_path);
 		if (discovered_root) |root| {
 			config_root = root;
