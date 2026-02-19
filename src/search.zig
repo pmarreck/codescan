@@ -274,6 +274,19 @@ pub fn search(
 				},
 			}
 		}
+
+		// For natural-language queries, strongly vector-matched local bindings
+		// (for example: `var reader = ...`) and generic helper names (`ok`, `file`)
+		// are often noise. Penalize them even with partial lexical overlap; apply
+		// a stronger penalty when lexical overlap is zero.
+		if (!options.comments_only and options.mode != .lexical and query_token_count >= 3) {
+			if (isLikelyLocalBindingSignature(res.symbol.signature)) {
+				res.score *= if (lexical == 0) 0.55 else 0.75;
+			}
+			if (isGenericSymbolName(res.symbol.name)) {
+				res.score *= if (lexical == 0) 0.65 else 0.85;
+			}
+		}
 	}
 
 	var filtered = std.ArrayListUnmanaged(Result){};
@@ -291,6 +304,12 @@ pub fn search(
 		}
 	}
 	results.deinit(allocator);
+
+	// Natural-language queries are prone to duplicate call-site style hits.
+	// Down-weight repeated name/signature pairs so distinct symbols surface.
+	if (query_token_count >= 3) {
+		try applyDuplicatePenalty(allocator, filtered.items);
+	}
 
 	std.sort.heap(Result, filtered.items, {}, sortByScoreDesc);
 
@@ -321,6 +340,38 @@ pub fn freeResults(allocator: std.mem.Allocator, results: []Result) void {
 
 fn sortByScoreDesc(_: void, a: Result, b: Result) bool {
 	return a.score > b.score;
+}
+
+fn applyDuplicatePenalty(allocator: std.mem.Allocator, items: []Result) !void {
+	var seen = std.AutoHashMap(u64, usize).init(allocator);
+	defer seen.deinit();
+
+	for (items) |*res| {
+		const key = duplicateSymbolKey(res.symbol.name, res.symbol.signature);
+		const dup_count = seen.get(key) orelse 0;
+		if (dup_count > 0) {
+			const factor = duplicateDecayFactor(dup_count);
+			res.score *= factor;
+		}
+		try seen.put(key, dup_count + 1);
+	}
+}
+
+fn duplicateSymbolKey(name: []const u8, signature: []const u8) u64 {
+	var hasher = std.hash.Wyhash.init(0);
+	hasher.update(name);
+	hasher.update(&[_]u8{0});
+	hasher.update(signature);
+	return hasher.final();
+}
+
+fn duplicateDecayFactor(dup_count: usize) f32 {
+	var factor: f32 = 1.0;
+	var i: usize = 0;
+	while (i < dup_count) : (i += 1) {
+		factor *= 0.85;
+	}
+	return factor;
 }
 
 fn matchesFilters(symbol: model.Symbol, options: Options) bool {
@@ -711,6 +762,40 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 	}
 	if (significant == 0) return 1.0;
 	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
+}
+
+fn isLikelyLocalBindingSignature(signature: []const u8) bool {
+	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	return std.mem.startsWith(u8, trimmed, "var ") or
+		std.mem.startsWith(u8, trimmed, "const ") or
+		std.mem.startsWith(u8, trimmed, "let ") or
+		std.mem.startsWith(u8, trimmed, "val ") or
+		std.mem.startsWith(u8, trimmed, "mut ");
+}
+
+fn isGenericSymbolName(name: []const u8) bool {
+	const generic_names = [_][]const u8{
+		"ok",
+		"fail",
+		"reader",
+		"writer",
+		"file",
+		"data",
+		"tmp",
+		"buf",
+		"result",
+		"results",
+		"value",
+		"item",
+		"items",
+		"count",
+		"index",
+		"id",
+	};
+	for (generic_names) |generic| {
+		if (std.ascii.eqlIgnoreCase(name, generic)) return true;
+	}
+	return false;
 }
 
 /// Determine how the query relates to the symbol name.
@@ -1842,6 +1927,184 @@ test "hybrid scoring: lexical-only result gets no vector credit" {
 	// match when vector weight dominates. Before the fix, "greet" would get
 	// vector_score=1.0 from distance=0.0, inflating its hybrid score.
 	try std.testing.expect(vector_match_score > lexical_only_score);
+}
+
+test "hybrid natural-language query prefers meaningful symbols over local generic bindings" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Local/generic binding: very close vector match, but low semantic value.
+	var sym_local = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "reader"),
+		.signature = try allocator.dupe(u8, "var reader = BitReader.init(&data);"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_local.deinit(allocator);
+
+	// Meaningful API symbol: slightly farther vector distance.
+	var sym_api = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "decodeKernel"),
+		.signature = try allocator.dupe(u8, "pub fn decodeKernel() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_api.deinit(allocator);
+
+	const id_local = try storage.insertSymbol(db, sym_local);
+	const id_api = try storage.insertSymbol(db, sym_api);
+	try storage.insertEmbedding(db, allocator, id_local, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_api, &[_]f32{ 0.2, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "how does stream parsing work", .{
+		.top_n = 2,
+		.mode = .hybrid,
+		.score_dropoff = 0,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 2), results.len);
+	try std.testing.expectEqualStrings("decodeKernel", results[0].symbol.name);
+}
+
+test "hybrid natural-language query demotes local bindings even with partial lexical overlap" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym_local = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "reader"),
+		.signature = try allocator.dupe(u8, "var reader = BitReader.init(&data);"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_local.deinit(allocator);
+
+	var sym_api = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "decodeKernel"),
+		.signature = try allocator.dupe(u8, "pub fn decodeKernel() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_api.deinit(allocator);
+
+	const id_local = try storage.insertSymbol(db, sym_local);
+	const id_api = try storage.insertSymbol(db, sym_api);
+	try storage.insertEmbedding(db, allocator, id_local, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_api, &[_]f32{ 0.2, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "how does bitstream reader work", .{
+		.top_n = 2,
+		.mode = .hybrid,
+		.score_dropoff = 0,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 2), results.len);
+	try std.testing.expectEqualStrings("decodeKernel", results[0].symbol.name);
+	var local_score: f32 = 0;
+	for (results) |res| {
+		if (std.mem.eql(u8, res.symbol.name, "reader")) local_score = res.score;
+	}
+	try std.testing.expect(local_score < 0.45);
+}
+
+test "hybrid ranking applies diversity penalty to duplicate symbol signatures" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Three near-identical local symbols that would otherwise crowd top results.
+	var dup_a = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "reader"),
+		.signature = try allocator.dupe(u8, "var reader = BitReader.init(&data);"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer dup_a.deinit(allocator);
+	var dup_b = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "reader"),
+		.signature = try allocator.dupe(u8, "var reader = BitReader.init(&data);"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer dup_b.deinit(allocator);
+	var dup_c = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/c.zig"),
+		.name = try allocator.dupe(u8, "reader"),
+		.signature = try allocator.dupe(u8, "var reader = BitReader.init(&data);"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer dup_c.deinit(allocator);
+
+	// Distinct symbol slightly farther in vector space.
+	var unique = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/d.zig"),
+		.name = try allocator.dupe(u8, "parseBitstream"),
+		.signature = try allocator.dupe(u8, "pub fn parseBitstream() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer unique.deinit(allocator);
+
+	const id_a = try storage.insertSymbol(db, dup_a);
+	const id_b = try storage.insertSymbol(db, dup_b);
+	const id_c = try storage.insertSymbol(db, dup_c);
+	const id_u = try storage.insertSymbol(db, unique);
+
+	try storage.insertEmbedding(db, allocator, id_a, &[_]f32{ 0.00, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_b, &[_]f32{ 0.01, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_c, &[_]f32{ 0.02, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_u, &[_]f32{ 0.05, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "conceptual ranking check", .{
+		.top_n = 4,
+		.mode = .hybrid,
+		.score_dropoff = 0,
+		.min_score = 0,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 4), results.len);
+	// Without diversity pressure, top slots are all duplicate `reader` entries.
+	// With the penalty, the unique symbol should surface into the top two.
+	const in_top_two =
+		std.mem.eql(u8, results[0].symbol.name, "parseBitstream") or
+		std.mem.eql(u8, results[1].symbol.name, "parseBitstream");
+	try std.testing.expect(in_top_two);
 }
 
 const FakeEmbedder = struct {
