@@ -218,10 +218,15 @@ pub fn search(
 	for (results.items) |*res| {
 		const lexical = if (res.bm25 != 0) blk: {
 			// Use normalized BM25 as the lexical score for FTS candidates.
-			break :blk if (bm25_range > 0)
+			const bm25_norm = if (bm25_range > 0)
 				(worst_bm25 - res.bm25) / bm25_range // best → 1.0, worst → 0.0
 			else
 				@as(f32, 1.0); // single result or all same score
+
+			// Apply token coverage gating: if the query has multiple tokens,
+			// penalize FTS results that only match a fraction of them.
+			const coverage = tokenCoverage(query_tokens, res.symbol);
+			break :blk bm25_norm * coverage;
 		} else try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
 		res.lexical = lexical;
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
@@ -654,6 +659,26 @@ fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
 }
 
 const NameRelevance = enum { exact, substring, none };
+
+/// Compute the fraction of significant query tokens that appear in a symbol's
+/// name, signature, or doc comment. Used to gate FTS/BM25 scores so that
+/// single-token matches don't inflate to 1.0 on multi-token queries.
+fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
+	if (query_tokens.len == 0) return 1.0;
+	var matched: usize = 0;
+	var significant: usize = 0;
+	for (query_tokens) |tok| {
+		// Skip very short tokens (likely noise: "a", "I", etc.)
+		if (tok.len < 2) continue;
+		significant += 1;
+		const in_name = std.ascii.indexOfIgnoreCase(symbol.name, tok) != null;
+		const in_sig = std.ascii.indexOfIgnoreCase(symbol.signature, tok) != null;
+		const in_doc = if (symbol.doc_comment) |doc| std.ascii.indexOfIgnoreCase(doc, tok) != null else false;
+		if (in_name or in_sig or in_doc) matched += 1;
+	}
+	if (significant == 0) return 1.0;
+	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
+}
 
 /// Determine how the query relates to the symbol name.
 /// Handles multi-word queries by checking camelCase/snake_case joins
@@ -1902,6 +1927,46 @@ test "RRF hybrid fusion produces rank-based compromise ordering" {
 	// should score below a result that appears in both lists (B or C).
 	try std.testing.expect(score_b > score_a);
 	try std.testing.expect(score_c > score_a);
+}
+
+test "lexical coverage: single FTS result does not normalize to 1.0 for multi-token query" {
+	// When there's only one FTS result for a multi-token query, bm25_range=0
+	// causes normalization to 1.0. With coverage gating, the score should
+	// be penalized based on how many query tokens actually matched.
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Only symbol in DB: matches "parse" but not "json" or "config"
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "parse_data"),
+		.signature = try allocator.dupe(u8, "fn parse_data(data: []u8) void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+	_ = try storage.insertSymbol(db, sym);
+
+	const sr = try search(allocator, db, undefined, "parse json config", .{
+		.top_n = 10,
+		.mode = .lexical,
+		.score_dropoff = 0,
+		.min_score = 0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expect(sr.results.len >= 1);
+
+	// With coverage gating, a symbol matching 1/3 tokens should NOT score 1.0.
+	// Its BM25 would normalize to 1.0 (single result, bm25_range=0), but
+	// coverage = 1/3 should pull it down.
+	const score = sr.results[0].score;
+	try std.testing.expect(score < 0.7); // Should be ~0.33 with coverage
 }
 
 test "buildFtsQuery uses OR for multi-word queries" {
