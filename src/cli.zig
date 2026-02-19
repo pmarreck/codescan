@@ -63,6 +63,7 @@ pub const Seen = struct {
 	search_mode: bool = false,
 	fusion: bool = false,
 	rrf_k: bool = false,
+	fts_mode: bool = false,
 	weight_vector: bool = false,
 	weight_lexical: bool = false,
 	min_score: bool = false,
@@ -99,6 +100,7 @@ pub const Parsed = struct {
 	search_mode: search.SearchMode,
 	fusion: search.FusionMode,
 	rrf_k: f32,
+	fts_mode: search.FtsMode,
 	weight_vector: f32,
 	weight_lexical: f32,
 	min_score: f32,
@@ -158,6 +160,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.search_mode = .hybrid,
 		.fusion = .weighted_sum,
 		.rrf_k = 60,
+		.fts_mode = .broad,
 		.weight_vector = 0.7,
 		.weight_lexical = 0.3,
 		.min_score = 0.0,
@@ -474,6 +477,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			if (i >= args.len) return error.MissingValue;
 			parsed.rrf_k = try std.fmt.parseFloat(f32, args[i]);
 			parsed.seen.rrf_k = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--fts-mode")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.fts_mode = try search.FtsMode.parse(args[i]);
+			parsed.seen.fts_mode = true;
 			i += 1;
 			continue;
 		}

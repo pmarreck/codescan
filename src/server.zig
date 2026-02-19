@@ -32,6 +32,7 @@ pub const Settings = struct {
 	search_mode: search.SearchMode,
 	search_fusion: search.FusionMode,
 	search_rrf_k: f32,
+	search_fts_mode: search.FtsMode,
 	search_weight_vector: f32,
 	search_weight_lexical: f32,
 	search_min_score: f32,
@@ -159,6 +160,7 @@ fn handleRequest(
 			.mode = parsed.mode orelse settings.search_mode,
 			.fusion = parsed.fusion orelse settings.search_fusion,
 			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
+			.fts_mode = parsed.fts_mode orelse settings.search_fts_mode,
 			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
 			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
 			.min_score = parsed.min_score orelse settings.search_min_score,
@@ -733,6 +735,7 @@ pub const SearchRequest = struct {
 	mode: ?search.SearchMode = null,
 	fusion: ?search.FusionMode = null,
 	rrf_k: ?f32 = null,
+	fts_mode: ?search.FtsMode = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
 	min_score: ?f32 = null,
@@ -783,6 +786,11 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 
 	if (obj.get("rrf_k")) |rrf_k_val| {
 		req.rrf_k = try parseWeight(rrf_k_val);
+	}
+
+	if (obj.get("fts_mode")) |fts_mode_val| {
+		if (fts_mode_val != .string) return error.InvalidRequest;
+		req.fts_mode = try search.FtsMode.parse(fts_mode_val.string);
 	}
 
 	if (obj.get("weight_vector")) |weight| {
@@ -1049,6 +1057,7 @@ fn testSettings() Settings {
 		.search_mode = .vector,
 		.search_fusion = .weighted_sum,
 		.search_rrf_k = 60,
+		.search_fts_mode = .broad,
 		.search_weight_vector = 1.0,
 		.search_weight_lexical = 0.0,
 		.search_min_score = 0.0,

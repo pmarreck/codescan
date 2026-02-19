@@ -32,6 +32,7 @@ pub const default_template =
     \\#search_mode=hybrid
     \\#fusion=weighted_sum
     \\#rrf_k=60
+    \\#fts_mode=broad
     \\#weight_vector=0.7
     \\#weight_lexical=0.3
     \\#min_score=0.0
@@ -98,6 +99,7 @@ pub const Config = struct {
 	search_mode: ?[]const u8 = null,
 	fusion: ?[]const u8 = null,
 	rrf_k: ?f32 = null,
+	fts_mode: ?[]const u8 = null,
 	weight_vector: ?f32 = null,
 	weight_lexical: ?f32 = null,
 	min_score: ?f32 = null,
@@ -124,6 +126,7 @@ pub const Config = struct {
 		if (self.ollama_model) |value| allocator.free(value);
 		if (self.search_mode) |value| allocator.free(value);
 		if (self.fusion) |value| allocator.free(value);
+		if (self.fts_mode) |value| allocator.free(value);
 		if (self.index_ext) |value| allocator.free(value);
 		if (self.index_type) |value| allocator.free(value);
 		if (self.search_ext) |value| allocator.free(value);
@@ -224,6 +227,12 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 
 		if (std.mem.eql(u8, key, "rrf_k")) {
 			config.rrf_k = std.fmt.parseFloat(f32, value) catch return error.InvalidValue;
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "fts_mode")) {
+			if (!validFtsMode(value)) return error.InvalidValue;
+			config.fts_mode = try allocator.dupe(u8, value);
 			continue;
 		}
 
@@ -404,6 +413,10 @@ fn validMode(value: []const u8) bool {
 
 fn validFusion(value: []const u8) bool {
 	return std.mem.eql(u8, value, "weighted_sum") or std.mem.eql(u8, value, "weighted-sum") or std.mem.eql(u8, value, "rrf");
+}
+
+fn validFtsMode(value: []const u8) bool {
+	return std.mem.eql(u8, value, "broad") or std.mem.eql(u8, value, "balanced") or std.mem.eql(u8, value, "strict");
 }
 
 test "parseText empty yields defaults" {

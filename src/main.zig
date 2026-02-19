@@ -38,6 +38,7 @@ const Defaults = struct {
 	search_mode: search.SearchMode = .hybrid,
 	fusion: search.FusionMode = .weighted_sum,
 	rrf_k: f32 = 60,
+	fts_mode: search.FtsMode = .broad,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
 	min_score: f32 = 0.0,
@@ -64,6 +65,7 @@ const Settings = struct {
 	search_mode: search.SearchMode,
 	fusion: search.FusionMode,
 	rrf_k: f32,
+	fts_mode: search.FtsMode,
 	weight_vector: f32,
 	weight_lexical: f32,
 	min_score: f32,
@@ -448,6 +450,7 @@ pub fn main() !void {
 					.mode = effective_search_mode,
 					.fusion = settings.fusion,
 					.rrf_k = settings.rrf_k,
+					.fts_mode = settings.fts_mode,
 					.weight_vector = settings.weight_vector,
 					.weight_lexical = settings.weight_lexical,
 					.min_score = settings.min_score,
@@ -510,6 +513,7 @@ pub fn main() !void {
 				.search_mode = settings.search_mode,
 				.search_fusion = settings.fusion,
 				.search_rrf_k = settings.rrf_k,
+				.search_fts_mode = settings.fts_mode,
 				.search_weight_vector = settings.weight_vector,
 				.search_weight_lexical = settings.weight_lexical,
 				.search_min_score = settings.min_score,
@@ -627,6 +631,7 @@ pub fn main() !void {
 				.search_mode = settings.search_mode,
 				.search_fusion = settings.fusion,
 				.search_rrf_k = settings.rrf_k,
+				.search_fts_mode = settings.fts_mode,
 				.search_weight_vector = settings.weight_vector,
 				.search_weight_lexical = settings.weight_lexical,
 				.search_min_score = settings.min_score,
@@ -838,6 +843,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.search_mode = defaults.search_mode,
 		.fusion = defaults.fusion,
 		.rrf_k = defaults.rrf_k,
+		.fts_mode = defaults.fts_mode,
 		.weight_vector = defaults.weight_vector,
 		.weight_lexical = defaults.weight_lexical,
 		.min_score = defaults.min_score,
@@ -878,6 +884,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.search_mode) |value| settings.search_mode = try search.SearchMode.parse(value);
 	if (cfg.fusion) |value| settings.fusion = try search.FusionMode.parse(value);
 	if (cfg.rrf_k) |value| settings.rrf_k = value;
+	if (cfg.fts_mode) |value| settings.fts_mode = try search.FtsMode.parse(value);
 	if (cfg.weight_vector) |value| settings.weight_vector = value;
 	if (cfg.weight_lexical) |value| settings.weight_lexical = value;
 	if (cfg.min_score) |value| settings.min_score = value;
@@ -921,6 +928,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.search_mode) settings.search_mode = parsed.search_mode;
 	if (parsed.seen.fusion) settings.fusion = parsed.fusion;
 	if (parsed.seen.rrf_k) settings.rrf_k = parsed.rrf_k;
+	if (parsed.seen.fts_mode) settings.fts_mode = parsed.fts_mode;
 	if (parsed.seen.weight_vector) settings.weight_vector = parsed.weight_vector;
 	if (parsed.seen.weight_lexical) settings.weight_lexical = parsed.weight_lexical;
 	if (parsed.seen.min_score) settings.min_score = parsed.min_score;
@@ -2734,6 +2742,7 @@ const usage =
 	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
 	\\  --fusion <weighted_sum|rrf>     Hybrid fusion method (default weighted_sum)
 	\\  --rrf-k <n>                     RRF smoothing constant (default 60)
+	\\  --fts-mode <broad|balanced|strict>  FTS query mode (default broad)
 	\\  --weight-vector <n>             Hybrid weight for vector score (default 0.7)
 	\\  --weight-lexical <n>            Hybrid weight for lexical score (default 0.3)
 	\\  --min-score <n>                 Minimum score threshold (default 0.0)

@@ -30,12 +30,26 @@ pub const FusionMode = enum {
 	}
 };
 
+pub const FtsMode = enum {
+	broad, // OR for all tokens (maximum recall)
+	balanced, // AND for significant tokens, drops short/stop words
+	strict, // AND for all tokens (maximum precision)
+
+	pub fn parse(value: []const u8) !FtsMode {
+		if (std.mem.eql(u8, value, "broad")) return .broad;
+		if (std.mem.eql(u8, value, "balanced")) return .balanced;
+		if (std.mem.eql(u8, value, "strict")) return .strict;
+		return error.InvalidFtsMode;
+	}
+};
+
 pub const Options = struct {
 	top_n: usize = 10,
 	candidate_multiplier: usize = 5,
 	mode: SearchMode = .hybrid,
 	fusion: FusionMode = .weighted_sum,
 	rrf_k: f32 = 60,
+	fts_mode: FtsMode = .broad,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
 	min_score: f32 = 0.0,
@@ -103,6 +117,7 @@ pub fn search(
 			query,
 			options.top_n * options.candidate_multiplier,
 			options.comments_only,
+			options.fts_mode,
 		);
 		for (lexical) |res| try results.append(allocator, res);
 		allocator.free(lexical);
@@ -131,7 +146,7 @@ pub fn search(
 				try seen.put(res.id, {});
 			}
 
-			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only);
+			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only, options.fts_mode);
 			defer allocator.free(lexical);
 
 			// Build lexical rank map (candidates are ordered by relevance, best first).
@@ -400,12 +415,13 @@ fn lexicalCandidates(
 	query: []const u8,
 	limit: usize,
 	comments_only: bool,
+	fts_mode: FtsMode,
 ) ![]Result {
 	if (comments_only) {
 		return commentCandidates(allocator, db, query, limit);
 	}
 	if (ftsAvailable(db) catch false) {
-		const fts = ftsCandidates(allocator, db, query, limit) catch null;
+		const fts = ftsCandidates(allocator, db, query, limit, fts_mode) catch null;
 		if (fts) |rows| return rows;
 	}
 	return likeCandidates(allocator, db, query, limit);
@@ -519,10 +535,11 @@ fn ftsCandidates(
 	db: storage.Db,
 	query: []const u8,
 	limit: usize,
+	fts_mode: FtsMode,
 ) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
-	const fts_query = try buildFtsQuery(allocator, query);
+	const fts_query = try buildFtsQueryMode(allocator, query, fts_mode);
 	defer allocator.free(fts_query);
 	const escaped = try escapeSqlLiteral(allocator, fts_query);
 	defer allocator.free(escaped);
@@ -953,15 +970,26 @@ fn joinPartsAsSnake(allocator: std.mem.Allocator, parts: []const []const u8) ![]
 }
 
 fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
+	return buildFtsQueryMode(allocator, query, .broad);
+}
+
+fn buildFtsQueryMode(allocator: std.mem.Allocator, query: []const u8, fts_mode: FtsMode) ![]u8 {
 	var out = std.ArrayListUnmanaged(u8){};
 	errdefer out.deinit(allocator);
+
+	const joiner: []const u8 = switch (fts_mode) {
+		.broad => " OR ",
+		.balanced, .strict => " AND ",
+	};
 
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
 	var token_count: usize = 0;
 	while (tokens.next()) |tok| {
 		if (tok.len == 0) continue;
+		// In balanced mode, skip short tokens (likely noise: "a", "I", "is", etc.)
+		if (fts_mode == .balanced and tok.len < 3) continue;
 		if (token_count > 0) {
-			try out.appendSlice(allocator, " OR ");
+			try out.appendSlice(allocator, joiner);
 		}
 		try out.append(allocator, '"');
 		try out.appendSlice(allocator, tok);
@@ -970,6 +998,10 @@ fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 	}
 
 	if (token_count == 0) {
+		// Fallback: if balanced mode dropped all tokens, use broad OR with original query
+		if (fts_mode == .balanced) {
+			return buildFtsQueryMode(allocator, query, .broad);
+		}
 		try out.appendSlice(allocator, query);
 	}
 
@@ -1369,7 +1401,7 @@ test "search lexical uses fts when available" {
 	if (has_fts) {
 		const count = try storage.countRows(db, allocator, "symbols_fts");
 		try std.testing.expectEqual(@as(i64, 1), count);
-		const fts_results = try ftsCandidates(allocator, db, "functions hash", 3);
+		const fts_results = try ftsCandidates(allocator, db, "functions hash", 3, .broad);
 		defer freeResults(allocator, fts_results);
 		try std.testing.expectEqual(@as(usize, 1), fts_results.len);
 	}
@@ -1976,6 +2008,36 @@ test "buildFtsQuery uses OR for multi-word queries" {
 	try std.testing.expectEqualStrings("\"hash\" OR \"functions\"", result);
 }
 
+test "buildFtsQueryMode broad uses OR" {
+	const allocator = std.testing.allocator;
+	const result = try buildFtsQueryMode(allocator, "parse json config", .broad);
+	defer allocator.free(result);
+	try std.testing.expectEqualStrings("\"parse\" OR \"json\" OR \"config\"", result);
+}
+
+test "buildFtsQueryMode strict uses AND" {
+	const allocator = std.testing.allocator;
+	const result = try buildFtsQueryMode(allocator, "parse json config", .strict);
+	defer allocator.free(result);
+	try std.testing.expectEqualStrings("\"parse\" AND \"json\" AND \"config\"", result);
+}
+
+test "buildFtsQueryMode balanced uses AND and drops short tokens" {
+	const allocator = std.testing.allocator;
+	// "a" and "is" are < 3 chars, should be dropped in balanced mode
+	const result = try buildFtsQueryMode(allocator, "a is parse json config", .balanced);
+	defer allocator.free(result);
+	try std.testing.expectEqualStrings("\"parse\" AND \"json\" AND \"config\"", result);
+}
+
+test "buildFtsQueryMode balanced falls back to broad when all tokens short" {
+	const allocator = std.testing.allocator;
+	// All tokens are < 3 chars, balanced should fall back to broad OR
+	const result = try buildFtsQueryMode(allocator, "a is of", .balanced);
+	defer allocator.free(result);
+	try std.testing.expectEqualStrings("\"a\" OR \"is\" OR \"of\"", result);
+}
+
 test "buildFtsQuery single word has no operator" {
 	const allocator = std.testing.allocator;
 	const result = try buildFtsQuery(allocator, "hash");
@@ -2006,7 +2068,7 @@ test "ftsCandidates captures bm25 scores" {
 
 	if (!(ftsAvailable(db) catch false)) return; // skip if FTS not available
 
-	const results = try ftsCandidates(allocator, db, "hash", 10);
+	const results = try ftsCandidates(allocator, db, "hash", 10, .broad);
 	defer freeResults(allocator, results);
 
 	try std.testing.expect(results.len > 0);
