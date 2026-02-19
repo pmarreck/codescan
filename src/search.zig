@@ -382,7 +382,7 @@ fn likeCandidates(
 
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
-		++ "0.0 AS distance "
+		++ "1e999 AS distance "
 		++ "FROM symbols "
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
 		++ "OR signature LIKE ?1 COLLATE NOCASE "
@@ -434,7 +434,7 @@ fn commentCandidates(
 
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
-		++ "0.0 AS distance "
+		++ "1e999 AS distance "
 		++ "FROM symbols "
 		++ "WHERE doc_comment IS NOT NULL "
 		++ "AND doc_comment LIKE ?1 COLLATE NOCASE "
@@ -487,7 +487,7 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
-		++ "0.0 AS distance, "
+		++ "1e999 AS distance, "
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
@@ -500,7 +500,7 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
-		++ "0.0 AS distance, "
+		++ "1e999 AS distance, "
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
@@ -1657,6 +1657,79 @@ test "nameRelevance single-token cross-case matching" {
 	try std.testing.expectEqual(NameRelevance.exact, try nameRelevance(allocator, "name_relevance", "nameRelevance"));
 	// camelCase query vs camelCase name (substring)
 	try std.testing.expectEqual(NameRelevance.substring, try nameRelevance(allocator, "nameRelevance", "myNameRelevanceHelper"));
+}
+
+test "hybrid scoring: lexical-only result gets no vector credit" {
+	// A lexical-only candidate (not in vector results) must NOT receive
+	// vector_score = 1.0 from its sentinel distance. Its score should
+	// come purely from the lexical signal.
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// sym_vector: close to query vector but name doesn't match query text
+	var sym_vector = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "unrelated_name"),
+		.signature = try allocator.dupe(u8, "fn unrelated_name() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_vector.deinit(allocator);
+
+	// sym_lexical: far from query vector but name matches query text exactly
+	var sym_lexical = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "greet"),
+		.signature = try allocator.dupe(u8, "fn greet() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_lexical.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym_vector);
+	_ = try storage.insertSymbol(db, sym_lexical);
+	// Only sym_vector gets an embedding — sym_lexical has no embedding,
+	// so it can only appear via lexical retrieval.
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+
+	// Query embedding at origin — sym_vector is near, sym_lexical is far
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+
+	// With equal weights, a lexical-only candidate should NOT outscore
+	// a true vector match just because it gets phantom vector credit.
+	const results = (try search(allocator, db, fake.embedder(), "greet", .{
+		.top_n = 10,
+		.mode = .hybrid,
+		.weight_vector = 0.7,
+		.weight_lexical = 0.3,
+		.score_dropoff = 0,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expect(results.len >= 2);
+
+	// Find both results
+	var lexical_only_score: f32 = 0;
+	var vector_match_score: f32 = 0;
+	for (results) |res| {
+		if (std.mem.eql(u8, res.symbol.name, "greet")) {
+			lexical_only_score = res.score;
+		} else if (std.mem.eql(u8, res.symbol.name, "unrelated_name")) {
+			vector_match_score = res.score;
+		}
+	}
+
+	// The vector match (distance ~0) should score higher than the lexical-only
+	// match when vector weight dominates. Before the fix, "greet" would get
+	// vector_score=1.0 from distance=0.0, inflating its hybrid score.
+	try std.testing.expect(vector_match_score > lexical_only_score);
 }
 
 const FakeEmbedder = struct {

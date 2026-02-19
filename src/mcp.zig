@@ -11,6 +11,7 @@ const output = @import("output.zig");
 const ollama = @import("ollama.zig");
 const filters = @import("filters.zig");
 const kind = @import("kind.zig");
+const model = @import("model.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
@@ -26,6 +27,13 @@ pub const Settings = struct {
 	search_weight_vector: f32 = 0.7,
 	search_weight_lexical: f32 = 0.3,
 	search_min_score: f32 = 0.0,
+	search_ext: ?[]const u8 = null,
+	search_type: ?[]const u8 = null,
+	search_lang: ?[]const u8 = null,
+	primary_lang: ?[]const u8 = null,
+	include_docs: bool = false,
+	docs_only: bool = false,
+	comments_only: bool = false,
 	ignore_global: []const []const u8 = &[_][]const u8{},
 	ignore_lang: []const config.IgnoreOverride = &[_]config.IgnoreOverride{},
 	include_node_modules: bool = false,
@@ -296,15 +304,25 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.model = settings.ollama_model,
 		};
 
+		var search_filters = filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+			.search_ext = settings.search_ext,
+			.search_type = settings.search_type,
+			.search_lang = settings.search_lang,
+			.primary_lang = settings.primary_lang,
+			.include_docs = settings.include_docs,
+			.docs_only = settings.docs_only,
+		}) catch return error.ToolFailed;
+		defer search_filters.deinit(allocator);
+
 		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, .{
 			.top_n = settings.search_top_n,
 			.mode = effective_search_mode,
 			.weight_vector = settings.search_weight_vector,
 			.weight_lexical = settings.search_weight_lexical,
 			.min_score = settings.search_min_score,
-			.allowed_langs = &[_][]const u8{},
-			.allowed_exts = &[_][]const u8{},
-			.comments_only = false,
+			.allowed_langs = search_filters.langs.items,
+			.allowed_exts = search_filters.exts.items,
+			.comments_only = settings.comments_only,
 		}) catch return error.ToolFailed;
 		defer search.freeResults(allocator, sr.results);
 
@@ -911,4 +929,73 @@ test "formatError produces valid JSON-RPC error" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"id\":5") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "-32601") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "method not found") != null);
+}
+
+test "MCP search applies language filters from settings" {
+	// P0 #2: MCP search must use the same filter pipeline as CLI/HTTP.
+	// Without the fix, MCP passes empty allowed_langs/allowed_exts,
+	// so a search_lang="zig" setting is ignored and all languages appear.
+	const allocator = std.testing.allocator;
+
+	// Create a temp dir + pre-populated DB with symbols from two languages
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	// Create and populate the DB directly, then close it so MCP handler can open it
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+		// Insert a Zig symbol
+		var sym_zig = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/a.zig"),
+			.name = try allocator.dupe(u8, "hello_zig"),
+			.signature = try allocator.dupe(u8, "fn hello_zig() void"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer sym_zig.deinit(allocator);
+		_ = try storage.insertSymbol(db, sym_zig);
+
+		// Insert a Python symbol with similar name
+		var sym_py = model.Symbol{
+			.language = try allocator.dupe(u8, "python"),
+			.file_path = try allocator.dupe(u8, "src/b.py"),
+			.name = try allocator.dupe(u8, "hello_python"),
+			.signature = try allocator.dupe(u8, "def hello_python():"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer sym_py.deinit(allocator);
+		_ = try storage.insertSymbol(db, sym_py);
+	}
+
+	// Search via MCP callTool with search_lang="zig", lexical-only mode
+	const params_str = "{\"name\":\"search\",\"arguments\":{\"query\":\"hello\"}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.search_mode = .lexical,
+		.search_lang = "zig",
+		// Use a port that won't have Ollama running
+		.ollama_url = "http://localhost:19999",
+		.ollama_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	// The response should contain the Zig symbol but NOT the Python one
+	try std.testing.expect(std.mem.indexOf(u8, response, "hello_zig") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "hello_python") == null);
 }
