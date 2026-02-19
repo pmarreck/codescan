@@ -195,7 +195,7 @@ pub const Language = enum {
 	}
 };
 
-const NameField = enum {
+pub const NameField = enum {
 	name, // ts_node_child_by_field_name(node, "name")
 	declarator, // C: ts_node_child_by_field_name(node, "declarator") -> find identifier
 	attrpath, // Nix: ts_node_child_by_field_name(node, "attrpath")
@@ -203,7 +203,7 @@ const NameField = enum {
 	word, // Bash: ts_node_child_by_field_name(node, "word") — fallback to "name"
 };
 
-const SymbolMapping = struct {
+pub const SymbolMapping = struct {
 	node_type: [:0]const u8,
 	kind: SymbolKind,
 	name_field: NameField,

@@ -13,6 +13,8 @@ const extract_nim = @import("extract_nim.zig");
 const extract_bash = @import("extract_bash.zig");
 const extract_lua = @import("extract_lua.zig");
 const extract_haskell = @import("extract_haskell.zig");
+const extract_go = @import("extract_go.zig");
+const extract_generic = @import("extract_generic.zig");
 const extract_markdown = @import("extract_markdown.zig");
 const extract_text = @import("extract_text.zig");
 const extract_log = @import("extract_log.zig");
@@ -28,6 +30,14 @@ const nim_plugin = @import("plugins/nim/mod.zig");
 const bash_plugin = @import("plugins/bash/mod.zig");
 const lua_plugin = @import("plugins/lua/mod.zig");
 const haskell_plugin = @import("plugins/haskell/mod.zig");
+const go_plugin = @import("plugins/go/mod.zig");
+const ruby_plugin = @import("plugins/ruby/mod.zig");
+const erlang_plugin = @import("plugins/erlang/mod.zig");
+const ocaml_plugin = @import("plugins/ocaml/mod.zig");
+const swift_plugin = @import("plugins/swift/mod.zig");
+const llvm_plugin = @import("plugins/llvm/mod.zig");
+const clojure_plugin = @import("plugins/clojure/mod.zig");
+const assembly_plugin = @import("plugins/assembly/mod.zig");
 const markdown_plugin = @import("plugins/markdown/mod.zig");
 const text_plugin = @import("plugins/text/mod.zig");
 const log_plugin = @import("plugins/log/mod.zig");
@@ -189,6 +199,62 @@ pub fn defaultRegistry() Registry {
 				.extensions = haskell_plugin.extensions,
 				.ignore_patterns = haskell_plugin.ignore_patterns,
 				.extract = extract_haskell.extract,
+			},
+			.{
+				.language = go_plugin.language,
+				.kind = go_plugin.kind,
+				.extensions = go_plugin.extensions,
+				.ignore_patterns = go_plugin.ignore_patterns,
+				.extract = extract_go.extract,
+			},
+			.{
+				.language = ruby_plugin.language,
+				.kind = ruby_plugin.kind,
+				.extensions = ruby_plugin.extensions,
+				.ignore_patterns = ruby_plugin.ignore_patterns,
+				.extract = extract_generic.extractRuby,
+			},
+			.{
+				.language = erlang_plugin.language,
+				.kind = erlang_plugin.kind,
+				.extensions = erlang_plugin.extensions,
+				.ignore_patterns = erlang_plugin.ignore_patterns,
+				.extract = extract_generic.extractErlang,
+			},
+			.{
+				.language = ocaml_plugin.language,
+				.kind = ocaml_plugin.kind,
+				.extensions = ocaml_plugin.extensions,
+				.ignore_patterns = ocaml_plugin.ignore_patterns,
+				.extract = extract_generic.extractOcaml,
+			},
+			.{
+				.language = swift_plugin.language,
+				.kind = swift_plugin.kind,
+				.extensions = swift_plugin.extensions,
+				.ignore_patterns = swift_plugin.ignore_patterns,
+				.extract = extract_generic.extractSwift,
+			},
+			.{
+				.language = llvm_plugin.language,
+				.kind = llvm_plugin.kind,
+				.extensions = llvm_plugin.extensions,
+				.ignore_patterns = llvm_plugin.ignore_patterns,
+				.extract = extract_generic.extractLlvm,
+			},
+			.{
+				.language = clojure_plugin.language,
+				.kind = clojure_plugin.kind,
+				.extensions = clojure_plugin.extensions,
+				.ignore_patterns = clojure_plugin.ignore_patterns,
+				.extract = extract_generic.extractClojure,
+			},
+			.{
+				.language = assembly_plugin.language,
+				.kind = assembly_plugin.kind,
+				.extensions = assembly_plugin.extensions,
+				.ignore_patterns = assembly_plugin.ignore_patterns,
+				.extract = extract_generic.extractAssembly,
 			},
 			.{
 				.language = markdown_plugin.language,
