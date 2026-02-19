@@ -43,6 +43,12 @@ pub const FtsMode = enum {
 	}
 };
 
+const QueryIntent = enum {
+	lookup,
+	navigation,
+	conceptual,
+};
+
 pub const Options = struct {
 	top_n: usize = 10,
 	candidate_multiplier: usize = 5,
@@ -217,6 +223,7 @@ pub fn search(
 		}
 	}
 	const query_tokens = token_buf[0..query_token_count];
+	const query_intent = inferQueryIntent(query_trimmed, query_tokens);
 
 	// Normalize BM25 scores to [0, 1] for FTS candidates.
 	// FTS5 bm25() returns negative values (more negative = better match).
@@ -261,33 +268,66 @@ pub fn search(
 			res.score = vector_score * weight_vector + lexical * weight_lexical;
 		}
 
-		// Post-combination name-relevance adjustment: the vector model doesn't
-		// distinguish definitions from call sites, so boost/penalize based on
-		// whether the query matches the symbol name vs. just appearing in the signature.
-		if (!options.comments_only and query_trimmed.len > 0 and options.mode != .lexical) {
-			const name_rel = nameRelevance(allocator, query_trimmed, res.symbol.name) catch .none;
-			switch (name_rel) {
-				.exact => res.score = @min(1.0, res.score * 1.25),
-				.substring => res.score = @min(1.0, res.score * 1.1),
-				.none => if (lexical > 0) {
-					res.score = res.score * 0.7;
-				},
+			// Post-combination name-relevance adjustment tuned by inferred query intent.
+			if (!options.comments_only and query_trimmed.len > 0 and options.mode != .lexical) {
+				const name_rel = nameRelevance(allocator, query_trimmed, res.symbol.name) catch .none;
+				switch (name_rel) {
+					.exact => {
+						const boost: f32 = switch (query_intent) {
+							.lookup => 1.35,
+							.navigation => 1.2,
+							.conceptual => 1.08,
+						};
+						res.score = @min(@as(f32, 1.0), res.score * boost);
+					},
+					.substring => {
+						const boost: f32 = switch (query_intent) {
+							.lookup => 1.15,
+							.navigation => 1.1,
+							.conceptual => 1.04,
+						};
+						res.score = @min(@as(f32, 1.0), res.score * boost);
+					},
+					.none => if (lexical > 0) {
+						const penalty: f32 = switch (query_intent) {
+							.lookup => 0.8,
+							.navigation => 0.88,
+							.conceptual => 0.7,
+						};
+						res.score *= penalty;
+					},
+				}
 			}
-		}
 
-		// For natural-language queries, strongly vector-matched local bindings
-		// (for example: `var reader = ...`) and generic helper names (`ok`, `file`)
-		// are often noise. Penalize them even with partial lexical overlap; apply
-		// a stronger penalty when lexical overlap is zero.
-		if (!options.comments_only and options.mode != .lexical and query_token_count >= 3) {
-			if (isLikelyLocalBindingSignature(res.symbol.signature)) {
-				res.score *= if (lexical == 0) 0.55 else 0.75;
+			if (!options.comments_only and options.mode != .lexical and query_intent == .navigation) {
+				const coverage = pathTokenCoverage(query_tokens, res.symbol.file_path);
+				if (coverage > 0) {
+					res.score *= (1.0 + (0.2 * coverage));
+				}
 			}
-			if (isGenericSymbolName(res.symbol.name)) {
-				res.score *= if (lexical == 0) 0.65 else 0.85;
+
+			// For non-lookup queries, strongly vector-matched local bindings
+			// (for example: `var reader = ...`) and generic helper names (`ok`, `file`)
+			// are often noise.
+			if (!options.comments_only and options.mode != .lexical and query_token_count >= 3 and query_intent != .lookup) {
+				if (isLikelyLocalBindingSignature(res.symbol.signature)) {
+					const factor: f32 = switch (query_intent) {
+						.navigation => if (lexical == 0) 0.72 else 0.86,
+						.conceptual => if (lexical == 0) 0.55 else 0.75,
+						.lookup => 1.0,
+					};
+					res.score *= factor;
+				}
+				if (isGenericSymbolName(res.symbol.name)) {
+					const factor: f32 = switch (query_intent) {
+						.navigation => if (lexical == 0) 0.82 else 0.92,
+						.conceptual => if (lexical == 0) 0.65 else 0.85,
+						.lookup => 1.0,
+					};
+					res.score *= factor;
+				}
 			}
 		}
-	}
 
 	var filtered = std.ArrayListUnmanaged(Result){};
 	errdefer {
@@ -307,7 +347,7 @@ pub fn search(
 
 	// Natural-language queries are prone to duplicate call-site style hits.
 	// Down-weight repeated name/signature pairs so distinct symbols surface.
-	if (query_token_count >= 3) {
+	if (query_token_count >= 3 and query_intent != .lookup) {
 		try applyDuplicatePenalty(allocator, filtered.items);
 	}
 
@@ -762,6 +802,88 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 	}
 	if (significant == 0) return 1.0;
 	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
+}
+
+fn pathTokenCoverage(query_tokens: []const []const u8, file_path: []const u8) f32 {
+	if (query_tokens.len == 0) return 0;
+	var matched: usize = 0;
+	var significant: usize = 0;
+	for (query_tokens) |tok| {
+		if (tok.len < 3) continue;
+		if (isConceptualCue(tok)) continue;
+		significant += 1;
+		if (std.ascii.indexOfIgnoreCase(file_path, tok) != null) matched += 1;
+	}
+	if (significant == 0) return 0;
+	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
+}
+
+fn inferQueryIntent(query_trimmed: []const u8, query_tokens: []const []const u8) QueryIntent {
+	if (query_tokens.len == 0) return .lookup;
+
+	var has_navigation_cue = false;
+	var has_conceptual_cue = false;
+	var code_like_count: usize = 0;
+	for (query_tokens) |tok| {
+		if (isNavigationCue(tok)) has_navigation_cue = true;
+		if (isConceptualCue(tok)) has_conceptual_cue = true;
+		if (isCodeLikeToken(tok)) code_like_count += 1;
+	}
+
+	if (has_navigation_cue) return .navigation;
+	if (query_tokens.len == 1 and isCodeLikeToken(query_tokens[0])) return .lookup;
+	if (has_conceptual_cue) return .conceptual;
+	if (code_like_count * 2 >= query_tokens.len) return .lookup;
+	if (query_tokens.len >= 5 and !looksCodeLikeQuery(query_trimmed)) return .conceptual;
+	return .lookup;
+}
+
+fn isNavigationCue(token: []const u8) bool {
+	return std.ascii.eqlIgnoreCase(token, "where") or
+		std.ascii.eqlIgnoreCase(token, "find") or
+		std.ascii.eqlIgnoreCase(token, "locate") or
+		std.ascii.eqlIgnoreCase(token, "path") or
+		std.ascii.eqlIgnoreCase(token, "file") or
+		std.ascii.eqlIgnoreCase(token, "defined") or
+		std.ascii.eqlIgnoreCase(token, "definition") or
+		std.ascii.eqlIgnoreCase(token, "implemented") or
+		std.ascii.eqlIgnoreCase(token, "implementation") or
+		std.ascii.eqlIgnoreCase(token, "handle") or
+		std.ascii.eqlIgnoreCase(token, "handled") or
+		std.ascii.eqlIgnoreCase(token, "handling");
+}
+
+fn isConceptualCue(token: []const u8) bool {
+	return std.ascii.eqlIgnoreCase(token, "how") or
+		std.ascii.eqlIgnoreCase(token, "why") or
+		std.ascii.eqlIgnoreCase(token, "explain") or
+		std.ascii.eqlIgnoreCase(token, "overview") or
+		std.ascii.eqlIgnoreCase(token, "conceptual") or
+		std.ascii.eqlIgnoreCase(token, "architecture") or
+		std.ascii.eqlIgnoreCase(token, "algorithm") or
+		std.ascii.eqlIgnoreCase(token, "flow") or
+		std.ascii.eqlIgnoreCase(token, "work") or
+		std.ascii.eqlIgnoreCase(token, "works") or
+		std.ascii.eqlIgnoreCase(token, "behavior") or
+		std.ascii.eqlIgnoreCase(token, "semantics");
+}
+
+fn looksCodeLikeQuery(query: []const u8) bool {
+	return std.mem.indexOfAny(u8, query, "./\\:_()[]{}<>") != null;
+}
+
+fn isCodeLikeToken(token: []const u8) bool {
+	if (token.len == 0) return false;
+	if (std.mem.indexOfAny(u8, token, "./\\:_()[]{}<>") != null) return true;
+
+	var has_lower = false;
+	var has_upper = false;
+	for (token) |c| {
+		if (std.ascii.isLower(c)) has_lower = true;
+		if (std.ascii.isUpper(c)) has_upper = true;
+	}
+	if (has_lower and has_upper) return true; // camelCase/PascalCase
+	return false;
 }
 
 fn isLikelyLocalBindingSignature(signature: []const u8) bool {
@@ -2315,6 +2437,24 @@ test "buildFtsQueryMode balanced falls back to broad when all tokens short" {
 	const result = try buildFtsQueryMode(allocator, "a is of", .balanced);
 	defer allocator.free(result);
 	try std.testing.expectEqualStrings("\"a\" OR \"is\" OR \"of\"", result);
+}
+
+test "inferQueryIntent classifies conceptual question deterministically" {
+	const tokens = [_][]const u8{ "how", "does", "bitstream", "reader", "work" };
+	const intent = inferQueryIntent("how does bitstream reader work", tokens[0..]);
+	try std.testing.expectEqual(QueryIntent.conceptual, intent);
+}
+
+test "inferQueryIntent classifies navigation query deterministically" {
+	const tokens = [_][]const u8{ "where", "is", "validateRarDeep", "defined" };
+	const intent = inferQueryIntent("where is validateRarDeep defined", tokens[0..]);
+	try std.testing.expectEqual(QueryIntent.navigation, intent);
+}
+
+test "inferQueryIntent classifies symbol lookup query deterministically" {
+	const tokens = [_][]const u8{ "parseEncryptionParams" };
+	const intent = inferQueryIntent("parseEncryptionParams", tokens[0..]);
+	try std.testing.expectEqual(QueryIntent.lookup, intent);
 }
 
 test "buildFtsQuery single word has no operator" {
