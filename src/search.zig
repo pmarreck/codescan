@@ -440,6 +440,14 @@ fn likeCandidates(
 	const pattern_z = try allocator.dupeZ(u8, pattern);
 	defer allocator.free(pattern_z);
 
+	const query_z = try allocator.dupeZ(u8, query);
+	defer allocator.free(query_z);
+	const prefix = try std.fmt.allocPrint(allocator, "{s}%", .{query});
+	defer allocator.free(prefix);
+	const prefix_z = try allocator.dupeZ(u8, prefix);
+	defer allocator.free(prefix_z);
+
+	// ?1 = %query% (LIKE pattern), ?2 = query (exact), ?3 = query% (prefix), ?4 = limit
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
 		++ "1e999 AS distance "
@@ -447,7 +455,13 @@ fn likeCandidates(
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
 		++ "OR signature LIKE ?1 COLLATE NOCASE "
 		++ "OR doc_comment LIKE ?1 COLLATE NOCASE "
-		++ "LIMIT ?2;\x00";
+		++ "ORDER BY "
+		++ "CASE WHEN symbol_name LIKE ?2 COLLATE NOCASE THEN 0 "
+		++ "WHEN symbol_name LIKE ?3 COLLATE NOCASE THEN 1 "
+		++ "WHEN symbol_name LIKE ?1 COLLATE NOCASE THEN 2 "
+		++ "WHEN signature LIKE ?1 COLLATE NOCASE THEN 3 "
+		++ "ELSE 4 END "
+		++ "LIMIT ?4;\x00";
 
 	var stmt: ?*sqlite.sqlite3_stmt = null;
 	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) {
@@ -456,7 +470,9 @@ fn likeCandidates(
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
 
 	_ = sqlite.sqlite3_bind_text(stmt.?, 1, pattern_z.ptr, @intCast(pattern.len), null);
-	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
+	_ = sqlite.sqlite3_bind_text(stmt.?, 2, query_z.ptr, @intCast(query.len), null);
+	_ = sqlite.sqlite3_bind_text(stmt.?, 3, prefix_z.ptr, @intCast(prefix.len), null);
+	_ = sqlite.sqlite3_bind_int64(stmt.?, 4, @intCast(limit));
 
 	var results = std.ArrayListUnmanaged(Result){};
 	errdefer {
@@ -2180,4 +2196,89 @@ test "bm25 column weights rank name match above doc_comment match" {
 	try std.testing.expect(sr.results.len >= 2);
 	// The symbol with "hash" in its name should rank first
 	try std.testing.expectEqualStrings("hash", sr.results[0].symbol.name);
+}
+
+test "likeCandidates orders exact name > prefix > substring > signature-only" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// sym_sig: "init" appears only in the signature (priority 3)
+	var sym_sig = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "setup"),
+		.signature = try allocator.dupe(u8, "pub fn setup(init: bool) void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_sig.deinit(allocator);
+
+	// sym_sub: "init" is a substring of the name (priority 2)
+	var sym_sub = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "reinitialize"),
+		.signature = try allocator.dupe(u8, "pub fn reinitialize() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_sub.deinit(allocator);
+
+	// sym_prefix: "init" is a prefix of the name (priority 1)
+	var sym_prefix = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/c.zig"),
+		.name = try allocator.dupe(u8, "initSystem"),
+		.signature = try allocator.dupe(u8, "pub fn initSystem() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_prefix.deinit(allocator);
+
+	// sym_exact: "init" is the exact name (priority 0)
+	var sym_exact = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/d.zig"),
+		.name = try allocator.dupe(u8, "init"),
+		.signature = try allocator.dupe(u8, "pub fn init() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_exact.deinit(allocator);
+
+	// Insert in reverse priority order to ensure ORDER BY matters
+	const id1 = try storage.insertSymbol(db, sym_sig);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym_sub);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+	const id3 = try storage.insertSymbol(db, sym_prefix);
+	try storage.insertEmbedding(db, allocator, id3, &[_]f32{ 0.0, 0.0 });
+	const id4 = try storage.insertSymbol(db, sym_exact);
+	try storage.insertEmbedding(db, allocator, id4, &[_]f32{ 0.0, 0.0 });
+
+	const results = try likeCandidates(allocator, db, "init", 10);
+	defer {
+		for (results) |*r| {
+			var res = r.*;
+			res.deinit(allocator);
+		}
+		allocator.free(results);
+	}
+
+	try std.testing.expectEqual(@as(usize, 4), results.len);
+	// Exact name match first
+	try std.testing.expectEqualStrings("init", results[0].symbol.name);
+	// Prefix match second
+	try std.testing.expectEqualStrings("initSystem", results[1].symbol.name);
+	// Substring in name third
+	try std.testing.expectEqualStrings("reinitialize", results[2].symbol.name);
+	// Signature-only match last
+	try std.testing.expectEqualStrings("setup", results[3].symbol.name);
 }
