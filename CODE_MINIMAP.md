@@ -29,10 +29,10 @@
 - src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/weights.zig: parser/loader for `.codescan/weights.toml` (`[default]` + per-language weights) and runtime weight resolution with explicit-override precedence + tests
-- src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), schema v3 migration support (`symbol_kind` column auto-added for older DBs), index reset, insert symbol/embedding, tests
+- src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), schema v3 migration support (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity` columns auto-added for older DBs), index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed + model availability check (`/api/tags`) + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests
-- src/model.zig: core data model for extracted symbols (includes optional `symbol_kind` metadata field)
+- src/model.zig: core data model for extracted symbols (includes optional metadata fields: `symbol_kind`, `symbol_visibility`, `symbol_scope`, `symbol_arity`)
 - src/kind.zig: type/category enum for plugins and filters (code/doc/text/log)
 - src/plugin.zig: extractor interface, registry, and tests
 - src/plugins/zig/mod.zig: Zig plugin defaults (language, extensions, ignore globs)

@@ -8,6 +8,9 @@ pub const Symbol = struct {
 	signature: []const u8,
 	doc_comment: ?[]const u8,
 	symbol_kind: ?[]const u8 = null,
+	symbol_visibility: ?[]const u8 = null,
+	symbol_scope: ?[]const u8 = null,
+	symbol_arity: ?i32 = null,
 	start_line: usize,
 	end_line: usize,
 	start_hash: ?hashline.Hash = null,
@@ -20,6 +23,8 @@ pub const Symbol = struct {
 		allocator.free(self.signature);
 		if (self.doc_comment) |value| allocator.free(value);
 		if (self.symbol_kind) |value| allocator.free(value);
+		if (self.symbol_visibility) |value| allocator.free(value);
+		if (self.symbol_scope) |value| allocator.free(value);
 		self.* = undefined;
 	}
 };

@@ -77,10 +77,29 @@ fn deleteFileIfExists(path: []const u8) !void {
 
 pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const meta_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
-	const symbols_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, start_hash TEXT, end_line INTEGER NOT NULL, end_hash TEXT, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT, symbol_kind TEXT);\x00";
+	const symbols_sql: [:0]const u8 =
+		"CREATE TABLE IF NOT EXISTS symbols (" ++
+		"id INTEGER PRIMARY KEY, " ++
+		"lang TEXT NOT NULL, " ++
+		"file_path TEXT NOT NULL, " ++
+		"start_line INTEGER NOT NULL, " ++
+		"start_hash TEXT, " ++
+		"end_line INTEGER NOT NULL, " ++
+		"end_hash TEXT, " ++
+		"symbol_name TEXT NOT NULL, " ++
+		"signature TEXT, " ++
+		"doc_comment TEXT, " ++
+		"symbol_kind TEXT, " ++
+		"symbol_visibility TEXT, " ++
+		"symbol_scope TEXT, " ++
+		"symbol_arity INTEGER" ++
+		");\x00";
 	try exec(db, meta_sql);
 	try exec(db, symbols_sql);
 	try ensureColumnExists(db, allocator, "symbols", "symbol_kind", "TEXT");
+	try ensureColumnExists(db, allocator, "symbols", "symbol_visibility", "TEXT");
+	try ensureColumnExists(db, allocator, "symbols", "symbol_scope", "TEXT");
+	try ensureColumnExists(db, allocator, "symbols", "symbol_arity", "INTEGER");
 
 	// Unique constraint prevents duplicate symbols from being inserted (defense-in-depth)
 	const unique_idx_sql: [:0]const u8 = "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols (file_path, start_line, end_line, symbol_name);\x00";
@@ -150,8 +169,10 @@ pub fn resetIndex(db: Db) !void {
 
 pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	const sql: [:0]const u8 =
-		"INSERT OR REPLACE INTO symbols (lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, symbol_kind) "
-		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10);\x00";
+		"INSERT OR REPLACE INTO symbols (" ++
+		"lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity" ++
+		") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		logSqliteError(db, "insertSymbol: prepare");
@@ -184,6 +205,21 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 		try bindText(stmt.?, 10, kind);
 	} else {
 		_ = c.sqlite3_bind_null(stmt.?, 10);
+	}
+	if (symbol.symbol_visibility) |visibility| {
+		try bindText(stmt.?, 11, visibility);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 11);
+	}
+	if (symbol.symbol_scope) |scope| {
+		try bindText(stmt.?, 12, scope);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 12);
+	}
+	if (symbol.symbol_arity) |arity| {
+		_ = c.sqlite3_bind_int64(stmt.?, 13, arity);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 13);
 	}
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
@@ -745,13 +781,16 @@ test "initSchema creates tables" {
 	try std.testing.expect(try tableExists(db, allocator, "embeddings"));
 	try std.testing.expect(try tableExists(db, allocator, "embeddings_comment"));
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_kind"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_visibility"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_scope"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_arity"));
 	const version = try metaValue(db, allocator, "schema_version");
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
 	try std.testing.expectEqualStrings("3", version.?);
 }
 
-test "initSchema migrates v2 symbols table by adding symbol_kind column" {
+test "initSchema migrates v2 symbols table by adding metadata columns" {
 	const allocator = std.testing.allocator;
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
@@ -764,6 +803,9 @@ test "initSchema migrates v2 symbols table by adding symbol_kind column" {
 	try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_kind"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_visibility"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_scope"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_arity"));
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
 	const version = try metaValue(db, allocator, "schema_version");
 	defer if (version) |v| allocator.free(v);
@@ -819,7 +861,7 @@ test "insertSymbol and insertEmbedding" {
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
 }
 
-test "insertSymbol stores symbol_kind metadata when provided" {
+test "insertSymbol stores symbol metadata columns when provided" {
 	const allocator = std.testing.allocator;
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
@@ -833,6 +875,9 @@ test "insertSymbol stores symbol_kind metadata when provided" {
 		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
 		.doc_comment = null,
 		.symbol_kind = try allocator.dupe(u8, "function"),
+		.symbol_visibility = try allocator.dupe(u8, "public"),
+		.symbol_scope = try allocator.dupe(u8, "top_level"),
+		.symbol_arity = 2,
 		.start_line = 1,
 		.end_line = 2,
 	};
@@ -841,7 +886,9 @@ test "insertSymbol stores symbol_kind metadata when provided" {
 	_ = try insertSymbol(db, symbol);
 
 	var stmt: ?*c.sqlite3_stmt = null;
-	const sql: [:0]const u8 = "SELECT symbol_kind FROM symbols WHERE symbol_name = 'add' LIMIT 1;\x00";
+	const sql: [:0]const u8 =
+		"SELECT symbol_kind, symbol_visibility, symbol_scope, symbol_arity " ++
+		"FROM symbols WHERE symbol_name = 'add' LIMIT 1;\x00";
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		return error.SqlPrepareFailed;
 	}
@@ -850,6 +897,11 @@ test "insertSymbol stores symbol_kind metadata when provided" {
 	try std.testing.expectEqual(@as(c_int, c.SQLITE_ROW), c.sqlite3_step(stmt.?));
 	const kind_ptr = c.sqlite3_column_text(stmt.?, 0) orelse return error.TestExpectedEqual;
 	try std.testing.expectEqualStrings("function", std.mem.span(kind_ptr));
+	const vis_ptr = c.sqlite3_column_text(stmt.?, 1) orelse return error.TestExpectedEqual;
+	try std.testing.expectEqualStrings("public", std.mem.span(vis_ptr));
+	const scope_ptr = c.sqlite3_column_text(stmt.?, 2) orelse return error.TestExpectedEqual;
+	try std.testing.expectEqualStrings("top_level", std.mem.span(scope_ptr));
+	try std.testing.expectEqual(@as(i64, 2), c.sqlite3_column_int64(stmt.?, 3));
 }
 
 test "indexed_files tracking" {
