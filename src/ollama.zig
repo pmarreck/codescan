@@ -23,10 +23,11 @@ pub fn embed(
 	base_url: []const u8,
 	model: []const u8,
 	inputs: []const []const u8,
+	keep_alive: ?i64,
 ) ![][]f32 {
 	const url = try buildEmbedUrl(allocator, base_url);
 	defer allocator.free(url);
-	const body = try buildEmbedRequest(allocator, model, inputs);
+	const body = try buildEmbedRequest(allocator, model, inputs, keep_alive);
 	defer allocator.free(body);
 
 	const headers = [_]std.http.Header{
@@ -60,16 +61,24 @@ pub fn buildTagsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
 	return std.fmt.allocPrint(allocator, "{s}/api/tags", .{base_url});
 }
 
+pub fn buildPsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+	if (std.mem.endsWith(u8, base_url, "/")) {
+		return std.fmt.allocPrint(allocator, "{s}api/ps", .{base_url});
+	}
+	return std.fmt.allocPrint(allocator, "{s}/api/ps", .{base_url});
+}
+
 pub fn buildEmbedRequest(
 	allocator: std.mem.Allocator,
 	model: []const u8,
 	inputs: []const []const u8,
+	keep_alive: ?i64,
 ) ![]u8 {
-	const payload = EmbedRequest{ .model = model, .input = inputs };
+	const payload = EmbedRequest{ .model = model, .input = inputs, .keep_alive = keep_alive };
 	var out: std.io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
-	var stream: std.json.Stringify = .{ .writer = &out.writer, .options = .{} };
+	var stream: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .emit_null_optional_fields = false } };
 	try stream.write(payload);
 	return out.toOwnedSlice();
 }
@@ -78,9 +87,50 @@ pub fn ensureModelAvailable(
 	allocator: std.mem.Allocator,
 	transport: Transport,
 	base_url: []const u8,
-	model: []const u8,
+	model_name: []const u8,
 ) !void {
-	const url = try buildTagsUrl(allocator, base_url);
+	// Step 1: Check /api/tags — model exists on disk?
+	{
+		const url = try buildTagsUrl(allocator, base_url);
+		defer allocator.free(url);
+
+		const headers = [_]std.http.Header{
+			.{ .name = "Accept", .value = "application/json" },
+		};
+
+		const response = try transport.send(transport.ctx, allocator, .{
+			.method = "GET",
+			.url = url,
+			.headers = &headers,
+			.body = "",
+		});
+		defer allocator.free(response.body);
+
+		if (response.status != 200) return error.HttpStatus;
+		if (!try hasModel(allocator, response.body, model_name)) return error.ModelNotFound;
+	}
+
+	// Step 2: Check /api/ps — model loaded in memory? (fast path)
+	if (try isModelLoaded(allocator, transport, base_url, model_name)) return;
+
+	// Step 3: Model exists but not loaded — trigger loading with a small embed request
+	const trigger_inputs = [_][]const u8{""};
+	const embeddings = embed(allocator, transport, base_url, model_name, &trigger_inputs, null) catch {
+		// Embed failed (e.g. timeout while loading) — model is being loaded
+		return error.ModelLoading;
+	};
+	// Embed succeeded — model loaded during our request
+	freeEmbeddings(allocator, embeddings);
+}
+
+/// Check if a model is currently loaded in memory via /api/ps.
+pub fn isModelLoaded(
+	allocator: std.mem.Allocator,
+	transport: Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+) !bool {
+	const url = try buildPsUrl(allocator, base_url);
 	defer allocator.free(url);
 
 	const headers = [_]std.http.Header{
@@ -95,8 +145,8 @@ pub fn ensureModelAvailable(
 	});
 	defer allocator.free(response.body);
 
-	if (response.status != 200) return error.HttpStatus;
-	if (!try hasModel(allocator, response.body, model)) return error.ModelNotFound;
+	if (response.status != 200) return false;
+	return hasModel(allocator, response.body, model_name) catch false;
 }
 
 pub fn parseEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 {
@@ -164,6 +214,7 @@ fn parseNumber(value: std.json.Value) !f32 {
 const EmbedRequest = struct {
 	model: []const u8,
 	input: []const []const u8,
+	keep_alive: ?i64 = null,
 };
 
 pub const StdHttpTransport = struct {
@@ -228,9 +279,17 @@ test "buildEmbedUrl handles trailing slash" {
 test "buildEmbedRequest serializes inputs" {
 	const allocator = std.testing.allocator;
 	const inputs = [_][]const u8{ "hello", "world" };
-	const body = try buildEmbedRequest(allocator, "bge-large", &inputs);
+	const body = try buildEmbedRequest(allocator, "bge-large", &inputs, null);
 	defer allocator.free(body);
 	try std.testing.expectEqualStrings("{\"model\":\"bge-large\",\"input\":[\"hello\",\"world\"]}", body);
+}
+
+test "buildEmbedRequest includes keep_alive when set" {
+	const allocator = std.testing.allocator;
+	const inputs = [_][]const u8{"hello"};
+	const body = try buildEmbedRequest(allocator, "bge-large", &inputs, -1);
+	defer allocator.free(body);
+	try std.testing.expectEqualStrings("{\"model\":\"bge-large\",\"input\":[\"hello\"],\"keep_alive\":-1}", body);
 }
 
 test "parseEmbeddings reads vectors" {
@@ -275,7 +334,7 @@ test "embed uses live Ollama" {
 	try ensureModelAvailable(allocator, transport.transport(), url, model);
 
 	const inputs = [_][]const u8{ "hash functions" };
-	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs);
+	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs, null);
 	defer freeEmbeddings(allocator, embeddings);
 	try std.testing.expect(embeddings.len == 1);
 	try std.testing.expect(embeddings[0].len > 0);
@@ -287,6 +346,135 @@ fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const
 		else => return err,
 	};
 	return value;
+}
+
+/// A mock transport for unit tests — returns canned responses based on URL path.
+const MockTransportCtx = struct {
+	tags_body: []const u8,
+	ps_body: []const u8,
+	embed_should_fail: bool = false,
+
+	fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
+		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
+		if (std.mem.endsWith(u8, req.url, "/api/tags")) {
+			return .{ .status = 200, .body = try allocator.dupe(u8, self.tags_body) };
+		}
+		if (std.mem.endsWith(u8, req.url, "/api/ps")) {
+			return .{ .status = 200, .body = try allocator.dupe(u8, self.ps_body) };
+		}
+		if (std.mem.endsWith(u8, req.url, "/api/embed")) {
+			if (self.embed_should_fail) return error.ConnectionRefused;
+			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"embeddings\":[[0.1,0.2]]}") };
+		}
+		return error.UnsupportedMethod;
+	}
+
+	fn transport(self: *MockTransportCtx) Transport {
+		return .{ .ctx = self, .send = send };
+	}
+};
+
+test "isModelLoaded returns true when model is in ps" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body =
+		\\{"models":[{"name":"bge-large:latest","model":"bge-large:latest","size":1234}]}
+		,
+	};
+	const loaded = try isModelLoaded(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+	try std.testing.expect(loaded);
+}
+
+test "isModelLoaded returns false when model is not in ps" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body =
+		\\{"models":[{"name":"other-model:latest","model":"other-model:latest","size":1234}]}
+		,
+	};
+	const loaded = try isModelLoaded(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+	try std.testing.expect(!loaded);
+}
+
+test "isModelLoaded returns false on empty ps" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body =
+		\\{"models":[]}
+		,
+	};
+	const loaded = try isModelLoaded(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+	try std.testing.expect(!loaded);
+}
+
+test "ensureModelAvailable returns ModelNotFound when not in tags" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body =
+		\\{"models":[{"name":"other-model:latest"}]}
+		,
+		.ps_body =
+		\\{"models":[]}
+		,
+	};
+	try std.testing.expectError(
+		error.ModelNotFound,
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large"),
+	);
+}
+
+test "ensureModelAvailable succeeds when model is loaded in ps" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body =
+		\\{"models":[{"name":"bge-large:latest"}]}
+		,
+		.ps_body =
+		\\{"models":[{"name":"bge-large:latest"}]}
+		,
+	};
+	try ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+}
+
+test "ensureModelAvailable returns ModelLoading when in tags but not ps and embed fails" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body =
+		\\{"models":[{"name":"bge-large:latest"}]}
+		,
+		.ps_body =
+		\\{"models":[]}
+		,
+		.embed_should_fail = true,
+	};
+	try std.testing.expectError(
+		error.ModelLoading,
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large"),
+	);
+}
+
+test "ensureModelAvailable succeeds when in tags, not in ps, but embed succeeds" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body =
+		\\{"models":[{"name":"bge-large:latest"}]}
+		,
+		.ps_body =
+		\\{"models":[]}
+		,
+		.embed_should_fail = false,
+	};
+	try ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+}
+
+test "buildPsUrl handles trailing slash" {
+	const allocator = std.testing.allocator;
+	const url = try buildPsUrl(allocator, "http://localhost:11434/");
+	defer allocator.free(url);
+	try std.testing.expectEqualStrings("http://localhost:11434/api/ps", url);
 }
 
 /// Skip test if Ollama is not reachable (for CI environments without Ollama).

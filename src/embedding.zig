@@ -11,6 +11,7 @@ pub const OllamaEmbedder = struct {
 	transport: ollama.Transport,
 	base_url: []const u8,
 	model: []const u8,
+	keep_alive: ?i64 = 900, // 15 minutes in seconds
 
 	pub fn embedder(self: *OllamaEmbedder) Embedder {
 		return .{
@@ -22,7 +23,7 @@ pub const OllamaEmbedder = struct {
 
 	fn embed(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
 		const self: *OllamaEmbedder = @ptrCast(@alignCast(ctx));
-		return ollama.embed(allocator, self.transport, self.base_url, self.model, inputs);
+		return ollama.embed(allocator, self.transport, self.base_url, self.model, inputs, self.keep_alive);
 	}
 
 	fn free(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {

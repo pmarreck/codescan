@@ -11,6 +11,7 @@ const hashline = @import("hashline.zig");
 
 pub const Options = struct {
 	embedding_dim: usize,
+	embedding_model: []const u8 = "",
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
 	allowed_exts: []const []const u8 = &[_][]const u8{},
@@ -38,7 +39,7 @@ pub fn indexAll(
 ) !Stats {
 	if (options.batch_size == 0) return error.InvalidBatchSize;
 
-	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
 	try storage.resetIndex(db);
 
 	const debug = try debugEnabled(allocator);
@@ -213,7 +214,7 @@ pub fn indexIncremental(
 	if (options.batch_size == 0) return error.InvalidBatchSize;
 
 	// Ensure schema exists (including indexed_files table)
-	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
 
 	const debug = try debugEnabled(allocator);
 	const show_progress = options.show_progress and !debug;

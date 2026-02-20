@@ -15,10 +15,21 @@ const current_schema_version = 3;
 pub const InitSchemaResult = struct {
 	did_schema_upgrade: bool = false,
 	previous_schema_version: ?u32 = null,
+	embedding_model_mismatch: bool = false,
+	embedding_dim_mismatch: bool = false,
+	stored_embedding_model: ?[]u8 = null,
+	stored_embedding_dim: ?usize = null,
+
+	/// Free any allocator-owned fields.
+	pub fn deinit(self: *InitSchemaResult, allocator: std.mem.Allocator) void {
+		if (self.stored_embedding_model) |m| allocator.free(m);
+		self.stored_embedding_model = null;
+	}
 };
 
 pub const Schema = struct {
 	embedding_dim: usize,
+	embedding_model: []const u8 = "",
 };
 
 pub fn openMemoryWithVec(allocator: std.mem.Allocator) !Db {
@@ -98,7 +109,41 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 	// Future migrations go here:
 	// if (effective_version < 4) { try migrateV3ToV4(allocator, db); did_schema_upgrade = true; }
 
-	// Stamp current version and metadata
+	// Detect embedding model/dim mismatches BEFORE overwriting stored values
+	var result = InitSchemaResult{
+		.did_schema_upgrade = did_schema_upgrade,
+		.previous_schema_version = previous_schema_version,
+	};
+
+	if (had_meta_table and isIndexPopulated(db)) {
+		// Check embedding model mismatch
+		if (schema.embedding_model.len > 0) {
+			const stored_model = try metaValue(db, allocator, "embedding_model");
+			if (stored_model) |sm| {
+				if (!std.mem.eql(u8, sm, schema.embedding_model)) {
+					result.embedding_model_mismatch = true;
+					result.stored_embedding_model = sm;
+				} else {
+					allocator.free(sm);
+				}
+			}
+		}
+
+		// Check embedding dim mismatch
+		const stored_dim_str = try metaValue(db, allocator, "embedding_dim");
+		if (stored_dim_str) |ds| {
+			defer allocator.free(ds);
+			const stored_dim = std.fmt.parseInt(usize, ds, 10) catch null;
+			if (stored_dim) |sd| {
+				if (sd != schema.embedding_dim) {
+					result.embedding_dim_mismatch = true;
+					result.stored_embedding_dim = sd;
+				}
+			}
+		}
+	}
+
+	// Stamp current version and metadata (after mismatch check)
 	try setMetaVersion(allocator, db, schema);
 
 	// Initialize FTS (idempotent)
@@ -111,10 +156,7 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 	defer allocator.free(fts_meta);
 	try exec(db, fts_meta);
 
-	return .{
-		.did_schema_upgrade = did_schema_upgrade,
-		.previous_schema_version = previous_schema_version,
-	};
+	return result;
 }
 
 /// Create all base tables at current schema version.
@@ -174,7 +216,7 @@ fn migrateV2ToV3(allocator: std.mem.Allocator, db: Db) !void {
 	try ensureColumnExists(db, allocator, "symbols", "symbol_arity", "INTEGER");
 }
 
-/// Write the current schema version and embedding dim to the meta table.
+/// Write the current schema version, embedding dim, and embedding model to the meta table.
 fn setMetaVersion(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const version_sql = try allocPrintZ(allocator,
 		"INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '{d}');",
@@ -189,6 +231,15 @@ fn setMetaVersion(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	);
 	defer allocator.free(dim_sql);
 	try exec(db, dim_sql);
+
+	if (schema.embedding_model.len > 0) {
+		const model_sql = try allocPrintZ(allocator,
+			"INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_model', '{s}');",
+			.{schema.embedding_model},
+		);
+		defer allocator.free(model_sql);
+		try exec(db, model_sql);
+	}
 }
 
 pub fn schemaVersion(db: Db, allocator: std.mem.Allocator) !?u32 {
@@ -1269,4 +1320,132 @@ test "isIndexPopulated returns false without schema" {
 
 	// No initSchema — table doesn't exist
 	try std.testing.expect(!isIndexPopulated(db));
+}
+
+test "initSchema detects embedding model mismatch" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	// Init with model A
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	// Insert a symbol so index is populated
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+	_ = try insertSymbol(db, sym);
+
+	// Re-init with model B — should detect mismatch
+	var result = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "nomic-embed-text" });
+	defer result.deinit(allocator);
+	try std.testing.expect(result.embedding_model_mismatch);
+	try std.testing.expect(!result.embedding_dim_mismatch);
+	try std.testing.expect(result.stored_embedding_model != null);
+	try std.testing.expectEqualStrings("bge-large", result.stored_embedding_model.?);
+}
+
+test "initSchema detects embedding dim mismatch" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	// Init with dim=2
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	// Insert a symbol so index is populated
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+	_ = try insertSymbol(db, sym);
+
+	// Re-init with dim=4 — should detect mismatch
+	var result = try initSchema(allocator, db, .{ .embedding_dim = 4, .embedding_model = "bge-large" });
+	defer result.deinit(allocator);
+	try std.testing.expect(!result.embedding_model_mismatch);
+	try std.testing.expect(result.embedding_dim_mismatch);
+	try std.testing.expectEqual(@as(?usize, 2), result.stored_embedding_dim);
+}
+
+test "initSchema no mismatch on fresh DB" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	var result = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+	defer result.deinit(allocator);
+	try std.testing.expect(!result.embedding_model_mismatch);
+	try std.testing.expect(!result.embedding_dim_mismatch);
+}
+
+test "initSchema no mismatch when model is same" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	// Insert a symbol
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+	_ = try insertSymbol(db, sym);
+
+	// Re-init with same model — no mismatch
+	var result = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+	defer result.deinit(allocator);
+	try std.testing.expect(!result.embedding_model_mismatch);
+	try std.testing.expect(!result.embedding_dim_mismatch);
+}
+
+test "initSchema stores embedding_model in meta" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	const stored = try metaValue(db, allocator, "embedding_model");
+	defer if (stored) |v| allocator.free(v);
+	try std.testing.expect(stored != null);
+	try std.testing.expectEqualStrings("bge-large", stored.?);
+}
+
+test "initSchema empty model does not overwrite stored model" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	// First init with real model
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	// Second init with empty model (like tests or tryReindexFile)
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Stored model should still be bge-large
+	const stored = try metaValue(db, allocator, "embedding_model");
+	defer if (stored) |v| allocator.free(v);
+	try std.testing.expect(stored != null);
+	try std.testing.expectEqualStrings("bge-large", stored.?);
 }

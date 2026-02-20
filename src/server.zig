@@ -50,13 +50,28 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	try ensureParentDir(settings.db_path);
 	const db = try storage.openFileWithVec(allocator, settings.db_path);
 	defer storage.close(db);
-	const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+	var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+	defer schema_result.deinit(allocator);
 	if (schema_result.did_schema_upgrade) {
 		var sb: [4096]u8 = undefined;
 		var sw = std.fs.File.stderr().writer(&sb);
 		const se = &sw.interface;
 		_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
 		_ = se.flush() catch {};
+	}
+	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+		var sb: [4096]u8 = undefined;
+		var sw = std.fs.File.stderr().writer(&sb);
+		const se = &sw.interface;
+		if (schema_result.embedding_model_mismatch) {
+			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+		}
+		if (schema_result.embedding_dim_mismatch) {
+			_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+		}
+		_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+		_ = se.flush() catch {};
+		return error.EmbeddingMismatch;
 	}
 
 	var http_client = ollama.StdHttpTransport.init(allocator);
@@ -110,6 +125,17 @@ fn ensureModelAvailableOrExit(
 			_ = stderr.print(
 				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
 				.{ model_name, model_name },
+			) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		},
+		error.ModelLoading => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"error: Ollama model '{s}' is available but still loading into memory. Please wait a few moments and try again.\n",
+				.{model_name},
 			) catch {};
 			_ = stderr.flush() catch {};
 			std.process.exit(1);
@@ -230,6 +256,7 @@ fn handleRequest(
 			embedder,
 			.{
 				.embedding_dim = settings.embedding_dim,
+				.embedding_model = settings.ollama_model,
 				.batch_size = settings.batch_size,
 				.max_file_size = settings.max_file_size,
 				.allowed_exts = index_filters.exts.items,

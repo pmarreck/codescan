@@ -228,7 +228,7 @@ pub fn main() !void {
 			// Open DB and init schema
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
-			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
 
 			// Try Ollama; fall back to lexical-only if unavailable
 			var http_client = ollama.StdHttpTransport.init(allocator);
@@ -296,6 +296,7 @@ pub fn main() !void {
 				embedder_adapter.embedder(),
 				.{
 					.embedding_dim = settings.embedding_dim,
+					.embedding_model = settings.ollama_model,
 					.batch_size = settings.batch_size,
 					.max_file_size = settings.max_file_size,
 					.allowed_exts = index_filters.exts.items,
@@ -320,13 +321,28 @@ pub fn main() !void {
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
-			const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+			defer schema_result.deinit(allocator);
 			if (schema_result.did_schema_upgrade) {
 				var sb: [4096]u8 = undefined;
 				var sw = std.fs.File.stderr().writer(&sb);
 				const se = &sw.interface;
 				_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
 				_ = se.flush() catch {};
+			}
+			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+				var sb: [4096]u8 = undefined;
+				var sw = std.fs.File.stderr().writer(&sb);
+				const se = &sw.interface;
+				if (schema_result.embedding_model_mismatch) {
+					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+				}
+				if (schema_result.embedding_dim_mismatch) {
+					_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+				}
+				_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+				_ = se.flush() catch {};
+				std.process.exit(1);
 			}
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
@@ -349,6 +365,7 @@ pub fn main() !void {
 				embedder_adapter.embedder(),
 				.{
 					.embedding_dim = settings.embedding_dim,
+					.embedding_model = settings.ollama_model,
 					.batch_size = settings.batch_size,
 					.max_file_size = settings.max_file_size,
 					.allowed_exts = index_filters.exts.items,
@@ -400,10 +417,22 @@ pub fn main() !void {
 			const stderr = &stderr_writer.interface;
 
 			// Always run schema init/migration so older DBs get new columns
-			const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+			defer schema_result.deinit(allocator);
 			if (schema_result.did_schema_upgrade) {
 				_ = stderr.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
 				_ = stderr.flush() catch {};
+			}
+			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+				if (schema_result.embedding_model_mismatch) {
+					_ = stderr.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+				}
+				if (schema_result.embedding_dim_mismatch) {
+					_ = stderr.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+				}
+				_ = stderr.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+				std.process.exit(1);
 			}
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
@@ -751,13 +780,28 @@ pub fn main() !void {
 					// Open existing DB or create new one (don't destroy existing index)
 					const db = try storage.openFileWithVec(allocator, settings.db_path);
 					defer storage.close(db);
-					const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+					var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+					defer schema_result.deinit(allocator);
 					if (schema_result.did_schema_upgrade) {
 						var sb: [4096]u8 = undefined;
 						var sw = std.fs.File.stderr().writer(&sb);
 						const se = &sw.interface;
 						_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
 						_ = se.flush() catch {};
+					}
+					if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+						var sb: [4096]u8 = undefined;
+						var sw = std.fs.File.stderr().writer(&sb);
+						const se = &sw.interface;
+						if (schema_result.embedding_model_mismatch) {
+							_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+						}
+						if (schema_result.embedding_dim_mismatch) {
+							_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+						}
+						_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+						_ = se.flush() catch {};
+						std.process.exit(1);
 					}
 
 					var http_client = ollama.StdHttpTransport.init(allocator);
@@ -798,6 +842,7 @@ pub fn main() !void {
 							.codescan_dir = codescan_dir,
 							.index_options = .{
 								.embedding_dim = settings.embedding_dim,
+								.embedding_model = settings.ollama_model,
 								.batch_size = settings.batch_size,
 								.max_file_size = settings.max_file_size,
 								.allowed_exts = index_filters.exts.items,
@@ -1031,6 +1076,17 @@ fn ensureModelAvailableOrExit(
 			_ = stderr.flush() catch {};
 			std.process.exit(1);
 		},
+		error.ModelLoading => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"error: Ollama model '{s}' is available but still loading into memory. Please wait a few moments and try again.\n",
+				.{model_name},
+			) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		},
 		else => return err,
 	};
 }
@@ -1060,6 +1116,13 @@ fn tryInitOllama(
 					"  note: Ollama model '{s}' not found. Using lexical-only search.\n" ++
 						"  Run 'ollama pull {s}' then 'codescan update' for semantic search.\n",
 					.{ ollama_model, ollama_model },
+				) catch {};
+			},
+			error.ModelLoading => {
+				_ = stderr.print(
+					"  note: Ollama model '{s}' is still loading into memory. Using lexical-only search.\n" ++
+						"  Please wait a few moments and try again for semantic search.\n",
+					.{ollama_model},
 				) catch {};
 			},
 			else => {
@@ -1097,6 +1160,7 @@ fn performFullIndex(
 		embedder,
 		.{
 			.embedding_dim = settings.embedding_dim,
+			.embedding_model = settings.ollama_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
 			.allowed_exts = index_filters.exts.items,
