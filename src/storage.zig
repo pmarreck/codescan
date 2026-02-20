@@ -84,24 +84,44 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 	const had_meta_table = try tableExists(db, allocator, "meta");
 	const had_symbols_table = try tableExists(db, allocator, "symbols");
 	const previous_schema_version = if (had_meta_table) try schemaVersion(db, allocator) else null;
-	const had_symbol_kind = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_kind") else false;
-	const had_symbol_visibility = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_visibility") else false;
-	const had_symbol_scope = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_scope") else false;
-	const had_symbol_arity = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_arity") else false;
+	const effective_version = previous_schema_version orelse if (had_symbols_table) @as(u32, 1) else 0;
 
+	// Create base tables (all use IF NOT EXISTS, safe to run always)
+	try createBaseTables(allocator, db, schema);
+
+	// Run migrations for each version step
 	var did_schema_upgrade = false;
-	if (previous_schema_version) |version| {
-		if (version < current_schema_version) did_schema_upgrade = true;
-	} else if (had_symbols_table) {
-		// Existing symbol rows with no declared version are treated as legacy schema.
+	if (effective_version > 0 and effective_version < 3) {
+		try migrateV2ToV3(allocator, db);
 		did_schema_upgrade = true;
 	}
-	if (had_symbols_table and (!had_symbol_kind or !had_symbol_visibility or !had_symbol_scope or !had_symbol_arity)) {
-		did_schema_upgrade = true;
-	}
+	// Future migrations go here:
+	// if (effective_version < 4) { try migrateV3ToV4(allocator, db); did_schema_upgrade = true; }
 
-	const meta_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
-	const symbols_sql: [:0]const u8 =
+	// Stamp current version and metadata
+	try setMetaVersion(allocator, db, schema);
+
+	// Initialize FTS (idempotent)
+	const fts_enabled = tryInitFts(allocator, db);
+	const fts_sql = if (fts_enabled)
+		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '1');"
+	else
+		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '0');";
+	const fts_meta = try allocator.dupeZ(u8, fts_sql);
+	defer allocator.free(fts_meta);
+	try exec(db, fts_meta);
+
+	return .{
+		.did_schema_upgrade = did_schema_upgrade,
+		.previous_schema_version = previous_schema_version,
+	};
+}
+
+/// Create all base tables at current schema version.
+/// Uses IF NOT EXISTS so it's safe to call on existing DBs.
+fn createBaseTables(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
+	try exec(db, "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00");
+	try exec(db,
 		"CREATE TABLE IF NOT EXISTS symbols (" ++
 		"id INTEGER PRIMARY KEY, " ++
 		"lang TEXT NOT NULL, " ++
@@ -117,71 +137,58 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 		"symbol_visibility TEXT, " ++
 		"symbol_scope TEXT, " ++
 		"symbol_arity INTEGER" ++
-		");\x00";
-	try exec(db, meta_sql);
-	try exec(db, symbols_sql);
-	try ensureColumnExists(db, allocator, "symbols", "symbol_kind", "TEXT");
-	try ensureColumnExists(db, allocator, "symbols", "symbol_visibility", "TEXT");
-	try ensureColumnExists(db, allocator, "symbols", "symbol_scope", "TEXT");
-	try ensureColumnExists(db, allocator, "symbols", "symbol_arity", "INTEGER");
+		");\x00",
+	);
+	try exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols (file_path, start_line, end_line, symbol_name);\x00");
 
-	// Unique constraint prevents duplicate symbols from being inserted (defense-in-depth)
-	const unique_idx_sql: [:0]const u8 = "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols (file_path, start_line, end_line, symbol_name);\x00";
-	try exec(db, unique_idx_sql);
-
-	const vec_sql = try allocPrintZ(
-		allocator,
+	const vec_sql = try allocPrintZ(allocator,
 		"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings USING vec0(embedding float[{d}]);",
 		.{schema.embedding_dim},
 	);
 	defer allocator.free(vec_sql);
 	try exec(db, vec_sql);
 
-	const vec_comment_sql = try allocPrintZ(
-		allocator,
+	const vec_comment_sql = try allocPrintZ(allocator,
 		"CREATE VIRTUAL TABLE IF NOT EXISTS embeddings_comment USING vec0(embedding float[{d}]);",
 		.{schema.embedding_dim},
 	);
 	defer allocator.free(vec_comment_sql);
 	try exec(db, vec_comment_sql);
 
-	const version_sql = try allocPrintZ(
-		allocator,
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '{d}');",
-		.{current_schema_version},
-	);
-	defer allocator.free(version_sql);
-	try exec(db, version_sql);
-	const dim_sql = try allocPrintZ(
-		allocator,
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_dim', '{d}');",
-		.{schema.embedding_dim},
-	);
-	defer allocator.free(dim_sql);
-	try exec(db, dim_sql);
-
-	const files_sql: [:0]const u8 =
+	try exec(db,
 		"CREATE TABLE IF NOT EXISTS indexed_files (" ++
 		"file_path TEXT PRIMARY KEY, " ++
 		"mtime_ns INTEGER NOT NULL, " ++
 		"size INTEGER NOT NULL, " ++
 		"indexed_at INTEGER NOT NULL" ++
-		");\x00";
-	try exec(db, files_sql);
+		");\x00",
+	);
+}
 
-	const fts_enabled = tryInitFts(allocator, db);
-	const fts_sql = if (fts_enabled)
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '1');"
-	else
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '0');";
-	const fts_meta = try allocator.dupeZ(u8, fts_sql);
-	defer allocator.free(fts_meta);
-	try exec(db, fts_meta);
+/// Migrate from schema v2 (or v1/unversioned) to v3:
+/// Adds symbol_kind, symbol_visibility, symbol_scope, symbol_arity columns.
+fn migrateV2ToV3(allocator: std.mem.Allocator, db: Db) !void {
+	try ensureColumnExists(db, allocator, "symbols", "symbol_kind", "TEXT");
+	try ensureColumnExists(db, allocator, "symbols", "symbol_visibility", "TEXT");
+	try ensureColumnExists(db, allocator, "symbols", "symbol_scope", "TEXT");
+	try ensureColumnExists(db, allocator, "symbols", "symbol_arity", "INTEGER");
+}
 
-	return .{
-		.did_schema_upgrade = did_schema_upgrade,
-		.previous_schema_version = previous_schema_version,
-	};
+/// Write the current schema version and embedding dim to the meta table.
+fn setMetaVersion(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
+	const version_sql = try allocPrintZ(allocator,
+		"INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '{d}');",
+		.{current_schema_version},
+	);
+	defer allocator.free(version_sql);
+	try exec(db, version_sql);
+
+	const dim_sql = try allocPrintZ(allocator,
+		"INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_dim', '{d}');",
+		.{schema.embedding_dim},
+	);
+	defer allocator.free(dim_sql);
+	try exec(db, dim_sql);
 }
 
 pub fn schemaVersion(db: Db, allocator: std.mem.Allocator) !?u32 {
@@ -863,6 +870,59 @@ test "initSchema migrates v2 symbols table by adding metadata columns" {
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
 	try std.testing.expectEqualStrings("3", version.?);
+}
+
+test "migrateV2ToV3 adds metadata columns to existing table" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	// Create a v2 symbols table (no metadata columns)
+	try exec(db, "CREATE TABLE symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, start_hash TEXT, end_line INTEGER NOT NULL, end_hash TEXT, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT);\x00");
+
+	try std.testing.expect(!try columnExists(db, allocator, "symbols", "symbol_kind"));
+	try migrateV2ToV3(allocator, db);
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_kind"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_visibility"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_scope"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_arity"));
+}
+
+test "initSchema reports did_schema_upgrade for v2 DB" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	try exec(db, "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00");
+	try exec(db, "CREATE TABLE symbols (id INTEGER PRIMARY KEY, lang TEXT NOT NULL, file_path TEXT NOT NULL, start_line INTEGER NOT NULL, start_hash TEXT, end_line INTEGER NOT NULL, end_hash TEXT, symbol_name TEXT NOT NULL, signature TEXT, doc_comment TEXT);\x00");
+	try exec(db, "INSERT INTO meta(key, value) VALUES ('schema_version', '2');\x00");
+
+	const result = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try std.testing.expect(result.did_schema_upgrade);
+	try std.testing.expectEqual(@as(?u32, 2), result.previous_schema_version);
+}
+
+test "initSchema does not report upgrade for fresh DB" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	const result = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try std.testing.expect(!result.did_schema_upgrade);
+	try std.testing.expect(result.previous_schema_version == null);
+}
+
+test "initSchema does not report upgrade for current-version DB" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	// First init creates at current version
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	// Second init should not report upgrade
+	const result = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try std.testing.expect(!result.did_schema_upgrade);
+	try std.testing.expectEqual(@as(?u32, 3), result.previous_schema_version);
 }
 
 test "openFileWithVecRecreate replaces existing file" {
