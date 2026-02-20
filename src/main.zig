@@ -21,6 +21,7 @@ const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
 const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
+const weights = @import("weights.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
 var g_stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -84,6 +85,7 @@ const Settings = struct {
 	lsp_overrides: []const config.LspOverride,
 	http_host: []const u8,
 	http_port: u16,
+	search_weights: ?*const weights.Table,
 };
 
 pub fn main() !void {
@@ -140,7 +142,11 @@ pub fn main() !void {
 	var cfg = try loadConfig(allocator, config_root);
 	defer cfg.deinit(allocator);
 
-	const settings = try resolveSettings(allocator, parsed, cfg, config_root);
+	var search_weights = try loadWeights(allocator, config_root);
+	defer search_weights.deinit(allocator);
+
+	var settings = try resolveSettings(allocator, parsed, cfg, config_root);
+	settings.search_weights = &search_weights;
 	defer if (settings.db_path_owned) allocator.free(settings.db_path);
 	defer if (settings.ollama_model_owned) allocator.free(settings.ollama_model);
 
@@ -212,6 +218,11 @@ pub fn main() !void {
 				const cfg_path = try configPath(allocator, config_root);
 				defer allocator.free(cfg_path);
 				try ensureConfigWithDefaults(cfg_path);
+			}
+			{
+				const weights_cfg_path = try weightsPath(allocator, config_root);
+				defer allocator.free(weights_cfg_path);
+				try ensureWeightsWithDefaults(weights_cfg_path);
 			}
 
 			// Open DB and init schema
@@ -440,6 +451,14 @@ pub fn main() !void {
 			});
 			defer search_filters.deinit(allocator);
 
+			const effective_weights = weights.resolveSearchWeights(
+				settings.search_weights,
+				search_filters.langs.items,
+				settings.weight_vector,
+				settings.weight_lexical,
+				parsed.seen.weight_vector or parsed.seen.weight_lexical,
+			);
+
 			const sr = try search.search(
 				allocator,
 				db,
@@ -451,8 +470,8 @@ pub fn main() !void {
 					.fusion = settings.fusion,
 					.rrf_k = settings.rrf_k,
 					.fts_mode = settings.fts_mode,
-					.weight_vector = settings.weight_vector,
-					.weight_lexical = settings.weight_lexical,
+					.weight_vector = effective_weights.weight_vector,
+					.weight_lexical = effective_weights.weight_lexical,
 					.min_score = settings.min_score,
 					.allowed_langs = search_filters.langs.items,
 					.allowed_exts = search_filters.exts.items,
@@ -523,6 +542,7 @@ pub fn main() !void {
 				.http_host = settings.http_host,
 				.http_port = settings.http_port,
 				.lsp_overrides = settings.lsp_overrides,
+				.search_weights = settings.search_weights,
 			});
 		},
 		.symbols => {
@@ -645,6 +665,7 @@ pub fn main() !void {
 				.ignore_global = settings.ignore_global,
 				.ignore_lang = settings.ignore_lang,
 				.include_node_modules = settings.include_node_modules,
+				.search_weights = settings.search_weights,
 			});
 		},
 		.watch => {
@@ -862,6 +883,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.lsp_overrides = &[_]config.LspOverride{},
 		.http_host = defaults.http_host,
 		.http_port = defaults.http_port,
+		.search_weights = null,
 	};
 
 	var env_model: ?[]u8 = null;
@@ -1167,8 +1189,23 @@ fn loadConfig(allocator: std.mem.Allocator, root_path: []const u8) !config.Confi
 	};
 }
 
+fn loadWeights(allocator: std.mem.Allocator, root_path: []const u8) !weights.Table {
+	const path = try weightsPath(allocator, root_path);
+	defer allocator.free(path);
+
+	return weights.loadFromPath(allocator, path) catch |err| switch (err) {
+		error.FileNotFound => weights.Table{},
+		error.NotDir => weights.Table{},
+		else => err,
+	};
+}
+
 fn configPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
 	return std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
+}
+
+fn weightsPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
+	return std.fs.path.join(allocator, &.{ root_path, ".codescan", "weights.toml" });
 }
 
 fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Writer) !void {
@@ -1291,6 +1328,26 @@ fn ensureConfigWithDefaults(path: []const u8) !void {
 			const file = try std.fs.cwd().createFile(path, .{});
 			defer file.close();
 			try file.writeAll(config.default_template);
+		},
+		else => return err,
+	}
+}
+
+fn ensureWeightsWithDefaults(path: []const u8) !void {
+	const result = std.fs.cwd().openFile(path, .{});
+	if (result) |file| {
+		const stat = try file.stat();
+		file.close();
+		if (stat.size == 0) {
+			const f = try std.fs.cwd().createFile(path, .{ .truncate = true });
+			defer f.close();
+			try f.writeAll(weights.default_template);
+		}
+	} else |err| switch (err) {
+		error.FileNotFound => {
+			const file = try std.fs.cwd().createFile(path, .{});
+			defer file.close();
+			try file.writeAll(weights.default_template);
 		},
 		else => return err,
 	}

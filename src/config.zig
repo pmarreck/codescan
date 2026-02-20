@@ -36,6 +36,9 @@ pub const default_template =
     \\#weight_vector=0.7
     \\#weight_lexical=0.3
     \\#min_score=0.0
+    \\#
+    \\# Language-specific overrides live in .codescan/weights.toml
+    \\# (for example: [zig], [elixir], [rust] sections)
     \\
     \\# Index/search file filters (comma-separated)
     \\#index_ext=

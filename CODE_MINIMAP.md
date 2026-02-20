@@ -28,6 +28,7 @@
 - src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, and HTTP server
 - src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
+- src/weights.zig: parser/loader for `.codescan/weights.toml` (`[default]` + per-language weights) and runtime weight resolution with explicit-override precedence + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed + model availability check (`/api/tags`) + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests

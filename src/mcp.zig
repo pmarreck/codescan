@@ -12,6 +12,7 @@ const ollama = @import("ollama.zig");
 const filters = @import("filters.zig");
 const kind = @import("kind.zig");
 const model = @import("model.zig");
+const weights = @import("weights.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
@@ -40,6 +41,7 @@ pub const Settings = struct {
 	ignore_global: []const []const u8 = &[_][]const u8{},
 	ignore_lang: []const config.IgnoreOverride = &[_]config.IgnoreOverride{},
 	include_node_modules: bool = false,
+	search_weights: ?*const weights.Table = null,
 };
 
 /// Read a single JSON-RPC message from the reader.
@@ -316,6 +318,13 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.docs_only = settings.docs_only,
 		}) catch return error.ToolFailed;
 		defer search_filters.deinit(allocator);
+		const effective_weights = weights.resolveSearchWeights(
+			settings.search_weights,
+			search_filters.langs.items,
+			settings.search_weight_vector,
+			settings.search_weight_lexical,
+			false,
+		);
 
 		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, .{
 			.top_n = settings.search_top_n,
@@ -323,8 +332,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.fusion = settings.search_fusion,
 			.rrf_k = settings.search_rrf_k,
 			.fts_mode = settings.search_fts_mode,
-			.weight_vector = settings.search_weight_vector,
-			.weight_lexical = settings.search_weight_lexical,
+			.weight_vector = effective_weights.weight_vector,
+			.weight_lexical = effective_weights.weight_lexical,
 			.min_score = settings.search_min_score,
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,

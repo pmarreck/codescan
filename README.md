@@ -273,6 +273,23 @@ ignore=**/.git/**, **/.codescan/**
 ignore.zig=**/.zig-cache/**,**/zig-out/**
 ```
 
+Optional language-specific weight overrides live in `<root>/.codescan/weights.toml`:
+
+```toml
+[default]
+weight_vector = 0.7
+weight_lexical = 0.3
+
+[zig]
+weight_vector = 0.55
+weight_lexical = 0.45
+```
+
+When both are present:
+- explicit CLI/HTTP weights win
+- otherwise `weights.toml` applies
+- otherwise `.codescan/config` global `weight_*` applies
+
 ## Notes
 
 - SQLite vector extension is statically linked (no runtime extension loading).

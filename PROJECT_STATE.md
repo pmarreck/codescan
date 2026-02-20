@@ -42,6 +42,11 @@
   `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`,
   `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`, `docs_only`, `comments_only`,
   `include_node_modules`.
+- Optional language-specific search weights:
+  - Path: `<root>/.codescan/weights.toml`
+  - Sections: `[default]` and canonical language sections (for example `[zig]`, `[elixir]`)
+  - Keys per section: `weight_vector`, `weight_lexical`
+  - Precedence: explicit CLI/HTTP request weights > `weights.toml` > `.codescan/config` global weights
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
   - Per-language: `ignore.zig=**/zig-out/**,**/.zig-cache/**`

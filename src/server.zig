@@ -8,6 +8,7 @@ const plugin = @import("plugin.zig");
 const ollama = @import("ollama.zig");
 const config = @import("config.zig");
 const filters = @import("filters.zig");
+const weights = @import("weights.zig");
 const main = @import("main.zig");
 const cli = @import("cli.zig");
 
@@ -42,6 +43,7 @@ pub const Settings = struct {
 	http_host: []const u8,
 	http_port: u16,
 	lsp_overrides: []const config.LspOverride = &[_]config.LspOverride{},
+	search_weights: ?*const weights.Table = null,
 };
 
 pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
@@ -155,14 +157,24 @@ fn handleRequest(
 		defer search_filters.deinit(allocator);
 
 		const top_n = parsed.top_n orelse settings.search_top_n;
+		const request_has_weight_override = parsed.weight_vector != null or parsed.weight_lexical != null;
+		const base_weight_vector = parsed.weight_vector orelse settings.search_weight_vector;
+		const base_weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical;
+		const effective_weights = weights.resolveSearchWeights(
+			settings.search_weights,
+			search_filters.langs.items,
+			base_weight_vector,
+			base_weight_lexical,
+			request_has_weight_override,
+		);
 		const sr = try search.search(allocator, db, embedder, parsed.query, .{
 			.top_n = top_n,
 			.mode = parsed.mode orelse settings.search_mode,
 			.fusion = parsed.fusion orelse settings.search_fusion,
 			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
 			.fts_mode = parsed.fts_mode orelse settings.search_fts_mode,
-			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
-			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
+			.weight_vector = effective_weights.weight_vector,
+			.weight_lexical = effective_weights.weight_lexical,
 			.min_score = parsed.min_score orelse settings.search_min_score,
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,
