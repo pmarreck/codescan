@@ -38,7 +38,7 @@ pub fn indexAll(
 ) !Stats {
 	if (options.batch_size == 0) return error.InvalidBatchSize;
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
 	try storage.resetIndex(db);
 
 	const debug = try debugEnabled(allocator);
@@ -120,6 +120,9 @@ pub fn indexAll(
 		defer {
 			for (symbols) |*sym| sym.deinit(allocator);
 			allocator.free(symbols);
+		}
+		for (symbols) |*sym| {
+			try enrichSymbolMetadata(allocator, sym);
 		}
 
 		// Compute chain hashes for this file's lines
@@ -210,7 +213,7 @@ pub fn indexIncremental(
 	if (options.batch_size == 0) return error.InvalidBatchSize;
 
 	// Ensure schema exists (including indexed_files table)
-	try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim });
 
 	const debug = try debugEnabled(allocator);
 	const show_progress = options.show_progress and !debug;
@@ -343,6 +346,9 @@ pub fn indexIncremental(
 			for (symbols) |*sym| sym.deinit(allocator);
 			allocator.free(symbols);
 		}
+		for (symbols) |*sym| {
+			try enrichSymbolMetadata(allocator, sym);
+		}
 
 		// Compute chain hashes for this file's lines
 		const hashes = computeFileHashes(allocator, source) catch null;
@@ -428,6 +434,9 @@ pub fn reindexFile(
 		for (symbols) |*sym| sym.deinit(allocator);
 		allocator.free(symbols);
 	}
+	for (symbols) |*sym| {
+		try enrichSymbolMetadata(allocator, sym);
+	}
 
 	// Compute chain hashes
 	const hashes = computeFileHashes(allocator, source) catch null;
@@ -452,6 +461,148 @@ pub fn reindexFile(
 	const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
 	const current_size: i64 = @intCast(stat.size);
 	try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
+}
+
+fn enrichSymbolMetadata(allocator: std.mem.Allocator, symbol: *model.Symbol) !void {
+	if (symbol.symbol_kind == null) {
+		if (inferKindFromSignature(symbol.signature)) |value| {
+			symbol.symbol_kind = try allocator.dupe(u8, value);
+		}
+	}
+	if (symbol.symbol_visibility == null) {
+		if (inferVisibilityFromSignature(symbol.signature)) |value| {
+			symbol.symbol_visibility = try allocator.dupe(u8, value);
+		}
+	}
+	if (symbol.symbol_scope == null) {
+		if (inferScope(symbol.name, symbol.signature, symbol.symbol_kind)) |value| {
+			symbol.symbol_scope = try allocator.dupe(u8, value);
+		}
+	}
+	if (symbol.symbol_arity == null) {
+		symbol.symbol_arity = inferArityFromSignature(symbol.name, symbol.signature);
+	}
+}
+
+fn inferKindFromSignature(signature: []const u8) ?[]const u8 {
+	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{
+		"pub fn ",
+		"fn ",
+		"def ",
+		"defp ",
+		"func ",
+		"function ",
+		"proc ",
+	})) return "function";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "class ", "class\t" })) return "class";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "struct ", "record " })) return "struct";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "enum " })) return "enum";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "interface " })) return "interface";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "trait " })) return "trait";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "module ", "mod ", "namespace " })) return "module";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "macro " })) return "macro";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "const ", "let ", "var ", "val ", "mut " })) return "variable";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "type ", "typedef " })) return "type";
+	return null;
+}
+
+fn inferVisibilityFromSignature(signature: []const u8) ?[]const u8 {
+	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{
+		"pub ",
+		"public ",
+		"export ",
+	})) return "public";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "private ", "priv " })) return "private";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "protected " })) return "protected";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "internal " })) return "internal";
+	return null;
+}
+
+fn inferScope(name: []const u8, signature: []const u8, symbol_kind: ?[]const u8) ?[]const u8 {
+	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "var ", "let ", "const ", "val ", "mut " })) {
+		return "local";
+	}
+	if (std.mem.indexOf(u8, name, ".") != null or std.mem.indexOf(u8, name, "::") != null) {
+		if (symbol_kind) |kind_value| {
+			if (std.ascii.eqlIgnoreCase(kind_value, "function")) return "method";
+		}
+		return "member";
+	}
+	return "top_level";
+}
+
+fn inferArityFromSignature(name: []const u8, signature: []const u8) ?i32 {
+	if (std.mem.indexOfScalar(u8, signature, '(')) |open_idx| {
+		if (std.mem.indexOfScalarPos(u8, signature, open_idx + 1, ')')) |close_idx| {
+			const params = signature[open_idx + 1 .. close_idx];
+			if (isEmptyParams(params)) return 0;
+			var count: i32 = 1;
+			var paren_depth: i32 = 0;
+			var bracket_depth: i32 = 0;
+			var brace_depth: i32 = 0;
+			var angle_depth: i32 = 0;
+				for (params) |ch| {
+					switch (ch) {
+						'(' => paren_depth += 1,
+						')' => {
+							if (paren_depth > 0) paren_depth -= 1;
+						},
+						'[' => bracket_depth += 1,
+						']' => {
+							if (bracket_depth > 0) bracket_depth -= 1;
+						},
+						'{' => brace_depth += 1,
+						'}' => {
+							if (brace_depth > 0) brace_depth -= 1;
+						},
+						'<' => angle_depth += 1,
+						'>' => {
+							if (angle_depth > 0) angle_depth -= 1;
+						},
+						',' => if (paren_depth == 0 and bracket_depth == 0 and brace_depth == 0 and angle_depth == 0) {
+							count += 1;
+						},
+					else => {},
+				}
+			}
+			return count;
+		}
+	}
+	if (std.mem.lastIndexOfScalar(u8, name, '/')) |slash_idx| {
+		if (slash_idx + 1 < name.len) {
+			return parseIntToken(name[slash_idx + 1 ..]);
+		}
+	}
+	return null;
+}
+
+fn isEmptyParams(params: []const u8) bool {
+	const trimmed = std.mem.trim(u8, params, " \t\r\n");
+	if (trimmed.len == 0) return true;
+	return std.ascii.eqlIgnoreCase(trimmed, "void");
+}
+
+fn parseIntToken(token: []const u8) ?i32 {
+	if (token.len == 0) return null;
+	for (token) |ch| {
+		if (!std.ascii.isDigit(ch)) return null;
+	}
+	return std.fmt.parseInt(i32, token, 10) catch null;
+}
+
+fn hasAnyPrefixIgnoreCase(value: []const u8, prefixes: []const []const u8) bool {
+	for (prefixes) |prefix| {
+		if (hasPrefixIgnoreCase(value, prefix)) return true;
+	}
+	return false;
+}
+
+fn hasPrefixIgnoreCase(value: []const u8, prefix: []const u8) bool {
+	if (value.len < prefix.len) return false;
+	return std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
 }
 
 fn kindAllowed(kind_value: kind.Kind, allowed: []const kind.Kind) bool {
@@ -906,6 +1057,35 @@ test "shouldEmitProgress respects step and completion" {
 	try std.testing.expect(!shouldEmitProgress(3, 10, 2));
 	try std.testing.expect(shouldEmitProgress(4, 10, 2));
 	try std.testing.expect(shouldEmitProgress(10, 10, 5));
+}
+
+test "enrichSymbolMetadata infers kind visibility scope and arity" {
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/main.zig"),
+		.name = try allocator.dupe(u8, "add"),
+		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+
+	try enrichSymbolMetadata(allocator, &symbol);
+
+	try std.testing.expect(symbol.symbol_kind != null);
+	try std.testing.expect(symbol.symbol_visibility != null);
+	try std.testing.expect(symbol.symbol_scope != null);
+	try std.testing.expect(symbol.symbol_arity != null);
+	try std.testing.expectEqualStrings("function", symbol.symbol_kind.?);
+	try std.testing.expectEqualStrings("public", symbol.symbol_visibility.?);
+	try std.testing.expectEqualStrings("top_level", symbol.symbol_scope.?);
+	try std.testing.expectEqual(@as(i32, 2), symbol.symbol_arity.?);
+}
+
+test "inferArityFromSignature supports slash arity fallback" {
+	try std.testing.expectEqual(@as(?i32, 2), inferArityFromSignature("decode/2", "decode/2"));
 }
 
 test "indexAll stores symbols and embeddings" {

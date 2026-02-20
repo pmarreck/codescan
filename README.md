@@ -279,16 +279,24 @@ Optional language-specific weight overrides live in `<root>/.codescan/weights.to
 [default]
 weight_vector = 0.7
 weight_lexical = 0.3
+weight_symbol_kind = 0.0
+weight_symbol_visibility = 0.0
+weight_symbol_scope = 0.0
+weight_symbol_arity = 0.0
 
 [zig]
 weight_vector = 0.55
 weight_lexical = 0.45
+weight_symbol_kind = 0.15
+weight_symbol_visibility = 0.10
 ```
 
 When both are present:
 - explicit CLI/HTTP weights win
 - otherwise `weights.toml` applies
 - otherwise `.codescan/config` global `weight_*` applies
+
+Metadata weights apply when the query includes metadata cues such as `function`, `public`, `top-level`, or `arity 2`.
 
 ## Notes
 

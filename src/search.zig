@@ -58,6 +58,10 @@ pub const Options = struct {
 	fts_mode: FtsMode = .broad,
 	weight_vector: f32 = 0.7,
 	weight_lexical: f32 = 0.3,
+	weight_symbol_kind: f32 = 0.0,
+	weight_symbol_visibility: f32 = 0.0,
+	weight_symbol_scope: f32 = 0.0,
+	weight_symbol_arity: f32 = 0.0,
 	min_score: f32 = 0.0,
 	score_dropoff: f32 = 0.3,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
@@ -224,6 +228,7 @@ pub fn search(
 	}
 	const query_tokens = token_buf[0..query_token_count];
 	const query_intent = inferQueryIntent(query_trimmed, query_tokens);
+	const metadata_query = inferMetadataQuery(query_tokens);
 
 	// Normalize BM25 scores to [0, 1] for FTS candidates.
 	// FTS5 bm25() returns negative values (more negative = better match).
@@ -327,6 +332,8 @@ pub fn search(
 					res.score *= factor;
 				}
 			}
+
+			res.score = applyMetadataBoost(res.score, res.symbol, metadata_query, options);
 		}
 
 	var filtered = std.ArrayListUnmanaged(Result){};
@@ -462,6 +469,7 @@ fn vectorCandidates(
 	const sql = try allocPrintZ(
 		allocator,
 		"SELECT symbols.id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
+		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, "
 		++ "knn.distance "
 		++ "FROM {s} AS knn JOIN symbols ON knn.rowid = symbols.id "
 		++ "WHERE knn.embedding MATCH vec_f32(?1) AND k = ?2 "
@@ -541,6 +549,7 @@ fn likeCandidates(
 	// ?1 = %query% (LIKE pattern), ?2 = query (exact), ?3 = query% (prefix), ?4 = limit
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
+		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, "
 		++ "1e999 AS distance "
 		++ "FROM symbols "
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
@@ -601,6 +610,7 @@ fn commentCandidates(
 
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
+		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, "
 		++ "1e999 AS distance "
 		++ "FROM symbols "
 		++ "WHERE doc_comment IS NOT NULL "
@@ -655,6 +665,7 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
+		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, "
 		++ "1e999 AS distance, "
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
@@ -668,6 +679,7 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
+		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, "
 		++ "1e999 AS distance, "
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
@@ -695,7 +707,7 @@ fn ftsCandidates(
 		const rc = sqlite.sqlite3_step(stmt.?);
 		if (rc == sqlite.SQLITE_ROW) {
 			var res = try readResultRow(allocator, stmt.?);
-			res.bm25 = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt.?, 11)));
+			res.bm25 = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt.?, 15)));
 			try results.append(allocator, res);
 		} else if (rc == sqlite.SQLITE_DONE) {
 			break;
@@ -718,7 +730,11 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 	const name = try dupColumnText(allocator, stmt, 7);
 	const signature = try dupColumnText(allocator, stmt, 8);
 	const doc_comment = try dupColumnTextOptional(allocator, stmt, 9);
-	const distance = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt, 10)));
+	const symbol_kind = try dupColumnTextOptional(allocator, stmt, 10);
+	const symbol_visibility = try dupColumnTextOptional(allocator, stmt, 11);
+	const symbol_scope = try dupColumnTextOptional(allocator, stmt, 12);
+	const symbol_arity = readIntColumnOptional(stmt, 13);
+	const distance = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt, 14)));
 
 	return .{
 		.id = id,
@@ -728,6 +744,10 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 			.name = name,
 			.signature = signature,
 			.doc_comment = doc_comment,
+			.symbol_kind = symbol_kind,
+			.symbol_visibility = symbol_visibility,
+			.symbol_scope = symbol_scope,
+			.symbol_arity = symbol_arity,
 			.start_line = start_line,
 			.end_line = end_line,
 			.start_hash = start_hash,
@@ -745,6 +765,11 @@ fn readHashColumn(stmt: *sqlite.sqlite3_stmt, col: c_int) ?hashline.Hash {
 	const slice = std.mem.span(ptr);
 	if (slice.len < hashline.HASH_LEN) return null;
 	return slice[0..hashline.HASH_LEN].*;
+}
+
+fn readIntColumnOptional(stmt: *sqlite.sqlite3_stmt, col: c_int) ?i32 {
+	if (sqlite.sqlite3_column_type(stmt, col) == sqlite.SQLITE_NULL) return null;
+	return @as(i32, @intCast(sqlite.sqlite3_column_int(stmt, col)));
 }
 
 fn bindText(stmt: *sqlite.sqlite3_stmt, index: c_int, text: []const u8) !void {
@@ -918,6 +943,158 @@ fn isGenericSymbolName(name: []const u8) bool {
 		if (std.ascii.eqlIgnoreCase(name, generic)) return true;
 	}
 	return false;
+}
+
+const MetadataQuery = struct {
+	kind: ?[]const u8 = null,
+	visibility: ?[]const u8 = null,
+	scope: ?[]const u8 = null,
+	arity: ?i32 = null,
+};
+
+fn inferMetadataQuery(tokens: []const []const u8) MetadataQuery {
+	var out: MetadataQuery = .{};
+	var prev_was_arity_cue = false;
+
+	for (tokens) |tok| {
+		if (out.kind == null) out.kind = tokenToKind(tok);
+		if (out.visibility == null) out.visibility = tokenToVisibility(tok);
+		if (out.scope == null) out.scope = tokenToScope(tok);
+
+		if (std.ascii.eqlIgnoreCase(tok, "arity") or
+			std.ascii.eqlIgnoreCase(tok, "args") or
+			std.ascii.eqlIgnoreCase(tok, "arg") or
+			std.ascii.eqlIgnoreCase(tok, "params") or
+			std.ascii.eqlIgnoreCase(tok, "parameters"))
+		{
+			prev_was_arity_cue = true;
+			continue;
+		}
+
+		if (out.arity == null) {
+			if (parseSlashArity(tok)) |arity| {
+				out.arity = arity;
+			} else if (prev_was_arity_cue) {
+				if (parseIntToken(tok)) |arity| out.arity = arity;
+			} else if (hasPrefixIgnoreCase(tok, "arity")) {
+				if (parseIntToken(tok[5..])) |arity| out.arity = arity;
+			}
+		}
+
+		prev_was_arity_cue = false;
+	}
+
+	return out;
+}
+
+fn applyMetadataBoost(base_score: f32, symbol: model.Symbol, query_meta: MetadataQuery, options: Options) f32 {
+	var score = base_score;
+
+	if (query_meta.kind) |expected| {
+		score = applyMetadataFactor(score, symbol.symbol_kind, expected, options.weight_symbol_kind);
+	}
+	if (query_meta.visibility) |expected| {
+		score = applyMetadataFactor(score, symbol.symbol_visibility, expected, options.weight_symbol_visibility);
+	}
+	if (query_meta.scope) |expected| {
+		score = applyMetadataFactor(score, symbol.symbol_scope, expected, options.weight_symbol_scope);
+	}
+	if (query_meta.arity) |expected| {
+		if (options.weight_symbol_arity > 0 and symbol.symbol_arity != null) {
+			if (symbol.symbol_arity.? == expected) {
+				score *= (1.0 + options.weight_symbol_arity);
+			} else {
+				const penalty = @max(@as(f32, 0.05), 1.0 - (options.weight_symbol_arity * 0.5));
+				score *= penalty;
+			}
+		}
+	}
+
+	return score;
+}
+
+fn applyMetadataFactor(score: f32, actual: ?[]const u8, expected: []const u8, weight: f32) f32 {
+	if (weight <= 0 or actual == null) return score;
+	if (std.ascii.eqlIgnoreCase(actual.?, expected)) {
+		return score * (1.0 + weight);
+	}
+	const penalty = @max(@as(f32, 0.05), 1.0 - (weight * 0.5));
+	return score * penalty;
+}
+
+fn tokenToKind(token: []const u8) ?[]const u8 {
+	if (std.ascii.eqlIgnoreCase(token, "function") or
+		std.ascii.eqlIgnoreCase(token, "fn") or
+		std.ascii.eqlIgnoreCase(token, "def") or
+		std.ascii.eqlIgnoreCase(token, "method"))
+		return "function";
+	if (std.ascii.eqlIgnoreCase(token, "class")) return "class";
+	if (std.ascii.eqlIgnoreCase(token, "struct")) return "struct";
+	if (std.ascii.eqlIgnoreCase(token, "enum")) return "enum";
+	if (std.ascii.eqlIgnoreCase(token, "interface")) return "interface";
+	if (std.ascii.eqlIgnoreCase(token, "trait")) return "trait";
+	if (std.ascii.eqlIgnoreCase(token, "module") or
+		std.ascii.eqlIgnoreCase(token, "namespace") or
+		std.ascii.eqlIgnoreCase(token, "ns"))
+		return "module";
+	if (std.ascii.eqlIgnoreCase(token, "variable") or
+		std.ascii.eqlIgnoreCase(token, "var") or
+		std.ascii.eqlIgnoreCase(token, "const") or
+		std.ascii.eqlIgnoreCase(token, "let") or
+		std.ascii.eqlIgnoreCase(token, "field"))
+		return "variable";
+	if (std.ascii.eqlIgnoreCase(token, "type")) return "type";
+	if (std.ascii.eqlIgnoreCase(token, "macro")) return "macro";
+	return null;
+}
+
+fn tokenToVisibility(token: []const u8) ?[]const u8 {
+	if (std.ascii.eqlIgnoreCase(token, "public") or
+		std.ascii.eqlIgnoreCase(token, "pub") or
+		std.ascii.eqlIgnoreCase(token, "export") or
+		std.ascii.eqlIgnoreCase(token, "exported"))
+		return "public";
+	if (std.ascii.eqlIgnoreCase(token, "private") or
+		std.ascii.eqlIgnoreCase(token, "priv"))
+		return "private";
+	if (std.ascii.eqlIgnoreCase(token, "protected")) return "protected";
+	if (std.ascii.eqlIgnoreCase(token, "internal")) return "internal";
+	return null;
+}
+
+fn tokenToScope(token: []const u8) ?[]const u8 {
+	if (std.ascii.eqlIgnoreCase(token, "top_level") or
+		std.ascii.eqlIgnoreCase(token, "top-level") or
+		std.ascii.eqlIgnoreCase(token, "toplevel") or
+		std.ascii.eqlIgnoreCase(token, "global"))
+		return "top_level";
+	if (std.ascii.eqlIgnoreCase(token, "local")) return "local";
+	if (std.ascii.eqlIgnoreCase(token, "member")) return "member";
+	if (std.ascii.eqlIgnoreCase(token, "method")) return "method";
+	return null;
+}
+
+fn parseIntToken(token: []const u8) ?i32 {
+	if (token.len == 0) return null;
+	for (token) |ch| {
+		if (!std.ascii.isDigit(ch)) return null;
+	}
+	return std.fmt.parseInt(i32, token, 10) catch null;
+}
+
+fn parseSlashArity(token: []const u8) ?i32 {
+	if (token.len < 2) return null;
+	if (token[0] == '/') {
+		return parseIntToken(token[1..]);
+	}
+	const slash_idx = std.mem.lastIndexOfScalar(u8, token, '/') orelse return null;
+	if (slash_idx + 1 >= token.len) return null;
+	return parseIntToken(token[slash_idx + 1 ..]);
+}
+
+fn hasPrefixIgnoreCase(value: []const u8, prefix: []const u8) bool {
+	if (value.len < prefix.len) return false;
+	return std.ascii.eqlIgnoreCase(value[0..prefix.len], prefix);
 }
 
 /// Determine how the query relates to the symbol name.
@@ -1322,7 +1499,7 @@ test "search vector mode returns nearest symbol" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1367,7 +1544,7 @@ test "search comments_only uses comment embeddings" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym_comment = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1413,7 +1590,7 @@ test "search filters by min_score" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1459,7 +1636,7 @@ test "search filters by language and extension" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym_code = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1513,7 +1690,7 @@ test "search hybrid weights influence ranking" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1568,7 +1745,7 @@ test "search hybrid normalizes weights" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1603,7 +1780,7 @@ test "search lexical uses fts when available" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1647,7 +1824,7 @@ test "search hybrid returns no duplicate symbol IDs" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Insert a symbol that will match BOTH vector (nearby) and lexical (name match)
 	var sym = model.Symbol{
@@ -1689,7 +1866,7 @@ test "UNIQUE constraint prevents duplicate symbols in DB" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1728,7 +1905,7 @@ test "search omits low-relevance results below score dropoff" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// sym1: very close to query vector
 	var sym1 = model.Symbol{
@@ -1986,7 +2163,7 @@ test "hybrid scoring: lexical-only result gets no vector credit" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// sym_vector: close to query vector but name doesn't match query text
 	var sym_vector = model.Symbol{
@@ -2056,7 +2233,7 @@ test "hybrid natural-language query prefers meaningful symbols over local generi
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Local/generic binding: very close vector match, but low semantic value.
 	var sym_local = model.Symbol{
@@ -2104,7 +2281,7 @@ test "hybrid natural-language query demotes local bindings even with partial lex
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym_local = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -2155,7 +2332,7 @@ test "hybrid ranking applies diversity penalty to duplicate symbol signatures" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Three near-identical local symbols that would otherwise crowd top results.
 	var dup_a = model.Symbol{
@@ -2263,7 +2440,7 @@ test "RRF hybrid fusion produces rank-based compromise ordering" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// sym_a: close to query vector, poor name match for "search"
 	var sym_a = model.Symbol{
@@ -2370,7 +2547,7 @@ test "lexical coverage: single FTS result does not normalize to 1.0 for multi-to
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Only symbol in DB: matches "parse" but not "json" or "config"
 	var sym = model.Symbol{
@@ -2457,6 +2634,114 @@ test "inferQueryIntent classifies symbol lookup query deterministically" {
 	try std.testing.expectEqual(QueryIntent.lookup, intent);
 }
 
+test "inferMetadataQuery parses kind visibility scope and arity cues" {
+	const tokens = [_][]const u8{ "find", "public", "function", "arity", "2", "top-level" };
+	const meta = inferMetadataQuery(tokens[0..]);
+	try std.testing.expect(meta.kind != null);
+	try std.testing.expect(meta.visibility != null);
+	try std.testing.expect(meta.scope != null);
+	try std.testing.expect(meta.arity != null);
+	try std.testing.expectEqualStrings("function", meta.kind.?);
+	try std.testing.expectEqualStrings("public", meta.visibility.?);
+	try std.testing.expectEqualStrings("top_level", meta.scope.?);
+	try std.testing.expectEqual(@as(i32, 2), meta.arity.?);
+}
+
+test "search result retrieval includes symbol metadata columns" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/meta.zig"),
+		.name = try allocator.dupe(u8, "add"),
+		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "function"),
+		.symbol_visibility = try allocator.dupe(u8, "public"),
+		.symbol_scope = try allocator.dupe(u8, "top_level"),
+		.symbol_arity = 2,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+
+	const id = try storage.insertSymbol(db, sym);
+	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 0.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "add", .{
+		.top_n = 1,
+		.mode = .vector,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 1), results.len);
+	try std.testing.expect(results[0].symbol.symbol_kind != null);
+	try std.testing.expect(results[0].symbol.symbol_visibility != null);
+	try std.testing.expect(results[0].symbol.symbol_scope != null);
+	try std.testing.expect(results[0].symbol.symbol_arity != null);
+	try std.testing.expectEqualStrings("function", results[0].symbol.symbol_kind.?);
+	try std.testing.expectEqualStrings("public", results[0].symbol.symbol_visibility.?);
+	try std.testing.expectEqualStrings("top_level", results[0].symbol.symbol_scope.?);
+	try std.testing.expectEqual(@as(i32, 2), results[0].symbol.symbol_arity.?);
+}
+
+test "metadata weights prioritize matching symbol metadata for query cues" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym_good = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/public_fn.zig"),
+		.name = try allocator.dupe(u8, "target"),
+		.signature = try allocator.dupe(u8, "symbol target"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "function"),
+		.symbol_visibility = try allocator.dupe(u8, "public"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_good.deinit(allocator);
+
+	var sym_bad = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/private_var.zig"),
+		.name = try allocator.dupe(u8, "target"),
+		.signature = try allocator.dupe(u8, "symbol target"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "variable"),
+		.symbol_visibility = try allocator.dupe(u8, "private"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_bad.deinit(allocator);
+
+	const id_good = try storage.insertSymbol(db, sym_good);
+	const id_bad = try storage.insertSymbol(db, sym_bad);
+	try storage.insertEmbedding(db, allocator, id_good, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_bad, &[_]f32{ 0.0, 0.0 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "public function target", .{
+		.top_n = 2,
+		.mode = .vector,
+		.weight_symbol_kind = 1.0,
+		.weight_symbol_visibility = 1.0,
+		.score_dropoff = 0,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expectEqual(@as(usize, 2), results.len);
+	try std.testing.expectEqualStrings("src/public_fn.zig", results[0].symbol.file_path);
+}
+
 test "buildFtsQuery single word has no operator" {
 	const allocator = std.testing.allocator;
 	const result = try buildFtsQuery(allocator, "hash");
@@ -2469,7 +2754,7 @@ test "ftsCandidates captures bm25 scores" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -2500,7 +2785,7 @@ test "bm25 normalization produces values in 0-1 range" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Insert two symbols with different relevance to "hash"
 	var sym1 = model.Symbol{
@@ -2554,7 +2839,7 @@ test "bm25 column weights rank name match above doc_comment match" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// sym_name: "hash" appears in the symbol name (weight 10)
 	var sym_name = model.Symbol{
@@ -2606,7 +2891,7 @@ test "likeCandidates orders exact name > prefix > substring > signature-only" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// sym_sig: "init" appears only in the signature (priority 3)
 	var sym_sig = model.Symbol{

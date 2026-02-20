@@ -228,7 +228,7 @@ pub fn main() !void {
 			// Open DB and init schema
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
-			try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
 
 			// Try Ollama; fall back to lexical-only if unavailable
 			var http_client = ollama.StdHttpTransport.init(allocator);
@@ -416,7 +416,7 @@ pub fn main() !void {
 				};
 
 				// Need to init schema before indexing into a fresh DB
-				try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+				_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
 
 				_ = try performFullIndex(
 					allocator,
@@ -472,6 +472,10 @@ pub fn main() !void {
 					.fts_mode = settings.fts_mode,
 					.weight_vector = effective_weights.weight_vector,
 					.weight_lexical = effective_weights.weight_lexical,
+					.weight_symbol_kind = effective_weights.weight_symbol_kind,
+					.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
+					.weight_symbol_scope = effective_weights.weight_symbol_scope,
+					.weight_symbol_arity = effective_weights.weight_symbol_arity,
 					.min_score = settings.min_score,
 					.allowed_langs = search_filters.langs.items,
 					.allowed_exts = search_filters.exts.items,
@@ -3141,7 +3145,7 @@ test "buildSearchFilters defaults to primary language" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -3205,7 +3209,7 @@ test "buildSearchFilters includes docs when requested" {
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),

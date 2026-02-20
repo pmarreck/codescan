@@ -45,7 +45,7 @@
 - Optional language-specific search weights:
   - Path: `<root>/.codescan/weights.toml`
   - Sections: `[default]` and canonical language sections (for example `[zig]`, `[elixir]`)
-  - Keys per section: `weight_vector`, `weight_lexical`
+  - Keys per section: `weight_vector`, `weight_lexical`, `weight_symbol_kind`, `weight_symbol_visibility`, `weight_symbol_scope`, `weight_symbol_arity`
   - Precedence: explicit CLI/HTTP request weights > `weights.toml` > `.codescan/config` global weights
 - Ignore globs:
   - Global: `ignore=**/.git/**, **/.codescan/**`
@@ -96,6 +96,7 @@
 - A warning is emitted when a file exceeds `max_file_size / 4`.
 - Default DB location is `.codescan/index.sqlite3` under the target root.
 - `min_score` filters low-scoring results after ranking (default `0.0`).
+- Indexed symbols are enriched with inferred metadata when extractors do not provide it (`symbol_kind`, `symbol_visibility`, `symbol_scope`, `symbol_arity`).
 - Interactive index/update shows a compact per-file progress counter on stderr (TTY only).
 - Search defaults to the primary code language by file count unless filters are supplied.
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.

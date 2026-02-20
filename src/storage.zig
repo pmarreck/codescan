@@ -12,6 +12,11 @@ pub const sqlite = c;
 pub const Db = *c.sqlite3;
 const current_schema_version = 3;
 
+pub const InitSchemaResult = struct {
+	did_schema_upgrade: bool = false,
+	previous_schema_version: ?u32 = null,
+};
+
 pub const Schema = struct {
 	embedding_dim: usize,
 };
@@ -75,7 +80,26 @@ fn deleteFileIfExists(path: []const u8) !void {
 	};
 }
 
-pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
+pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSchemaResult {
+	const had_meta_table = try tableExists(db, allocator, "meta");
+	const had_symbols_table = try tableExists(db, allocator, "symbols");
+	const previous_schema_version = if (had_meta_table) try schemaVersion(db, allocator) else null;
+	const had_symbol_kind = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_kind") else false;
+	const had_symbol_visibility = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_visibility") else false;
+	const had_symbol_scope = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_scope") else false;
+	const had_symbol_arity = if (had_symbols_table) try columnExists(db, allocator, "symbols", "symbol_arity") else false;
+
+	var did_schema_upgrade = false;
+	if (previous_schema_version) |version| {
+		if (version < current_schema_version) did_schema_upgrade = true;
+	} else if (had_symbols_table) {
+		// Existing symbol rows with no declared version are treated as legacy schema.
+		did_schema_upgrade = true;
+	}
+	if (had_symbols_table and (!had_symbol_kind or !had_symbol_visibility or !had_symbol_scope or !had_symbol_arity)) {
+		did_schema_upgrade = true;
+	}
+
 	const meta_sql: [:0]const u8 = "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
 	const symbols_sql: [:0]const u8 =
 		"CREATE TABLE IF NOT EXISTS symbols (" ++
@@ -153,6 +177,34 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const fts_meta = try allocator.dupeZ(u8, fts_sql);
 	defer allocator.free(fts_meta);
 	try exec(db, fts_meta);
+
+	return .{
+		.did_schema_upgrade = did_schema_upgrade,
+		.previous_schema_version = previous_schema_version,
+	};
+}
+
+pub fn schemaVersion(db: Db, allocator: std.mem.Allocator) !?u32 {
+	if (!try tableExists(db, allocator, "meta")) return null;
+	const version_text = try metaValue(db, allocator, "schema_version");
+	defer if (version_text) |value| allocator.free(value);
+	if (version_text == null) return null;
+	return std.fmt.parseInt(u32, version_text.?, 10) catch null;
+}
+
+pub fn isSchemaUpgradeRequired(db: Db, allocator: std.mem.Allocator) !bool {
+	const has_symbols = try tableExists(db, allocator, "symbols");
+	if (!has_symbols) return false;
+
+	const version = try schemaVersion(db, allocator);
+	if (version == null) return true;
+	if (version.? < current_schema_version) return true;
+
+	if (!try columnExists(db, allocator, "symbols", "symbol_kind")) return true;
+	if (!try columnExists(db, allocator, "symbols", "symbol_visibility")) return true;
+	if (!try columnExists(db, allocator, "symbols", "symbol_scope")) return true;
+	if (!try columnExists(db, allocator, "symbols", "symbol_arity")) return true;
+	return false;
 }
 
 pub fn resetIndex(db: Db) !void {
@@ -774,7 +826,7 @@ test "initSchema creates tables" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 1024 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 1024 });
 
 	try std.testing.expect(try tableExists(db, allocator, "meta"));
 	try std.testing.expect(try tableExists(db, allocator, "symbols"));
@@ -800,7 +852,7 @@ test "initSchema migrates v2 symbols table by adding metadata columns" {
 	try exec(db, "INSERT INTO meta(key, value) VALUES ('schema_version', '2');\x00");
 	try exec(db, "INSERT INTO symbols(id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment) VALUES (1, 'zig', 'src/main.zig', 1, NULL, 1, NULL, 'main', 'pub fn main() void', NULL);\x00");
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_kind"));
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_visibility"));
@@ -824,7 +876,7 @@ test "openFileWithVecRecreate replaces existing file" {
 
 	const db = try openFileWithVecRecreate(allocator, abs_path);
 	defer _ = c.sqlite3_close(db);
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var file = try std.fs.openFileAbsolute(abs_path, .{});
 	defer file.close();
@@ -840,7 +892,7 @@ test "insertSymbol and insertEmbedding" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var symbol = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -866,7 +918,7 @@ test "insertSymbol stores symbol metadata columns when provided" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var symbol = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -909,7 +961,7 @@ test "indexed_files tracking" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Initially no tracked files
 	const initial = try getIndexedFileMtime(db, "src/main.zig");
@@ -946,7 +998,7 @@ test "deleteSymbolsByFile removes symbols and embeddings" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// Insert symbols for two files
 	var sym1 = model.Symbol{
@@ -990,7 +1042,7 @@ test "primaryLanguage selects most common language" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1042,7 +1094,7 @@ test "languageStats returns grouped data" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym1 = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),
@@ -1102,7 +1154,7 @@ test "lastIndexedFile returns most recent entry" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	// No files yet
 	const empty = try lastIndexedFile(db, allocator);
@@ -1124,7 +1176,7 @@ test "isIndexPopulated returns false on empty DB" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 	try std.testing.expect(!isIndexPopulated(db));
 }
 
@@ -1133,7 +1185,7 @@ test "isIndexPopulated returns true with data" {
 	const db = try openMemoryWithVec(allocator);
 	defer _ = c.sqlite3_close(db);
 
-	try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 	var sym = model.Symbol{
 		.language = try allocator.dupe(u8, "zig"),

@@ -45,7 +45,7 @@ pub fn main() !void {
 	const db = try storage.openFileWithVec(allocator, path);
 	defer storage.close(db);
 
-	try storage.initSchema(allocator, db, .{ .embedding_dim = embedding_dim });
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = embedding_dim });
 	try storage.resetIndex(db);
 
 	var sym_code = model.Symbol{

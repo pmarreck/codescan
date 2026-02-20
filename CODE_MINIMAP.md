@@ -28,7 +28,7 @@
 - src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, and HTTP server
 - src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
-- src/weights.zig: parser/loader for `.codescan/weights.toml` (`[default]` + per-language weights) and runtime weight resolution with explicit-override precedence + tests
+- src/weights.zig: parser/loader for `.codescan/weights.toml` (`[default]` + per-language weights for vector/lexical + metadata boosts) and runtime weight resolution with explicit-override precedence + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), schema v3 migration support (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity` columns auto-added for older DBs), index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed + model availability check (`/api/tags`) + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests
@@ -67,9 +67,9 @@
 - src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
 - src/scan.zig: file walker + ignore matching (built-in + global + per-language globs, `.gitignore` parity via git allowlist at repo roots, hard ignore for `.git`/`.jj`, node_modules opt-in) + shebang detection for extensionless bash/lua scripts + tests
-- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), embedding truncation (sentence/line-aware), TTY progress counter, DEBUG progress logs, large-file warnings + tests
-- src/search.zig: vector/lexical/hybrid search + weighted_sum/RRF fusion + lower default score dropoff threshold (0.3) + FTS candidate generation + intent-aware natural-language scoring (lookup/navigation/conceptual), local/generic symbol demotion, duplicate signature diversity penalty + tests
-- src/output.zig: human/json output formatting for results + tests
+- src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), heuristic symbol metadata enrichment (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity`), embedding truncation (sentence/line-aware), TTY progress counter, DEBUG progress logs, large-file warnings + tests
+- src/search.zig: vector/lexical/hybrid search + weighted_sum/RRF fusion + lower default score dropoff threshold (0.3) + FTS candidate generation + intent-aware natural-language scoring (lookup/navigation/conceptual), local/generic symbol demotion, duplicate signature diversity penalty, metadata-aware scoring boosts from query cues + tests
+- src/output.zig: human/json output formatting for results (includes symbol metadata fields in JSON payload) + tests
 - src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests
 - src/filters.zig: shared parsing + filter logic for ext/lang/type and primary language defaults
 - src/filter.zig: glob-to-regex compiler + PCRE2 matcher for ignore patterns

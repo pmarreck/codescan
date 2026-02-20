@@ -281,7 +281,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				.base_url = settings.ollama_url,
 				.model = settings.ollama_model,
 			};
-			storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
+				_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
 			_ = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
 				.embedding_dim = settings.embedding_dim,
 				.batch_size = settings.batch_size,
@@ -334,6 +334,10 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.fts_mode = settings.search_fts_mode,
 			.weight_vector = effective_weights.weight_vector,
 			.weight_lexical = effective_weights.weight_lexical,
+			.weight_symbol_kind = effective_weights.weight_symbol_kind,
+			.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
+			.weight_symbol_scope = effective_weights.weight_symbol_scope,
+			.weight_symbol_arity = effective_weights.weight_symbol_arity,
 			.min_score = settings.search_min_score,
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,
@@ -965,7 +969,7 @@ test "MCP search applies language filters from settings" {
 	{
 		const db = try storage.openFileWithVec(allocator, db_path);
 		defer storage.close(db);
-		try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
 		// Insert a Zig symbol
 		var sym_zig = model.Symbol{
