@@ -160,8 +160,19 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 	const result = callTool(allocator, name, args, settings) catch |err| {
 		const msg = switch (err) {
 			error.OutOfMemory => "out of memory",
+			error.ToolFailed => "tool execution failed (check stderr for details)",
+			error.MissingArgument => "missing required argument",
+			error.UnknownTool => "unknown tool",
 			else => "tool execution failed",
 		};
+		// Log the actual error to stderr for debugging (skip during tests)
+		if (!@import("builtin").is_test) {
+			var sb: [4096]u8 = undefined;
+			var sw = std.fs.File.stderr().writer(&sb);
+			const se = &sw.interface;
+			se.print("MCP tool '{s}' failed: {s} (error: {})\n", .{ name, msg, err }) catch {};
+			se.flush() catch {};
+		}
 		return formatError(allocator, id, -32603, msg);
 	};
 	defer allocator.free(result);
@@ -630,7 +641,7 @@ test "handleToolsCall returns error for unknown tool" {
 	defer allocator.free(response);
 
 	try std.testing.expect(std.mem.indexOf(u8, response, "\"error\"") != null);
-	try std.testing.expect(std.mem.indexOf(u8, response, "tool execution failed") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "unknown tool") != null);
 }
 
 test "writeMessage strips embedded newlines" {
