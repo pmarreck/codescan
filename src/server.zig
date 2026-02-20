@@ -50,7 +50,14 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	try ensureParentDir(settings.db_path);
 	const db = try storage.openFileWithVec(allocator, settings.db_path);
 	defer storage.close(db);
-	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+	const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+	if (schema_result.did_schema_upgrade) {
+		var sb: [4096]u8 = undefined;
+		var sw = std.fs.File.stderr().writer(&sb);
+		const se = &sw.interface;
+		_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+		_ = se.flush() catch {};
+	}
 
 	var http_client = ollama.StdHttpTransport.init(allocator);
 	defer http_client.deinit();

@@ -320,7 +320,14 @@ pub fn main() !void {
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
-			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			if (schema_result.did_schema_upgrade) {
+				var sb: [4096]u8 = undefined;
+				var sw = std.fs.File.stderr().writer(&sb);
+				const se = &sw.interface;
+				_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+				_ = se.flush() catch {};
+			}
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
@@ -388,12 +395,16 @@ pub fn main() !void {
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
 
-			// Always run schema init/migration so older DBs get new columns
-			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
-
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
+
+			// Always run schema init/migration so older DBs get new columns
+			const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+			if (schema_result.did_schema_upgrade) {
+				_ = stderr.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+			}
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
@@ -740,7 +751,14 @@ pub fn main() !void {
 					// Open existing DB or create new one (don't destroy existing index)
 					const db = try storage.openFileWithVec(allocator, settings.db_path);
 					defer storage.close(db);
-					_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+					const schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+					if (schema_result.did_schema_upgrade) {
+						var sb: [4096]u8 = undefined;
+						var sw = std.fs.File.stderr().writer(&sb);
+						const se = &sw.interface;
+						_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+						_ = se.flush() catch {};
+					}
 
 					var http_client = ollama.StdHttpTransport.init(allocator);
 					defer http_client.deinit();

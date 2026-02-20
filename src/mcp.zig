@@ -266,7 +266,14 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		try ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVec(allocator, settings.db_path) catch return error.ToolFailed;
 		defer storage.close(db);
-		_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
+		const schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
+		if (schema_result.did_schema_upgrade) {
+			var sb: [4096]u8 = undefined;
+			var sw = std.fs.File.stderr().writer(&sb);
+			const se = &sw.interface;
+			_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended.\n", .{}) catch {};
+			_ = se.flush() catch {};
+		}
 
 		var http_client = ollama.StdHttpTransport.init(allocator);
 		defer http_client.deinit();
