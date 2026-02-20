@@ -14,6 +14,19 @@ const kind = @import("kind.zig");
 const model = @import("model.zig");
 const weights = @import("weights.zig");
 
+/// Log an error to stderr (skipped during tests) and return error.ToolFailed.
+/// Use at catch sites to make MCP errors visible instead of silently swallowing them.
+fn toolError(comptime fmt: []const u8, args: anytype) error{ToolFailed} {
+	if (!@import("builtin").is_test) {
+		var sb: [4096]u8 = undefined;
+		var sw = std.fs.File.stderr().writer(&sb);
+		const se = &sw.interface;
+		se.print(fmt, args) catch {};
+		se.flush() catch {};
+	}
+	return error.ToolFailed;
+}
+
 pub const Settings = struct {
 	root_path: []const u8,
 	db_path: []const u8,
@@ -221,63 +234,75 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 	errdefer out.deinit();
 
 	if (std.mem.eql(u8, name, "symbols")) {
-		var files = getArgStringArray(allocator, args, "file") catch return error.ToolFailed;
+		var files = getArgStringArray(allocator, args, "file") catch |err|
+			return toolError("MCP symbols: failed to parse file args: {}\n", .{err});
 		defer {
 			for (files.items) |f| allocator.free(f);
 			files.deinit(allocator);
 		}
 		const pattern = getArg(args, "pattern");
 		const include_body = getArgBool(args, "include_body");
-		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path) catch return error.ToolFailed;
+		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path) catch |err|
+			return toolError("MCP symbols: runSymbols failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "replace_symbol")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runReplaceSymbol(allocator, file, pattern, body, &out.writer) catch return error.ToolFailed;
+		main.runReplaceSymbol(allocator, file, pattern, body, &out.writer) catch |err|
+			return toolError("MCP replace_symbol: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_after")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runInsertAfter(allocator, file, pattern, body, &out.writer) catch return error.ToolFailed;
+		main.runInsertAfter(allocator, file, pattern, body, &out.writer) catch |err|
+			return toolError("MCP insert_after: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_before")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runInsertBefore(allocator, file, pattern, body, &out.writer) catch return error.ToolFailed;
+		main.runInsertBefore(allocator, file, pattern, body, &out.writer) catch |err|
+			return toolError("MCP insert_before: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_lines")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const from = getArg(args, "from") orelse return error.MissingArgument;
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runReplaceLines(allocator, file, from, to, body, &out.writer) catch return error.ToolFailed;
+		main.runReplaceLines(allocator, file, from, to, body, &out.writer) catch |err|
+			return toolError("MCP replace_lines: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_at")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const ref = getArg(args, "ref") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runInsertAt(allocator, file, ref, body, &out.writer) catch return error.ToolFailed;
+		main.runInsertAt(allocator, file, ref, body, &out.writer) catch |err|
+			return toolError("MCP insert_at: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_content")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const needle = getArg(args, "needle") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		const regex = getArgBool(args, "regex");
 		const all = getArgBool(args, "all");
-		main.runReplaceContent(allocator, file, needle, regex, all, body, &out.writer) catch return error.ToolFailed;
+		main.runReplaceContent(allocator, file, needle, regex, all, body, &out.writer) catch |err|
+			return toolError("MCP replace_content: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "references")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
-		main.runReferences(allocator, file, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch return error.ToolFailed;
+		main.runReferences(allocator, file, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch |err|
+			return toolError("MCP references: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "rename")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const dry_run = getArgBool(args, "dry_run");
-		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch return error.ToolFailed;
+		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch |err|
+			return toolError("MCP rename: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "search") or std.mem.eql(u8, name, "query")) {
 		const query = getArg(args, "query") orelse return error.MissingArgument;
 		try ensureParentDir(settings.db_path);
-		const db = storage.openFileWithVec(allocator, settings.db_path) catch return error.ToolFailed;
+		const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
+			return toolError("MCP search: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 		defer storage.close(db);
-		const schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
+		const schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch |err|
+			return toolError("MCP search: schema init failed: {}\n", .{err});
 		if (schema_result.did_schema_upgrade) {
 			var sb: [4096]u8 = undefined;
 			var sw = std.fs.File.stderr().writer(&sb);
@@ -312,7 +337,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 					.include_node_modules = settings.include_node_modules,
 				},
 				.show_progress = false,
-			}) catch return error.ToolFailed;
+			}) catch |err|
+				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ settings.root_path, err });
 		} else {
 			if (effective_search_mode != .lexical) {
 				ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch {
@@ -334,7 +360,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.primary_lang = settings.primary_lang,
 			.include_docs = settings.include_docs,
 			.docs_only = settings.docs_only,
-		}) catch return error.ToolFailed;
+		}) catch |err|
+			return toolError("MCP search: failed to build search filters: {}\n", .{err});
 		defer search_filters.deinit(allocator);
 		const effective_weights = weights.resolveSearchWeights(
 			settings.search_weights,
@@ -360,7 +387,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,
 			.comments_only = settings.comments_only,
-		}) catch return error.ToolFailed;
+		}) catch |err|
+			return toolError("MCP search: search failed for query '{s}': {}\n", .{ query, err });
 		defer search.freeResults(allocator, sr.results);
 
 		output.writeResults(allocator, &out.writer, .json, sr.results, .{
@@ -368,10 +396,12 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.use_color = false,
 			.total_relevant = sr.total_relevant,
 			.top_n = settings.search_top_n,
-		}) catch return error.ToolFailed;
+		}) catch |err|
+			return toolError("MCP search: failed to write results: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "index")) {
 		try ensureParentDir(settings.db_path);
-		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch return error.ToolFailed;
+		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch |err|
+			return toolError("MCP index: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 		defer storage.close(db);
 
 		var http_client = ollama.StdHttpTransport.init(allocator);
@@ -399,7 +429,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				.include_node_modules = settings.include_node_modules,
 			},
 			.show_progress = false,
-		}) catch return error.ToolFailed;
+		}) catch |err|
+			return toolError("MCP index: indexAll failed for root '{s}': {}\n", .{ settings.root_path, err });
 
 		try out.writer.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}", .{ stats.files, stats.symbols });
 	} else if (std.mem.eql(u8, name, "config")) {
@@ -411,7 +442,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			settings.embedding_dim,
 		});
 	} else if (std.mem.eql(u8, name, "status")) {
-		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch return error.ToolFailed;
+		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch |err|
+			return toolError("MCP status: failed: {}\n", .{err});
 	} else {
 		return error.UnknownTool;
 	}
