@@ -50,6 +50,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	try ensureParentDir(settings.db_path);
 	const db = try storage.openFileWithVec(allocator, settings.db_path);
 	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
 
 	var http_client = ollama.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
@@ -653,7 +654,7 @@ fn handleRequest(
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runRename(allocator, file_path, pattern, new_name, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, &out.writer) catch {
+		main.runRename(allocator, file_path, pattern, new_name, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch {
 			try req.respond("{\"error\":\"rename failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};

@@ -2886,6 +2886,62 @@ test "bm25 column weights rank name match above doc_comment match" {
 	try std.testing.expectEqualStrings("hash", sr.results[0].symbol.name);
 }
 
+test "search works against v2 schema DB after initSchema migration" {
+	// Simulates opening an existing DB created before schema v3 (no symbol_kind etc.)
+	// initSchema must add the missing columns so search SQL can prepare.
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	// Create v2-style schema WITHOUT symbol_kind/visibility/scope/arity columns
+	const v2_meta: [:0]const u8 = "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);\x00";
+	const v2_symbols: [:0]const u8 =
+		"CREATE TABLE symbols (" ++
+		"id INTEGER PRIMARY KEY, " ++
+		"lang TEXT NOT NULL, " ++
+		"file_path TEXT NOT NULL, " ++
+		"start_line INTEGER NOT NULL, " ++
+		"start_hash TEXT, " ++
+		"end_line INTEGER NOT NULL, " ++
+		"end_hash TEXT, " ++
+		"symbol_name TEXT NOT NULL, " ++
+		"signature TEXT, " ++
+		"doc_comment TEXT" ++
+		");\x00";
+	const v2_unique: [:0]const u8 = "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols (file_path, start_line, end_line, symbol_name);\x00";
+	const v2_vec: [:0]const u8 = "CREATE VIRTUAL TABLE embeddings USING vec0(embedding float[2]);\x00";
+
+	_ = sqlite.sqlite3_exec(db, v2_meta, null, null, null);
+	_ = sqlite.sqlite3_exec(db, v2_symbols, null, null, null);
+	_ = sqlite.sqlite3_exec(db, v2_unique, null, null, null);
+	_ = sqlite.sqlite3_exec(db, v2_vec, null, null, null);
+
+	// Insert a symbol directly via SQL (v2 schema — no metadata columns)
+	const insert_sym: [:0]const u8 =
+		"INSERT INTO symbols (lang, file_path, start_line, end_line, symbol_name, signature) " ++
+		"VALUES ('zig', 'src/test.zig', 1, 10, 'compress', 'pub fn compress(data: []const u8) []u8');\x00";
+	_ = sqlite.sqlite3_exec(db, insert_sym, null, null, null);
+	const insert_emb: [:0]const u8 = "INSERT INTO embeddings (rowid, embedding) VALUES (1, X'0000000000000000');\x00";
+	_ = sqlite.sqlite3_exec(db, insert_emb, null, null, null);
+
+	// Run initSchema to migrate v2 → v3 (adds metadata columns).
+	// This is what main.zig now does unconditionally before search.
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Search should succeed after migration
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "compress", .{
+		.top_n = 5,
+		.mode = .vector,
+		.score_dropoff = 0,
+		.min_score = 0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expect(sr.results.len >= 1);
+	try std.testing.expectEqualStrings("compress", sr.results[0].symbol.name);
+}
+
 test "likeCandidates orders exact name > prefix > substring > signature-only" {
 	const allocator = std.testing.allocator;
 	const db = try storage.openMemoryWithVec(allocator);

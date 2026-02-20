@@ -320,6 +320,7 @@ pub fn main() !void {
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
+			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
 
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
@@ -387,6 +388,9 @@ pub fn main() !void {
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
 
+			// Always run schema init/migration so older DBs get new columns
+			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
+
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
@@ -414,9 +418,6 @@ pub fn main() !void {
 					.base_url = settings.ollama_url,
 					.model = settings.ollama_model,
 				};
-
-				// Need to init schema before indexing into a fresh DB
-				_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
 
 				_ = try performFullIndex(
 					allocator,
@@ -561,7 +562,7 @@ pub fn main() !void {
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runReplaceSymbol(allocator, file_path, pattern, input_text, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
 		.insert_after => {
@@ -572,7 +573,7 @@ pub fn main() !void {
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runInsertAfter(allocator, file_path, pattern, input_text, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
 		.insert_before => {
@@ -583,7 +584,7 @@ pub fn main() !void {
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runInsertBefore(allocator, file_path, pattern, input_text, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
 		.replace_lines => {
@@ -596,7 +597,7 @@ pub fn main() !void {
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runReplaceLines(allocator, file_path, from_ref, to_ref, input_text, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
 		.insert_at => {
@@ -607,7 +608,7 @@ pub fn main() !void {
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runInsertAt(allocator, file_path, ref, input_text, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
 		.replace_content => {
@@ -619,7 +620,7 @@ pub fn main() !void {
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
 		.references => {
@@ -637,7 +638,7 @@ pub fn main() !void {
 				exitWithError("error: rename requires --file <path>\n");
 			const new_name = parsed.rename_to orelse
 				exitWithError("error: rename requires --to <new_name>\n");
-			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, settings.lsp_overrides, stdout);
+			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, settings.lsp_overrides, settings.embedding_dim, stdout);
 			try stdout.flush();
 		},
 		.mcp_serve => {
@@ -739,6 +740,7 @@ pub fn main() !void {
 					// Open existing DB or create new one (don't destroy existing index)
 					const db = try storage.openFileWithVec(allocator, settings.db_path);
 					defer storage.close(db);
+					_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim });
 
 					var http_client = ollama.StdHttpTransport.init(allocator);
 					defer http_client.deinit();
@@ -1361,7 +1363,7 @@ fn ensureWeightsWithDefaults(path: []const u8) !void {
 /// Opens the DB, calls indexer.reindexFile, and closes the DB.
 /// If no index exists or any step fails, the edit is still successful —
 /// the background watcher will eventually catch up.
-fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: []const u8, file_path: []const u8, registry: plugin.Registry) void {
+fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: []const u8, file_path: []const u8, registry: plugin.Registry, embedding_dim: usize) void {
 	var stderr_buf: [4096]u8 = undefined;
 	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 	const stderr = &stderr_writer.interface;
@@ -1372,6 +1374,11 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 		return;
 	};
 	defer storage.close(db);
+	_ = storage.initSchema(allocator, db, .{ .embedding_dim = embedding_dim }) catch |err| {
+		_ = stderr.print("warning: reindex skipped (schema migration failed): {}\n", .{err}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
 	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch |err| {
 		_ = stderr.print("warning: reindex skipped (could not resolve root): {}\n", .{err}) catch {};
 		_ = stderr.flush() catch {};
@@ -2418,6 +2425,7 @@ pub fn runRename(
 	root_path: []const u8,
 	registry: plugin.Registry,
 	lsp_overrides: []const config.LspOverride,
+	embedding_dim: usize,
 	writer: *std.Io.Writer,
 ) !void {
 	const loc = try locateSymbol(allocator, file_path, pattern) orelse {
@@ -2562,7 +2570,7 @@ pub fn runRename(
 				try writer.print("warning: failed to apply edits to {s}: {}\n", .{ path, err });
 				continue;
 			};
-			tryReindexFile(allocator, db_path, root_path, path, registry);
+			tryReindexFile(allocator, db_path, root_path, path, registry, embedding_dim);
 		}
 	}
 }

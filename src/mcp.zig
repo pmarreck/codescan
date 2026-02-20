@@ -260,12 +260,13 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const dry_run = getArgBool(args, "dry_run");
-		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, &out.writer) catch return error.ToolFailed;
+		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch return error.ToolFailed;
 	} else if (std.mem.eql(u8, name, "search") or std.mem.eql(u8, name, "query")) {
 		const query = getArg(args, "query") orelse return error.MissingArgument;
 		try ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVec(allocator, settings.db_path) catch return error.ToolFailed;
 		defer storage.close(db);
+		_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
 
 		var http_client = ollama.StdHttpTransport.init(allocator);
 		defer http_client.deinit();
@@ -281,7 +282,6 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				.base_url = settings.ollama_url,
 				.model = settings.ollama_model,
 			};
-				_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim }) catch return error.ToolFailed;
 			_ = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
 				.embedding_dim = settings.embedding_dim,
 				.batch_size = settings.batch_size,
