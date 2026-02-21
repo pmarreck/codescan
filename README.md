@@ -173,6 +173,25 @@ Add to your MCP settings:
 }
 ```
 
+### Codex CLI / Codex Desktop configuration
+
+Use an absolute binary path so startup does not depend on `PATH`:
+
+```bash
+codex mcp remove codescan
+codex mcp add codescan -- /path/to/codescan mcp-serve --root /path/to/your/project
+codex mcp get codescan
+```
+
+If you prefer `command = "codescan"` in `~/.codex/config.toml`, ensure the app's
+launch environment includes the directory that contains `codescan`.
+
+### MCP troubleshooting
+
+- `MCP startup failed: No such file or directory (os error 2)` usually means the MCP command could not be resolved.
+- Fix: configure an absolute binary path (recommended), or fix `PATH` for the app launch environment.
+- Verify with `codex mcp list` / `codex mcp get codescan`.
+
 ### Available MCP tools
 
 | Tool | Description |
