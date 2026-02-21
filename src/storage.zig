@@ -143,8 +143,12 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 		}
 	}
 
-	// Stamp current version and metadata (after mismatch check)
-	try setMetaVersion(allocator, db, schema);
+	// Always stamp schema version, but preserve embedding metadata when the
+	// existing populated index does not match current embedding settings.
+	try setSchemaVersion(allocator, db);
+	if (!(result.embedding_model_mismatch or result.embedding_dim_mismatch)) {
+		try setEmbeddingMeta(allocator, db, schema);
+	}
 
 	// Initialize FTS (idempotent)
 	const fts_enabled = tryInitFts(allocator, db);
@@ -216,15 +220,18 @@ fn migrateV2ToV3(allocator: std.mem.Allocator, db: Db) !void {
 	try ensureColumnExists(db, allocator, "symbols", "symbol_arity", "INTEGER");
 }
 
-/// Write the current schema version, embedding dim, and embedding model to the meta table.
-fn setMetaVersion(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
+/// Write the current schema version to meta.
+fn setSchemaVersion(allocator: std.mem.Allocator, db: Db) !void {
 	const version_sql = try allocPrintZ(allocator,
 		"INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '{d}');",
 		.{current_schema_version},
 	);
 	defer allocator.free(version_sql);
 	try exec(db, version_sql);
+}
 
+/// Write embedding dim/model metadata to meta.
+fn setEmbeddingMeta(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
 	const dim_sql = try allocPrintZ(allocator,
 		"INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_dim', '{d}');",
 		.{schema.embedding_dim},
@@ -1379,6 +1386,41 @@ test "initSchema detects embedding dim mismatch" {
 	try std.testing.expect(!result.embedding_model_mismatch);
 	try std.testing.expect(result.embedding_dim_mismatch);
 	try std.testing.expectEqual(@as(?usize, 2), result.stored_embedding_dim);
+}
+
+test "initSchema mismatch does not overwrite stored embedding metadata" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+	_ = try insertSymbol(db, sym);
+
+	var result = try initSchema(allocator, db, .{ .embedding_dim = 4, .embedding_model = "nomic-embed-text" });
+	defer result.deinit(allocator);
+	try std.testing.expect(result.embedding_model_mismatch);
+	try std.testing.expect(result.embedding_dim_mismatch);
+
+	const stored_dim = try metaValue(db, allocator, "embedding_dim");
+	defer if (stored_dim) |v| allocator.free(v);
+	try std.testing.expect(stored_dim != null);
+	try std.testing.expectEqualStrings("2", stored_dim.?);
+
+	const stored_model = try metaValue(db, allocator, "embedding_model");
+	defer if (stored_model) |v| allocator.free(v);
+	try std.testing.expect(stored_model != null);
+	try std.testing.expectEqualStrings("bge-large", stored_model.?);
 }
 
 test "initSchema no mismatch on fresh DB" {

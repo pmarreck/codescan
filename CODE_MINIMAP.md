@@ -29,7 +29,7 @@
 - src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/weights.zig: parser/loader for `.codescan/weights.toml` (`[default]` + per-language weights for vector/lexical + metadata boosts) and runtime weight resolution with explicit-override precedence + tests
-- src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), schema v3 migration support (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity` columns auto-added for older DBs), index reset, insert symbol/embedding, tests
+- src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), schema v3 migration support (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity` columns auto-added for older DBs), mismatch detection for embedding model/dim without clobbering stored metadata, index reset, insert symbol/embedding, tests
 - src/ollama.zig: Ollama embed + model availability check (`/api/tags`) + HTTP transport + tests
 - src/embedding.zig: embedder interface + Ollama adapter + tests
 - src/model.zig: core data model for extracted symbols (includes optional metadata fields: `symbol_kind`, `symbol_visibility`, `symbol_scope`, `symbol_arity`)
@@ -74,7 +74,7 @@
 - src/filters.zig: shared parsing + filter logic for ext/lang/type and primary language defaults
 - src/filter.zig: glob-to-regex compiler + PCRE2 matcher for ignore patterns
 - src/pcre2.zig: minimal PCRE2 wrapper used by filter
-- src/mk_test_db.zig: generate tiny sqlite index for CLI/HTTP tests
+- src/mk_test_db.zig: generate tiny sqlite index for CLI/HTTP tests (default embedding dim 1024; override via `--embedding-dim`)
 - deps/tree-sitter: vendored tree-sitter runtime (C library + headers)
 - deps/tree-sitter-c: vendored tree-sitter C grammar (parser.c)
 - deps/tree-sitter-typescript: vendored tree-sitter TypeScript/TSX grammar

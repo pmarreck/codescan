@@ -11,7 +11,7 @@ pub fn main() !void {
 	defer std.process.argsFree(allocator, args);
 
 	var db_path: ?[]const u8 = null;
-	var embedding_dim: usize = 2;
+	var embedding_dim: usize = 1024;
 
 	var i: usize = 1;
 	while (i < args.len) {
