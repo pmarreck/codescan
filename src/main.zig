@@ -2823,113 +2823,32 @@ fn writeJsonString(s: []const u8, writer: *std.Io.Writer) !void {
 }
 
 const usage =
-	\\codescan [command] [options]
-	\\
-	\\Commands:
-	\\  init [--force]           Initialize codescan for this project
-	\\  config [show|edit]       Show or edit project config
-	\\  index                    Index codebase
-	\\  update                   Incremental index (only new/modified/deleted)
-	\\  watch                    Watch for changes and re-index continuously
-	\\    watch start            Start watcher as background daemon
-	\\    watch stop             Stop background watcher
-	\\    watch restart          Restart background watcher
-	\\    watch status           Show watcher status
-	\\    watch pid              Print watcher PID
-	\\  search <query>           Search indexed codebase (query is an alias)
-	\\  symbols [pattern]         List or find symbols (across files, or all if no --file)
-	\\                           find-symbol is an alias for symbols
-	\\  replace-symbol <pattern> Replace a symbol's body (from stdin)
-	\\  insert-after <pattern>   Insert code after a symbol (from stdin)
-	\\  insert-before <pattern>  Insert code before a symbol (from stdin)
-	\\  replace-lines            Replace a range of lines (from stdin)
-	\\  insert-at <line:hash>    Insert code after a line (from stdin)
-	\\  replace-content <needle> Replace matching content (from stdin)
-	\\  references <pattern>    Find all references via LSP
-	\\  rename <pattern>        Rename symbol across codebase via LSP
-	\\  serve                    Start HTTP API server
-	\\  mcp-serve                Start MCP (Model Context Protocol) server
-	\\  status                   Show index and watcher status
-	\\  clean, clear              Stop watcher and remove all codescan data (.codescan/)
-	\\                           Requires confirmation (interactive prompt or --confirm)
-	\\
-	\\If no command is specified, codescan assumes `search`.
-	\\
-	\\Name path patterns (for symbols, replace-symbol, insert-*):
-	\\  init                     Match any symbol named 'init'
-	\\  MyStruct/init            Match suffix of name path
-	\\  /MyStruct/init           Match exact full name path
-	\\
-	\\Hashlines:
-	\\  Every line reference includes a 3-char chain hash (e.g. 45:r2p).
-	\\  Each hash depends on the line's content AND the previous line's hash,
-	\\  so any edit above cascades through all subsequent hashes. This means
-	\\  a stale reference (from a prior read) will fail with a mismatch error
-	\\  rather than silently editing the wrong line. Re-read the file to get
-	\\  current hashes before retrying.
-	\\
-	\\  Hashline format:  <line>:<hash>  (e.g. 45:r2p)
-	\\  Hash alphabet:    0-9 a-z (base-36, 46656 values, no case ambiguity)
-	\\  Used by:          replace-lines --from/--to, insert-at, symbols output
-	\\
-	\\Editing options:
-	\\  --file <path>            Target file (repeatable for symbols; editing/LSP commands)
-	\\  --from <line:hash>       Start of line range (replace-lines)
-	\\  --to <line:hash>         End of line range (replace-lines) / new name (rename)
-	\\  --include-body           Include source body with hashlines
-	\\  --regex                  Treat needle as PCRE2 regex (replace-content)
-	\\  --all                    Replace all occurrences (replace-content)
-	\\
-	\\Supported languages:
-	\\  Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir,
-	\\    Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang,
-	\\    OCaml, Swift, LLVM IR, Clojure, Assembly
-	\\  LSP (references, rename): all of the above
-	\\  Indexing/search: any text file (Markdown, logs, plain text, etc.)
-	\\  Extensionless scripts with shebangs (#!/usr/bin/env bash, etc.)
-	\\  are auto-detected for bash, lua, node/deno/bun, and ruby.
-	\\
-	\\LSP commands (references, rename):
-	\\  Lazy-start a language server for the file's language.
-	\\  Requires the appropriate server on PATH (zls, rust-analyzer,
-	\\  clangd, typescript-language-server, gopls, elixir-ls, etc.)
-	\\
-	\\Options:
-	\\  --root <path>                   Root path (default: nearest .codescan ancestor or .)
-	\\  --db <path>                     DB path (default .codescan/index.sqlite3)
-	\\  --ollama-url <url>              Ollama base URL (default http://localhost:11434)
-	\\  --ollama-model <name>           Embedding model (default bge-large or $OLLAMA_MODEL)
-	\\  --embedding-dim <n>             Embedding dimension (default 1024)
-	\\  --batch <n>                     Embedding batch size (default 16)
-	\\  --max-file-size <n>             Max file size bytes (default 5242880)
-	\\  --top <n>                       Search top N (default 5)
-	\\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
-	\\  --fusion <weighted_sum|rrf>     Hybrid fusion method (default weighted_sum)
-	\\  --rrf-k <n>                     RRF smoothing constant (default 60)
-	\\  --fts-mode <broad|balanced|strict>  FTS query mode (default broad)
-	\\  --weight-vector <n>             Hybrid weight for vector score (default 0.7)
-	\\  --weight-lexical <n>            Hybrid weight for lexical score (default 0.3)
-	\\  --min-score <n>                 Minimum score threshold (default 0.0)
-	\\  --ext <csv>                     Restrict to extensions (comma-separated)
-	\\  --type <csv>                    Restrict to types: code,doc,text,log
-	\\  --lang <csv>                    Restrict search to languages:
-	\\                                    zig, c, typescript, rust, elixir, bash, lua,
-	\\                                    nix, nim, lean, idris, haskell, go, ruby,
-	\\                                    erlang, ocaml, swift, llvm, clojure, assembly,
-	\\                                    markdown, text, log
-    \\  --scope <code|docs|comments|all> Unified search scope selector
-	\\  --include-docs                  Include markdown/README when defaulting to primary language
-	\\  --docs, --only-docs             Only return markdown/README results
-	\\  --comments, --only-comments     Only return doc-comment results
-	\\  --include-node-modules          Include node_modules during indexing
-	\\  --http-host <host>              HTTP host (default 127.0.0.1)
-	\\  --http-port <port>              HTTP port (default 8123)
-	\\  --show-comments, --verbose      Show doc comments in human output (default: hidden)
-	\\  --interval <ms>                 Watch poll interval milliseconds (default 2000)
-	\\  --json                          JSON output for CLI search/index
-	\\  --confirm, -y                   Skip confirmation prompt (for clean/clear)
-	\\  -h, --help                      Show help
-	\\
+    \\codescan [command] [options]
+    \\
+    \\Commands:
+    \\  search <query>            Semantic + lexical code search (default command)
+    \\  symbols [pattern]         List or find symbols (functions, structs, etc.)
+    \\  replace-symbol <pattern>  Replace a symbol's body (stdin)
+    \\  insert-after <pattern>    Insert code after a symbol (stdin)
+    \\  insert-before <pattern>   Insert code before a symbol (stdin)
+    \\  replace-lines             Replace a hashline-validated line range (stdin)
+    \\  insert-at <line:hash>     Insert code after a hashline (stdin)
+    \\  replace-content <needle>  Find & replace text or regex (stdin)
+    \\  references <pattern>      Find all references via LSP
+    \\  rename <pattern>          Rename symbol across codebase via LSP
+    \\  index                     Full re-index (drops & recreates DB)
+    \\  update                    Incremental index (new/modified/deleted only)
+    \\  watch [start|stop|status] Watch for changes and re-index continuously
+    \\  config [show|edit]        Show or edit project config
+    \\  serve                     Start HTTP API server
+    \\  mcp-serve                 Start MCP server
+    \\  status                    Show index & watcher status
+    \\  clean                     Remove all codescan data
+    \\
+    \\Use 'codescan help <command>' for details on any command.
+    \\Topics: hashlines, name-paths, languages, lsp
+    \\Common: --root <path>  --json  --top <n>  --file <path>  -h/--help
+    \\
 ;
 
 const usage_search =
@@ -3011,6 +2930,323 @@ const usage_config =
     \\Examples:
     \\  codescan config
     \\  codescan config edit
+    \\
+;
+
+const usage_symbols =
+    \\Usage: codescan symbols [pattern] [options]
+    \\
+    \\List or find symbols (functions, structs, types, etc.).
+    \\Alias: find-symbol
+    \\
+    \\Options:
+    \\  --file <path>            Restrict to file (repeatable)
+    \\  --include-body           Include source body with hashlines
+    \\  --json                   JSON output
+    \\
+    \\Name path patterns:
+    \\  init                     Match any symbol named 'init'
+    \\  MyStruct/init            Match suffix of name path
+    \\  /MyStruct/init           Match exact full name path
+    \\  See 'codescan help name-paths' for details.
+    \\
+    \\Examples:
+    \\  codescan symbols --file src/main.zig
+    \\  codescan symbols "parse" --file src/cli.zig --include-body
+    \\  codescan symbols "Config/init"
+    \\
+;
+
+const usage_replace_symbol =
+    \\Usage: codescan replace-symbol <pattern> [options] < new_body.txt
+    \\
+    \\Replace a symbol's entire body with content from stdin.
+    \\The pattern uses name path matching (see 'codescan help name-paths').
+    \\
+    \\Options:
+    \\  --file <path>            Target file (required)
+    \\
+    \\Examples:
+    \\  echo 'fn init() void {}' | codescan replace-symbol "init" --file src/main.zig
+    \\  codescan replace-symbol "Config/validate" --file src/config.zig < new_body.zig
+    \\
+;
+
+const usage_insert_after =
+    \\Usage: codescan insert-after <pattern> [options] < code.txt
+    \\
+    \\Insert code from stdin after a matched symbol.
+    \\The pattern uses name path matching (see 'codescan help name-paths').
+    \\
+    \\Options:
+    \\  --file <path>            Target file (required)
+    \\
+    \\Examples:
+    \\  echo 'fn newFn() void {}' | codescan insert-after "init" --file src/main.zig
+    \\
+;
+
+const usage_insert_before =
+    \\Usage: codescan insert-before <pattern> [options] < code.txt
+    \\
+    \\Insert code from stdin before a matched symbol.
+    \\The pattern uses name path matching (see 'codescan help name-paths').
+    \\
+    \\Options:
+    \\  --file <path>            Target file (required)
+    \\
+    \\Examples:
+    \\  echo '// section header' | codescan insert-before "init" --file src/main.zig
+    \\
+;
+
+const usage_replace_lines =
+    \\Usage: codescan replace-lines --file <path> --from <line:hash> --to <line:hash> < new.txt
+    \\
+    \\Replace a range of lines with content from stdin.
+    \\Lines are validated by hashlines to prevent stale edits.
+    \\See 'codescan help hashlines' for hash format details.
+    \\
+    \\Options:
+    \\  --file <path>            Target file (required)
+    \\  --from <line:hash>       Start of range, inclusive (e.g. 10:r2p)
+    \\  --to <line:hash>         End of range, inclusive (e.g. 25:f4x)
+    \\
+    \\Examples:
+    \\  echo 'replacement' | codescan replace-lines --file src/main.zig --from 10:r2p --to 15:f4x
+    \\
+;
+
+const usage_insert_at =
+    \\Usage: codescan insert-at <line:hash> --file <path> < code.txt
+    \\
+    \\Insert code from stdin after the specified hashline.
+    \\See 'codescan help hashlines' for hash format details.
+    \\
+    \\Options:
+    \\  --file <path>            Target file (required)
+    \\
+    \\Examples:
+    \\  echo 'new line' | codescan insert-at 42:r2p --file src/main.zig
+    \\
+;
+
+const usage_replace_content =
+    \\Usage: codescan replace-content <needle> --file <path> [options] < replacement.txt
+    \\
+    \\Find and replace text in a file. Replacement comes from stdin.
+    \\
+    \\Options:
+    \\  --file <path>            Target file (required)
+    \\  --regex                  Treat needle as PCRE2 regex
+    \\  --all                    Replace all occurrences (default: first only)
+    \\
+    \\Examples:
+    \\  echo 'new_name' | codescan replace-content 'old_name' --file src/main.zig --all
+    \\  echo 'v2' | codescan replace-content 'v[0-9]+' --file config.toml --regex
+    \\
+;
+
+const usage_references =
+    \\Usage: codescan references <pattern> --file <path>
+    \\
+    \\Find all references to a symbol via LSP.
+    \\Requires the appropriate language server on PATH.
+    \\See 'codescan help lsp' for server requirements.
+    \\
+    \\Options:
+    \\  --file <path>            File containing the symbol (required)
+    \\  --json                   JSON output
+    \\
+    \\Examples:
+    \\  codescan references "parseArgs" --file src/cli.zig
+    \\  codescan references "Config" --file src/config.zig --json
+    \\
+;
+
+const usage_rename =
+    \\Usage: codescan rename <pattern> --file <path> --to <new_name> [options]
+    \\
+    \\Rename a symbol across the codebase via LSP.
+    \\Requires the appropriate language server on PATH.
+    \\See 'codescan help lsp' for server requirements.
+    \\
+    \\Options:
+    \\  --file <path>            File containing the symbol (required)
+    \\  --to <new_name>          New name for the symbol (required)
+    \\  --dry-run, -n            Preview changes without applying
+    \\  --json                   JSON output
+    \\
+    \\Examples:
+    \\  codescan rename "oldFunc" --file src/main.zig --to "newFunc"
+    \\  codescan rename "Config" --file src/lib.zig --to "Settings" --dry-run
+    \\
+;
+
+const usage_watch =
+    \\Usage: codescan watch [subcommand] [options]
+    \\
+    \\Watch for file changes and re-index continuously.
+    \\
+    \\Subcommands:
+    \\  (none)                   Run watcher in foreground
+    \\  start                    Start watcher as background daemon
+    \\  stop                     Stop background watcher
+    \\  restart                  Restart background watcher
+    \\  status                   Show watcher status
+    \\  pid                      Print watcher PID
+    \\
+    \\Options:
+    \\  --interval <ms>          Poll interval in milliseconds (default 2000)
+    \\
+    \\Examples:
+    \\  codescan watch
+    \\  codescan watch start --interval 5000
+    \\  codescan watch stop
+    \\
+;
+
+const usage_serve =
+    \\Usage: codescan serve [options]
+    \\
+    \\Start the HTTP API server for programmatic access.
+    \\
+    \\Options:
+    \\  --http-host <host>       Bind address (default 127.0.0.1)
+    \\  --http-port <port>       Port number (default 8123)
+    \\
+    \\Examples:
+    \\  codescan serve
+    \\  codescan serve --http-port 9000
+    \\
+;
+
+const usage_mcp_serve =
+    \\Usage: codescan mcp-serve
+    \\
+    \\Start an MCP (Model Context Protocol) server on stdin/stdout.
+    \\Used by AI editors and tools that support MCP.
+    \\
+;
+
+const usage_status =
+    \\Usage: codescan status
+    \\
+    \\Show index and watcher status: file count, index age,
+    \\watcher state (running/stopped), and database location.
+    \\
+;
+
+const usage_clean =
+    \\Usage: codescan clean [options]
+    \\
+    \\Stop the watcher and remove all codescan data (.codescan/).
+    \\Alias: clear
+    \\
+    \\Options:
+    \\  --confirm, -y            Skip interactive confirmation prompt
+    \\
+    \\Examples:
+    \\  codescan clean
+    \\  codescan clean -y
+    \\
+;
+
+const usage_init =
+    \\Usage: codescan init [options]
+    \\
+    \\Initialize codescan for this project (creates .codescan/).
+    \\
+    \\Options:
+    \\  --force, -f              Re-initialize even if already initialized
+    \\
+    \\Examples:
+    \\  codescan init
+    \\  codescan init --force
+    \\
+;
+
+const usage_hashlines =
+    \\Hashlines
+    \\
+    \\Every line reference includes a 3-char chain hash (e.g. 45:r2p).
+    \\Each hash depends on the line's content AND the previous line's hash,
+    \\so any edit above cascades through all subsequent hashes. This means
+    \\a stale reference (from a prior read) will fail with a mismatch error
+    \\rather than silently editing the wrong line. Re-read the file to get
+    \\current hashes before retrying.
+    \\
+    \\Format:     <line>:<hash>  (e.g. 45:r2p)
+    \\Alphabet:   0-9 a-z (base-36, 46656 values, no case ambiguity)
+    \\Used by:    replace-lines --from/--to, insert-at, symbols --include-body
+    \\
+    \\Commands using hashlines:
+    \\  replace-lines            --from and --to specify the line range
+    \\  insert-at                positional arg specifies insertion point
+    \\  symbols --include-body   output includes hashlines for each line
+    \\
+;
+
+const usage_name_paths =
+    \\Name Path Patterns
+    \\
+    \\Symbol commands (symbols, replace-symbol, insert-after, insert-before)
+    \\accept a name path pattern to match symbols.
+    \\
+    \\Matching rules:
+    \\  init                     Match any symbol named 'init'
+    \\  MyStruct/init            Match suffix of name path (partial path)
+    \\  /MyStruct/init           Match exact full name path (leading /)
+    \\
+    \\The name path is the hierarchical identifier of a symbol, using /
+    \\as the separator. For example, a method 'init' inside struct 'Config'
+    \\has the name path 'Config/init'.
+    \\
+    \\Use 'codescan symbols --file <path>' to see available name paths.
+    \\
+;
+
+const usage_languages =
+    \\Supported Languages
+    \\
+    \\Symbol extraction and LSP:
+    \\  Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua,
+    \\  Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml,
+    \\  Swift, LLVM IR, Clojure, Assembly
+    \\
+    \\Indexing and search:
+    \\  Any text file (Markdown, logs, plain text, etc.)
+    \\
+    \\Auto-detection:
+    \\  Extensionless scripts with shebangs (#!/usr/bin/env bash, etc.)
+    \\  are auto-detected for bash, lua, node/deno/bun, and ruby.
+    \\
+    \\Language filter values (--lang):
+    \\  zig, c, typescript, rust, elixir, bash, lua, nix, nim, lean,
+    \\  idris, haskell, go, ruby, erlang, ocaml, swift, llvm, clojure,
+    \\  assembly, markdown, text, log
+    \\
+;
+
+const usage_lsp =
+    \\LSP Integration
+    \\
+    \\The 'references' and 'rename' commands use Language Server Protocol.
+    \\Codescan lazy-starts a language server for the file's language.
+    \\
+    \\Required servers (must be on PATH):
+    \\  Zig          zls
+    \\  C/C++        clangd
+    \\  TypeScript   typescript-language-server
+    \\  Rust         rust-analyzer
+    \\  Go           gopls
+    \\  Elixir       elixir-ls
+    \\  Haskell      haskell-language-server
+    \\  OCaml        ocamllsp
+    \\  Lua          lua-language-server
+    \\  Nix          nil
+    \\
+    \\If the server is not found, the command will error with instructions.
     \\
 ;
 
@@ -3554,6 +3790,25 @@ fn usageForTopic(topic: []const u8) []const u8 {
     if (std.mem.eql(u8, topic, "index")) return usage_index;
     if (std.mem.eql(u8, topic, "update")) return usage_update;
     if (std.mem.eql(u8, topic, "config")) return usage_config;
+    if (std.mem.eql(u8, topic, "symbols") or std.mem.eql(u8, topic, "find-symbol")) return usage_symbols;
+    if (std.mem.eql(u8, topic, "replace-symbol")) return usage_replace_symbol;
+    if (std.mem.eql(u8, topic, "insert-after")) return usage_insert_after;
+    if (std.mem.eql(u8, topic, "insert-before")) return usage_insert_before;
+    if (std.mem.eql(u8, topic, "replace-lines")) return usage_replace_lines;
+    if (std.mem.eql(u8, topic, "insert-at")) return usage_insert_at;
+    if (std.mem.eql(u8, topic, "replace-content")) return usage_replace_content;
+    if (std.mem.eql(u8, topic, "references")) return usage_references;
+    if (std.mem.eql(u8, topic, "rename")) return usage_rename;
+    if (std.mem.eql(u8, topic, "watch")) return usage_watch;
+    if (std.mem.eql(u8, topic, "serve")) return usage_serve;
+    if (std.mem.eql(u8, topic, "mcp-serve")) return usage_mcp_serve;
+    if (std.mem.eql(u8, topic, "status")) return usage_status;
+    if (std.mem.eql(u8, topic, "clean") or std.mem.eql(u8, topic, "clear")) return usage_clean;
+    if (std.mem.eql(u8, topic, "init")) return usage_init;
+    if (std.mem.eql(u8, topic, "hashlines")) return usage_hashlines;
+    if (std.mem.eql(u8, topic, "name-paths")) return usage_name_paths;
+    if (std.mem.eql(u8, topic, "languages")) return usage_languages;
+    if (std.mem.eql(u8, topic, "lsp")) return usage_lsp;
     return usage;
 }
 
