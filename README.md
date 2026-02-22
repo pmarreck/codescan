@@ -66,39 +66,49 @@ nix develop -c ./tests/integration/test-integration
 
 ```bash
 # show or edit project config
-./zig-out/bin/codescan config
-./zig-out/bin/codescan config edit
+codescan config
+codescan config edit
 
 # ReleaseFast builds are self-contained; no `nix develop` prefix needed to run.
 # index
-./zig-out/bin/codescan index --root <path>
+codescan index --root <path>
 
 # update (full reindex)
-./zig-out/bin/codescan update --root <path>
+codescan update --root <path>
 
 # search
-./zig-out/bin/codescan search "hash functions" --root <path> --min-score 0.2
+codescan search "hash functions" --root <path> --min-score 0.2
 # default verb is search
-./zig-out/bin/codescan "hash functions" --root <path>
+codescan "hash functions" --root <path>
 # show doc comments in human output
-./zig-out/bin/codescan search "hash functions" --root <path> --show-comments
+codescan search "hash functions" --root <path> --show-comments
 # comment-only search (doc comments only)
-./zig-out/bin/codescan search "hash functions" --root <path> --comments
+codescan search "hash functions" --root <path> --comments
 # include markdown/README when using default search scope
-./zig-out/bin/codescan search "design doc" --include-docs
+codescan search "design doc" --include-docs
 # only markdown/README results
-./zig-out/bin/codescan search "design doc" --docs
+codescan search "design doc" --docs
+# unified scope selector
+codescan search "design doc" --scope docs
+codescan search "hash functions" --scope comments
 # restrict by extension/type/language
-./zig-out/bin/codescan search "checksum" --ext md,zig
-./zig-out/bin/codescan search "checksum" --type code,doc
-./zig-out/bin/codescan search "checksum" --lang zig
+codescan search "checksum" --ext md,zig
+codescan search "checksum" --type code,doc
+codescan search "checksum" --lang zig
 
 # index node_modules too
-./zig-out/bin/codescan index --include-node-modules
+codescan index --include-node-modules
 
 # show index and watcher status
-./zig-out/bin/codescan status
-./zig-out/bin/codescan status --json
+codescan status
+codescan status --json
+
+# focused command help
+codescan help search
+codescan search --help
+
+# stdin JSON request mode (auto-routed to CLI args, always emits JSON)
+printf '{"action":"search","query":"checksum","mode":"lexical","db":".codescan/index.sqlite3"}\n' | codescan --json
 ```
 
 If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
@@ -108,6 +118,7 @@ Search defaults to the primary code language by file count unless a filter is su
 Multi-word queries use OR semantics in lexical/hybrid search — results matching any term surface, with BM25 ranking results matching all terms higher.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
+`--scope <code|docs|comments|all>` is a unified alias for common filter combinations.
 Index/update defaults to code + docs unless `--type`/`index_type` is set.
 Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `node_modules/` (opt-in), `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/` (see PROJECT_STATE for full list).
 
@@ -118,7 +129,7 @@ Set `DEBUG=1` to emit verbose indexing progress to stderr.
 ## Run (HTTP)
 
 ```bash
-./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123
+codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123
 ```
 
 Endpoints:

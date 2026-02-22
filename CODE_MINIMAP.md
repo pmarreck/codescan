@@ -10,7 +10,7 @@
 - README.md: usage, build, and configuration overview
 - LICENSE: MIT license
 - tests/integration/test-integration: end-to-end integration suite (requires Ollama + fixtures)
-- tests/cli/test-cli: CLI black-box test suite (uses mk_test_db fixture)
+- tests/cli/test-cli: CLI black-box test suite (uses mk_test_db fixture; covers docs/comments/scope filters, command-specific help, and stdin JSON request mode)
 - tests/http/test-http: HTTP API black-box test suite (uses mk_test_db fixture)
 - tests/unit/test-unit: Zig unit-test runner (wraps `zig build test` in nix dev shell)
 - fixtures/manifest.toml: pinned fixture repos for integration tests
@@ -25,8 +25,8 @@
 - build.zig: Zig build script for CLI + unit tests
 - test: master test runner script (unit/cli/http/integration)
 - PROJECT_STATE.md: working notes for future contributors/LLMs (build/run/config details)
-- src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, and HTTP server
-- src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, hybrid weights) + tests
+- src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, command-specific help topics, stdin JSON request envelope parsing (JSON->CLI args), and HTTP server
+- src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, unified `--scope`, and hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
 - src/weights.zig: parser/loader for `.codescan/weights.toml` (`[default]` + per-language weights for vector/lexical + metadata boosts) and runtime weight resolution with explicit-override precedence + tests
 - src/storage.zig: sqlite + sqlite-vec schema init (static vec init, optional FTS5), schema v3 migration support (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity` columns auto-added for older DBs), mismatch detection for embedding model/dim without clobbering stored metadata, index reset, insert symbol/embedding, tests
@@ -70,7 +70,7 @@
 - src/indexer.zig: indexing pipeline (scan -> extract -> embed -> store), heuristic symbol metadata enrichment (`symbol_kind`/`symbol_visibility`/`symbol_scope`/`symbol_arity`), embedding truncation (sentence/line-aware), TTY progress counter, DEBUG progress logs, large-file warnings + tests
 - src/search.zig: vector/lexical/hybrid search + weighted_sum/RRF fusion + lower default score dropoff threshold (0.3) + FTS candidate generation + intent-aware natural-language scoring (lookup/navigation/conceptual), local/generic symbol demotion, duplicate signature diversity penalty, metadata-aware scoring boosts from query cues + tests
 - src/output.zig: human/json output formatting for results (includes symbol metadata fields in JSON payload) + tests
-- src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request + tests
+- src/server.zig: HTTP server with /health, /search, /index endpoints; search weights in request; startup no longer blocks on Ollama model preflight (health/status become available immediately) + tests
 - src/filters.zig: shared parsing + filter logic for ext/lang/type and primary language defaults
 - src/filter.zig: glob-to-regex compiler + PCRE2 matcher for ignore patterns
 - src/pcre2.zig: minimal PCRE2 wrapper used by filter

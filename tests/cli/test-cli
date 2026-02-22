@@ -66,6 +66,13 @@ main() {
 	names=$(search_names "checksum" --only-docs)
 	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "only-docs missing docs"
 
+	names=$(search_names "checksum" --scope docs)
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' || fail "scope=docs missing docs"
+	printf '%s\n' "$names" | rg -q '^checksum_fn$' && fail "scope=docs included code"
+
+	names=$(search_names "checksum" --scope code)
+	printf '%s\n' "$names" | rg -q '^Checksum Docs$' && fail "scope=code included docs"
+
 	names=$(search_names "checksum" --comments --lang zig)
 	printf '%s\n' "$names" | rg -q '^hash_bytes$' || fail "comments-only missing commented symbol"
 	printf '%s\n' "$names" | rg -q '^checksum_fn$' && fail "comments-only included non-commented symbol"
@@ -81,6 +88,27 @@ main() {
 	count=$(printf '%s' "$out" | jq '.results | length')
 	[ "$count" -eq 0 ] || fail "expected no results for missing query"
 	printf '%s' "$err" | rg -q 're-?index' || fail "missing reindex suggestion on empty results"
+
+	capture "$BIN" help search
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "help search failed"
+	fi
+	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "help search did not print focused usage"
+
+	capture "$BIN" search --help
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "search --help failed"
+	fi
+	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "search --help did not print focused usage"
+
+	capture bash -lc "printf '{\"action\":\"search\",\"query\":\"checksum\",\"mode\":\"lexical\",\"db\":\"$DB\"}\n' | '$BIN' --json"
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "stdin json search failed"
+	fi
+	printf '%s' "$out" | jq -r '.results[].name' | rg -q '^checksum_fn$' || fail "stdin json did not return expected result"
 
 	printf '%s\n' "cli ok"
 }

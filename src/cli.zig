@@ -70,6 +70,7 @@ pub const Seen = struct {
 	ext_filter: bool = false,
 	type_filter: bool = false,
 	lang_filter: bool = false,
+    scope: bool = false,
 	force: bool = false,
 	dry_run: bool = false,
 	confirm: bool = false,
@@ -80,6 +81,7 @@ pub const Parsed = struct {
 	config_action: ConfigAction,
 	assumed_search: bool,
 	query_owned: bool,
+    help_topic: ?[]const u8,
 	output: OutputFormat,
 	show_comments: bool,
 	include_docs: bool,
@@ -140,6 +142,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.config_action = .show,
 		.assumed_search = false,
 		.query_owned = false,
+        .help_topic = null,
 		.output = .human,
 		.show_comments = false,
 		.include_docs = false,
@@ -194,29 +197,41 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	}
 
 	const cmd = args[i];
+    var help_topic_default: ?[]const u8 = null;
 	if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
 		parsed.command = .help;
+        i += 1;
+        if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+            parsed.help_topic = args[i];
+        }
 		return parsed;
 	} else if (std.mem.eql(u8, cmd, "config")) {
 		parsed.command = .config;
+        help_topic_default = "config";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "init")) {
 		parsed.command = .init;
+        help_topic_default = "init";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "index")) {
 		parsed.command = .index;
+        help_topic_default = "index";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "update")) {
 		parsed.command = .update;
+        help_topic_default = "update";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "search") or std.mem.eql(u8, cmd, "query")) {
 		parsed.command = .search;
+        help_topic_default = "search";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "serve")) {
 		parsed.command = .serve;
+        help_topic_default = "serve";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "symbols") or std.mem.eql(u8, cmd, "find-symbol")) {
 		parsed.command = .symbols;
+        help_topic_default = "symbols";
 		i += 1;
 		// Next non-flag arg is the pattern (optional)
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
@@ -225,6 +240,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "replace-symbol")) {
 		parsed.command = .replace_symbol;
+        help_topic_default = "replace-symbol";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
@@ -232,6 +248,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "insert-after")) {
 		parsed.command = .insert_after;
+        help_topic_default = "insert-after";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
@@ -239,6 +256,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "insert-before")) {
 		parsed.command = .insert_before;
+        help_topic_default = "insert-before";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
@@ -246,9 +264,11 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "replace-lines")) {
 		parsed.command = .replace_lines;
+        help_topic_default = "replace-lines";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "insert-at")) {
 		parsed.command = .insert_at;
+        help_topic_default = "insert-at";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.hashline_ref = args[i];
@@ -256,6 +276,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "replace-content")) {
 		parsed.command = .replace_content;
+        help_topic_default = "replace-content";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
@@ -263,6 +284,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "references")) {
 		parsed.command = .references;
+        help_topic_default = "references";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
@@ -270,6 +292,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "rename")) {
 		parsed.command = .rename;
+        help_topic_default = "rename";
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
@@ -277,9 +300,11 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "mcp-serve")) {
 		parsed.command = .mcp_serve;
+        help_topic_default = "mcp-serve";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "watch")) {
 		parsed.command = .watch;
+        help_topic_default = "watch";
 		i += 1;
 		// Parse optional watch subcommand
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
@@ -303,13 +328,16 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 	} else if (std.mem.eql(u8, cmd, "status")) {
 		parsed.command = .status;
+        help_topic_default = "status";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
 		parsed.command = .clean;
+        help_topic_default = "clean";
 		i += 1;
 	} else {
 		parsed.command = .search;
 		parsed.assumed_search = true;
+        help_topic_default = "search";
 	}
 
 	while (i < args.len) {
@@ -354,6 +382,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--comments") or std.mem.eql(u8, arg, "--only-comments")) {
 			parsed.comments_only = true;
+            parsed.docs_only = false;
 			parsed.seen.comments_only = true;
 			i += 1;
 			continue;
@@ -372,10 +401,42 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--docs") or std.mem.eql(u8, arg, "--only-docs")) {
 			parsed.docs_only = true;
+            parsed.include_docs = true;
+            parsed.comments_only = false;
 			parsed.seen.docs_only = true;
 			i += 1;
 			continue;
 		}
+        if (std.mem.eql(u8, arg, "--scope")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            const scope_value = args[i];
+            if (std.mem.eql(u8, scope_value, "code")) {
+                parsed.include_docs = false;
+                parsed.docs_only = false;
+                parsed.comments_only = false;
+            } else if (std.mem.eql(u8, scope_value, "docs")) {
+                parsed.include_docs = true;
+                parsed.docs_only = true;
+                parsed.comments_only = false;
+            } else if (std.mem.eql(u8, scope_value, "comments")) {
+                parsed.include_docs = false;
+                parsed.docs_only = false;
+                parsed.comments_only = true;
+            } else if (std.mem.eql(u8, scope_value, "all")) {
+                parsed.include_docs = true;
+                parsed.docs_only = false;
+                parsed.comments_only = false;
+            } else {
+                return error.InvalidValue;
+            }
+            parsed.seen.include_docs = true;
+            parsed.seen.docs_only = true;
+            parsed.seen.comments_only = true;
+            parsed.seen.scope = true;
+            i += 1;
+            continue;
+        }
 		if (std.mem.eql(u8, arg, "--top")) {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
@@ -603,6 +664,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
 			parsed.command = .help;
+            parsed.help_topic = help_topic_default;
 			return parsed;
 		}
 
@@ -684,6 +746,24 @@ test "parse defaults to search when first arg is query" {
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expect(parsed.assumed_search);
 	try std.testing.expectEqualStrings("checksum", parsed.query.?);
+}
+
+test "parse help with topic" {
+    const args = [_][]const u8{ "codescan", "help", "search" };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandTag.help, parsed.command);
+    try std.testing.expect(parsed.help_topic != null);
+    try std.testing.expectEqualStrings("search", parsed.help_topic.?);
+}
+
+test "parse command --help sets help topic" {
+    const args = [_][]const u8{ "codescan", "index", "--help" };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandTag.help, parsed.command);
+    try std.testing.expect(parsed.help_topic != null);
+    try std.testing.expectEqualStrings("index", parsed.help_topic.?);
 }
 
 test "parse defaults to search when first arg is flag" {
@@ -888,6 +968,77 @@ test "parse search with comments flag" {
 	try std.testing.expectEqualStrings("doc query", parsed.query.?);
 }
 
+test "parse search with --scope docs" {
+    const args = [_][]const u8{
+        "codescan",
+        "search",
+        "--scope",
+        "docs",
+        "design",
+    };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.docs_only);
+    try std.testing.expect(!parsed.comments_only);
+}
+
+test "parse search with --scope comments" {
+    const args = [_][]const u8{
+        "codescan",
+        "search",
+        "--scope",
+        "comments",
+        "hash",
+    };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.comments_only);
+    try std.testing.expect(!parsed.docs_only);
+}
+
+test "parse search with --scope all" {
+    const args = [_][]const u8{
+        "codescan",
+        "search",
+        "--scope",
+        "all",
+        "hash",
+    };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.include_docs);
+    try std.testing.expect(!parsed.docs_only);
+    try std.testing.expect(!parsed.comments_only);
+}
+
+test "parse search with repeated --scope uses last value" {
+    const args = [_][]const u8{
+        "codescan",
+        "search",
+        "--scope",
+        "docs",
+        "--scope",
+        "code",
+        "hash",
+    };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(!parsed.include_docs);
+    try std.testing.expect(!parsed.docs_only);
+    try std.testing.expect(!parsed.comments_only);
+}
+
+test "parse search with invalid --scope value errors" {
+    const args = [_][]const u8{
+        "codescan",
+        "search",
+        "--scope",
+        "everything",
+        "hash",
+    };
+    try std.testing.expectError(error.InvalidValue, parse(std.testing.allocator, &args));
+}
+
 test "parse recognizes --format json" {
 	const args = [_][]const u8{ "codescan", "search", "--format", "json", "query" };
 	var parsed = try parse(std.testing.allocator, &args);
@@ -938,7 +1089,6 @@ test "parse init -f shorthand" {
 	try std.testing.expectEqual(CommandTag.init, parsed.command);
 	try std.testing.expect(parsed.force);
 }
-
 
 test "parse status command" {
 	const args = [_][]const u8{ "codescan", "status" };

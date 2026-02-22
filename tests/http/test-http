@@ -50,7 +50,7 @@ post_search() {
 }
 
 wait_for_health() {
-	for _ in $(seq 1 40); do
+	for _ in $(seq 1 120); do
 		if curl -fsS "http://$HOST:$PORT/health" >/dev/null 2>&1; then
 			return 0
 		fi
