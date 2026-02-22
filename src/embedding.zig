@@ -45,7 +45,10 @@ test "OllamaEmbedder uses live Ollama" {
 	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
-	try ollama.ensureModelAvailable(allocator, transport.transport(), url, model);
+	ollama.ensureModelAvailable(allocator, transport.transport(), url, model) catch |err| switch (err) {
+		error.ModelLoading => {}, // Model exists, embed will trigger loading
+		else => return err,
+	};
 
 	var adapter = OllamaEmbedder{
 		.transport = transport.transport(),

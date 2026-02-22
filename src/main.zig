@@ -96,17 +96,33 @@ pub fn main() !void {
 	const args = try std.process.argsAlloc(allocator);
 	defer std.process.argsFree(allocator, args);
 
+    var built_json_args: ?JsonEnvelopeArgs = null;
+    defer if (built_json_args) |*value| value.deinit(allocator);
+
+    const parse_args = blk: {
+        if (shouldAttemptJsonEnvelope(args, std.fs.File.stdin().isTty())) {
+            const stdin_text = try readStdin(allocator);
+            defer allocator.free(stdin_text);
+            const trimmed = std.mem.trim(u8, stdin_text, " \t\r\n");
+            if (trimmed.len > 0 and (trimmed[0] == '{' or trimmed[0] == '[')) {
+                built_json_args = try parseJsonEnvelopeArgs(allocator, trimmed, args[0]);
+                break :blk built_json_args.?.args;
+            }
+        }
+        break :blk args;
+    };
+
 	var stdout_buf: [4096]u8 = undefined;
 	var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
 	const stdout = &stdout_writer.interface;
 
-	var parsed = cli.parse(allocator, args) catch |err| {
+    var parsed = cli.parse(allocator, parse_args) catch |err| {
 		if (isUsageError(err)) {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print("error: {s}\n\n", .{usageErrorMessage(err)}) catch {};
-			_ = printUsage(stderr) catch {};
+            _ = printUsage(stderr, null) catch {};
 			_ = stderr.flush() catch {};
 			std.process.exit(64);
 		}
@@ -115,7 +131,7 @@ pub fn main() !void {
 	defer parsed.deinit(allocator);
 
 	if (parsed.command == .help) {
-		try printUsage(stdout);
+        try printUsage(stdout, parsed.help_topic);
 		try stdout.flush();
 		return;
 	}
@@ -597,8 +613,7 @@ pub fn main() !void {
 		.replace_symbol => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: replace-symbol requires a name path\nusage: echo 'new body' | codescan replace-symbol <name_path> --file <path>\n");
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: replace-symbol requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-symbol requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runReplaceSymbol(allocator, file_path, pattern, input_text, stdout);
@@ -608,8 +623,7 @@ pub fn main() !void {
 		.insert_after => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: insert-after requires a name path\nusage: echo 'code' | codescan insert-after <name_path> --file <path>\n");
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: insert-after requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: insert-after requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runInsertAfter(allocator, file_path, pattern, input_text, stdout);
@@ -619,8 +633,7 @@ pub fn main() !void {
 		.insert_before => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: insert-before requires a name path\nusage: echo 'code' | codescan insert-before <name_path> --file <path>\n");
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: insert-before requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: insert-before requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runInsertBefore(allocator, file_path, pattern, input_text, stdout);
@@ -628,8 +641,7 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.replace_lines => {
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: replace-lines requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-lines requires --file <path>\n");
 			const from_ref = parsed.from_ref orelse
 				exitWithError("error: replace-lines requires --from <line:hash>\n");
 			const to_ref = parsed.to_ref orelse
@@ -641,8 +653,7 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.insert_at => {
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: insert-at requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: insert-at requires --file <path>\n");
 			const ref = parsed.hashline_ref orelse
 				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
 			const input_text = try readStdin(allocator);
@@ -655,8 +666,7 @@ pub fn main() !void {
 			const needle = parsed.pattern orelse
 				exitWithError("error: replace-content requires a pattern\n" ++
 					"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: replace-content requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-content requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
 			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, stdout);
@@ -666,16 +676,14 @@ pub fn main() !void {
 		.references => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: references requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: references requires --file <path>\n");
 			try runReferences(allocator, file_path, pattern, parsed.output, settings.root_path, settings.lsp_overrides, stdout);
 			try stdout.flush();
 		},
 		.rename => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: rename requires a name path pattern\nusage: codescan rename <pattern> --file <path> --to <new_name>\n");
-			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else
-				exitWithError("error: rename requires --file <path>\n");
+            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: rename requires --file <path>\n");
 			const new_name = parsed.rename_to orelse
 				exitWithError("error: rename requires --to <new_name>\n");
 			try runRename(allocator, file_path, pattern, new_name, parsed.output, parsed.dry_run, settings.db_path, settings.root_path, registry, settings.lsp_overrides, settings.embedding_dim, stdout);
@@ -1077,15 +1085,16 @@ fn ensureModelAvailableOrExit(
 			std.process.exit(1);
 		},
 		error.ModelLoading => {
+			// Model exists but not loaded — the first embed call will trigger loading.
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
-				"error: Ollama model '{s}' is available but still loading into memory. Please wait a few moments and try again.\n",
+				"note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
 				.{model_name},
 			) catch {};
 			_ = stderr.flush() catch {};
-			std.process.exit(1);
+			// Continue — embed() will block until model is loaded
 		},
 		else => return err,
 	};
@@ -1117,13 +1126,17 @@ fn tryInitOllama(
 						"  Run 'ollama pull {s}' then 'codescan update' for semantic search.\n",
 					.{ ollama_model, ollama_model },
 				) catch {};
+				_ = stderr.flush() catch {};
+				return false;
 			},
 			error.ModelLoading => {
+				// Model exists but not loaded — embed() will trigger loading
 				_ = stderr.print(
-					"  note: Ollama model '{s}' is still loading into memory. Using lexical-only search.\n" ++
-						"  Please wait a few moments and try again for semantic search.\n",
+					"  note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
 					.{ollama_model},
 				) catch {};
+				_ = stderr.flush() catch {};
+				return true; // Proceed — embed will block until loaded
 			},
 			else => {
 				_ = stderr.print(
@@ -1131,10 +1144,10 @@ fn tryInitOllama(
 						"  Run 'codescan update' after starting Ollama for semantic search.\n",
 					.{},
 				) catch {};
+				_ = stderr.flush() catch {};
+				return false;
 			},
 		}
-		_ = stderr.flush() catch {};
-		return false;
 	};
 	return true;
 }
@@ -2904,6 +2917,7 @@ const usage =
 	\\                                    nix, nim, lean, idris, haskell, go, ruby,
 	\\                                    erlang, ocaml, swift, llvm, clojure, assembly,
 	\\                                    markdown, text, log
+    \\  --scope <code|docs|comments|all> Unified search scope selector
 	\\  --include-docs                  Include markdown/README when defaulting to primary language
 	\\  --docs, --only-docs             Only return markdown/README results
 	\\  --comments, --only-comments     Only return doc-comment results
@@ -2918,10 +2932,93 @@ const usage =
 	\\
 ;
 
+const usage_search =
+    \\Usage: codescan search <query> [options]
+    \\
+    \\Aliases:
+    \\  query                           Alias for search
+    \\  codescan <query>                If command is omitted, search is assumed
+    \\
+    \\Common search options:
+    \\  --top <n>                       Number of hits (default 5)
+    \\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
+    \\  --min-score <n>                 Minimum score threshold
+    \\  --scope <code|docs|comments|all>
+    \\                                  Unified result scope selector
+    \\  --docs, --only-docs             Only markdown/README results
+    \\  --comments, --only-comments     Only doc-comment results
+    \\  --include-docs                  Include markdown/README with code
+    \\  --ext <csv>                     Restrict to extensions
+    \\  --type <csv>                    Restrict to types: code,doc,text,log
+    \\  --lang <csv>                    Restrict to language(s)
+    \\  --json                          JSON output
+    \\
+    \\Examples:
+    \\  codescan search "checksum"
+    \\  codescan "h264 parser"
+    \\  codescan search "design doc" --scope docs
+    \\  codescan search "hash functions" --scope comments
+    \\
+;
+
+const usage_index =
+    \\Usage: codescan index [options]
+    \\
+    \\Rebuilds the index from scratch (deletes and recreates the DB).
+    \\
+    \\Common index options:
+    \\  --root <path>                   Project root
+    \\  --db <path>                     Database path (default .codescan/index.sqlite3)
+    \\  --max-file-size <n>             Max file size bytes
+    \\  --type <csv>                    Index types (default code,doc)
+    \\  --ext <csv>                     Restrict indexed extensions
+    \\  --include-node-modules          Include node_modules
+    \\  --json                          JSON output
+    \\
+    \\Examples:
+    \\  codescan index
+    \\  codescan index --root /path/to/repo
+    \\
+;
+
+const usage_update =
+    \\Usage: codescan update [options]
+    \\
+    \\Runs incremental index updates (new/modified/deleted files only).
+    \\
+    \\Common update options:
+    \\  --root <path>                   Project root
+    \\  --db <path>                     Database path
+    \\  --max-file-size <n>             Max file size bytes
+    \\  --type <csv>                    Indexed types (default code,doc)
+    \\  --ext <csv>                     Restrict indexed extensions
+    \\  --include-node-modules          Include node_modules
+    \\  --json                          JSON output
+    \\
+    \\Examples:
+    \\  codescan update
+    \\  codescan update --root /path/to/repo
+    \\
+;
+
+const usage_config =
+    \\Usage: codescan config [show|edit]
+    \\
+    \\Subcommands:
+    \\  show                            Print current project config
+    \\  edit                            Open config in $VISUAL or $EDITOR
+    \\
+    \\Examples:
+    \\  codescan config
+    \\  codescan config edit
+    \\
+;
+
 fn isUsageError(err: anyerror) bool {
 	return err == error.MissingQuery or
 		err == error.UnknownCommand or
 		err == error.MissingValue or
+        err == error.InvalidValue or
 		err == error.InvalidMode or
 		err == error.UnexpectedArg or
 		err == error.TooManyArgs or
@@ -2932,6 +3029,7 @@ fn usageErrorMessage(err: anyerror) []const u8 {
 	if (err == error.MissingQuery) return "missing search query";
 	if (err == error.UnknownCommand) return "unknown command";
 	if (err == error.MissingValue) return "missing required value";
+    if (err == error.InvalidValue) return "invalid value";
 	if (err == error.InvalidMode) return "invalid mode";
 	if (err == error.UnexpectedArg) return "unexpected argument";
 	if (err == error.TooManyArgs) return "too many arguments";
@@ -2939,6 +3037,277 @@ fn usageErrorMessage(err: anyerror) []const u8 {
 	return "invalid usage";
 }
 
+const JsonEnvelopeArgs = struct {
+    args: []const []const u8,
+    owned: [][]u8,
+
+    fn deinit(self: *JsonEnvelopeArgs, allocator: std.mem.Allocator) void {
+        for (self.owned) |value| allocator.free(value);
+        allocator.free(self.owned);
+        allocator.free(self.args);
+    }
+};
+
+fn shouldAttemptJsonEnvelope(args: []const []const u8, stdin_is_tty: bool) bool {
+    if (stdin_is_tty) return false;
+    if (args.len == 1) return true;
+    if (args.len == 2 and std.mem.eql(u8, args[1], "--json")) return true;
+    return false;
+}
+
+fn parseJsonEnvelopeArgs(
+    allocator: std.mem.Allocator,
+    payload: []const u8,
+    argv0: []const u8,
+) !JsonEnvelopeArgs {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const obj = switch (parsed.value) {
+        .object => |map| map,
+        else => return error.InvalidJsonEnvelope,
+    };
+    const action = getJsonString(obj, "action") orelse return error.InvalidJsonEnvelope;
+
+    var args_list = std.ArrayList([]const u8){};
+    errdefer args_list.deinit(allocator);
+    var owned_list = std.ArrayList([]u8){};
+    errdefer {
+        for (owned_list.items) |item| allocator.free(item);
+        owned_list.deinit(allocator);
+    }
+
+    try args_list.append(allocator, argv0);
+    if (std.mem.eql(u8, action, "search")) {
+        try args_list.append(allocator, "search");
+        const query = getJsonQuery(allocator, obj) catch return error.InvalidJsonEnvelope;
+        defer if (query.owned) allocator.free(query.value);
+        try appendOwnedArg(allocator, &args_list, &owned_list, query.value);
+        try appendJsonStringFlag(allocator, obj, "root", "--root", &args_list, &owned_list);
+        try appendJsonStringFlag(allocator, obj, "db", "--db", &args_list, &owned_list);
+        try appendJsonIntegerFlag(allocator, obj, "top", "--top", &args_list, &owned_list);
+        try appendJsonStringFlag(allocator, obj, "scope", "--scope", &args_list, &owned_list);
+        try appendJsonStringFlag(allocator, obj, "mode", "--mode", &args_list, &owned_list);
+        try appendJsonFloatFlag(allocator, obj, "min_score", "--min-score", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "ext", "--ext", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "type", "--type", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "lang", "--lang", &args_list, &owned_list);
+        try appendJsonBoolFlag(allocator, obj, "include_docs", "--include-docs", &args_list);
+        try appendJsonBoolFlag(allocator, obj, "docs_only", "--docs", &args_list);
+        try appendJsonBoolFlag(allocator, obj, "comments_only", "--comments", &args_list);
+    } else if (std.mem.eql(u8, action, "index")) {
+        try args_list.append(allocator, "index");
+        try appendJsonStringFlag(allocator, obj, "root", "--root", &args_list, &owned_list);
+        try appendJsonStringFlag(allocator, obj, "db", "--db", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "ext", "--ext", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "type", "--type", &args_list, &owned_list);
+    } else if (std.mem.eql(u8, action, "update") or std.mem.eql(u8, action, "reindex")) {
+        try args_list.append(allocator, "update");
+        try appendJsonStringFlag(allocator, obj, "root", "--root", &args_list, &owned_list);
+        try appendJsonStringFlag(allocator, obj, "db", "--db", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "ext", "--ext", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "type", "--type", &args_list, &owned_list);
+    } else if (std.mem.eql(u8, action, "status")) {
+        try args_list.append(allocator, "status");
+        try appendJsonStringFlag(allocator, obj, "root", "--root", &args_list, &owned_list);
+        try appendJsonStringFlag(allocator, obj, "db", "--db", &args_list, &owned_list);
+    } else {
+        return error.InvalidJsonEnvelope;
+    }
+
+    try args_list.append(allocator, "--json");
+    return .{
+        .args = try args_list.toOwnedSlice(allocator),
+        .owned = try owned_list.toOwnedSlice(allocator),
+    };
+}
+
+const JsonQueryValue = struct {
+    value: []const u8,
+    owned: bool,
+};
+
+fn getJsonQuery(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !JsonQueryValue {
+    const value = obj.get("query") orelse return error.InvalidJsonEnvelope;
+    switch (value) {
+        .string => |text| return .{ .value = text, .owned = false },
+        .array => |arr| {
+            var parts = std.ArrayList([]const u8){};
+            defer parts.deinit(allocator);
+            for (arr.items) |item| {
+                switch (item) {
+                    .string => |part| try parts.append(allocator, part),
+                    else => return error.InvalidJsonEnvelope,
+                }
+            }
+            if (parts.items.len == 0) return error.InvalidJsonEnvelope;
+            return .{
+                .value = try joinSpaceArgs(allocator, parts.items),
+                .owned = true,
+            };
+        },
+        else => return error.InvalidJsonEnvelope,
+    }
+}
+
+fn appendOwnedArg(
+    allocator: std.mem.Allocator,
+    args: *std.ArrayList([]const u8),
+    owned: *std.ArrayList([]u8),
+    value: []const u8,
+) !void {
+    const duped = try allocator.dupe(u8, value);
+    try owned.append(allocator, duped);
+    try args.append(allocator, duped);
+}
+
+fn getJsonString(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
+    const value = obj.get(key) orelse return null;
+    return switch (value) {
+        .string => |s| s,
+        else => null,
+    };
+}
+
+fn appendJsonStringFlag(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    flag: []const u8,
+    args: *std.ArrayList([]const u8),
+    owned: *std.ArrayList([]u8),
+) !void {
+    const value = getJsonString(obj, key) orelse return;
+    try args.append(allocator, flag);
+    try appendOwnedArg(allocator, args, owned, value);
+}
+
+fn appendJsonStringOrArrayFlag(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    flag: []const u8,
+    args: *std.ArrayList([]const u8),
+    owned: *std.ArrayList([]u8),
+) !void {
+    const value = obj.get(key) orelse return;
+    switch (value) {
+        .string => |s| {
+            try args.append(allocator, flag);
+            try appendOwnedArg(allocator, args, owned, s);
+        },
+        .array => |arr| {
+            if (arr.items.len == 0) return;
+            var list = std.ArrayList([]const u8){};
+            defer list.deinit(allocator);
+            for (arr.items) |item| {
+                switch (item) {
+                    .string => |s| try list.append(allocator, s),
+                    else => return error.InvalidJsonEnvelope,
+                }
+            }
+            const joined = try joinCsvArgs(allocator, list.items);
+            errdefer allocator.free(joined);
+            try args.append(allocator, flag);
+            try owned.append(allocator, joined);
+            try args.append(allocator, joined);
+        },
+        else => return error.InvalidJsonEnvelope,
+    }
+}
+
+fn joinCsvArgs(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    var total: usize = 0;
+    for (parts, 0..) |part, idx| {
+        total += part.len;
+        if (idx + 1 < parts.len) total += 1;
+    }
+    const buf = try allocator.alloc(u8, total);
+    var offset: usize = 0;
+    for (parts, 0..) |part, idx| {
+        std.mem.copyForwards(u8, buf[offset .. offset + part.len], part);
+        offset += part.len;
+        if (idx + 1 < parts.len) {
+            buf[offset] = ',';
+            offset += 1;
+        }
+    }
+    return buf;
+}
+
+fn joinSpaceArgs(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
+    var total: usize = 0;
+    for (parts, 0..) |part, idx| {
+        total += part.len;
+        if (idx + 1 < parts.len) total += 1;
+    }
+    const buf = try allocator.alloc(u8, total);
+    var offset: usize = 0;
+    for (parts, 0..) |part, idx| {
+        std.mem.copyForwards(u8, buf[offset .. offset + part.len], part);
+        offset += part.len;
+        if (idx + 1 < parts.len) {
+            buf[offset] = ' ';
+            offset += 1;
+        }
+    }
+    return buf;
+}
+
+fn appendJsonIntegerFlag(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    flag: []const u8,
+    args: *std.ArrayList([]const u8),
+    owned: *std.ArrayList([]u8),
+) !void {
+    const value = obj.get(key) orelse return;
+    const int_value = switch (value) {
+        .integer => |n| n,
+        else => return error.InvalidJsonEnvelope,
+    };
+    const text = try std.fmt.allocPrint(allocator, "{d}", .{int_value});
+    errdefer allocator.free(text);
+    try args.append(allocator, flag);
+    try owned.append(allocator, text);
+    try args.append(allocator, text);
+}
+
+fn appendJsonFloatFlag(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    flag: []const u8,
+    args: *std.ArrayList([]const u8),
+    owned: *std.ArrayList([]u8),
+) !void {
+    const value = obj.get(key) orelse return;
+    const float_value = switch (value) {
+        .float => |n| n,
+        .integer => |n| @as(f64, @floatFromInt(n)),
+        else => return error.InvalidJsonEnvelope,
+    };
+    const text = try std.fmt.allocPrint(allocator, "{d}", .{float_value});
+    errdefer allocator.free(text);
+    try args.append(allocator, flag);
+    try owned.append(allocator, text);
+    try args.append(allocator, text);
+}
+
+fn appendJsonBoolFlag(
+    allocator: std.mem.Allocator,
+    obj: std.json.ObjectMap,
+    key: []const u8,
+    flag: []const u8,
+    args: *std.ArrayList([]const u8),
+) !void {
+    const value = obj.get(key) orelse return;
+    const enabled = switch (value) {
+        .bool => |b| b,
+        else => return error.InvalidJsonEnvelope,
+    };
+    if (enabled) try args.append(allocator, flag);
+}
 
 pub fn runStatus(
 	allocator: std.mem.Allocator,
@@ -3180,7 +3549,19 @@ fn writeHumanSize(writer: *std.Io.Writer, size: u64) !void {
 	}
 }
 
-fn printUsage(writer: *std.Io.Writer) !void {
+fn usageForTopic(topic: []const u8) []const u8 {
+    if (std.mem.eql(u8, topic, "search") or std.mem.eql(u8, topic, "query")) return usage_search;
+    if (std.mem.eql(u8, topic, "index")) return usage_index;
+    if (std.mem.eql(u8, topic, "update")) return usage_update;
+    if (std.mem.eql(u8, topic, "config")) return usage_config;
+    return usage;
+}
+
+fn printUsage(writer: *std.Io.Writer, topic: ?[]const u8) !void {
+    if (topic) |value| {
+        try writer.writeAll(usageForTopic(value));
+        return;
+    }
 	try writer.writeAll(usage);
 }
 
@@ -3228,6 +3609,61 @@ test "shouldShowProgress requires tty and human output" {
 	try std.testing.expect(shouldShowProgress(true, .human));
 	try std.testing.expect(!shouldShowProgress(false, .human));
 	try std.testing.expect(!shouldShowProgress(true, .json));
+}
+
+test "help topic search returns focused usage" {
+    const text = usageForTopic("search");
+    try std.testing.expect(std.mem.indexOf(u8, text, "Usage: codescan search") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Usage: codescan index") == null);
+}
+
+test "help topic unknown falls back to global usage" {
+    const text = usageForTopic("does-not-exist");
+    try std.testing.expectEqualStrings(usage, text);
+}
+
+test "json envelope search request converts to argv" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"action\":\"search\",\"query\":\"checksum\",\"root\":\"/repo\",\"top\":7,\"scope\":\"docs\",\"mode\":\"hybrid\",\"min_score\":0.25}";
+    var built = try parseJsonEnvelopeArgs(allocator, payload, "codescan");
+    defer built.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 14), built.args.len);
+    try std.testing.expectEqualStrings("codescan", built.args[0]);
+    try std.testing.expectEqualStrings("search", built.args[1]);
+    try std.testing.expectEqualStrings("checksum", built.args[2]);
+    try std.testing.expectEqualStrings("--root", built.args[3]);
+    try std.testing.expectEqualStrings("/repo", built.args[4]);
+    try std.testing.expectEqualStrings("--top", built.args[5]);
+    try std.testing.expectEqualStrings("7", built.args[6]);
+    try std.testing.expectEqualStrings("--scope", built.args[7]);
+    try std.testing.expectEqualStrings("docs", built.args[8]);
+    try std.testing.expectEqualStrings("--mode", built.args[9]);
+    try std.testing.expectEqualStrings("hybrid", built.args[10]);
+    try std.testing.expectEqualStrings("--min-score", built.args[11]);
+    const min_score = try std.fmt.parseFloat(f32, built.args[12]);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), min_score, 0.0001);
+    try std.testing.expectEqualStrings("--json", built.args[13]);
+}
+
+test "json envelope status request converts to argv" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"action\":\"status\",\"root\":\"/repo\"}";
+    var built = try parseJsonEnvelopeArgs(allocator, payload, "codescan");
+    defer built.deinit(allocator);
+
+    try std.testing.expectEqual(@as(usize, 5), built.args.len);
+    try std.testing.expectEqualStrings("codescan", built.args[0]);
+    try std.testing.expectEqualStrings("status", built.args[1]);
+    try std.testing.expectEqualStrings("--root", built.args[2]);
+    try std.testing.expectEqualStrings("/repo", built.args[3]);
+    try std.testing.expectEqualStrings("--json", built.args[4]);
+}
+
+test "json envelope requires action" {
+    const allocator = std.testing.allocator;
+    const payload = "{\"query\":\"checksum\"}";
+    try std.testing.expectError(error.InvalidJsonEnvelope, parseJsonEnvelopeArgs(allocator, payload, "codescan"));
 }
 
 test "buildSearchFilters defaults to primary language" {

@@ -1018,7 +1018,10 @@ test "doc truncation avoids Ollama context length errors" {
 	const model_name = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model_name);
 
-	try ollama.ensureModelAvailable(allocator, transport.transport(), url, model_name);
+	ollama.ensureModelAvailable(allocator, transport.transport(), url, model_name) catch |err| switch (err) {
+		error.ModelLoading => {}, // Model exists, embed will trigger loading
+		else => return err,
+	};
 
 	var adapter = embedding.OllamaEmbedder{
 		.transport = transport.transport(),

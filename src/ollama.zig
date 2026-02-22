@@ -113,14 +113,10 @@ pub fn ensureModelAvailable(
 	// Step 2: Check /api/ps — model loaded in memory? (fast path)
 	if (try isModelLoaded(allocator, transport, base_url, model_name)) return;
 
-	// Step 3: Model exists but not loaded — trigger loading with a small embed request
-	const trigger_inputs = [_][]const u8{""};
-	const embeddings = embed(allocator, transport, base_url, model_name, &trigger_inputs, null) catch {
-		// Embed failed (e.g. timeout while loading) — model is being loaded
-		return error.ModelLoading;
-	};
-	// Embed succeeded — model loaded during our request
-	freeEmbeddings(allocator, embeddings);
+	// Step 3: Model exists on disk but not loaded in memory.
+	// The next embed call will trigger loading, which can take minutes.
+	// Return immediately so callers can show a helpful message or fall back.
+	return error.ModelLoading;
 }
 
 /// Check if a model is currently loaded in memory via /api/ps.
@@ -331,7 +327,10 @@ test "embed uses live Ollama" {
 	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
-	try ensureModelAvailable(allocator, transport.transport(), url, model);
+	ensureModelAvailable(allocator, transport.transport(), url, model) catch |err| switch (err) {
+		error.ModelLoading => {}, // Model exists, embed will trigger loading
+		else => return err,
+	};
 
 	const inputs = [_][]const u8{ "hash functions" };
 	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs, null);
@@ -456,7 +455,7 @@ test "ensureModelAvailable returns ModelLoading when in tags but not ps and embe
 	);
 }
 
-test "ensureModelAvailable succeeds when in tags, not in ps, but embed succeeds" {
+test "ensureModelAvailable returns ModelLoading when in tags but not ps" {
 	const allocator = std.testing.allocator;
 	var mock = MockTransportCtx{
 		.tags_body =
@@ -467,7 +466,10 @@ test "ensureModelAvailable succeeds when in tags, not in ps, but embed succeeds"
 		,
 		.embed_should_fail = false,
 	};
-	try ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+	try std.testing.expectError(
+		error.ModelLoading,
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large"),
+	);
 }
 
 test "buildPsUrl handles trailing slash" {

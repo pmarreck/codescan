@@ -333,14 +333,11 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		var effective_search_mode = settings.search_mode;
 		if (!storage.isIndexPopulated(db)) {
 			ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
-				if (err == error.ModelLoading) {
-					var sb: [4096]u8 = undefined;
-					var sw = std.fs.File.stderr().writer(&sb);
-					const se = &sw.interface;
-					_ = se.print("MCP search: model '{s}' is still loading. Falling back to lexical search.\n", .{settings.ollama_model}) catch {};
-					_ = se.flush() catch {};
+				if (err != error.ModelLoading) {
+					// ModelNotFound or connection error — fall back to lexical
+					effective_search_mode = .lexical;
 				}
-				effective_search_mode = .lexical;
+				// ModelLoading: model exists, embed() will trigger loading — proceed
 			};
 			var embedder_for_index = embedding.OllamaEmbedder{
 				.transport = http_client.transport(),
@@ -365,14 +362,11 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		} else {
 			if (effective_search_mode != .lexical) {
 				ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
-					if (err == error.ModelLoading) {
-						var sb: [4096]u8 = undefined;
-						var sw = std.fs.File.stderr().writer(&sb);
-						const se = &sw.interface;
-						_ = se.print("MCP search: model '{s}' is still loading. Falling back to lexical search.\n", .{settings.ollama_model}) catch {};
-						_ = se.flush() catch {};
+					if (err != error.ModelLoading) {
+						// ModelNotFound or connection error — fall back to lexical
+						effective_search_mode = .lexical;
 					}
-					effective_search_mode = .lexical;
+					// ModelLoading: model exists, embed() will trigger loading — proceed
 				};
 			}
 		}
@@ -439,16 +433,22 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
 			switch (err) {
 				error.ModelLoading => {
-					try out.writer.print("error: Model '{s}' is available but still loading into memory. Please wait a few moments and try again.", .{settings.ollama_model});
+					// Model exists but not loaded — embed() will trigger loading. Log and proceed.
+					var sb: [4096]u8 = undefined;
+					var sw = std.fs.File.stderr().writer(&sb);
+					const se = &sw.interface;
+					_ = se.print("MCP index: model '{s}' is loading into memory. This may take a moment...\n", .{settings.ollama_model}) catch {};
+					_ = se.flush() catch {};
 				},
 				error.ModelNotFound => {
 					try out.writer.print("error: Ollama model '{s}' not found. Run: ollama pull {s}", .{ settings.ollama_model, settings.ollama_model });
+					return out.toOwnedSlice();
 				},
 				else => {
 					try out.writer.print("error: Ollama model '{s}' not available: {}", .{ settings.ollama_model, err });
+					return out.toOwnedSlice();
 				},
 			}
-			return out.toOwnedSlice();
 		};
 
 		var embedder_adapter = embedding.OllamaEmbedder{
