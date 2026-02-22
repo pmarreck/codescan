@@ -88,6 +88,19 @@ pub fn build(b: *std.Build) void {
 	linkCommon(mk_db, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	b.installArtifact(mk_db);
 
+	const unit_aggregate_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/all_tests.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, unit_aggregate_tests.root_module);
+	addPcre2Includes(unit_aggregate_tests.root_module, pcre2_lib);
+	linkCommon(unit_aggregate_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	const test_unit_step = b.step("test-unit", "Run aggregated unit tests");
+	test_unit_step.dependOn(&b.addRunArtifact(unit_aggregate_tests).step);
+
 	const test_step = b.step("test", "Run unit tests");
 
 	const cli_tests = b.addTest(.{

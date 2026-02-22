@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-nix develop -c zig build test
+nix develop -c zig build test-unit

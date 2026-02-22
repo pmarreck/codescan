@@ -12,7 +12,7 @@
 - tests/integration/test-integration: end-to-end integration suite (requires Ollama + fixtures)
 - tests/cli/test-cli: CLI black-box test suite (uses mk_test_db fixture; covers docs/comments/scope filters, command-specific help, and stdin JSON request mode)
 - tests/http/test-http: HTTP API black-box test suite (uses mk_test_db fixture)
-- tests/unit/test-unit: Zig unit-test runner (wraps `zig build test` in nix dev shell)
+- tests/unit/test-unit: Zig unit-test runner (wraps `zig build test-unit` aggregated suite in nix dev shell)
 - fixtures/manifest.toml: pinned fixture repos for integration tests
 - .github/workflows/build.yml: CI build + release artifacts workflow
 - scripts/ci-setup-nix: CI helper to install Nix (used by GitHub Actions)
@@ -22,9 +22,10 @@
 - ZIG_RECENT_API_CHANGES_2025.md: Zig 0.14–0.15 API quick reference
 - flake.nix: Nix flake providing dev dependencies (zig_0_15) + sqlite amalgamation env vars
 - build.zig.zon: Zig package metadata + git dependency on sqlite-vec fork
-- build.zig: Zig build script for CLI + unit tests
+- build.zig: Zig build script for CLI + unit tests (`test-unit` aggregated fast step + legacy `test` step)
 - test: master test runner script (unit/cli/http/integration)
 - PROJECT_STATE.md: working notes for future contributors/LLMs (build/run/config details)
+- src/all_tests.zig: aggregated unit-test root importing all source modules with test blocks (single binary for faster unit runs)
 - src/main.zig: CLI entrypoint wiring config (show/edit), root discovery, index/search, command-specific help topics, stdin JSON request envelope parsing (JSON->CLI args), and HTTP server
 - src/cli.zig: CLI argument parsing (including default-to-search behavior, docs/comments flags, unified `--scope`, and hybrid weights) + tests
 - src/config.zig: config parsing/loading for .codescan/config (including weights) + tests
