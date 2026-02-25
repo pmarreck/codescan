@@ -3732,7 +3732,7 @@ fn writeIso8601(writer: *std.Io.Writer, epoch_secs: i64) !void {
 	const ds = es.getDaySeconds();
 	try writer.print("{d}-{d:0>2}-{d:0>2}T{d:0>2}:{d:0>2}:{d:0>2}Z", .{
 		yd.year,
-		@as(u32, @intFromEnum(md.month)) + 1,
+		@as(u32, @intFromEnum(md.month)),
 		@as(u32, md.day_index) + 1,
 		ds.getHoursIntoDay(),
 		ds.getMinutesIntoHour(),

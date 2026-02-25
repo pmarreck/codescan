@@ -103,6 +103,19 @@ main() {
 	fi
 	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "search --help did not print focused usage"
 
+	# status --json: verify ISO8601 month matches epoch (regression: off-by-one)
+	# Insert a known timestamp: 2026-02-15 10:30:00 UTC = epoch 1771148200
+	# (February, not March)
+	sqlite3 "$DB" "INSERT OR REPLACE INTO indexed_files (file_path, mtime_ns, size, indexed_at) VALUES ('test.zig', 0, 100, 1771148200);"
+	capture "$BIN" status --db "$DB" --json
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "status --json failed"
+	fi
+	iso_ts=$(printf '%s' "$out" | jq -r '.last_indexed.timestamp_utc')
+	# The ISO8601 string must contain 2026-02 (February), not 2026-03 (March)
+	printf '%s' "$iso_ts" | rg -q '^2026-02-' || fail "status ISO8601 month wrong: expected 2026-02-*, got '$iso_ts'"
+
 	capture bash -lc "printf '{\"action\":\"search\",\"query\":\"checksum\",\"mode\":\"lexical\",\"db\":\"$DB\"}\n' | '$BIN' --json"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
