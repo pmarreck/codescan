@@ -441,6 +441,7 @@ fn insertSymbolFts(db: Db, symbol: model.Symbol, rowid: i64) !void {
 		++ "VALUES (?1, ?2, ?3, ?4, ?5);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "insertSymbolFts: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -481,6 +482,7 @@ fn tableExists(db: Db, allocator: std.mem.Allocator, name: []const u8) !bool {
 
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "tableExists: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -488,6 +490,7 @@ fn tableExists(db: Db, allocator: std.mem.Allocator, name: []const u8) !bool {
 	const step_rc = c.sqlite3_step(stmt.?);
 	if (step_rc == c.SQLITE_ROW) return true;
 	if (step_rc == c.SQLITE_DONE) return false;
+	logSqliteError(db, "tableExists: step");
 	return error.SqlStepFailed;
 }
 
@@ -501,6 +504,7 @@ fn columnExists(db: Db, allocator: std.mem.Allocator, table_name: []const u8, co
 
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "columnExists: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -537,6 +541,7 @@ fn metaValue(db: Db, allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
 	const sql: [:0]const u8 = "SELECT value FROM meta WHERE key = ?1 LIMIT 1;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "metaValue: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -561,6 +566,7 @@ pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
 
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "countRows: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -587,6 +593,7 @@ pub fn countDistinctFiles(db: Db, allocator: std.mem.Allocator) !i64 {
 	const sql: [:0]const u8 = "SELECT COUNT(DISTINCT file_path) FROM symbols;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "countDistinctFiles: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -622,6 +629,7 @@ pub fn primaryLanguage(
 
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql_z, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "primaryLanguage: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -652,6 +660,7 @@ pub fn languageStats(db: Db, allocator: std.mem.Allocator) ![]LangStat {
 	const sql: [:0]const u8 = "SELECT lang, COUNT(DISTINCT file_path), COUNT(*) FROM symbols GROUP BY lang ORDER BY 2 DESC;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "languageStats: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -687,6 +696,7 @@ pub fn lastIndexedFile(db: Db, allocator: std.mem.Allocator) !?LastIndexedResult
 	const sql: [:0]const u8 = "SELECT file_path, indexed_at FROM indexed_files ORDER BY indexed_at DESC LIMIT 1;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "lastIndexedFile: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -753,6 +763,7 @@ pub fn upsertIndexedFile(db: Db, file_path: []const u8, mtime_ns: i64, size: i64
 		"VALUES (?1, ?2, ?3, strftime('%s','now'));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "upsertIndexedFile: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -771,6 +782,7 @@ pub fn getIndexedFileMtime(db: Db, file_path: []const u8) !?i64 {
 		"SELECT mtime_ns FROM indexed_files WHERE file_path = ?1;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "getIndexedFileMtime: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -789,6 +801,7 @@ pub fn getAllIndexedFiles(db: Db, allocator: std.mem.Allocator) ![]IndexedFile {
 		"SELECT file_path, mtime_ns, size FROM indexed_files;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "getAllIndexedFiles: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -823,6 +836,7 @@ pub fn deleteIndexedFile(db: Db, file_path: []const u8) !void {
 		"DELETE FROM indexed_files WHERE file_path = ?1;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "deleteIndexedFile: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
@@ -847,6 +861,7 @@ pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
 	inline for (.{ del_embed_sql, del_comment_sql }) |sql| {
 		var stmt: ?*c.sqlite3_stmt = null;
 		if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+			logSqliteError(db, "deleteSymbolsByFile: prepare");
 			return error.SqlPrepareFailed;
 		}
 		defer _ = c.sqlite3_finalize(stmt.?);
@@ -870,6 +885,7 @@ pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
 	{
 		var stmt: ?*c.sqlite3_stmt = null;
 		if (c.sqlite3_prepare_v2(db, del_sym_sql, -1, &stmt, null) != c.SQLITE_OK) {
+			logSqliteError(db, "deleteSymbolsByFile: prepare symbols");
 			return error.SqlPrepareFailed;
 		}
 		defer _ = c.sqlite3_finalize(stmt.?);
