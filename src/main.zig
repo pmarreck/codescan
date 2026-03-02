@@ -288,6 +288,7 @@ pub fn main() !void {
 			maybeStartWatcher(allocator, settings, stderr);
 		},
 		.index => {
+			checkTmpSpace();
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
 			defer storage.close(db);
@@ -334,6 +335,7 @@ pub fn main() !void {
 			try stdout.flush();
 		},
 		.update => {
+			checkTmpSpace();
 			try ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVec(allocator, settings.db_path);
 			defer storage.close(db);
@@ -1502,6 +1504,34 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 fn ensureParentDir(path: []const u8) !void {
 	const dir = std.fs.path.dirname(path) orelse return;
 	try std.fs.cwd().makePath(dir);
+}
+
+const MIN_TMP_SPACE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
+
+/// Check that the temp directory has sufficient free space for SQLite
+/// journal/WAL writes. Prints an error to stderr and exits if space
+/// is below the threshold. Best-effort: silently succeeds on any
+/// failure to read filesystem stats (e.g. unsupported platform).
+fn checkTmpSpace() void {
+	const c_fs = @cImport(@cInclude("sys/statvfs.h"));
+	const tmp_path: [*:0]const u8 = if (std.posix.getenv("TMPDIR")) |t|
+		@ptrCast(t.ptr)
+	else
+		"/tmp";
+	var stat: c_fs.struct_statvfs = undefined;
+	if (c_fs.statvfs(tmp_path, &stat) != 0) return; // best-effort
+	const avail: u64 = @as(u64, stat.f_bavail) * @as(u64, stat.f_frsize);
+	if (avail >= MIN_TMP_SPACE_BYTES) return;
+	var eb: [512]u8 = undefined;
+	var ew = std.fs.File.stderr().writer(&eb);
+	const se = &ew.interface;
+	_ = se.print("error: insufficient disk space on temp directory ({d} MB free, need at least {d} MB)\n", .{
+		avail / (1024 * 1024),
+		MIN_TMP_SPACE_BYTES / (1024 * 1024),
+	}) catch {};
+	_ = se.print("hint: clean up $TMPDIR or /tmp, or set TMPDIR to a path with more space\n", .{}) catch {};
+	_ = se.flush() catch {};
+	std.process.exit(1);
 }
 
 /// Compute the hashline hash for a specific 1-indexed line in a file.
