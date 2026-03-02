@@ -1508,19 +1508,55 @@ fn ensureParentDir(path: []const u8) !void {
 
 const MIN_TMP_SPACE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
+/// Platform-dispatched statvfs: manual extern struct for Linux (musl
+/// cross-compilation makes @cImport opaque), @cImport for macOS.
+const posix_fs = if (builtin.os.tag == .linux) struct {
+	const Statvfs = extern struct {
+		f_bsize: c_ulong,
+		f_frsize: c_ulong,
+		f_blocks: c_ulonglong,
+		f_bfree: c_ulonglong,
+		f_bavail: c_ulonglong,
+		f_files: c_ulonglong,
+		f_ffree: c_ulonglong,
+		f_favail: c_ulonglong,
+		f_fsid: c_ulong,
+		f_flag: c_ulong,
+		f_namemax: c_ulong,
+		f_type: c_uint,
+		__reserved: [5]c_int,
+	};
+	extern "c" fn statvfs(path: [*:0]const u8, buf: *Statvfs) c_int;
+
+	fn avail(path: [*:0]const u8) ?u64 {
+		var st: Statvfs = undefined;
+		if (statvfs(path, &st) != 0) return null;
+		return @as(u64, st.f_bavail) * @as(u64, st.f_frsize);
+	}
+} else if (builtin.os.tag == .macos) struct {
+	const c_fs = @cImport(@cInclude("sys/statvfs.h"));
+
+	fn avail(path: [*:0]const u8) ?u64 {
+		var st: c_fs.struct_statvfs = undefined;
+		if (c_fs.statvfs(path, &st) != 0) return null;
+		return @as(u64, st.f_bavail) * @as(u64, st.f_frsize);
+	}
+} else struct {
+	fn avail(_: [*:0]const u8) ?u64 {
+		return null;
+	}
+};
+
 /// Check that the temp directory has sufficient free space for SQLite
 /// journal/WAL writes. Prints an error to stderr and exits if space
 /// is below the threshold. Best-effort: silently succeeds on any
 /// failure to read filesystem stats (e.g. unsupported platform).
 fn checkTmpSpace() void {
-	const c_fs = @cImport(@cInclude("sys/statvfs.h"));
 	const tmp_path: [*:0]const u8 = if (std.posix.getenv("TMPDIR")) |t|
 		@ptrCast(t.ptr)
 	else
 		"/tmp";
-	var stat: c_fs.struct_statvfs = undefined;
-	if (c_fs.statvfs(tmp_path, &stat) != 0) return; // best-effort
-	const avail: u64 = @as(u64, stat.f_bavail) * @as(u64, stat.f_frsize);
+	const avail = posix_fs.avail(tmp_path) orelse return;
 	if (avail >= MIN_TMP_SPACE_BYTES) return;
 	var eb: [512]u8 = undefined;
 	var ew = std.fs.File.stderr().writer(&eb);
