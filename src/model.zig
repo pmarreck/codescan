@@ -11,6 +11,7 @@ pub const Symbol = struct {
 	symbol_visibility: ?[]const u8 = null,
 	symbol_scope: ?[]const u8 = null,
 	symbol_arity: ?i32 = null,
+	body: ?[]const u8 = null,
 	start_line: usize,
 	end_line: usize,
 	start_hash: ?hashline.Hash = null,
@@ -25,6 +26,7 @@ pub const Symbol = struct {
 		if (self.symbol_kind) |value| allocator.free(value);
 		if (self.symbol_visibility) |value| allocator.free(value);
 		if (self.symbol_scope) |value| allocator.free(value);
+		if (self.body) |value| allocator.free(value);
 		self.* = undefined;
 	}
 };

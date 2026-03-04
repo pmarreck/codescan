@@ -81,9 +81,23 @@ pub fn main() !void {
 	};
 	defer sym_doc.deinit(allocator);
 
+	// Symbol with a unique string only in its body (for body search test)
+	var sym_body = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/body_test.zig"),
+		.name = try allocator.dupe(u8, "processItems"),
+		.signature = try allocator.dupe(u8, "fn processItems() void"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "const xylophone_unique_test_string = 42;"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_body.deinit(allocator);
+
 	const id_code = try storage.insertSymbol(db, sym_code);
 	const id_comment = try storage.insertSymbol(db, sym_comment);
 	const id_doc = try storage.insertSymbol(db, sym_doc);
+	const id_body = try storage.insertSymbol(db, sym_body);
 
 	const vector = try allocator.alloc(f32, embedding_dim);
 	defer allocator.free(vector);
@@ -92,6 +106,7 @@ pub fn main() !void {
 	try storage.insertEmbedding(db, allocator, id_code, vector);
 	try storage.insertEmbedding(db, allocator, id_comment, vector);
 	try storage.insertEmbedding(db, allocator, id_doc, vector);
+	try storage.insertEmbedding(db, allocator, id_body, vector);
 	try storage.insertCommentEmbedding(db, allocator, id_comment, vector);
 	try storage.insertCommentEmbedding(db, allocator, id_doc, vector);
 }

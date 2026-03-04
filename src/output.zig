@@ -6,6 +6,7 @@ const model = @import("model.zig");
 
 pub const OutputOptions = struct {
 	show_comments: bool = false,
+	show_body: bool = false,
 	use_color: bool = true,
 	total_relevant: usize = 0,
 	top_n: usize = 10,
@@ -68,6 +69,16 @@ fn writeHuman(writer: *std.Io.Writer, results: []const search.Result, options: O
 				try writer.print("   doc: {s}\n", .{doc});
 			}
 		}
+
+		if (options.show_body) {
+			if (res.symbol.body) |body| {
+				try writer.writeAll("   --- body ---\n");
+				var line_iter = std.mem.splitScalar(u8, body, '\n');
+				while (line_iter.next()) |line| {
+					try writer.print("   {s}\n", .{line});
+				}
+			}
+		}
 	}
 }
 
@@ -82,6 +93,7 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		name: []const u8,
 		signature: []const u8,
 		doc_comment: ?[]const u8,
+		body: ?[]const u8,
 		symbol_kind: ?[]const u8,
 		symbol_visibility: ?[]const u8,
 		symbol_scope: ?[]const u8,
@@ -112,6 +124,7 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 			.name = res.symbol.name,
 			.signature = res.symbol.signature,
 			.doc_comment = res.symbol.doc_comment,
+			.body = if (options.show_body) res.symbol.body else null,
 			.symbol_kind = res.symbol.symbol_kind,
 			.symbol_visibility = res.symbol.symbol_visibility,
 			.symbol_scope = res.symbol.symbol_scope,

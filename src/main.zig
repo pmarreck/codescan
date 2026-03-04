@@ -241,10 +241,16 @@ pub fn main() !void {
 				try ensureWeightsWithDefaults(weights_cfg_path);
 			}
 
-			// Open DB and init schema
-			const db = try storage.openFileWithVec(allocator, settings.db_path);
+			// Open DB and init schema; if the DB is corrupt, recreate it
+			var db = try storage.openFileWithVec(allocator, settings.db_path);
+			_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch {
+				storage.close(db);
+				_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+				_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+			};
 			defer storage.close(db);
-			_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
 
 			// Try Ollama; fall back to lexical-only if unavailable
 			var http_client = ollama.StdHttpTransport.init(allocator);
@@ -337,15 +343,26 @@ pub fn main() !void {
 		.update => {
 			checkTmpSpace();
 			try ensureParentDir(settings.db_path);
-			const db = try storage.openFileWithVec(allocator, settings.db_path);
+			var db = try storage.openFileWithVec(allocator, settings.db_path);
+			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
+				storage.close(db);
+				{
+					var sb2: [4096]u8 = undefined;
+					var sw2 = std.fs.File.stderr().writer(&sb2);
+					const se2 = &sw2.interface;
+					_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+					_ = se2.flush() catch {};
+				}
+				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+			};
 			defer storage.close(db);
-			var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
 			defer schema_result.deinit(allocator);
 			if (schema_result.did_schema_upgrade) {
 				var sb: [4096]u8 = undefined;
 				var sw = std.fs.File.stderr().writer(&sb);
 				const se = &sw.interface;
-				_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+				_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 				_ = se.flush() catch {};
 			}
 			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
@@ -427,18 +444,24 @@ pub fn main() !void {
 		.search => {
 			const query = parsed.query orelse return error.MissingQuery;
 			try ensureParentDir(settings.db_path);
-			const db = try storage.openFileWithVec(allocator, settings.db_path);
-			defer storage.close(db);
+			var db = try storage.openFileWithVec(allocator, settings.db_path);
 
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 
 			// Always run schema init/migration so older DBs get new columns
-			var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
+				storage.close(db);
+				_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+			};
+			defer storage.close(db);
 			defer schema_result.deinit(allocator);
 			if (schema_result.did_schema_upgrade) {
-				_ = stderr.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+				_ = stderr.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 				_ = stderr.flush() catch {};
 			}
 			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
@@ -559,9 +582,28 @@ pub fn main() !void {
 				_ = stderr.flush() catch {};
 			}
 
+			// When --include-body is set, cap results at 3 unless user explicitly set --top
+			var display_results = sr.results;
+			const body_limit: usize = 3;
+			if (parsed.include_body and !parsed.seen.top_n and sr.results.len > body_limit) {
+				display_results = sr.results[0..body_limit];
+				_ = stderr.print("note: --include-body limits output to {d} results to avoid overfilling context (use --top N to override).\n", .{body_limit}) catch {};
+				_ = stderr.flush() catch {};
+			}
+
+			// Fetch body text for each result when --include-body is set
+			if (parsed.include_body) {
+				for (display_results) |*res| {
+					if (res.symbol.body == null) {
+						res.symbol.body = storage.getSymbolBody(allocator, db, res.id) catch null;
+					}
+				}
+			}
+
 			const use_color = settings.output == .human and !std.process.hasEnvVarConstant("NO_COLOR");
-			try output.writeResults(allocator, stdout, settings.output, sr.results, .{
+			try output.writeResults(allocator, stdout, settings.output, display_results, .{
 				.show_comments = settings.show_comments,
+				.show_body = parsed.include_body,
 				.use_color = use_color,
 				.total_relevant = sr.total_relevant,
 				.top_n = settings.top_n,
@@ -788,15 +830,26 @@ pub fn main() !void {
 				.run => {
 					try ensureParentDir(settings.db_path);
 					// Open existing DB or create new one (don't destroy existing index)
-					const db = try storage.openFileWithVec(allocator, settings.db_path);
+					var db = try storage.openFileWithVec(allocator, settings.db_path);
+					var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
+						storage.close(db);
+						{
+							var sb2: [4096]u8 = undefined;
+							var sw2 = std.fs.File.stderr().writer(&sb2);
+							const se2 = &sw2.interface;
+							_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+							_ = se2.flush() catch {};
+						}
+						db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+						break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+					};
 					defer storage.close(db);
-					var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
 					defer schema_result.deinit(allocator);
 					if (schema_result.did_schema_upgrade) {
 						var sb: [4096]u8 = undefined;
 						var sw = std.fs.File.stderr().writer(&sb);
 						const se = &sw.interface;
-						_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
+						_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 						_ = se.flush() catch {};
 					}
 					if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
@@ -2936,6 +2989,8 @@ const usage_search =
     \\  --ext <csv>                     Restrict to extensions
     \\  --type <csv>                    Restrict to types: code,doc,text,log
     \\  --lang <csv>                    Restrict to language(s)
+    \\  --include-body                  Include function body text in output
+    \\                                  (limits to 3 results by default)
     \\  --json                          JSON output
     \\
     \\Examples:
@@ -2943,6 +2998,7 @@ const usage_search =
     \\  codescan "h264 parser"
     \\  codescan search "design doc" --scope docs
     \\  codescan search "hash functions" --scope comments
+    \\  codescan search "widget" --include-body
     \\
 ;
 

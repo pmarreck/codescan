@@ -10,7 +10,7 @@ const hashline = @import("hashline.zig");
 
 pub const sqlite = c;
 pub const Db = *c.sqlite3;
-const current_schema_version = 3;
+const current_schema_version = 4;
 
 pub const InitSchemaResult = struct {
 	did_schema_upgrade: bool = false,
@@ -106,8 +106,10 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 		try migrateV2ToV3(allocator, db);
 		did_schema_upgrade = true;
 	}
-	// Future migrations go here:
-	// if (effective_version < 4) { try migrateV3ToV4(allocator, db); did_schema_upgrade = true; }
+	if (effective_version > 0 and effective_version < 4) {
+		try migrateV3ToV4(allocator, db);
+		did_schema_upgrade = true;
+	}
 
 	// Detect embedding model/dim mismatches BEFORE overwriting stored values
 	var result = InitSchemaResult{
@@ -182,7 +184,8 @@ fn createBaseTables(allocator: std.mem.Allocator, db: Db, schema: Schema) !void 
 		"symbol_kind TEXT, " ++
 		"symbol_visibility TEXT, " ++
 		"symbol_scope TEXT, " ++
-		"symbol_arity INTEGER" ++
+		"symbol_arity INTEGER, " ++
+		"body TEXT" ++
 		");\x00",
 	);
 	try exec(db, "CREATE UNIQUE INDEX IF NOT EXISTS idx_symbols_unique ON symbols (file_path, start_line, end_line, symbol_name);\x00");
@@ -218,6 +221,12 @@ fn migrateV2ToV3(allocator: std.mem.Allocator, db: Db) !void {
 	try ensureColumnExists(db, allocator, "symbols", "symbol_visibility", "TEXT");
 	try ensureColumnExists(db, allocator, "symbols", "symbol_scope", "TEXT");
 	try ensureColumnExists(db, allocator, "symbols", "symbol_arity", "INTEGER");
+}
+
+fn migrateV3ToV4(allocator: std.mem.Allocator, db: Db) !void {
+	try ensureColumnExists(db, allocator, "symbols", "body", "TEXT");
+	// Recreate FTS table to include the new body column
+	_ = execMaybe(db, "DROP TABLE IF EXISTS symbols_fts;\x00");
 }
 
 /// Write the current schema version to meta.
@@ -269,6 +278,7 @@ pub fn isSchemaUpgradeRequired(db: Db, allocator: std.mem.Allocator) !bool {
 	if (!try columnExists(db, allocator, "symbols", "symbol_visibility")) return true;
 	if (!try columnExists(db, allocator, "symbols", "symbol_scope")) return true;
 	if (!try columnExists(db, allocator, "symbols", "symbol_arity")) return true;
+	if (!try columnExists(db, allocator, "symbols", "body")) return true;
 	return false;
 }
 
@@ -288,8 +298,8 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	const sql: [:0]const u8 =
 		"INSERT OR REPLACE INTO symbols (" ++
 		"lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
-		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity" ++
-		") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13);\x00";
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body" ++
+		") VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		logSqliteError(db, "insertSymbol: prepare");
@@ -338,6 +348,11 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	} else {
 		_ = c.sqlite3_bind_null(stmt.?, 13);
 	}
+	if (symbol.body) |body| {
+		try bindText(stmt.?, 14, body);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 14);
+	}
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
 		logSqliteError(db, "insertSymbol: step");
@@ -352,6 +367,20 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 		},
 	};
 	return rowid;
+}
+
+pub fn getSymbolBody(allocator: std.mem.Allocator, db: Db, id: i64) !?[]const u8 {
+	const sql: [:0]const u8 = "SELECT body FROM symbols WHERE id = ?1;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+	_ = c.sqlite3_bind_int64(stmt.?, 1, id);
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) return null;
+	const ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
+	const len: usize = @intCast(c.sqlite3_column_bytes(stmt.?, 0));
+	return try allocator.dupe(u8, ptr[0..len]);
 }
 
 pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
@@ -421,14 +450,14 @@ fn execMaybe(db: Db, sql: [:0]const u8) bool {
 
 fn tryInitFts(allocator: std.mem.Allocator, db: Db) bool {
 	const fts_sql: [:0]const u8 =
-		"CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(symbol_name, signature, doc_comment, file_path);\x00";
+		"CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(symbol_name, signature, doc_comment, file_path, body);\x00";
 	if (!execMaybe(db, fts_sql)) return false;
 
 	const fts_count = countRows(db, allocator, "symbols_fts") catch return true;
 	if (fts_count == 0) {
 		const rebuild_sql: [:0]const u8 =
-			"INSERT OR REPLACE INTO symbols_fts(rowid, symbol_name, signature, doc_comment, file_path) "
-			++ "SELECT id, symbol_name, signature, doc_comment, file_path FROM symbols;\x00";
+			"INSERT OR REPLACE INTO symbols_fts(rowid, symbol_name, signature, doc_comment, file_path, body) "
+			++ "SELECT id, symbol_name, signature, doc_comment, file_path, body FROM symbols;\x00";
 		_ = execMaybe(db, rebuild_sql);
 	}
 
@@ -437,8 +466,8 @@ fn tryInitFts(allocator: std.mem.Allocator, db: Db) bool {
 
 fn insertSymbolFts(db: Db, symbol: model.Symbol, rowid: i64) !void {
 	const sql: [:0]const u8 =
-		"INSERT INTO symbols_fts (rowid, symbol_name, signature, doc_comment, file_path) "
-		++ "VALUES (?1, ?2, ?3, ?4, ?5);\x00";
+		"INSERT INTO symbols_fts (rowid, symbol_name, signature, doc_comment, file_path, body) "
+		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		logSqliteError(db, "insertSymbolFts: prepare");
@@ -455,6 +484,11 @@ fn insertSymbolFts(db: Db, symbol: model.Symbol, rowid: i64) !void {
 		_ = c.sqlite3_bind_null(stmt.?, 4);
 	}
 	try bindText(stmt.?, 5, symbol.file_path);
+	if (symbol.body) |body| {
+		try bindText(stmt.?, 6, body);
+	} else {
+		_ = c.sqlite3_bind_null(stmt.?, 6);
+	}
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
 		return error.SqlStepFailed;
@@ -920,7 +954,7 @@ test "initSchema creates tables" {
 	const version = try metaValue(db, allocator, "schema_version");
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
-	try std.testing.expectEqualStrings("3", version.?);
+	try std.testing.expectEqualStrings("4", version.?);
 }
 
 test "initSchema migrates v2 symbols table by adding metadata columns" {
@@ -939,11 +973,12 @@ test "initSchema migrates v2 symbols table by adding metadata columns" {
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_visibility"));
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_scope"));
 	try std.testing.expect(try columnExists(db, allocator, "symbols", "symbol_arity"));
+	try std.testing.expect(try columnExists(db, allocator, "symbols", "body"));
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
 	const version = try metaValue(db, allocator, "schema_version");
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
-	try std.testing.expectEqualStrings("3", version.?);
+	try std.testing.expectEqualStrings("4", version.?);
 }
 
 test "migrateV2ToV3 adds metadata columns to existing table" {
@@ -996,7 +1031,7 @@ test "initSchema does not report upgrade for current-version DB" {
 	// Second init should not report upgrade
 	const result = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 	try std.testing.expect(!result.did_schema_upgrade);
-	try std.testing.expectEqual(@as(?u32, 3), result.previous_schema_version);
+	try std.testing.expectEqual(@as(?u32, 4), result.previous_schema_version);
 }
 
 test "openFileWithVecRecreate replaces existing file" {

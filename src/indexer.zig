@@ -138,6 +138,9 @@ pub fn indexAll(
 				if (sym.end_line > 0 and sym.end_line <= h.len)
 					sym_with_hash.end_hash = h[sym.end_line - 1];
 			}
+			const body = try extractSourceBody(allocator, source, sym.start_line, sym.end_line);
+			defer if (body) |b| allocator.free(b);
+			sym_with_hash.body = body;
 			const rowid = try storage.insertSymbol(db, sym_with_hash);
 			stats.symbols += 1;
 
@@ -363,6 +366,9 @@ pub fn indexIncremental(
 				if (sym.end_line > 0 and sym.end_line <= h.len)
 					sym_with_hash.end_hash = h[sym.end_line - 1];
 			}
+			const body = try extractSourceBody(allocator, source, sym.start_line, sym.end_line);
+			defer if (body) |b| allocator.free(b);
+			sym_with_hash.body = body;
 			const rowid = try storage.insertSymbol(db, sym_with_hash);
 			stats.symbols += 1;
 
@@ -455,6 +461,9 @@ pub fn reindexFile(
 			if (sym.end_line > 0 and sym.end_line <= h.len)
 				sym_with_hash.end_hash = h[sym.end_line - 1];
 		}
+		const body = try extractSourceBody(allocator, source, sym.start_line, sym.end_line);
+		defer if (body) |b| allocator.free(b);
+		sym_with_hash.body = body;
 		_ = try storage.insertSymbol(db, sym_with_hash);
 	}
 
@@ -630,6 +639,45 @@ fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
 }
 
 /// Split source into lines and compute chain hashes.
+const max_body_bytes: usize = 16 * 1024; // 16 KB cap per symbol body
+
+/// Extract the source body for a symbol from source text, given its 1-based line range.
+/// Returns an owned slice truncated to max_body_bytes, or null if the range is invalid.
+fn extractSourceBody(allocator: std.mem.Allocator, source: []const u8, start_line: usize, end_line: usize) !?[]const u8 {
+	if (start_line == 0 or end_line == 0 or start_line > end_line) return null;
+
+	// Walk source to find byte offsets for the line range
+	var line: usize = 1;
+	var body_start: ?usize = null;
+	if (start_line == 1) body_start = 0;
+
+	for (source, 0..) |ch, i| {
+		if (ch == '\n') {
+			if (line == end_line) {
+				// End of the last line we want (include the newline)
+				const bs = body_start orelse return null;
+				const raw = source[bs .. i + 1];
+				const len = @min(raw.len, max_body_bytes);
+				return try allocator.dupe(u8, raw[0..len]);
+			}
+			line += 1;
+			if (line == start_line) {
+				body_start = i + 1;
+			}
+		}
+	}
+
+	// Handle last line (no trailing newline)
+	if (line >= start_line and line <= end_line) {
+		const bs = body_start orelse return null;
+		const raw = source[bs..];
+		const len = @min(raw.len, max_body_bytes);
+		return try allocator.dupe(u8, raw[0..len]);
+	}
+
+	return null;
+}
+
 fn computeFileHashes(allocator: std.mem.Allocator, source: []const u8) ![]hashline.Hash {
 	// Split source into lines
 	var lines = std.ArrayListUnmanaged([]const u8){};

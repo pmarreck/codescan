@@ -252,7 +252,9 @@ pub fn search(
 
 			// Apply token coverage gating: if the query has multiple tokens,
 			// penalize FTS results that only match a fraction of them.
-			const coverage = tokenCoverage(query_tokens, res.symbol);
+			// Floor at 0.1 because FTS already confirmed the match (may be in body column
+			// which isn't loaded into the result struct).
+			const coverage = @max(tokenCoverage(query_tokens, res.symbol), 0.1);
 			break :blk bm25_norm * coverage;
 		} else try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
 		res.lexical = lexical;
@@ -555,6 +557,7 @@ fn likeCandidates(
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
 		++ "OR signature LIKE ?1 COLLATE NOCASE "
 		++ "OR doc_comment LIKE ?1 COLLATE NOCASE "
+		++ "OR body LIKE ?1 COLLATE NOCASE "
 		++ "ORDER BY "
 		++ "CASE WHEN symbol_name LIKE ?2 COLLATE NOCASE THEN 0 "
 		++ "WHEN symbol_name LIKE ?3 COLLATE NOCASE THEN 1 "
@@ -667,10 +670,10 @@ fn ftsCandidates(
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, "
 		++ "1e999 AS distance, "
-		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
+		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
-		++ "ORDER BY bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) "
+		++ "ORDER BY bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) "
 		++ "LIMIT {d};",
 		.{ escaped, limit },
 	);
@@ -681,7 +684,7 @@ fn ftsCandidates(
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, "
 		++ "1e999 AS distance, "
-		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0) AS bm25_score "
+		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
 		++ "LIMIT {d};",
@@ -2884,6 +2887,74 @@ test "bm25 column weights rank name match above doc_comment match" {
 	try std.testing.expect(sr.results.len >= 2);
 	// The symbol with "hash" in its name should rank first
 	try std.testing.expectEqualStrings("hash", sr.results[0].symbol.name);
+}
+
+test "bm25 body matches rank below name and doc_comment matches" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// sym_name: "widget" in the symbol name (weight 10)
+	var sym_name = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "widget"),
+		.signature = try allocator.dupe(u8, "pub fn widget() void"),
+		.doc_comment = try allocator.dupe(u8, "does stuff"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_name.deinit(allocator);
+
+	// sym_doc: "widget" in doc_comment only (weight 5)
+	var sym_doc = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "render"),
+		.signature = try allocator.dupe(u8, "pub fn render() void"),
+		.doc_comment = try allocator.dupe(u8, "renders a widget"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_doc.deinit(allocator);
+
+	// sym_body: "widget" in body only (weight 0.5)
+	var sym_body = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/c.zig"),
+		.name = try allocator.dupe(u8, "process"),
+		.signature = try allocator.dupe(u8, "pub fn process() void"),
+		.doc_comment = try allocator.dupe(u8, "does processing"),
+		.body = try allocator.dupe(u8, "const x = widget.create();"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_body.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym_name);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym_doc);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+	const id3 = try storage.insertSymbol(db, sym_body);
+	try storage.insertEmbedding(db, allocator, id3, &[_]f32{ 0.0, 0.0 });
+
+	if (!(ftsAvailable(db) catch false)) return;
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "widget", .{
+		.top_n = 10,
+		.mode = .lexical,
+		.min_score = 0.0,
+		.score_dropoff = 0.0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expect(sr.results.len >= 3);
+	// Name match should rank first, body match should rank last
+	try std.testing.expectEqualStrings("widget", sr.results[0].symbol.name);
+	try std.testing.expectEqualStrings("process", sr.results[2].symbol.name);
 }
 
 test "search works against v2 schema DB after initSchema migration" {

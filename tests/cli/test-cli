@@ -116,6 +116,10 @@ main() {
 	# The ISO8601 string must contain 2026-02 (February), not 2026-03 (March)
 	printf '%s' "$iso_ts" | rg -q '^2026-02-' || fail "status ISO8601 month wrong: expected 2026-02-*, got '$iso_ts'"
 
+	# Body search: a unique string that only appears inside a function body
+	names=$(search_names "xylophone_unique_test_string")
+	printf '%s\n' "$names" | rg -q '^processItems$' || fail "body search did not find symbol by body content"
+
 	capture bash -lc "printf '{\"action\":\"search\",\"query\":\"checksum\",\"mode\":\"lexical\",\"db\":\"$DB\"}\n' | '$BIN' --json"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
