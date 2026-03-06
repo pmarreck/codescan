@@ -111,6 +111,7 @@ pub const Config = struct {
 	search_ext: ?[]const u8 = null,
 	search_type: ?[]const u8 = null,
 	search_lang: ?[]const u8 = null,
+	search_symbol_kind: ?[]const u8 = null,
 	primary_lang: ?[]const u8 = null,
 	include_docs: ?bool = null,
 	docs_only: ?bool = null,
@@ -135,6 +136,7 @@ pub const Config = struct {
 		if (self.search_ext) |value| allocator.free(value);
 		if (self.search_type) |value| allocator.free(value);
 		if (self.search_lang) |value| allocator.free(value);
+		if (self.search_symbol_kind) |value| allocator.free(value);
 		if (self.primary_lang) |value| allocator.free(value);
 		if (self.http_host) |value| allocator.free(value);
 		for (self.ignore_global.items) |pattern| allocator.free(pattern);
@@ -299,6 +301,11 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 
 		if (std.mem.eql(u8, key, "search_lang")) {
 			config.search_lang = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "search_symbol_kind")) {
+			config.search_symbol_kind = try allocator.dupe(u8, value);
 			continue;
 		}
 

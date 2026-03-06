@@ -70,6 +70,7 @@ pub const Seen = struct {
 	ext_filter: bool = false,
 	type_filter: bool = false,
 	lang_filter: bool = false,
+	kind_filter: bool = false,
     scope: bool = false,
 	force: bool = false,
 	dry_run: bool = false,
@@ -109,6 +110,7 @@ pub const Parsed = struct {
 	ext_filter: ?[]const u8,
 	type_filter: ?[]const u8,
 	lang_filter: ?[]const u8,
+	kind_filter: ?[]const u8,
 	symbols_files: std.ArrayListUnmanaged([]const u8),
 	pattern: ?[]const u8,
 	include_body: bool,
@@ -170,6 +172,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.ext_filter = null,
 		.type_filter = null,
 		.lang_filter = null,
+		.kind_filter = null,
 		.symbols_files = .{},
 		.pattern = null,
 		.include_body = false,
@@ -594,6 +597,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			if (i >= args.len) return error.MissingValue;
 			parsed.lang_filter = args[i];
 			parsed.seen.lang_filter = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--kind")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.kind_filter = args[i];
+			parsed.seen.kind_filter = true;
 			i += 1;
 			continue;
 		}

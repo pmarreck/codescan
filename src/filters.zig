@@ -7,6 +7,7 @@ pub const FilterLists = struct {
 	exts: std.ArrayListUnmanaged([]const u8) = .{},
 	langs: std.ArrayListUnmanaged([]const u8) = .{},
 	kinds: std.ArrayListUnmanaged(kind.Kind) = .{},
+	symbol_kinds: std.ArrayListUnmanaged([]const u8) = .{},
 
 	pub fn deinit(self: *FilterLists, allocator: std.mem.Allocator) void {
 		for (self.exts.items) |item| allocator.free(item);
@@ -14,6 +15,8 @@ pub const FilterLists = struct {
 		for (self.langs.items) |item| allocator.free(item);
 		self.langs.deinit(allocator);
 		self.kinds.deinit(allocator);
+		for (self.symbol_kinds.items) |item| allocator.free(item);
+		self.symbol_kinds.deinit(allocator);
 		self.* = undefined;
 	}
 };
@@ -22,6 +25,7 @@ pub const SearchOptions = struct {
 	search_ext: ?[]const u8 = null,
 	search_type: ?[]const u8 = null,
 	search_lang: ?[]const u8 = null,
+	search_symbol_kind: ?[]const u8 = null,
 	primary_lang: ?[]const u8 = null,
 	include_docs: bool = false,
 	docs_only: bool = false,
@@ -61,6 +65,9 @@ pub fn buildSearchFilters(
 	}
 	if (options.search_type) |value| {
 		try parseKindList(allocator, &filters.kinds, value);
+	}
+	if (options.search_symbol_kind) |value| {
+		try parseSymbolKindList(allocator, &filters.symbol_kinds, value);
 	}
 
 	if (options.docs_only) {
@@ -235,4 +242,50 @@ fn containsKind(list: []const kind.Kind, value: kind.Kind) bool {
 		if (item == value) return true;
 	}
 	return false;
+}
+
+pub fn parseSymbolKindList(
+	allocator: std.mem.Allocator,
+	list: *std.ArrayListUnmanaged([]const u8),
+	value: []const u8,
+) !void {
+	var it = std.mem.splitScalar(u8, value, ',');
+	while (it.next()) |part| {
+		const trimmed = std.mem.trim(u8, part, " \t\r");
+		if (trimmed.len == 0) continue;
+		const lower = try normalizeLower(allocator, trimmed);
+		defer allocator.free(lower);
+		const canonical = normalizeSymbolKind(lower) orelse return error.InvalidSymbolKind;
+		if (!containsString(list.items, canonical)) {
+			try list.append(allocator, try allocator.dupe(u8, canonical));
+		}
+	}
+}
+
+fn normalizeSymbolKind(value: []const u8) ?[]const u8 {
+	const map = .{
+		.{ "fn", "fn" },
+		.{ "func", "fn" },
+		.{ "function", "fn" },
+		.{ "struct", "struct" },
+		.{ "enum", "enum" },
+		.{ "union", "union" },
+		.{ "class", "class" },
+		.{ "interface", "interface" },
+		.{ "trait", "trait" },
+		.{ "impl", "impl" },
+		.{ "const", "const" },
+		.{ "constant", "const" },
+		.{ "var", "var" },
+		.{ "variable", "var" },
+		.{ "field", "field" },
+		.{ "test", "test" },
+		.{ "mod", "mod" },
+		.{ "module", "mod" },
+		.{ "type", "type" },
+	};
+	inline for (map) |entry| {
+		if (std.mem.eql(u8, value, entry[0])) return entry[1];
+	}
+	return null;
 }

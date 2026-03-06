@@ -66,6 +66,7 @@ pub const Options = struct {
 	score_dropoff: f32 = 0.3,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
 	allowed_exts: []const []const u8 = &[_][]const u8{},
+	allowed_symbol_kinds: []const []const u8 = &[_][]const u8{},
 	comments_only: bool = false,
 };
 
@@ -194,7 +195,7 @@ pub fn search(
 		results = filtered;
 	}
 
-	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0) {
+	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0 or options.allowed_symbol_kinds.len > 0) {
 		var filtered = std.ArrayListUnmanaged(Result){};
 		errdefer {
 			for (filtered.items) |*res| res.deinit(allocator);
@@ -438,6 +439,17 @@ fn matchesFilters(symbol: model.Symbol, options: Options) bool {
 		var ok = false;
 		for (options.allowed_exts) |ext| {
 			if (hasExtensionIgnoreCase(symbol.file_path, ext)) {
+				ok = true;
+				break;
+			}
+		}
+		if (!ok) return false;
+	}
+	if (options.allowed_symbol_kinds.len > 0) {
+		const sk = symbol.symbol_kind orelse return false;
+		var ok = false;
+		for (options.allowed_symbol_kinds) |k| {
+			if (std.mem.eql(u8, sk, k)) {
 				ok = true;
 				break;
 			}

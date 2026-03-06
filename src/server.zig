@@ -25,6 +25,7 @@ pub const Settings = struct {
 	search_ext: ?[]const u8,
 	search_type: ?[]const u8,
 	search_lang: ?[]const u8,
+	search_symbol_kind: ?[]const u8,
 	primary_lang: ?[]const u8,
 	include_docs: bool,
 	docs_only: bool,
@@ -184,6 +185,7 @@ fn handleRequest(
 			.search_ext = parsed.ext orelse settings.search_ext,
 			.search_type = parsed.type orelse settings.search_type,
 			.search_lang = parsed.lang orelse settings.search_lang,
+			.search_symbol_kind = parsed.symbol_kind orelse settings.search_symbol_kind,
 			.primary_lang = settings.primary_lang,
 			.include_docs = parsed.include_docs orelse settings.include_docs,
 			.docs_only = parsed.docs_only orelse settings.docs_only,
@@ -216,6 +218,7 @@ fn handleRequest(
 			.min_score = parsed.min_score orelse settings.search_min_score,
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,
+			.allowed_symbol_kinds = search_filters.symbol_kinds.items,
 			.comments_only = parsed.comments_only orelse settings.comments_only,
 		});
 		defer search.freeResults(allocator, sr.results);
@@ -793,6 +796,7 @@ pub const SearchRequest = struct {
 	ext: ?[]const u8 = null,
 	type: ?[]const u8 = null,
 	lang: ?[]const u8 = null,
+	symbol_kind: ?[]const u8 = null,
 	include_docs: ?bool = null,
 	docs_only: ?bool = null,
 	comments_only: ?bool = null,
@@ -802,6 +806,7 @@ pub const SearchRequest = struct {
 		if (self.ext) |value| allocator.free(value);
 		if (self.type) |value| allocator.free(value);
 		if (self.lang) |value| allocator.free(value);
+		if (self.symbol_kind) |value| allocator.free(value);
 		self.* = undefined;
 	}
 };
@@ -864,6 +869,13 @@ pub fn parseSearchRequest(allocator: std.mem.Allocator, body: []const u8) !Searc
 	}
 	if (obj.get("lang")) |lang_val| {
 		req.lang = try parseStringOrArray(allocator, lang_val);
+	}
+	if (obj.get("kind")) |kind_val| {
+		req.symbol_kind = try parseStringOrArray(allocator, kind_val);
+	}
+	if (obj.get("symbol_kind")) |kind_val| {
+		if (req.symbol_kind == null)
+			req.symbol_kind = try parseStringOrArray(allocator, kind_val);
 	}
 
 	if (obj.get("include_docs")) |flag| {
@@ -1100,6 +1112,7 @@ fn testSettings() Settings {
 		.search_ext = null,
 		.search_type = null,
 		.search_lang = null,
+		.search_symbol_kind = null,
 		.primary_lang = null,
 		.include_docs = false,
 		.docs_only = false,

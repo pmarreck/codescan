@@ -79,6 +79,7 @@ const Settings = struct {
 	search_ext: ?[]const u8,
 	search_type: ?[]const u8,
 	search_lang: ?[]const u8,
+	search_symbol_kind: ?[]const u8,
 	primary_lang: ?[]const u8,
 	ignore_global: []const []const u8,
 	ignore_lang: []const config.IgnoreOverride,
@@ -527,6 +528,7 @@ pub fn main() !void {
 				.search_ext = settings.search_ext,
 				.search_type = settings.search_type,
 				.search_lang = settings.search_lang,
+				.search_symbol_kind = settings.search_symbol_kind,
 				.primary_lang = settings.primary_lang,
 				.include_docs = settings.include_docs,
 				.docs_only = settings.docs_only,
@@ -561,6 +563,7 @@ pub fn main() !void {
 					.min_score = settings.min_score,
 					.allowed_langs = search_filters.langs.items,
 					.allowed_exts = search_filters.exts.items,
+					.allowed_symbol_kinds = search_filters.symbol_kinds.items,
 					.comments_only = settings.comments_only,
 				},
 			);
@@ -629,6 +632,7 @@ pub fn main() !void {
 				.search_ext = settings.search_ext,
 				.search_type = settings.search_type,
 				.search_lang = settings.search_lang,
+				.search_symbol_kind = settings.search_symbol_kind,
 				.primary_lang = settings.primary_lang,
 				.include_docs = settings.include_docs,
 				.docs_only = settings.docs_only,
@@ -755,6 +759,7 @@ pub fn main() !void {
 				.search_ext = settings.search_ext,
 				.search_type = settings.search_type,
 				.search_lang = settings.search_lang,
+				.search_symbol_kind = settings.search_symbol_kind,
 				.primary_lang = settings.primary_lang,
 				.include_docs = settings.include_docs,
 				.docs_only = settings.docs_only,
@@ -1009,6 +1014,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.search_ext = null,
 		.search_type = null,
 		.search_lang = null,
+		.search_symbol_kind = null,
 		.primary_lang = null,
 		.ignore_global = &[_][]const u8{},
 		.ignore_lang = &[_]config.IgnoreOverride{},
@@ -1047,6 +1053,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.search_ext) |value| settings.search_ext = value;
 	if (cfg.search_type) |value| settings.search_type = value;
 	if (cfg.search_lang) |value| settings.search_lang = value;
+	if (cfg.search_symbol_kind) |value| settings.search_symbol_kind = value;
 	if (cfg.primary_lang) |value| settings.primary_lang = value;
 	if (cfg.include_docs) |value| settings.include_docs = value;
 	if (cfg.docs_only) |value| settings.docs_only = value;
@@ -1106,6 +1113,9 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	}
 	if (parsed.seen.lang_filter and parsed.command == .search) {
 		settings.search_lang = parsed.lang_filter;
+	}
+	if (parsed.seen.kind_filter and parsed.command == .search) {
+		settings.search_symbol_kind = parsed.kind_filter;
 	}
 	if (parsed.seen.http_host) settings.http_host = parsed.http_host;
 	if (parsed.seen.http_port) settings.http_port = parsed.http_port;
@@ -2989,6 +2999,11 @@ const usage_search =
     \\  --ext <csv>                     Restrict to extensions
     \\  --type <csv>                    Restrict to types: code,doc,text,log
     \\  --lang <csv>                    Restrict to language(s)
+    \\  --kind <csv>                    Restrict to symbol kind(s)
+    \\                                  Values: fn (function, func), struct, enum,
+    \\                                  union, class, interface, trait, impl,
+    \\                                  const (constant), var (variable), field,
+    \\                                  test, mod (module), type
     \\  --include-body                  Include function body text in output
     \\                                  (limits to 3 results by default)
     \\  --json                          JSON output
@@ -2999,6 +3014,7 @@ const usage_search =
     \\  codescan search "design doc" --scope docs
     \\  codescan search "hash functions" --scope comments
     \\  codescan search "widget" --include-body
+    \\  codescan search "config" --kind const,var
     \\
 ;
 
@@ -3449,6 +3465,7 @@ fn parseJsonEnvelopeArgs(
         try appendJsonStringOrArrayFlag(allocator, obj, "ext", "--ext", &args_list, &owned_list);
         try appendJsonStringOrArrayFlag(allocator, obj, "type", "--type", &args_list, &owned_list);
         try appendJsonStringOrArrayFlag(allocator, obj, "lang", "--lang", &args_list, &owned_list);
+        try appendJsonStringOrArrayFlag(allocator, obj, "kind", "--kind", &args_list, &owned_list);
         try appendJsonBoolFlag(allocator, obj, "include_docs", "--include-docs", &args_list);
         try appendJsonBoolFlag(allocator, obj, "docs_only", "--docs", &args_list);
         try appendJsonBoolFlag(allocator, obj, "comments_only", "--comments", &args_list);

@@ -47,6 +47,7 @@ pub const Settings = struct {
 	search_ext: ?[]const u8 = null,
 	search_type: ?[]const u8 = null,
 	search_lang: ?[]const u8 = null,
+	search_symbol_kind: ?[]const u8 = null,
 	primary_lang: ?[]const u8 = null,
 	include_docs: bool = false,
 	docs_only: bool = false,
@@ -381,6 +382,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.search_ext = settings.search_ext,
 			.search_type = settings.search_type,
 			.search_lang = settings.search_lang,
+			.search_symbol_kind = settings.search_symbol_kind,
 			.primary_lang = settings.primary_lang,
 			.include_docs = settings.include_docs,
 			.docs_only = settings.docs_only,
@@ -410,6 +412,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.min_score = settings.search_min_score,
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,
+			.allowed_symbol_kinds = search_filters.symbol_kinds.items,
 			.comments_only = settings.comments_only,
 		}) catch |err|
 			return toolError("MCP search: search failed for query '{s}': {}\n", .{ query, err });
