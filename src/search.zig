@@ -3,6 +3,7 @@ const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
 const model = @import("model.zig");
 const hashline = @import("hashline.zig");
+const simd = @import("simd.zig");
 
 const sqlite = storage.sqlite;
 
@@ -835,9 +836,9 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 		// Skip very short tokens (likely noise: "a", "I", etc.)
 		if (tok.len < 2) continue;
 		significant += 1;
-		const in_name = std.ascii.indexOfIgnoreCase(symbol.name, tok) != null;
-		const in_sig = std.ascii.indexOfIgnoreCase(symbol.signature, tok) != null;
-		const in_doc = if (symbol.doc_comment) |doc| std.ascii.indexOfIgnoreCase(doc, tok) != null else false;
+		const in_name = simd.indexOfIgnoreCase(symbol.name, tok) != null;
+		const in_sig = simd.indexOfIgnoreCase(symbol.signature, tok) != null;
+		const in_doc = if (symbol.doc_comment) |doc| simd.indexOfIgnoreCase(doc, tok) != null else false;
 		if (in_name or in_sig or in_doc) matched += 1;
 	}
 	if (significant == 0) return 1.0;
@@ -852,7 +853,7 @@ fn pathTokenCoverage(query_tokens: []const []const u8, file_path: []const u8) f3
 		if (tok.len < 3) continue;
 		if (isConceptualCue(tok)) continue;
 		significant += 1;
-		if (std.ascii.indexOfIgnoreCase(file_path, tok) != null) matched += 1;
+		if (simd.indexOfIgnoreCase(file_path, tok) != null) matched += 1;
 	}
 	if (significant == 0) return 0;
 	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
@@ -1119,7 +1120,7 @@ fn nameRelevance(allocator: std.mem.Allocator, query: []const u8, name: []const 
 	// Single-token fast path: direct comparison
 	if (std.mem.indexOfScalar(u8, query, ' ') == null) {
 		if (std.ascii.eqlIgnoreCase(query, name)) return .exact;
-		if (std.ascii.indexOfIgnoreCase(name, query) != null) return .substring;
+		if (simd.indexOfIgnoreCase(name, query) != null) return .substring;
 		// Try cross-case match for single tokens (e.g. "nameRelevance" vs "name_relevance")
 		const cross = try crossCaseQueryMatch(allocator, query, name);
 		if (cross != .none) return cross;
@@ -1136,8 +1137,8 @@ fn nameRelevance(allocator: std.mem.Allocator, query: []const u8, name: []const 
 	if (std.ascii.eqlIgnoreCase(snake, name)) return .exact;
 
 	// Check if camelCase/snake_case join is a substring of the name
-	if (std.ascii.indexOfIgnoreCase(name, camel) != null) return .substring;
-	if (std.ascii.indexOfIgnoreCase(name, snake) != null) return .substring;
+	if (simd.indexOfIgnoreCase(name, camel) != null) return .substring;
+	if (simd.indexOfIgnoreCase(name, snake) != null) return .substring;
 
 	// Check if ALL query tokens appear individually in the name
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
@@ -1145,7 +1146,7 @@ fn nameRelevance(allocator: std.mem.Allocator, query: []const u8, name: []const 
 	var token_count: usize = 0;
 	while (tokens.next()) |tok| {
 		token_count += 1;
-		if (std.ascii.indexOfIgnoreCase(name, tok) == null) {
+		if (simd.indexOfIgnoreCase(name, tok) == null) {
 			all_in_name = false;
 			break;
 		}
@@ -1248,12 +1249,12 @@ fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, 
 	//   doc comment   → 0.5  (described in docs)
 	//   signature only → 0.3 (just referenced/called in body)
 	for (query_tokens) |tok| {
-		const in_doc = if (symbol.doc_comment) |doc| std.ascii.indexOfIgnoreCase(doc, tok) != null else false;
+		const in_doc = if (symbol.doc_comment) |doc| simd.indexOfIgnoreCase(doc, tok) != null else false;
 		if (comments_only) {
 			if (in_doc) weighted_score += 1.0;
 		} else {
-			const in_name = std.ascii.indexOfIgnoreCase(symbol.name, tok) != null;
-			const in_sig = std.ascii.indexOfIgnoreCase(symbol.signature, tok) != null;
+			const in_name = simd.indexOfIgnoreCase(symbol.name, tok) != null;
+			const in_sig = simd.indexOfIgnoreCase(symbol.signature, tok) != null;
 			if (in_name) {
 				weighted_score += 1.0;
 			} else if (in_doc) {
@@ -1277,7 +1278,7 @@ fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, 
 		if (std.ascii.eqlIgnoreCase(query_trimmed, symbol.name)) {
 			// Exact name match → strong boost
 			base_score = @min(1.0, base_score + 0.5);
-		} else if (query_trimmed.len >= 3 and std.ascii.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
+		} else if (query_trimmed.len >= 3 and simd.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
 			// Full query is a substring of the name → moderate boost
 			base_score = @min(1.0, base_score + 0.2);
 		} else {
@@ -1307,21 +1308,21 @@ fn crossCaseMatch(allocator: std.mem.Allocator, tok: []const u8, name: []const u
 	// Try camelCase join
 	const camel = try joinPartsAsCamel(allocator, parts);
 	defer allocator.free(camel);
-	if (std.ascii.indexOfIgnoreCase(name, camel) != null) return 1.0;
+	if (simd.indexOfIgnoreCase(name, camel) != null) return 1.0;
 
 	// Try snake_case join
 	const snake = try joinPartsAsSnake(allocator, parts);
 	defer allocator.free(snake);
-	if (std.ascii.indexOfIgnoreCase(name, snake) != null) return 1.0;
+	if (simd.indexOfIgnoreCase(name, snake) != null) return 1.0;
 
 	// Check signature
-	if (std.ascii.indexOfIgnoreCase(signature, camel) != null) return 0.3;
-	if (std.ascii.indexOfIgnoreCase(signature, snake) != null) return 0.3;
+	if (simd.indexOfIgnoreCase(signature, camel) != null) return 0.3;
+	if (simd.indexOfIgnoreCase(signature, snake) != null) return 0.3;
 
 	// Check if all sub-parts appear individually in the name
 	var all_in_name = true;
 	for (parts) |p| {
-		if (std.ascii.indexOfIgnoreCase(name, p) == null) {
+		if (simd.indexOfIgnoreCase(name, p) == null) {
 			all_in_name = false;
 			break;
 		}
@@ -1349,8 +1350,8 @@ fn crossCaseQueryMatch(allocator: std.mem.Allocator, query: []const u8, name: []
 	defer allocator.free(snake);
 	if (std.ascii.eqlIgnoreCase(snake, name)) return .exact;
 
-	if (std.ascii.indexOfIgnoreCase(name, camel) != null) return .substring;
-	if (std.ascii.indexOfIgnoreCase(name, snake) != null) return .substring;
+	if (simd.indexOfIgnoreCase(name, camel) != null) return .substring;
+	if (simd.indexOfIgnoreCase(name, snake) != null) return .substring;
 
 	return .none;
 }

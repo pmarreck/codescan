@@ -34,6 +34,7 @@ const _pidfile = @import("pidfile.zig");
 const _plugin = @import("plugin.zig");
 const _scan = @import("scan.zig");
 const _search = @import("search.zig");
+const _simd = @import("simd.zig");
 const _server = @import("server.zig");
 const _storage = @import("storage.zig");
 const _symbol_tree = @import("symbol_tree.zig");
@@ -78,6 +79,7 @@ test {
 	_ = _plugin;
 	_ = _scan;
 	_ = _search;
+	_ = _simd;
 	_ = _server;
 	_ = _storage;
 	_ = _symbol_tree;
