@@ -10,7 +10,7 @@ const hashline = @import("hashline.zig");
 
 pub const sqlite = c;
 pub const Db = *c.sqlite3;
-const current_schema_version = 4;
+const current_schema_version = 5;
 
 pub const InitSchemaResult = struct {
 	did_schema_upgrade: bool = false,
@@ -108,6 +108,10 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 	}
 	if (effective_version > 0 and effective_version < 4) {
 		try migrateV3ToV4(allocator, db);
+		did_schema_upgrade = true;
+	}
+	if (effective_version > 0 and effective_version < 5) {
+		try migrateV4ToV5(db);
 		did_schema_upgrade = true;
 	}
 
@@ -227,6 +231,21 @@ fn migrateV3ToV4(allocator: std.mem.Allocator, db: Db) !void {
 	try ensureColumnExists(db, allocator, "symbols", "body", "TEXT");
 	// Recreate FTS table to include the new body column
 	_ = execMaybe(db, "DROP TABLE IF EXISTS symbols_fts;\x00");
+}
+
+fn migrateV4ToV5(db: Db) !void {
+	// symbol_kind values changed from full words to short forms.
+	// Update existing records so searches work without a full reindex,
+	// though a full reindex is still recommended (picks up const/var split).
+	const updates = [_][:0]const u8{
+		"UPDATE symbols SET symbol_kind = 'fn' WHERE symbol_kind = 'function';\x00",
+		"UPDATE symbols SET symbol_kind = 'var' WHERE symbol_kind = 'variable';\x00",
+		"UPDATE symbols SET symbol_kind = 'mod' WHERE symbol_kind = 'module';\x00",
+		"UPDATE symbols SET symbol_kind = 'const' WHERE symbol_kind = 'constant';\x00",
+	};
+	for (updates) |sql| {
+		_ = execMaybe(db, sql);
+	}
 }
 
 /// Write the current schema version to meta.
@@ -954,7 +973,7 @@ test "initSchema creates tables" {
 	const version = try metaValue(db, allocator, "schema_version");
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
-	try std.testing.expectEqualStrings("4", version.?);
+	try std.testing.expectEqualStrings("5", version.?);
 }
 
 test "initSchema migrates v2 symbols table by adding metadata columns" {
@@ -978,7 +997,7 @@ test "initSchema migrates v2 symbols table by adding metadata columns" {
 	const version = try metaValue(db, allocator, "schema_version");
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
-	try std.testing.expectEqualStrings("4", version.?);
+	try std.testing.expectEqualStrings("5", version.?);
 }
 
 test "migrateV2ToV3 adds metadata columns to existing table" {
@@ -1031,7 +1050,7 @@ test "initSchema does not report upgrade for current-version DB" {
 	// Second init should not report upgrade
 	const result = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 	try std.testing.expect(!result.did_schema_upgrade);
-	try std.testing.expectEqual(@as(?u32, 4), result.previous_schema_version);
+	try std.testing.expectEqual(@as(?u32, 5), result.previous_schema_version);
 }
 
 test "openFileWithVecRecreate replaces existing file" {

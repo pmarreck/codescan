@@ -110,6 +110,22 @@ codescan search "checksum" --ext md,zig
 codescan search "checksum" --type code,doc
 codescan search "checksum" --lang zig
 
+# filter by symbol kind (fn, struct, enum, const, var, test, mod, type, macro, ...)
+codescan search "config" --kind struct
+codescan search "init" --kind fn
+codescan search "config" --kind const,var
+# meta-kinds: declaration (const+var), definition (any defined symbol)
+codescan search "config" --kind declaration
+codescan search --kind definition --top 20
+
+# browse mode: list symbols by kind without a text query
+codescan search --kind fn --top 10
+codescan search --kind struct
+
+# filter by file path (glob) or exact file
+codescan search "init" --path "src/storage*"
+codescan search "hash" --file src/hash.zig
+
 # index node_modules too
 codescan index --include-node-modules
 
@@ -221,7 +237,7 @@ launch environment includes the directory that contains `codescan`.
 
 | Tool | Description |
 |------|-------------|
-| `search` | Semantic code search (`query` is an alias) |
+| `search` | Semantic code search (`query` is an alias). Params: `query`, `kind`, `path`, `file`, `lang`, `top` |
 | `index` | Index/reindex repository |
 | `symbols` | List or find symbols (optional `file`, `pattern`, `include_body`) |
 | `replace_symbol` | Replace a symbol's body |

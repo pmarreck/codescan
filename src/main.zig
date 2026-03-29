@@ -3041,11 +3041,19 @@ const usage_search =
     \\  --kind <csv>                    Restrict to symbol kind(s)
     \\                                  Values: fn (function, func), struct, enum,
     \\                                  union, class, interface, trait, impl,
-    \\                                  const (constant), var (variable), field,
-    \\                                  test, mod (module), type
+    \\                                  const (constant, val), var (variable, mut),
+    \\                                  field, test, mod (module), type, macro
+    \\                                  Meta-kinds: declaration (const+var),
+    \\                                  definition (any defined symbol), let (const+var)
+    \\  --path <glob>                   Filter by file path (glob, repeatable)
+    \\  --file <path>                   Filter to exact file path
     \\  --include-body                  Include function body text in output
     \\                                  (limits to 3 results by default)
     \\  --json                          JSON output
+    \\
+    \\Browse mode (no query required when filters are present):
+    \\  codescan search --kind fn       List all functions
+    \\  codescan search --kind struct   List all structs
     \\
     \\Examples:
     \\  codescan search "checksum"
@@ -3054,6 +3062,9 @@ const usage_search =
     \\  codescan search "hash functions" --scope comments
     \\  codescan search "widget" --include-body
     \\  codescan search "config" --kind const,var
+    \\  codescan search "init" --path "src/storage*"
+    \\  codescan search "init" --file src/storage.zig
+    \\  codescan search --kind definition --top 20
     \\
 ;
 

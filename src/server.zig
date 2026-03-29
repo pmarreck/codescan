@@ -1138,7 +1138,7 @@ const help_text =
 	"\n" ++
 	"POST /search (also /query)\n" ++
 	"  fields: query, top_n, mode, weight_vector, weight_lexical, min_score\n" ++
-	"          ext, type, lang, include_docs, docs/only_docs, comments/only_comments\n" ++
+	"          ext, type, lang, kind, path, file, include_docs, docs/only_docs, comments/only_comments\n" ++
 	"\n" ++
 	"POST /index\n" ++
 	"  fields: ext, type, include_node_modules\n" ++
