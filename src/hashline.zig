@@ -70,6 +70,26 @@ pub fn computeSourceHashes(allocator: std.mem.Allocator, source: []const u8) ![]
 	return computeChainHashes(allocator, lines.items);
 }
 
+/// Compute the file-level version hash: the hashline of the last line.
+/// Returns null if the source is empty.
+pub fn computeFileVersion(allocator: std.mem.Allocator, source: []const u8) !?Hash {
+	if (source.len == 0) return null;
+	const hashes = try computeSourceHashes(allocator, source);
+	defer allocator.free(hashes);
+	if (hashes.len == 0) return null;
+	return hashes[hashes.len - 1];
+}
+
+/// Compute the file-level version hash from a file path.
+/// Returns null if the file is empty or cannot be read.
+pub fn computeFileVersionFromPath(allocator: std.mem.Allocator, file_path: []const u8) ?Hash {
+	const file = std.fs.cwd().openFile(file_path, .{}) catch return null;
+	defer file.close();
+	const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return null;
+	defer allocator.free(source);
+	return computeFileVersion(allocator, source) catch null;
+}
+
 /// Validate that a stored hash matches the current content at a given line.
 /// Returns true if the hash is still valid, false if the file has changed (stale index).
 /// Returns error.LineOutOfRange if line_number is out of bounds.
@@ -260,4 +280,19 @@ test "computeSourceHashes splits lines correctly" {
 	const hashes = try computeSourceHashes(allocator, source);
 	defer allocator.free(hashes);
 	try std.testing.expectEqual(@as(usize, 3), hashes.len);
+}
+
+test "computeFileVersion returns last line hash" {
+	const allocator = std.testing.allocator;
+	const source = "line one\nline two\nline three\n";
+	const hashes = try computeSourceHashes(allocator, source);
+	defer allocator.free(hashes);
+	const version = try computeFileVersion(allocator, source);
+	try std.testing.expectEqual(hashes[hashes.len - 1], version.?);
+}
+
+test "computeFileVersion returns null for empty source" {
+	const allocator = std.testing.allocator;
+	const version = try computeFileVersion(allocator, "");
+	try std.testing.expect(version == null);
 }
