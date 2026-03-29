@@ -127,6 +127,7 @@ pub const Parsed = struct {
 	rename_to: ?[]const u8,
 	regex_mode: bool,
 	regex_search: bool,
+	ignore_case: bool,
 	context_lines: usize,
 	replace_all: bool,
 	version_hash: ?[]const u8,
@@ -197,6 +198,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.rename_to = null,
 		.regex_mode = false,
 		.regex_search = false,
+		.ignore_case = false,
 		.context_lines = 0,
 		.replace_all = false,
 		.version_hash = null,
@@ -722,6 +724,11 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			} else {
 				parsed.regex_mode = true;
 			}
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--ignore-case") or std.mem.eql(u8, arg, "-i")) {
+			parsed.ignore_case = true;
 			i += 1;
 			continue;
 		}

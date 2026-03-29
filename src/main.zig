@@ -502,6 +502,7 @@ pub fn main() !void {
 					settings.top_n,
 					path_filters_regex.items,
 					settings.search_lang,
+					parsed.ignore_case,
 					registry,
 					settings.root_path,
 					settings.output,
@@ -3346,6 +3347,7 @@ const usage_search =
     \\  --path <glob>                   Filter by file path (glob, repeatable)
     \\  --file <path>                   Filter to exact file path
     \\  --regex                         Treat query as PCRE2 regex pattern
+    \\  --ignore-case, -i               Case-insensitive matching (regex search)
     \\  --context <n>, -C <n>           Total lines of context around matches
     \\                                  (includes match line, e.g. -C 5 = 2 before + 1 match + 2 after)
     \\  --include-body                  Include function body text in output
@@ -4322,13 +4324,14 @@ pub fn runRegexSearch(
 	top_n: usize,
 	path_filters: []const []const u8,
 	lang_filter: ?[]const u8,
+	ignore_case: bool,
 	registry: plugin.Registry,
 	root_path: []const u8,
 	format: cli.OutputFormat,
 	writer: *std.Io.Writer,
 ) !void {
 	// Compile the regex
-	var regex = pcre2.Regex.compile(allocator, pattern_str) catch {
+	var regex = pcre2.Regex.compileEx(allocator, pattern_str, .{ .case_insensitive = ignore_case }) catch {
 		if (format == .json) {
 			try writer.writeAll("{\"error\":\"invalid regex pattern\"}\n");
 		} else {
@@ -5501,7 +5504,7 @@ test "runRegexSearch finds matches with correct line numbers" {
 
 	try runRegexSearch(
 		allocator, db, "fn \\w+\\(\\)", 0, 20,
-		&[_][]const u8{}, null,
+		&[_][]const u8{}, null, false,
 		plugin.defaultRegistry(), root_path, .json, &out.writer,
 	);
 	const result = try out.toOwnedSlice();
@@ -5541,7 +5544,7 @@ test "runRegexSearch context lines shows surrounding lines" {
 	// context_lines=5 means 2 before + match + 2 after
 	try runRegexSearch(
 		allocator, db, "TARGET", 5, 20,
-		&[_][]const u8{}, null,
+		&[_][]const u8{}, null, false,
 		plugin.defaultRegistry(), root_path, .json, &out.writer,
 	);
 	const result = try out.toOwnedSlice();
@@ -5594,7 +5597,7 @@ test "runRegexSearch path filter restricts files" {
 	const path_filter: []const u8 = "src/*";
 	try runRegexSearch(
 		allocator, db, "fn \\w+", 0, 20,
-		&[_][]const u8{path_filter}, null,
+		&[_][]const u8{path_filter}, null, false,
 		plugin.defaultRegistry(), root_path, .json, &out.writer,
 	);
 	const result = try out.toOwnedSlice();
@@ -5625,7 +5628,7 @@ test "runRegexSearch invalid regex returns error message" {
 
 	try runRegexSearch(
 		allocator, db, "[invalid(", 0, 20,
-		&[_][]const u8{}, null,
+		&[_][]const u8{}, null, false,
 		plugin.defaultRegistry(), root_path, .json, &out.writer,
 	);
 	const result = try out.toOwnedSlice();

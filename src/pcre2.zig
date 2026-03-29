@@ -43,13 +43,24 @@ pub const Regex = struct {
     /// Default workspace size for DFA matching.
     const DEFAULT_WORKSPACE_SIZE: usize = 256;
 
+    /// Compile options for regex patterns.
+    pub const CompileOptions = struct {
+        case_insensitive: bool = false,
+    };
+
     /// Compile a regex pattern.
     /// Uses UTF-8 and UCP options by default for Unicode support.
     pub fn compile(allocator: Allocator, pattern: []const u8) Error!Self {
+        return compileEx(allocator, pattern, .{});
+    }
+
+    /// Compile a regex pattern with additional options.
+    pub fn compileEx(allocator: Allocator, pattern: []const u8, opts: CompileOptions) Error!Self {
         var error_code: c_int = 0;
         var error_offset: c.PCRE2_SIZE = 0;
 
-        const options: u32 = c.PCRE2_UTF | c.PCRE2_UCP;
+        var options: u32 = c.PCRE2_UTF | c.PCRE2_UCP;
+        if (opts.case_insensitive) options |= c.PCRE2_CASELESS;
         const code = c.pcre2_compile_8(
             pattern.ptr,
             pattern.len,

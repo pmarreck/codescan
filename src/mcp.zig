@@ -350,6 +350,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			if (path_arg) |p| try path_filters_mcp.append(allocator, p);
 			if (file_arg) |f| try path_filters_mcp.append(allocator, f);
 
+			const ignore_case_arg = getArgBool(args, "ignore_case");
 			main.runRegexSearch(
 				allocator,
 				db,
@@ -358,6 +359,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				top_arg orelse settings.search_top_n,
 				path_filters_mcp.items,
 				lang_arg,
+				ignore_case_arg,
 				plugin.defaultRegistry(),
 				settings.root_path,
 				.json,
@@ -686,8 +688,8 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 // Tool definitions for MCP tools/list
 const tools_list_json =
 	\\{"tools":[
-	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
-	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
+	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"ignore_case":{"type":"boolean","description":"Case-insensitive matching (applies to regex search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
+	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"ignore_case":{"type":"boolean","description":"Case-insensitive matching"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
 	\\{"name":"index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
 	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
 	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
