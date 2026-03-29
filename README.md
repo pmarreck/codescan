@@ -259,7 +259,7 @@ All editing commands read replacement text from stdin.
 ### Hashlines
 
 Every codescan command that outputs source lines annotates them with a 3-character
-base-36 content-chain hash:
+base-62 content-chain hash:
 
 ```
 44:k7m|fn init(self: *Self) void {

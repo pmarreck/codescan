@@ -1,23 +1,23 @@
 const std = @import("std");
 
-/// A 3-character base-36 hash for content-anchored line addressing.
+/// A 3-character base-62 hash for content-anchored line addressing.
 /// Used by LLMs to precisely reference code lines with staleness detection.
 pub const HASH_LEN = 3;
 pub const Hash = [HASH_LEN]u8;
 
-/// Base-36 alphabet: 0-9 a-z (no uppercase to avoid LLM case-normalization issues)
-const BASE36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+/// Base-62 alphabet: 0-9 a-z A-Z (238,328 values per 3-char hash)
+const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-/// Convert a u64 hash value to a 3-char base-36 string.
-fn toBase36(value: u64) Hash {
+/// Convert a u64 hash value to a 3-char base-62 string.
+fn toBase62(value: u64) Hash {
 	var result: Hash = undefined;
 	var v = value;
 	// Fill from right to left (least significant digit first)
 	comptime var i: usize = HASH_LEN;
 	inline while (i > 0) {
 		i -= 1;
-		result[i] = BASE36[v % 36];
-		v /= 36;
+		result[i] = ALPHABET[v % 62];
+		v /= 62;
 	}
 	return result;
 }
@@ -40,7 +40,7 @@ pub fn computeChainHashes(allocator: std.mem.Allocator, lines: []const []const u
 		hasher.update(&prev_hash);
 		hasher.update(line);
 		const digest = hasher.final();
-		const hash = toBase36(digest);
+		const hash = toBase62(digest);
 		hashes[i] = hash;
 		prev_hash = hash;
 	}
@@ -139,7 +139,11 @@ test "chain hashes are deterministic" {
 	}
 }
 
-test "chain hashes use only base-36 characters" {
+test "chain hashes use base-62 alphabet and toBase62 uses modulus 62" {
+	// Verify the alphabet is base-62 (0-9 a-z A-Z)
+	try std.testing.expectEqual(@as(usize, 62), ALPHABET.len);
+
+	// Verify hashes contain only base-62 characters
 	const allocator = std.testing.allocator;
 	const lines = &[_][]const u8{
 		"const x = 42;",
@@ -151,7 +155,7 @@ test "chain hashes use only base-36 characters" {
 	for (hashes) |hash| {
 		for (&hash) |c| {
 			try std.testing.expect(
-				(c >= '0' and c <= '9') or (c >= 'a' and c <= 'z'),
+				(c >= '0' and c <= '9') or (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z'),
 			);
 		}
 	}

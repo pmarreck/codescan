@@ -3631,7 +3631,7 @@ const usage_hashlines =
     \\current hashes before retrying.
     \\
     \\Format:     <line>:<hash>  (e.g. 45:r2p)
-    \\Alphabet:   0-9 a-z (base-36, 46656 values, no case ambiguity)
+    \\Alphabet:   0-9 a-z A-Z (base-62, 238328 values)
     \\Used by:    replace-lines --from/--to, insert-at, symbols --include-body
     \\
     \\Commands using hashlines:

@@ -1415,9 +1415,9 @@ test "handleRequest responds to POST /replace-lines" {
 	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
 	defer allocator.free(abs_path);
 
-	// Hashline refs computed for "line1\nline2\nline3\nline4\n": line2=ql8, line3=zrk
+	// Hashline refs computed for "line1\nline2\nline3\nline4\n": line2=pZK, line3=yO7
 	// Replace lines 2-3 with new text
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"from\":\"2:ql8\",\"to\":\"3:zrk\",\"body\":\"replaced\\n\"}}", .{abs_path});
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"from\":\"2:pZK\",\"to\":\"3:yO7\",\"body\":\"replaced\\n\"}}", .{abs_path});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-lines HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1458,9 +1458,9 @@ test "handleRequest responds to POST /insert-at" {
 	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
 	defer allocator.free(abs_path);
 
-	// Hashline ref computed for "line1\nline2\nline3\n": line2=ql8
+	// Hashline ref computed for "line1\nline2\nline3\n": line2=pZK
 	// Insert after line 2
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"ref\":\"2:ql8\",\"body\":\"inserted\\n\"}}", .{abs_path});
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"ref\":\"2:pZK\",\"body\":\"inserted\\n\"}}", .{abs_path});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-at HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
