@@ -3301,6 +3301,9 @@ const usage =
     \\  replace-lines             Replace a hashline-validated line range (stdin)
     \\  insert-at <line:hash>     Insert code after a hashline (stdin)
     \\  replace-content <needle>  Find & replace text or regex (stdin)
+    \\  read-file <path>          Read file with hashlines and version hash
+    \\  create-file --file <path> Create a new file (stdin)
+    \\  destroy-file --file <path> Move file to system trash
     \\  references <pattern>      Find all references via LSP
     \\  rename <pattern>          Rename symbol across codebase via LSP
     \\  index                     Full re-index (drops & recreates DB)
@@ -3528,15 +3531,68 @@ const usage_replace_content =
     \\Usage: codescan replace-content <needle> --file <path> [options] < replacement.txt
     \\
     \\Find and replace text in a file. Replacement comes from stdin.
+    \\Requires unique match (errors on multiple matches unless --all).
     \\
     \\Options:
     \\  --file <path>            Target file (required)
     \\  --regex                  Treat needle as PCRE2 regex
-    \\  --all                    Replace all occurrences (default: first only)
+    \\  --all                    Replace all occurrences (default: unique match only)
+    \\  --version <hash>         Version hash from read-file (prevents race conditions)
     \\
     \\Examples:
     \\  echo 'new_name' | codescan replace-content 'old_name' --file src/main.zig --all
     \\  echo 'v2' | codescan replace-content 'v[0-9]+' --file config.toml --regex
+    \\  echo 'new' | codescan replace-content 'old' --file src/foo.zig --version k7m
+    \\
+;
+
+const usage_read_file =
+    \\Usage: codescan read-file <path> [options]
+    \\
+    \\Read a file with hashline annotations and a version hash.
+    \\The version hash is a 3-char content checksum of the entire file —
+    \\pass it to write commands via --version to prevent race conditions.
+    \\
+    \\Options:
+    \\  --from <line>            Start line (1-indexed)
+    \\  --to <line>              End line (inclusive)
+    \\  --json                   JSON output
+    \\
+    \\Examples:
+    \\  codescan read-file src/main.zig
+    \\  codescan read-file src/main.zig --from 10 --to 50
+    \\  codescan read-file src/main.zig --json
+    \\
+;
+
+const usage_create_file =
+    \\Usage: codescan create-file --file <path> < content.txt
+    \\
+    \\Create a new file. Errors if the file already exists.
+    \\Content comes from stdin. Creates parent directories as needed.
+    \\Returns the new file's version hash.
+    \\
+    \\Options:
+    \\  --file <path>            File path to create (required)
+    \\
+    \\Examples:
+    \\  echo 'const std = @import("std");' | codescan create-file --file src/new.zig
+    \\
+;
+
+const usage_destroy_file =
+    \\Usage: codescan destroy-file --file <path> [options]
+    \\
+    \\Move a file to the system trash (safer than rm, supports undo).
+    \\macOS: moves to ~/.Trash/. Linux: uses gio trash or freedesktop spec.
+    \\
+    \\Options:
+    \\  --file <path>            File to trash (required)
+    \\  --version <hash>         Version hash from read-file (prevents race conditions)
+    \\
+    \\Examples:
+    \\  codescan destroy-file --file src/old.zig
+    \\  codescan destroy-file --file src/old.zig --version k7m
     \\
 ;
 
@@ -4291,6 +4347,9 @@ fn usageForTopic(topic: []const u8) []const u8 {
     if (std.mem.eql(u8, topic, "replace-lines")) return usage_replace_lines;
     if (std.mem.eql(u8, topic, "insert-at")) return usage_insert_at;
     if (std.mem.eql(u8, topic, "replace-content")) return usage_replace_content;
+    if (std.mem.eql(u8, topic, "read-file")) return usage_read_file;
+    if (std.mem.eql(u8, topic, "create-file")) return usage_create_file;
+    if (std.mem.eql(u8, topic, "destroy-file")) return usage_destroy_file;
     if (std.mem.eql(u8, topic, "references")) return usage_references;
     if (std.mem.eql(u8, topic, "rename")) return usage_rename;
     if (std.mem.eql(u8, topic, "watch")) return usage_watch;
