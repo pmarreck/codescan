@@ -358,6 +358,87 @@ When both are present:
 
 Metadata weights apply when the query includes metadata cues such as `function`, `public`, `top-level`, or `arity 2`.
 
+## AI Agent Integration (Optional)
+
+codescan can replace Claude Code's built-in Read, Edit, Grep, and Glob tools with safer,
+hashline-validated alternatives. This is especially valuable for multi-agent workflows
+where concurrent file access can cause stale edits.
+
+### Why use codescan's tools instead of built-in ones?
+
+- **Optimistic concurrency**: Every `read-file` returns a 3-character version hash
+  (the hashline of the last line — a content-addressed checksum of the entire file).
+  Pass it back to any write tool via `--version` — if the file changed since your read,
+  the edit fails cleanly instead of silently corrupting.
+- **Hashline validation**: Line-level edits use content-chain hashes that detect if
+  the target lines have shifted since your last read.
+- **Structured search**: `codescan search --kind fn` returns semantically relevant
+  results instead of raw text matches, using fewer tokens.
+- **Safe deletion**: `destroy-file` moves files to the system trash (with undo support)
+  instead of permanent `rm`.
+
+### Setup: Global Claude Code Hook
+
+Add a `PreToolUse` hook to `~/.claude/settings.json` that nudges Claude toward codescan
+tools in indexed projects:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Grep|Glob|Agent|Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/codescan-redirect/redirect.sh",
+            "timeout": 5,
+            "statusMessage": "Checking codescan availability..."
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The hook checks if `.codescan/` exists in the project and injects a context reminder to
+use codescan's tools instead. It's non-blocking — the built-in tool still runs, but the
+model learns to prefer codescan over time.
+
+Add to `~/.claude/CLAUDE.md`:
+
+```markdown
+## Code Navigation: Prefer codescan
+
+At the start of every session, run `codescan status` to check if the project is indexed
+and the watcher is running. A running watcher means the index stays up to date
+automatically.
+
+When a `.codescan/` directory exists:
+- Use `codescan search` / `codescan symbols` instead of Grep/Glob
+- Use `codescan read-file` instead of Read (returns version hash for safe edits)
+- Use `codescan replace-content --version <hash>` instead of Edit
+- Use `codescan create-file` instead of Write (for new files)
+- Use `codescan destroy-file` instead of rm (moves to trash)
+```
+
+### Typical safe-edit workflow
+
+```bash
+# 1. Read a file — get version hash
+codescan read-file src/foo.zig --json
+# → {"file":"src/foo.zig","version":"k7m","total_lines":50,...}
+
+# 2. Edit with version check — prevents stale edits
+codescan replace-content src/foo.zig "old text" --version k7m <<< "new text"
+# → Replaced 1 occurrence (line 10:abc)
+# → version: x9a
+
+# 3. If another agent edited the file between steps 1 and 2:
+# → error: file modified since last read (expected version k7m, current p3q) — re-read and retry
+```
+
 ## Notes
 
 - SQLite vector extension is statically linked (no runtime extension loading).
