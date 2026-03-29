@@ -111,6 +111,8 @@ pub const Parsed = struct {
 	type_filter: ?[]const u8,
 	lang_filter: ?[]const u8,
 	kind_filter: ?[]const u8,
+	path_filters: std.ArrayListUnmanaged([]const u8),
+	file_filter: ?[]const u8,
 	symbols_files: std.ArrayListUnmanaged([]const u8),
 	pattern: ?[]const u8,
 	include_body: bool,
@@ -131,6 +133,7 @@ pub const Parsed = struct {
 		if (self.query_owned and self.query != null) {
 			allocator.free(self.query.?);
 		}
+		self.path_filters.deinit(allocator);
 		self.symbols_files.deinit(allocator);
 	}
 };
@@ -173,6 +176,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.type_filter = null,
 		.lang_filter = null,
 		.kind_filter = null,
+		.path_filters = .{},
+		.file_filter = null,
 		.symbols_files = .{},
 		.pattern = null,
 		.include_body = false,
@@ -608,6 +613,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+		if (std.mem.eql(u8, arg, "--path")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			try parsed.path_filters.append(allocator, args[i]);
+			i += 1;
+			continue;
+		}
 		if (std.mem.eql(u8, arg, "--include-body")) {
 			parsed.include_body = true;
 			i += 1;
@@ -641,7 +653,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--file")) {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
-			try parsed.symbols_files.append(allocator, args[i]);
+			if (parsed.command == .search) {
+				const val = args[i];
+				if (std.mem.indexOfAny(u8, val, "*?[{") != null) return error.InvalidFileFilter;
+				parsed.file_filter = val;
+			} else {
+				try parsed.symbols_files.append(allocator, args[i]);
+			}
 			i += 1;
 			continue;
 		}
@@ -713,9 +731,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 
 	if (parsed.command == .search) {
 		if (!query_parts_inited or query_parts.items.len == 0) {
-			return error.MissingQuery;
-		}
-		if (query_parts.items.len == 1) {
+			// Allow empty query when filters are present (browse mode)
+			if (parsed.kind_filter == null and parsed.lang_filter == null and parsed.ext_filter == null and
+				parsed.path_filters.items.len == 0 and parsed.file_filter == null) {
+				return error.MissingQuery;
+			}
+			// query stays null — search.zig will handle browse mode
+		} else if (query_parts.items.len == 1) {
 			parsed.query = query_parts.items[0];
 		} else {
 			parsed.query = try joinArgs(allocator, query_parts.items);
@@ -1076,6 +1098,15 @@ test "parse search missing query errors" {
 	try std.testing.expectError(error.MissingQuery, parse(std.testing.allocator, &args));
 }
 
+test "parse search with --kind but no query allows browse mode" {
+	const args = [_][]const u8{ "codescan", "search", "--kind", "fn" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.query == null);
+	try std.testing.expectEqualStrings("fn", parsed.kind_filter.?);
+}
+
 test "parse init command" {
 	const args = [_][]const u8{ "codescan", "init" };
 	var parsed = try parse(std.testing.allocator, &args);
@@ -1203,4 +1234,45 @@ test "parse query as alias for search" {
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqualStrings("hash functions", parsed.query.?);
+}
+
+test "parse search with --path flag" {
+	const args = [_][]const u8{ "codescan", "search", "init", "--path", "src/storage*" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqual(@as(usize, 1), parsed.path_filters.items.len);
+	try std.testing.expectEqualStrings("src/storage*", parsed.path_filters.items[0]);
+}
+
+test "parse search with --file flag for search command" {
+	const args = [_][]const u8{ "codescan", "search", "init", "--file", "src/storage.zig" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqualStrings("src/storage.zig", parsed.file_filter.?);
+}
+
+test "parse search --file rejects globs" {
+	const args = [_][]const u8{ "codescan", "search", "init", "--file", "src/*.zig" };
+	const result = parse(std.testing.allocator, &args);
+	try std.testing.expectError(error.InvalidFileFilter, result);
+}
+
+test "parse search with --path allows browse mode (no query)" {
+	const args = [_][]const u8{ "codescan", "search", "--path", "src/storage*" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqual(@as(?[]const u8, null), parsed.query);
+	try std.testing.expectEqual(@as(usize, 1), parsed.path_filters.items.len);
+}
+
+test "parse search with --file allows browse mode (no query)" {
+	const args = [_][]const u8{ "codescan", "search", "--file", "src/storage.zig" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqual(@as(?[]const u8, null), parsed.query);
+	try std.testing.expectEqualStrings("src/storage.zig", parsed.file_filter.?);
 }

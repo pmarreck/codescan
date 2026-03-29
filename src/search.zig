@@ -68,6 +68,7 @@ pub const Options = struct {
 	allowed_langs: []const []const u8 = &[_][]const u8{},
 	allowed_exts: []const []const u8 = &[_][]const u8{},
 	allowed_symbol_kinds: []const []const u8 = &[_][]const u8{},
+	allowed_paths: []const []const u8 = &[_][]const u8{},
 	comments_only: bool = false,
 };
 
@@ -97,7 +98,16 @@ pub fn search(
 	query: []const u8,
 	options: Options,
 ) !SearchResult {
-	if (query.len == 0) return error.EmptyQuery;
+	if (query.len == 0) {
+		if (options.allowed_symbol_kinds.len == 0 and
+			options.allowed_langs.len == 0 and
+			options.allowed_exts.len == 0 and
+			options.allowed_paths.len == 0)
+		{
+			return error.EmptyQuery;
+		}
+		return browseSymbols(allocator, db, options);
+	}
 	if (options.top_n == 0) return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
 
 	var weight_vector = options.weight_vector;
@@ -384,6 +394,131 @@ pub fn search(
 	return .{ .results = out, .total_relevant = relevant };
 }
 
+fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options) !SearchResult {
+	if (options.top_n == 0) return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
+
+	// Build WHERE clauses
+	var where_parts = std.ArrayListUnmanaged([]const u8){};
+	defer {
+		for (where_parts.items) |part| allocator.free(part);
+		where_parts.deinit(allocator);
+	}
+
+	// Handle symbol kind filter
+	if (options.allowed_symbol_kinds.len > 0) {
+		// Check for "*" sentinel (any non-null kind)
+		var has_wildcard = false;
+		for (options.allowed_symbol_kinds) |k| {
+			if (std.mem.eql(u8, k, "*")) {
+				has_wildcard = true;
+				break;
+			}
+		}
+		if (has_wildcard) {
+			try where_parts.append(allocator, try allocator.dupe(u8, "symbol_kind IS NOT NULL"));
+		} else {
+			// Build IN clause
+			var in_buf = std.ArrayListUnmanaged(u8){};
+			defer in_buf.deinit(allocator);
+			try in_buf.appendSlice(allocator, "symbol_kind IN (");
+			for (options.allowed_symbol_kinds, 0..) |k, idx| {
+				if (idx > 0) try in_buf.appendSlice(allocator, ", ");
+				try in_buf.append(allocator, '\'');
+				try in_buf.appendSlice(allocator, k);
+				try in_buf.append(allocator, '\'');
+			}
+			try in_buf.appendSlice(allocator, ")");
+			try where_parts.append(allocator, try allocator.dupe(u8, in_buf.items));
+		}
+	}
+
+	// Handle language filter
+	if (options.allowed_langs.len > 0) {
+		var in_buf = std.ArrayListUnmanaged(u8){};
+		defer in_buf.deinit(allocator);
+		try in_buf.appendSlice(allocator, "lang IN (");
+		for (options.allowed_langs, 0..) |lang, idx| {
+			if (idx > 0) try in_buf.appendSlice(allocator, ", ");
+			try in_buf.append(allocator, '\'');
+			try in_buf.appendSlice(allocator, lang);
+			try in_buf.append(allocator, '\'');
+		}
+		try in_buf.appendSlice(allocator, ")");
+		try where_parts.append(allocator, try allocator.dupe(u8, in_buf.items));
+	}
+
+	// Handle extension filter (applied post-query via matchesFilters, not in SQL)
+	// Extensions are checked on file_path which is harder in SQL, so we over-fetch and filter.
+
+	// Build final SQL
+	var sql_buf = std.ArrayListUnmanaged(u8){};
+	defer sql_buf.deinit(allocator);
+	try sql_buf.appendSlice(allocator,
+		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, " ++
+		"0.0 AS distance " ++
+		"FROM symbols"
+	);
+	if (where_parts.items.len > 0) {
+		try sql_buf.appendSlice(allocator, " WHERE ");
+		for (where_parts.items, 0..) |part, idx| {
+			if (idx > 0) try sql_buf.appendSlice(allocator, " AND ");
+			try sql_buf.appendSlice(allocator, part);
+		}
+	}
+	try sql_buf.appendSlice(allocator, " ORDER BY file_path, start_line");
+
+	// If we have post-query filters, over-fetch since we filter in-code
+	const fetch_limit = if (options.allowed_exts.len > 0 or options.allowed_paths.len > 0)
+		options.top_n * 5
+	else
+		options.top_n;
+
+	const limit_str = try std.fmt.allocPrint(allocator, " LIMIT {d}", .{fetch_limit});
+	defer allocator.free(limit_str);
+	try sql_buf.appendSlice(allocator, limit_str);
+
+	try sql_buf.append(allocator, 0); // null terminate
+	const sql_z: [:0]const u8 = sql_buf.items[0..sql_buf.items.len - 1 :0];
+
+	var stmt: ?*sqlite.sqlite3_stmt = null;
+	if (sqlite.sqlite3_prepare_v2(db, sql_z.ptr, -1, &stmt, null) != sqlite.SQLITE_OK) {
+		return error.SqlPrepareFailed;
+	}
+	defer _ = sqlite.sqlite3_finalize(stmt.?);
+
+	var results = std.ArrayListUnmanaged(Result){};
+	errdefer {
+		for (results.items) |*res| res.deinit(allocator);
+		results.deinit(allocator);
+	}
+
+	while (true) {
+		const rc = sqlite.sqlite3_step(stmt.?);
+		if (rc == sqlite.SQLITE_ROW) {
+			var res = try readResultRow(allocator, stmt.?);
+			// Apply post-query filters (extensions, paths)
+			if ((options.allowed_exts.len > 0 or options.allowed_paths.len > 0) and !matchesFilters(res.symbol, options)) {
+				res.deinit(allocator);
+				continue;
+			}
+			res.score = 1.0;
+			res.distance = 0.0;
+			res.lexical = 0.0;
+			res.bm25 = 0.0;
+			try results.append(allocator, res);
+			if (results.items.len >= options.top_n) break;
+		} else if (rc == sqlite.SQLITE_DONE) {
+			break;
+		} else {
+			return error.SqlStepFailed;
+		}
+	}
+
+	const total = results.items.len;
+	return .{ .results = try results.toOwnedSlice(allocator), .total_relevant = total };
+}
+
 pub fn freeResults(allocator: std.mem.Allocator, results: []Result) void {
 	for (results) |*res| res.deinit(allocator);
 	allocator.free(results);
@@ -462,7 +597,44 @@ fn matchesFilters(symbol: model.Symbol, options: Options) bool {
 		}
 		if (!ok) return false;
 	}
+	if (options.allowed_paths.len > 0) {
+		var ok = false;
+		for (options.allowed_paths) |pattern| {
+			if (pathMatchesGlob(symbol.file_path, pattern)) {
+				ok = true;
+				break;
+			}
+		}
+		if (!ok) return false;
+	}
 	return true;
+}
+
+/// Simple glob match for path filtering. Supports * and ? wildcards.
+fn pathMatchesGlob(path: []const u8, pattern: []const u8) bool {
+	var pi: usize = 0;
+	var gi: usize = 0;
+	var star_pi: ?usize = null;
+	var star_gi: ?usize = null;
+
+	while (pi < path.len) {
+		if (gi < pattern.len and (pattern[gi] == '?' or pattern[gi] == path[pi])) {
+			pi += 1;
+			gi += 1;
+		} else if (gi < pattern.len and pattern[gi] == '*') {
+			star_pi = pi;
+			star_gi = gi;
+			gi += 1;
+		} else if (star_gi) |sg| {
+			gi = sg + 1;
+			star_pi = star_pi.? + 1;
+			pi = star_pi.?;
+		} else {
+			return false;
+		}
+	}
+	while (gi < pattern.len and pattern[gi] == '*') gi += 1;
+	return gi == pattern.len;
 }
 
 fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
@@ -3114,4 +3286,198 @@ test "likeCandidates orders exact name > prefix > substring > signature-only" {
 	try std.testing.expectEqualStrings("reinitialize", results[2].symbol.name);
 	// Signature-only match last
 	try std.testing.expectEqualStrings("setup", results[3].symbol.name);
+}
+
+test "browse mode: empty query with kind filter returns matching symbols" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym_fn = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/lib.zig"),
+		.name = try allocator.dupe(u8, "doWork"),
+		.signature = try allocator.dupe(u8, "pub fn doWork() void"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "fn"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym_fn.deinit(allocator);
+
+	var sym_struct = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/types.zig"),
+		.name = try allocator.dupe(u8, "Config"),
+		.signature = try allocator.dupe(u8, "pub const Config = struct"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "struct"),
+		.start_line = 1,
+		.end_line = 10,
+	};
+	defer sym_struct.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym_fn);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym_struct);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+
+	// Browse with kind filter "fn" — should return only the fn symbol
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "", .{
+		.top_n = 10,
+		.allowed_symbol_kinds = &[_][]const u8{"fn"},
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expectEqual(@as(usize, 1), sr.results.len);
+	try std.testing.expectEqualStrings("doWork", sr.results[0].symbol.name);
+	try std.testing.expectEqualStrings("fn", sr.results[0].symbol.symbol_kind.?);
+	// Browse mode should set score=1.0, distance=0, lexical=0, bm25=0
+	try std.testing.expectEqual(@as(f32, 1.0), sr.results[0].score);
+	try std.testing.expectEqual(@as(f32, 0.0), sr.results[0].distance);
+	try std.testing.expectEqual(@as(f32, 0.0), sr.results[0].lexical);
+	try std.testing.expectEqual(@as(f32, 0.0), sr.results[0].bm25);
+}
+
+test "browse mode: empty query with no filters returns EmptyQuery" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const result = search(allocator, db, fake.embedder(), "", .{
+		.top_n = 10,
+	});
+	try std.testing.expectError(error.EmptyQuery, result);
+}
+
+test "browse mode: wildcard kind filter returns all symbols with any kind" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym_fn = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "alpha"),
+		.signature = try allocator.dupe(u8, "fn alpha() void"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "fn"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_fn.deinit(allocator);
+
+	var sym_struct = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/b.zig"),
+		.name = try allocator.dupe(u8, "Beta"),
+		.signature = try allocator.dupe(u8, "const Beta = struct"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "struct"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_struct.deinit(allocator);
+
+	var sym_none = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/c.zig"),
+		.name = try allocator.dupe(u8, "gamma"),
+		.signature = try allocator.dupe(u8, "gamma"),
+		.doc_comment = null,
+		.symbol_kind = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_none.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym_fn);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym_struct);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+	const id3 = try storage.insertSymbol(db, sym_none);
+	try storage.insertEmbedding(db, allocator, id3, &[_]f32{ 0.0, 0.0 });
+
+	// Wildcard "*" means any non-null kind — should return fn and struct, not gamma
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "", .{
+		.top_n = 10,
+		.allowed_symbol_kinds = &[_][]const u8{"*"},
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expectEqual(@as(usize, 2), sr.results.len);
+}
+
+test "pathMatchesGlob matches file paths" {
+	try std.testing.expect(pathMatchesGlob("src/storage.zig", "src/storage*"));
+	try std.testing.expect(pathMatchesGlob("src/storage.zig", "src/*.zig"));
+	try std.testing.expect(pathMatchesGlob("src/storage.zig", "*/storage.zig"));
+	try std.testing.expect(pathMatchesGlob("src/storage.zig", "src/storage.zig"));
+	try std.testing.expect(!pathMatchesGlob("src/search.zig", "src/storage*"));
+	try std.testing.expect(pathMatchesGlob("src/a.zig", "src/?.zig"));
+	try std.testing.expect(!pathMatchesGlob("src/ab.zig", "src/?.zig"));
+	// Edge cases
+	try std.testing.expect(pathMatchesGlob("anything", "*"));
+	try std.testing.expect(!pathMatchesGlob("src/foo.zig", "src/bar.zig"));
+	try std.testing.expect(pathMatchesGlob("", ""));
+	try std.testing.expect(!pathMatchesGlob("", "a"));
+	try std.testing.expect(!pathMatchesGlob("a", ""));
+}
+
+test "browse mode: path filter restricts results by file path" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym1 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/storage.zig"),
+		.name = try allocator.dupe(u8, "initDb"),
+		.signature = try allocator.dupe(u8, "pub fn initDb() void"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "fn"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym1.deinit(allocator);
+
+	var sym2 = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/search.zig"),
+		.name = try allocator.dupe(u8, "runSearch"),
+		.signature = try allocator.dupe(u8, "pub fn runSearch() void"),
+		.doc_comment = null,
+		.symbol_kind = try allocator.dupe(u8, "fn"),
+		.start_line = 1,
+		.end_line = 5,
+	};
+	defer sym2.deinit(allocator);
+
+	const id1 = try storage.insertSymbol(db, sym1);
+	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
+	const id2 = try storage.insertSymbol(db, sym2);
+	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
+
+	// Browse with path filter — should return only storage.zig symbol
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "", .{
+		.top_n = 10,
+		.allowed_symbol_kinds = &[_][]const u8{"*"},
+		.allowed_paths = &[_][]const u8{"src/storage*"},
+	});
+	defer freeResults(allocator, sr.results);
+
+	try std.testing.expectEqual(@as(usize, 1), sr.results.len);
+	try std.testing.expectEqualStrings("initDb", sr.results[0].symbol.name);
 }

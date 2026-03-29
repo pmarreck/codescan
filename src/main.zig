@@ -22,6 +22,7 @@ const watcher = @import("watcher.zig");
 const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
 const weights = @import("weights.zig");
+const diagnostics = @import("diagnostics.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
 var g_stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -443,7 +444,7 @@ pub fn main() !void {
 			}
 		},
 		.search => {
-			const query = parsed.query orelse return error.MissingQuery;
+			const query = parsed.query orelse "";
 			try ensureParentDir(settings.db_path);
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
 
@@ -543,35 +544,73 @@ pub fn main() !void {
 				parsed.seen.weight_vector or parsed.seen.weight_lexical,
 			);
 
+			// Build path filters from --path and --file flags
+			var path_filters = std.ArrayListUnmanaged([]const u8){};
+			defer path_filters.deinit(allocator);
+			for (parsed.path_filters.items) |p| {
+				try path_filters.append(allocator, p);
+			}
+			if (parsed.file_filter) |f| {
+				try path_filters.append(allocator, f);
+			}
+
+			const search_opts = search.Options{
+				.top_n = settings.top_n,
+				.mode = effective_search_mode,
+				.fusion = settings.fusion,
+				.rrf_k = settings.rrf_k,
+				.fts_mode = settings.fts_mode,
+				.weight_vector = effective_weights.weight_vector,
+				.weight_lexical = effective_weights.weight_lexical,
+				.weight_symbol_kind = effective_weights.weight_symbol_kind,
+				.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
+				.weight_symbol_scope = effective_weights.weight_symbol_scope,
+				.weight_symbol_arity = effective_weights.weight_symbol_arity,
+				.min_score = settings.min_score,
+				.allowed_langs = search_filters.langs.items,
+				.allowed_exts = search_filters.exts.items,
+				.allowed_symbol_kinds = search_filters.symbol_kinds.items,
+				.allowed_paths = path_filters.items,
+				.comments_only = settings.comments_only,
+			};
 			const sr = try search.search(
 				allocator,
 				db,
 				embedder_adapter.embedder(),
 				query,
-				.{
-					.top_n = settings.top_n,
-					.mode = effective_search_mode,
-					.fusion = settings.fusion,
-					.rrf_k = settings.rrf_k,
-					.fts_mode = settings.fts_mode,
-					.weight_vector = effective_weights.weight_vector,
-					.weight_lexical = effective_weights.weight_lexical,
-					.weight_symbol_kind = effective_weights.weight_symbol_kind,
-					.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
-					.weight_symbol_scope = effective_weights.weight_symbol_scope,
-					.weight_symbol_arity = effective_weights.weight_symbol_arity,
-					.min_score = settings.min_score,
-					.allowed_langs = search_filters.langs.items,
-					.allowed_exts = search_filters.exts.items,
-					.allowed_symbol_kinds = search_filters.symbol_kinds.items,
-					.comments_only = settings.comments_only,
-				},
+				search_opts,
 			);
 			defer search.freeResults(allocator, sr.results);
 
 			if (sr.results.len == 0) {
 				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-				if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+				// Show per-filter diagnostic counts when 2+ filter dimensions were active
+				const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, search_opts) catch null;
+				const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
+				if (has_diag) {
+					const d = diag.?;
+					// Build a short description of active filters for the note header
+					const kind_str = if (search_opts.allowed_symbol_kinds.len > 0) search_opts.allowed_symbol_kinds[0] else "";
+					const lang_str = if (search_opts.allowed_langs.len > 0) search_opts.allowed_langs[0] else "";
+					if (kind_str.len > 0 and lang_str.len > 0) {
+						_ = stderr.print("note: no results for query \"{s}\" with kind={s} lang={s}\n", .{ query, kind_str, lang_str }) catch {};
+					} else if (kind_str.len > 0) {
+						_ = stderr.print("note: no results for query \"{s}\" with kind={s}\n", .{ query, kind_str }) catch {};
+					} else if (lang_str.len > 0) {
+						_ = stderr.print("note: no results for query \"{s}\" with lang={s}\n", .{ query, lang_str }) catch {};
+					} else {
+						_ = stderr.print("note: no results for query \"{s}\" with active filters\n", .{query}) catch {};
+					}
+					if (d.query_only) |n| {
+						_ = stderr.print("  -> query alone: {d} result(s)\n", .{n}) catch {};
+					}
+					if (d.kind_only) |n| {
+						_ = stderr.print("  -> kind filter alone: {d} result(s)\n", .{n}) catch {};
+					}
+					if (d.lang_only) |n| {
+						_ = stderr.print("  -> lang filter alone: {d} result(s)\n", .{n}) catch {};
+					}
+				} else if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
 					_ = stderr.print(
 						"note: no results found (watcher is running and index is up to date).\n",
 						.{},

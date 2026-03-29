@@ -297,12 +297,32 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch |err|
 			return toolError("MCP rename: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "search") or std.mem.eql(u8, name, "query")) {
-		const query = getArg(args, "query") orelse return error.MissingArgument;
-		try ensureParentDir(settings.db_path);
-		const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
-			return toolError("MCP search: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
+		const query = getArg(args, "query") orelse "";
+		const kind_arg = getArg(args, "kind");
+		const path_arg = getArg(args, "path");
+		const file_arg = getArg(args, "file");
+		const lang_arg = getArg(args, "lang");
+		const top_arg = getArgInt(args, "top");
+
+		if (query.len == 0 and kind_arg == null and lang_arg == null and path_arg == null and file_arg == null) {
+			return toolError("MCP search: query is required when no filters are provided\n", .{});
+		}
+
+		var mcp_settings = settings;
+		if (kind_arg) |k| mcp_settings.search_symbol_kind = k;
+		if (lang_arg) |l| mcp_settings.search_lang = l;
+		if (top_arg) |t| mcp_settings.search_top_n = t;
+
+		var path_filters = std.ArrayListUnmanaged([]const u8){};
+		defer path_filters.deinit(allocator);
+		if (path_arg) |p| try path_filters.append(allocator, p);
+		if (file_arg) |f| try path_filters.append(allocator, f);
+
+		try ensureParentDir(mcp_settings.db_path);
+		const db = storage.openFileWithVec(allocator, mcp_settings.db_path) catch |err|
+			return toolError("MCP search: failed to open DB '{s}': {}\n", .{ mcp_settings.db_path, err });
 		defer storage.close(db);
-		var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch |err|
+		var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = mcp_settings.embedding_dim, .embedding_model = mcp_settings.ollama_model }) catch |err|
 			return toolError("MCP search: schema init failed: {}\n", .{err});
 		defer schema_result.deinit(allocator);
 		if (schema_result.did_schema_upgrade) {
@@ -317,10 +337,10 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			var msg_writer = std.io.fixedBufferStream(&msg_buf);
 			const mw = msg_writer.writer();
 			if (schema_result.embedding_model_mismatch) {
-				mw.print("Embedding model mismatch: index built with '{s}', current is '{s}'. ", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+				mw.print("Embedding model mismatch: index built with '{s}', current is '{s}'. ", .{ schema_result.stored_embedding_model orelse "unknown", mcp_settings.ollama_model }) catch {};
 			}
 			if (schema_result.embedding_dim_mismatch) {
-				mw.print("Embedding dim mismatch: index built with {d}, current is {d}. ", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+				mw.print("Embedding dim mismatch: index built with {d}, current is {d}. ", .{ schema_result.stored_embedding_dim orelse 0, mcp_settings.embedding_dim }) catch {};
 			}
 			mw.print("Run 'codescan index' to rebuild.", .{}) catch {};
 			const msg = msg_buf[0..msg_writer.pos];
@@ -331,9 +351,9 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		defer http_client.deinit();
 
 		// Auto-index if DB is empty
-		var effective_search_mode = settings.search_mode;
+		var effective_search_mode = mcp_settings.search_mode;
 		if (!storage.isIndexPopulated(db)) {
-			ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
+			ollama.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
 				if (err != error.ModelLoading) {
 					// ModelNotFound or connection error — fall back to lexical
 					effective_search_mode = .lexical;
@@ -342,27 +362,27 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			};
 			var embedder_for_index = embedding.OllamaEmbedder{
 				.transport = http_client.transport(),
-				.base_url = settings.ollama_url,
-				.model = settings.ollama_model,
+				.base_url = mcp_settings.ollama_url,
+				.model = mcp_settings.ollama_model,
 			};
-			_ = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
-				.embedding_dim = settings.embedding_dim,
-				.embedding_model = settings.ollama_model,
-				.batch_size = settings.batch_size,
-				.max_file_size = settings.max_file_size,
+			_ = indexer.indexAll(allocator, db, mcp_settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
+				.embedding_dim = mcp_settings.embedding_dim,
+				.embedding_model = mcp_settings.ollama_model,
+				.batch_size = mcp_settings.batch_size,
+				.max_file_size = mcp_settings.max_file_size,
 				.allowed_exts = &[_][]const u8{},
 				.allowed_kinds = &[_]kind.Kind{},
 				.ignore = .{
-					.global = settings.ignore_global,
-					.per_language = settings.ignore_lang,
-					.include_node_modules = settings.include_node_modules,
+					.global = mcp_settings.ignore_global,
+					.per_language = mcp_settings.ignore_lang,
+					.include_node_modules = mcp_settings.include_node_modules,
 				},
 				.show_progress = false,
 			}) catch |err|
-				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ settings.root_path, err });
+				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ mcp_settings.root_path, err });
 		} else {
 			if (effective_search_mode != .lexical) {
-				ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
+				ollama.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
 					if (err != error.ModelLoading) {
 						// ModelNotFound or connection error — fall back to lexical
 						effective_search_mode = .lexical;
@@ -374,47 +394,49 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 
 		var embedder_adapter = embedding.OllamaEmbedder{
 			.transport = http_client.transport(),
-			.base_url = settings.ollama_url,
-			.model = settings.ollama_model,
+			.base_url = mcp_settings.ollama_url,
+			.model = mcp_settings.ollama_model,
 		};
 
 		var search_filters = filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
-			.search_ext = settings.search_ext,
-			.search_type = settings.search_type,
-			.search_lang = settings.search_lang,
-			.search_symbol_kind = settings.search_symbol_kind,
-			.primary_lang = settings.primary_lang,
-			.include_docs = settings.include_docs,
-			.docs_only = settings.docs_only,
+			.search_ext = mcp_settings.search_ext,
+			.search_type = mcp_settings.search_type,
+			.search_lang = mcp_settings.search_lang,
+			.search_symbol_kind = mcp_settings.search_symbol_kind,
+			.primary_lang = mcp_settings.primary_lang,
+			.include_docs = mcp_settings.include_docs,
+			.docs_only = mcp_settings.docs_only,
 		}) catch |err|
 			return toolError("MCP search: failed to build search filters: {}\n", .{err});
 		defer search_filters.deinit(allocator);
 		const effective_weights = weights.resolveSearchWeights(
-			settings.search_weights,
+			mcp_settings.search_weights,
 			search_filters.langs.items,
-			settings.search_weight_vector,
-			settings.search_weight_lexical,
+			mcp_settings.search_weight_vector,
+			mcp_settings.search_weight_lexical,
 			false,
 		);
 
-		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, .{
-			.top_n = settings.search_top_n,
+		const search_opts: search.Options = .{
+			.top_n = mcp_settings.search_top_n,
 			.mode = effective_search_mode,
-			.fusion = settings.search_fusion,
-			.rrf_k = settings.search_rrf_k,
-			.fts_mode = settings.search_fts_mode,
+			.fusion = mcp_settings.search_fusion,
+			.rrf_k = mcp_settings.search_rrf_k,
+			.fts_mode = mcp_settings.search_fts_mode,
 			.weight_vector = effective_weights.weight_vector,
 			.weight_lexical = effective_weights.weight_lexical,
 			.weight_symbol_kind = effective_weights.weight_symbol_kind,
 			.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
 			.weight_symbol_scope = effective_weights.weight_symbol_scope,
 			.weight_symbol_arity = effective_weights.weight_symbol_arity,
-			.min_score = settings.search_min_score,
+			.min_score = mcp_settings.search_min_score,
 			.allowed_langs = search_filters.langs.items,
 			.allowed_exts = search_filters.exts.items,
 			.allowed_symbol_kinds = search_filters.symbol_kinds.items,
-			.comments_only = settings.comments_only,
-		}) catch |err|
+			.allowed_paths = path_filters.items,
+			.comments_only = mcp_settings.comments_only,
+		};
+		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, search_opts) catch |err|
 			return toolError("MCP search: search failed for query '{s}': {}\n", .{ query, err });
 		defer search.freeResults(allocator, sr.results);
 
@@ -422,9 +444,23 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.show_comments = false,
 			.use_color = false,
 			.total_relevant = sr.total_relevant,
-			.top_n = settings.search_top_n,
+			.top_n = mcp_settings.search_top_n,
 		}) catch |err|
 			return toolError("MCP search: failed to write results: {}\n", .{err});
+
+		// Append diagnostics when no results and multiple filters active
+		if (sr.results.len == 0) {
+			const diagnostics = @import("diagnostics.zig");
+			const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, search_opts) catch null;
+			const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
+			if (has_diag) {
+				const d = diag.?;
+				out.writer.print("\n--- diagnostics ---", .{}) catch {};
+				if (d.query_only) |c| out.writer.print("\nQuery alone: {d} results", .{c}) catch {};
+				if (d.kind_only) |c| out.writer.print("\nKind alone: {d} results", .{c}) catch {};
+				if (d.lang_only) |c| out.writer.print("\nLang alone: {d} results", .{c}) catch {};
+			}
+		}
 	} else if (std.mem.eql(u8, name, "index")) {
 		try ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch |err|
@@ -509,6 +545,14 @@ fn getArgBool(args: ?std.json.ObjectMap, key: []const u8) bool {
 	return val.bool;
 }
 
+fn getArgInt(args: ?std.json.ObjectMap, key: []const u8) ?usize {
+	const a = args orelse return null;
+	const val = a.get(key) orelse return null;
+	if (val != .integer) return null;
+	if (val.integer < 0) return null;
+	return @intCast(val.integer);
+}
+
 /// Extract a string-or-array-of-strings arg into an owned ArrayList.
 fn getArgStringArray(allocator: std.mem.Allocator, args: ?std.json.ObjectMap, key: []const u8) !std.ArrayListUnmanaged([]const u8) {
 	var result = std.ArrayListUnmanaged([]const u8){};
@@ -583,8 +627,8 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 // Tool definitions for MCP tools/list
 const tools_list_json =
 	\\{"tools":[
-	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
-	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query"}},"required":["query"]}},
+	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"}}}},
+	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"}}}},
 	\\{"name":"index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
 	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
 	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"}},"required":["file","pattern","body"]}},
@@ -1112,4 +1156,247 @@ test "MCP search applies language filters from settings" {
 	// The response should contain the Zig symbol but NOT the Python one
 	try std.testing.expect(std.mem.indexOf(u8, response, "hello_zig") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "hello_python") == null);
+}
+
+test "getArgInt parses integer arguments" {
+	const allocator = std.testing.allocator;
+	const json_str = "{\"top\":42,\"name\":\"hello\",\"neg\":-1}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+	defer parsed.deinit();
+	const map = parsed.value.object;
+
+	// Valid integer
+	try std.testing.expectEqual(@as(?usize, 42), getArgInt(map, "top"));
+	// String value returns null
+	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "name"));
+	// Missing key returns null
+	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "missing"));
+	// Negative returns null
+	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "neg"));
+	// Null args returns null
+	try std.testing.expectEqual(@as(?usize, null), getArgInt(null, "top"));
+}
+
+test "MCP search returns error when no query and no filters" {
+	const allocator = std.testing.allocator;
+	// Search with empty query and no kind/lang/path/file args
+	const params_str = "{\"name\":\"search\",\"arguments\":{}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = ".",
+		.db_path = ":memory:",
+	});
+	defer allocator.free(response);
+
+	// Should return an error about missing query
+	try std.testing.expect(std.mem.indexOf(u8, response, "error") != null);
+}
+
+test "MCP search accepts kind filter without query (browse mode)" {
+	const allocator = std.testing.allocator;
+
+	// Create a temp dir + pre-populated DB
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	// Populate DB
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+		var sym = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/test.zig"),
+			.name = try allocator.dupe(u8, "myFunc"),
+			.signature = try allocator.dupe(u8, "fn myFunc() void"),
+			.symbol_kind = try allocator.dupe(u8, "fn"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer sym.deinit(allocator);
+		_ = try storage.insertSymbol(db, sym);
+	}
+
+	// Search with kind=fn but no query
+	const params_str = "{\"name\":\"search\",\"arguments\":{\"kind\":\"fn\"}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.embedding_dim = 2,
+		.search_mode = .lexical,
+		.ollama_url = "http://localhost:19999",
+		.ollama_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	// Should find the function (browse mode)
+	try std.testing.expect(std.mem.indexOf(u8, response, "myFunc") != null);
+}
+
+test "MCP search applies top parameter" {
+	const allocator = std.testing.allocator;
+
+	// Create a temp dir + pre-populated DB with multiple symbols
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	// Populate DB with 5 functions
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+		const names = [_][]const u8{ "func_alpha", "func_beta", "func_gamma", "func_delta", "func_epsilon" };
+		for (names) |n| {
+			var sym = model.Symbol{
+				.language = try allocator.dupe(u8, "zig"),
+				.file_path = try allocator.dupe(u8, "src/test.zig"),
+				.name = try allocator.dupe(u8, n),
+				.signature = try allocator.dupe(u8, n),
+				.symbol_kind = try allocator.dupe(u8, "fn"),
+				.doc_comment = null,
+				.start_line = 1,
+				.end_line = 1,
+			};
+			defer sym.deinit(allocator);
+			_ = try storage.insertSymbol(db, sym);
+		}
+	}
+
+	// Search with kind=fn and top=2
+	const params_str = "{\"name\":\"search\",\"arguments\":{\"kind\":\"fn\",\"top\":2}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.embedding_dim = 2,
+		.search_mode = .lexical,
+		.search_top_n = 20,
+		.ollama_url = "http://localhost:19999",
+		.ollama_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	// Should succeed (not an error)
+	try std.testing.expect(std.mem.indexOf(u8, response, "error") == null);
+	// Count occurrences of "func_" to verify top limit is applied
+	var count: usize = 0;
+	var pos: usize = 0;
+	while (std.mem.indexOfPos(u8, response, pos, "func_")) |idx| {
+		count += 1;
+		pos = idx + 5;
+	}
+	// With top=2 we should get at most 2 results (each has func_ in the name)
+	try std.testing.expect(count <= 4); // name appears in both name and signature fields, so up to 2*2=4
+}
+
+test "MCP search applies lang filter from arguments" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+		var sym_zig = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/a.zig"),
+			.name = try allocator.dupe(u8, "hello_world"),
+			.signature = try allocator.dupe(u8, "fn hello_world() void"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer sym_zig.deinit(allocator);
+		_ = try storage.insertSymbol(db, sym_zig);
+
+		var sym_py = model.Symbol{
+			.language = try allocator.dupe(u8, "python"),
+			.file_path = try allocator.dupe(u8, "src/b.py"),
+			.name = try allocator.dupe(u8, "hello_world"),
+			.signature = try allocator.dupe(u8, "def hello_world():"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer sym_py.deinit(allocator);
+		_ = try storage.insertSymbol(db, sym_py);
+	}
+
+	// Search with lang=python via MCP arguments (not settings)
+	const params_str = "{\"name\":\"search\",\"arguments\":{\"query\":\"hello_world\",\"lang\":\"python\"}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.embedding_dim = 2,
+		.search_mode = .lexical,
+		.ollama_url = "http://localhost:19999",
+		.ollama_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	// Should find the Python symbol but filter out Zig
+	try std.testing.expect(std.mem.indexOf(u8, response, "b.py") != null);
+	// The zig file should not appear
+	try std.testing.expect(std.mem.indexOf(u8, response, "a.zig") == null);
+}
+
+test "tools_list_json contains new search parameters" {
+	const allocator = std.testing.allocator;
+	// Parse the tools_list_json to verify it's valid JSON with new params
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, tools_list_json, .{});
+	defer parsed.deinit();
+
+	const tools = parsed.value.object.get("tools").?.array;
+
+	// Find the search tool
+	var found_search = false;
+	for (tools.items) |tool| {
+		const tool_name = tool.object.get("name").?.string;
+		if (std.mem.eql(u8, tool_name, "search")) {
+			found_search = true;
+			const schema = tool.object.get("inputSchema").?.object;
+			const props = schema.get("properties").?.object;
+			// Verify new parameters exist
+			try std.testing.expect(props.get("kind") != null);
+			try std.testing.expect(props.get("path") != null);
+			try std.testing.expect(props.get("file") != null);
+			try std.testing.expect(props.get("lang") != null);
+			try std.testing.expect(props.get("top") != null);
+			// query should no longer be required
+			try std.testing.expect(schema.get("required") == null);
+			break;
+		}
+	}
+	try std.testing.expect(found_search);
 }
