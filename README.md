@@ -130,6 +130,7 @@ codescan search "hash" --file src/hash.zig
 codescan search "pub fn \w+Init" --regex --context 5
 codescan search "TODO|FIXME|HACK" --regex --top 20
 codescan search "defer.*free" --regex --path "src/*.zig"
+codescan search "fixme|todo" --regex -i  # case-insensitive
 
 # index node_modules too
 codescan index --include-node-modules
