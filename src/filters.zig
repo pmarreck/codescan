@@ -255,11 +255,30 @@ pub fn parseSymbolKindList(
 		if (trimmed.len == 0) continue;
 		const lower = try normalizeLower(allocator, trimmed);
 		defer allocator.free(lower);
+		// Check for meta-kinds that expand to multiple values
+		if (expandMetaKind(lower)) |expansions| {
+			for (expansions) |canonical| {
+				if (!containsString(list.items, canonical)) {
+					try list.append(allocator, try allocator.dupe(u8, canonical));
+				}
+			}
+			continue;
+		}
 		const canonical = normalizeSymbolKind(lower) orelse return error.InvalidSymbolKind;
 		if (!containsString(list.items, canonical)) {
 			try list.append(allocator, try allocator.dupe(u8, canonical));
 		}
 	}
+}
+
+/// Meta-kinds that expand to multiple canonical values.
+fn expandMetaKind(value: []const u8) ?[]const []const u8 {
+	const decl = [_][]const u8{ "const", "var" };
+	const defn = [_][]const u8{"*"};
+	if (std.mem.eql(u8, value, "declaration")) return &decl;
+	if (std.mem.eql(u8, value, "let")) return &decl;
+	if (std.mem.eql(u8, value, "definition")) return &defn;
+	return null;
 }
 
 /// Normalizes user-facing symbol kind aliases to the short canonical form stored in the DB.
@@ -312,4 +331,38 @@ test "normalizeSymbolKind maps aliases to short DB canonical forms" {
 	try std.testing.expectEqualStrings("struct", normalizeSymbolKind("struct").?);
 	try std.testing.expectEqualStrings("test", normalizeSymbolKind("test").?);
 	try std.testing.expect(normalizeSymbolKind("bogus") == null);
+}
+
+test "parseSymbolKindList expands meta-kinds" {
+	const allocator = std.testing.allocator;
+	var list: std.ArrayListUnmanaged([]const u8) = .{};
+	defer {
+		for (list.items) |item| allocator.free(item);
+		list.deinit(allocator);
+	}
+
+	// "declaration" expands to const + var
+	try parseSymbolKindList(allocator, &list, "declaration");
+	try std.testing.expectEqual(@as(usize, 2), list.items.len);
+	try std.testing.expectEqualStrings("const", list.items[0]);
+	try std.testing.expectEqualStrings("var", list.items[1]);
+
+	// Reset
+	for (list.items) |item| allocator.free(item);
+	list.clearRetainingCapacity();
+
+	// "let" expands to const + var
+	try parseSymbolKindList(allocator, &list, "let");
+	try std.testing.expectEqual(@as(usize, 2), list.items.len);
+	try std.testing.expectEqualStrings("const", list.items[0]);
+	try std.testing.expectEqualStrings("var", list.items[1]);
+
+	// Reset
+	for (list.items) |item| allocator.free(item);
+	list.clearRetainingCapacity();
+
+	// "definition" expands to sentinel "*"
+	try parseSymbolKindList(allocator, &list, "definition");
+	try std.testing.expectEqual(@as(usize, 1), list.items.len);
+	try std.testing.expectEqualStrings("*", list.items[0]);
 }

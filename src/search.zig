@@ -450,6 +450,11 @@ fn matchesFilters(symbol: model.Symbol, options: Options) bool {
 		const sk = symbol.symbol_kind orelse return false;
 		var ok = false;
 		for (options.allowed_symbol_kinds) |k| {
+			if (std.mem.eql(u8, k, "*")) {
+				// "*" sentinel means "any non-null symbol_kind" — already passed the null check above
+				ok = true;
+				break;
+			}
 			if (std.mem.eql(u8, sk, k)) {
 				ok = true;
 				break;
