@@ -479,6 +479,38 @@ pub fn main() !void {
 				std.process.exit(1);
 			}
 
+			// Regex search: skip vector/FTS entirely
+			if (parsed.regex_search) {
+				if (query.len == 0) {
+					_ = stderr.print("error: --regex requires a search query\n", .{}) catch {};
+					_ = stderr.flush() catch {};
+					std.process.exit(1);
+				}
+				var path_filters_regex = std.ArrayListUnmanaged([]const u8){};
+				defer path_filters_regex.deinit(allocator);
+				for (parsed.path_filters.items) |p| {
+					try path_filters_regex.append(allocator, p);
+				}
+				if (parsed.file_filter) |f| {
+					try path_filters_regex.append(allocator, f);
+				}
+				try runRegexSearch(
+					allocator,
+					db,
+					query,
+					parsed.context_lines,
+					settings.top_n,
+					path_filters_regex.items,
+					settings.search_lang,
+					registry,
+					settings.root_path,
+					settings.output,
+					stdout,
+				);
+				try stdout.flush();
+				return;
+			}
+
 			var http_client = ollama.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 
@@ -4275,6 +4307,263 @@ fn printUsage(writer: *std.Io.Writer, topic: ?[]const u8) !void {
 	try writer.writeAll(usage);
 }
 
+/// Run a PCRE2 regex search across indexed files, returning matches with
+/// hashline annotations and optional context lines.
+pub fn runRegexSearch(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	pattern_str: []const u8,
+	context_lines: usize,
+	top_n: usize,
+	path_filters: []const []const u8,
+	lang_filter: ?[]const u8,
+	registry: plugin.Registry,
+	root_path: []const u8,
+	format: cli.OutputFormat,
+	writer: *std.Io.Writer,
+) !void {
+	// Compile the regex
+	var regex = pcre2.Regex.compile(allocator, pattern_str) catch {
+		if (format == .json) {
+			try writer.writeAll("{\"error\":\"invalid regex pattern\"}\n");
+		} else {
+			try writer.print("error: invalid regex pattern: {s}\n", .{pattern_str});
+		}
+		return;
+	};
+	defer regex.deinit();
+
+	// Get indexed files
+	const indexed_files = try storage.getAllIndexedFiles(db, allocator);
+	defer {
+		for (indexed_files) |f| allocator.free(f.file_path);
+		allocator.free(indexed_files);
+	}
+
+	const ContextLine = struct {
+		line: usize,
+		hash: hashline.Hash,
+		content: []const u8,
+		is_match: bool,
+	};
+	const Result = struct {
+		file: []const u8,
+		line: usize,
+		hash: hashline.Hash,
+		match_text: []const u8,
+		context: []ContextLine,
+	};
+
+	var results = std.ArrayListUnmanaged(Result){};
+	defer {
+		for (results.items) |r| {
+			allocator.free(r.match_text);
+			for (r.context) |ctx| allocator.free(ctx.content);
+			allocator.free(r.context);
+		}
+		results.deinit(allocator);
+	}
+
+	var match_count: usize = 0;
+
+	for (indexed_files) |indexed_file| {
+		if (match_count >= top_n) break;
+
+		const rel_path = indexed_file.file_path;
+
+		// Apply path filters
+		if (path_filters.len > 0) {
+			var any_match = false;
+			for (path_filters) |pf| {
+				if (search.pathMatchesGlob(rel_path, pf)) {
+					any_match = true;
+					break;
+				}
+			}
+			if (!any_match) continue;
+		}
+
+		// Apply language filter
+		if (lang_filter) |lang| {
+			const extractor = registry.find(rel_path);
+			if (extractor) |ext| {
+				if (!std.mem.eql(u8, ext.language, lang)) continue;
+			} else {
+				continue; // unknown language, skip
+			}
+		}
+
+		// Read file from disk
+		const abs_path = std.fs.path.join(allocator, &.{ root_path, rel_path }) catch continue;
+		defer allocator.free(abs_path);
+
+		const file = std.fs.openFileAbsolute(abs_path, .{}) catch continue;
+		defer file.close();
+		const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch continue;
+		defer allocator.free(source);
+
+		// Compute hashlines
+		const hashes = hashline.computeSourceHashes(allocator, source) catch continue;
+		defer allocator.free(hashes);
+
+		// Split source into lines for context
+		var lines_list = std.ArrayListUnmanaged([]const u8){};
+		defer lines_list.deinit(allocator);
+		{
+			var start: usize = 0;
+			for (source, 0..) |ch, idx| {
+				if (ch == '\n') {
+					try lines_list.append(allocator, source[start..idx]);
+					start = idx + 1;
+				}
+			}
+			if (start <= source.len) {
+				try lines_list.append(allocator, source[start..]);
+			}
+		}
+		const lines = lines_list.items;
+
+		// Build line offset index (byte offset -> line number)
+		var line_offsets = std.ArrayListUnmanaged(usize){};
+		defer line_offsets.deinit(allocator);
+		{
+			var off: usize = 0;
+			for (lines) |line| {
+				try line_offsets.append(allocator, off);
+				off += line.len + 1; // +1 for newline
+			}
+		}
+
+		// Find all regex matches
+		var offset: usize = 0;
+		// Track which lines we already reported to avoid duplicates
+		var reported_lines = std.AutoHashMapUnmanaged(usize, void){};
+		defer reported_lines.deinit(allocator);
+
+		while (match_count < top_n) {
+			const m = regex.findPosition(source, offset) orelse break;
+
+			// Find line number for match start
+			var line_num: usize = 0;
+			for (line_offsets.items, 0..) |lo, li| {
+				if (m.start < lo) break;
+				line_num = li;
+			}
+
+			// Skip if we already reported this line
+			if (reported_lines.get(line_num) != null) {
+				offset = m.end;
+				if (offset == m.start) offset += 1; // avoid infinite loop on zero-width match
+				continue;
+			}
+			reported_lines.put(allocator, line_num, {}) catch {};
+
+			if (line_num >= lines.len or line_num >= hashes.len) {
+				offset = m.end;
+				if (offset == m.start) offset += 1;
+				continue;
+			}
+
+			// Compute context range
+			const before: usize = if (context_lines <= 1) 0 else (context_lines - 1) / 2;
+			const after: usize = if (context_lines <= 1) 0 else context_lines - 1 - before;
+
+			const ctx_start = if (line_num >= before) line_num - before else 0;
+			const ctx_end = @min(line_num + after + 1, lines.len);
+
+			// Build context lines
+			var ctx_list = std.ArrayListUnmanaged(ContextLine){};
+			errdefer {
+				for (ctx_list.items) |ctx| allocator.free(ctx.content);
+				ctx_list.deinit(allocator);
+			}
+			for (ctx_start..ctx_end) |cl| {
+				if (cl >= lines.len or cl >= hashes.len) break;
+				const content_dupe = try allocator.dupe(u8, lines[cl]);
+				errdefer allocator.free(content_dupe);
+				try ctx_list.append(allocator, .{
+					.line = cl + 1, // 1-indexed
+					.hash = hashes[cl],
+					.content = content_dupe,
+					.is_match = cl == line_num,
+				});
+			}
+
+			const match_text = try allocator.dupe(u8, lines[line_num]);
+			errdefer allocator.free(match_text);
+			const ctx_owned = try ctx_list.toOwnedSlice(allocator);
+			errdefer {
+				for (ctx_owned) |ctx| allocator.free(ctx.content);
+				allocator.free(ctx_owned);
+			}
+
+			try results.append(allocator, .{
+				.file = rel_path,
+				.line = line_num + 1, // 1-indexed
+				.hash = hashes[line_num],
+				.match_text = match_text,
+				.context = ctx_owned,
+			});
+			match_count += 1;
+
+			offset = m.end;
+			if (offset == m.start) offset += 1;
+		}
+	}
+
+	// Output results
+	switch (format) {
+		.json => {
+			try writer.writeAll("{\"total_matches\":");
+			try writer.print("{d}", .{results.items.len});
+			try writer.writeAll(",\"showing\":");
+			try writer.print("{d}", .{results.items.len});
+			try writer.writeAll(",\"results\":[");
+			for (results.items, 0..) |r, ri| {
+				if (ri > 0) try writer.writeAll(",");
+				try writer.writeAll("{\"file\":");
+				try writeJsonString(r.file, writer);
+				try writer.print(",\"line\":{d},\"hash\":\"{s}\",\"match\":", .{ r.line, r.hash });
+				try writeJsonString(r.match_text, writer);
+				if (r.context.len > 0) {
+					try writer.writeAll(",\"context\":[");
+					for (r.context, 0..) |ctx, ci| {
+						if (ci > 0) try writer.writeAll(",");
+						try writer.writeAll("{\"line\":");
+						try writer.print("{d}", .{ctx.line});
+						try writer.print(",\"hash\":\"{s}\",\"content\":", .{ctx.hash});
+						try writeJsonString(ctx.content, writer);
+						if (ctx.is_match) {
+							try writer.writeAll(",\"is_match\":true");
+						}
+						try writer.writeAll("}");
+					}
+					try writer.writeAll("]");
+				}
+				try writer.writeAll("}");
+			}
+			try writer.writeAll("]}\n");
+		},
+		.human => {
+			if (results.items.len == 0) {
+				try writer.writeAll("No regex matches found.\n");
+				return;
+			}
+			for (results.items) |r| {
+				try writer.print("{s}:{d}:{s}\n", .{ r.file, r.line, r.hash });
+				if (r.context.len > 0) {
+					for (r.context) |ctx| {
+						const prefix: []const u8 = if (ctx.is_match) "> " else "  ";
+						try writer.print("{s}{d}:{s}|{s}\n", .{ prefix, ctx.line, ctx.hash, ctx.content });
+					}
+				}
+			}
+		},
+	}
+}
+
+// writeJsonString is defined earlier in this file (takes s, writer)
+
 test "findRepoRoot finds nearest .codescan ancestor" {
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
@@ -5176,4 +5465,167 @@ test "runDestroyFile errors when file does not exist" {
 	defer allocator.free(output_text);
 
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error:") != null);
+}
+
+test "runRegexSearch finds matches with correct line numbers" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Create a source file in the tmp dir
+	{
+		const f = try tmp.dir.createFile("hello.zig", .{});
+		defer f.close();
+		try f.writeAll("const std = @import(\"std\");\nfn hello() void {}\nfn world() void {}\n");
+	}
+
+	// Create DB
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	const db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try storage.upsertIndexedFile(db, "hello.zig", 0, 0);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try runRegexSearch(
+		allocator, db, "fn \\w+\\(\\)", 0, 20,
+		&[_][]const u8{}, null,
+		plugin.defaultRegistry(), root_path, .json, &out.writer,
+	);
+	const result = try out.toOwnedSlice();
+	defer allocator.free(result);
+
+	// Should find both fn declarations
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"total_matches\":2") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"line\":2") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"line\":3") != null);
+}
+
+test "runRegexSearch context lines shows surrounding lines" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	{
+		const f = try tmp.dir.createFile("ctx.zig", .{});
+		defer f.close();
+		try f.writeAll("line1\nline2\nTARGET\nline4\nline5\n");
+	}
+
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	const db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try storage.upsertIndexedFile(db, "ctx.zig", 0, 0);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	// context_lines=5 means 2 before + match + 2 after
+	try runRegexSearch(
+		allocator, db, "TARGET", 5, 20,
+		&[_][]const u8{}, null,
+		plugin.defaultRegistry(), root_path, .json, &out.writer,
+	);
+	const result = try out.toOwnedSlice();
+	defer allocator.free(result);
+
+	// Should have context lines
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"context\":[") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "line1") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "line2") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "TARGET") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "line4") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "line5") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"is_match\":true") != null);
+}
+
+test "runRegexSearch path filter restricts files" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	try tmp.dir.makePath("lib");
+
+	{
+		const f = try tmp.dir.createFile("src/a.zig", .{});
+		defer f.close();
+		try f.writeAll("fn alpha() void {}\n");
+	}
+	{
+		const f = try tmp.dir.createFile("lib/b.zig", .{});
+		defer f.close();
+		try f.writeAll("fn beta() void {}\n");
+	}
+
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	const db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try storage.upsertIndexedFile(db, "src/a.zig", 0, 0);
+	try storage.upsertIndexedFile(db, "lib/b.zig", 0, 0);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	const path_filter: []const u8 = "src/*";
+	try runRegexSearch(
+		allocator, db, "fn \\w+", 0, 20,
+		&[_][]const u8{path_filter}, null,
+		plugin.defaultRegistry(), root_path, .json, &out.writer,
+	);
+	const result = try out.toOwnedSlice();
+	defer allocator.free(result);
+
+	// Should find alpha but not beta
+	try std.testing.expect(std.mem.indexOf(u8, result, "alpha") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "beta") == null);
+}
+
+test "runRegexSearch invalid regex returns error message" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	const db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try runRegexSearch(
+		allocator, db, "[invalid(", 0, 20,
+		&[_][]const u8{}, null,
+		plugin.defaultRegistry(), root_path, .json, &out.writer,
+	);
+	const result = try out.toOwnedSlice();
+	defer allocator.free(result);
+
+	try std.testing.expect(std.mem.indexOf(u8, result, "error") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "invalid regex") != null);
 }

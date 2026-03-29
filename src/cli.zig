@@ -126,6 +126,8 @@ pub const Parsed = struct {
 	hashline_ref: ?[]const u8,
 	rename_to: ?[]const u8,
 	regex_mode: bool,
+	regex_search: bool,
+	context_lines: usize,
 	replace_all: bool,
 	version_hash: ?[]const u8,
 	watch_interval: u64,
@@ -194,6 +196,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.hashline_ref = null,
 		.rename_to = null,
 		.regex_mode = false,
+		.regex_search = false,
+		.context_lines = 0,
 		.replace_all = false,
 		.version_hash = null,
 		.watch_interval = 2000,
@@ -713,7 +717,18 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			continue;
 		}
 		if (std.mem.eql(u8, arg, "--regex")) {
-			parsed.regex_mode = true;
+			if (parsed.command == .search) {
+				parsed.regex_search = true;
+			} else {
+				parsed.regex_mode = true;
+			}
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--context") or std.mem.eql(u8, arg, "-C")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.context_lines = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidValue;
 			i += 1;
 			continue;
 		}
@@ -1313,4 +1328,37 @@ test "parse search with --file allows browse mode (no query)" {
 	try std.testing.expectEqual(CommandTag.search, parsed.command);
 	try std.testing.expectEqual(@as(?[]const u8, null), parsed.query);
 	try std.testing.expectEqualStrings("src/storage.zig", parsed.file_filter.?);
+}
+
+test "parse search --regex sets regex_search flag" {
+	const args = [_][]const u8{ "codescan", "search", "fn \\w+", "--regex" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expect(parsed.regex_search);
+	try std.testing.expect(!parsed.regex_mode); // regex_mode is for replace_content
+	try std.testing.expectEqualStrings("fn \\w+", parsed.query.?);
+}
+
+test "parse search --context sets context_lines" {
+	const args = [_][]const u8{ "codescan", "search", "hello", "--context", "5" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.search, parsed.command);
+	try std.testing.expectEqual(@as(usize, 5), parsed.context_lines);
+}
+
+test "parse search -C shorthand for context" {
+	const args = [_][]const u8{ "codescan", "search", "hello", "-C", "3" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(@as(usize, 3), parsed.context_lines);
+}
+
+test "parse --regex on non-search command sets regex_mode not regex_search" {
+	const args = [_][]const u8{ "codescan", "replace-content", "pattern", "--regex" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expect(parsed.regex_mode);
+	try std.testing.expect(!parsed.regex_search);
 }

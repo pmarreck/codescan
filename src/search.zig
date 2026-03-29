@@ -611,7 +611,7 @@ fn matchesFilters(symbol: model.Symbol, options: Options) bool {
 }
 
 /// Simple glob match for path filtering. Supports * and ? wildcards.
-fn pathMatchesGlob(path: []const u8, pattern: []const u8) bool {
+pub fn pathMatchesGlob(path: []const u8, pattern: []const u8) bool {
 	var pi: usize = 0;
 	var gi: usize = 0;
 	var star_pi: ?usize = null;

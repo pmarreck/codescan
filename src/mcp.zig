@@ -325,9 +325,46 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const file_arg = getArg(args, "file");
 		const lang_arg = getArg(args, "lang");
 		const top_arg = getArgInt(args, "top");
+		const regex_flag = getArgBool(args, "regex");
+		const context_arg = getArgInt(args, "context");
 
 		if (query.len == 0 and kind_arg == null and lang_arg == null and path_arg == null and file_arg == null) {
 			return toolError("MCP search: query is required when no filters are provided\n", .{});
+		}
+
+		// Regex search: skip vector/FTS entirely
+		if (regex_flag) {
+			if (query.len == 0) {
+				return toolError("MCP search: --regex requires a search query\n", .{});
+			}
+			try ensureParentDir(settings.db_path);
+			const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
+				return toolError("MCP search: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
+			defer storage.close(db);
+			var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch |err|
+				return toolError("MCP search: schema init failed: {}\n", .{err});
+			defer schema_result.deinit(allocator);
+
+			var path_filters_mcp = std.ArrayListUnmanaged([]const u8){};
+			defer path_filters_mcp.deinit(allocator);
+			if (path_arg) |p| try path_filters_mcp.append(allocator, p);
+			if (file_arg) |f| try path_filters_mcp.append(allocator, f);
+
+			main.runRegexSearch(
+				allocator,
+				db,
+				query,
+				context_arg orelse 0,
+				top_arg orelse settings.search_top_n,
+				path_filters_mcp.items,
+				lang_arg,
+				plugin.defaultRegistry(),
+				settings.root_path,
+				.json,
+				&out.writer,
+			) catch |err|
+				return toolError("MCP search: regex search failed: {}\n", .{err});
+			return try out.toOwnedSlice();
 		}
 
 		var mcp_settings = settings;
@@ -649,8 +686,8 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 // Tool definitions for MCP tools/list
 const tools_list_json =
 	\\{"tools":[
-	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"}}}},
-	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"}}}},
+	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
+	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
 	\\{"name":"index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
 	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
 	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
@@ -1426,4 +1463,72 @@ test "tools_list_json contains new search parameters" {
 		}
 	}
 	try std.testing.expect(found_search);
+}
+
+test "MCP search with regex flag uses regex search path" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Create a source file
+	{
+		const f = try tmp.dir.createFile("hello.zig", .{});
+		defer f.close();
+		try f.writeAll("const x = 1;\nfn hello() void {}\nfn world() void {}\n");
+	}
+
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	// Create DB and register file
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+		try storage.upsertIndexedFile(db, "hello.zig", 0, 0);
+	}
+
+	const params_str = "{\"name\":\"search\",\"arguments\":{\"query\":\"fn \\\\w+\",\"regex\":true}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.embedding_dim = 2,
+		.search_mode = .lexical,
+		.ollama_url = "http://localhost:19999",
+		.ollama_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	// Should find fn declarations via regex
+	try std.testing.expect(std.mem.indexOf(u8, response, "hello") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "world") != null);
+}
+
+test "MCP search tool schema includes regex and context params" {
+	const allocator = std.testing.allocator;
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, tools_list_json, .{});
+	defer parsed.deinit();
+
+	const tools = parsed.value.object.get("tools").?.array;
+	for (tools.items) |tool| {
+		const tool_name = tool.object.get("name").?.string;
+		if (std.mem.eql(u8, tool_name, "search")) {
+			const props = tool.object.get("inputSchema").?.object.get("properties").?.object;
+			try std.testing.expect(props.get("regex") != null);
+			try std.testing.expect(props.get("context") != null);
+			const regex_type = props.get("regex").?.object.get("type").?.string;
+			try std.testing.expectEqualStrings("boolean", regex_type);
+			const context_type = props.get("context").?.object.get("type").?.string;
+			try std.testing.expectEqualStrings("integer", context_type);
+			return;
+		}
+	}
+	try std.testing.expect(false); // search tool not found
 }
