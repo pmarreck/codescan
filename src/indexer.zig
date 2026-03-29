@@ -475,7 +475,7 @@ pub fn reindexFile(
 
 fn enrichSymbolMetadata(allocator: std.mem.Allocator, symbol: *model.Symbol) !void {
 	if (symbol.symbol_kind == null) {
-		if (inferKindFromSignature(symbol.signature)) |value| {
+		if (inferKindFromSignature(symbol.signature, symbol.language)) |value| {
 			symbol.symbol_kind = try allocator.dupe(u8, value);
 		}
 	}
@@ -494,26 +494,63 @@ fn enrichSymbolMetadata(allocator: std.mem.Allocator, symbol: *model.Symbol) !vo
 	}
 }
 
-fn inferKindFromSignature(signature: []const u8) ?[]const u8 {
-	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+fn inferKindFromSignature(signature: []const u8, language: []const u8) ?[]const u8 {
+	var trimmed = std.mem.trimLeft(u8, signature, " \t");
+	// Strip visibility and qualifier prefixes so "pub inline fn" / "pub const X = struct" work
+	inline for ([_][]const u8{ "pub ", "export ", "inline ", "comptime ", "extern " }) |prefix| {
+		if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{prefix})) {
+			trimmed = std.mem.trimLeft(u8, trimmed[prefix.len..], " \t");
+		}
+	}
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{
-		"pub fn ",
 		"fn ",
 		"def ",
 		"defp ",
 		"func ",
 		"function ",
 		"proc ",
-	})) return "function";
+	})) return "fn";
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "class ", "class\t" })) return "class";
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "struct ", "record " })) return "struct";
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "enum " })) return "enum";
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "interface " })) return "interface";
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "trait " })) return "trait";
-	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "module ", "mod ", "namespace " })) return "module";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "module ", "mod ", "namespace " })) return "mod";
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "macro " })) return "macro";
-	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "const ", "let ", "var ", "val ", "mut " })) return "variable";
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "test ", "test\t", "test\"" })) return "test";
+	// const/val → always immutable
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "const ", "val " })) {
+		if (containsTypeAssignment(signature)) |type_kind| return type_kind;
+		return "const";
+	}
+	// let → language-dependent mutability
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{"let "})) {
+		if (containsTypeAssignment(signature)) |type_kind| return type_kind;
+		// let is immutable in Rust and Swift
+		if (std.ascii.eqlIgnoreCase(language, "rust") or std.ascii.eqlIgnoreCase(language, "swift")) {
+			return "const";
+		}
+		return "var";
+	}
+	// var/mut → always mutable
+	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "var ", "mut " })) {
+		if (containsTypeAssignment(signature)) |type_kind| return type_kind;
+		return "var";
+	}
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "type ", "typedef " })) return "type";
+	return null;
+}
+
+/// Check if a signature contains "= struct", "= enum", or "= union" indicating a type definition.
+fn containsTypeAssignment(signature: []const u8) ?[]const u8 {
+	const patterns = [_]struct { needle: []const u8, kind: []const u8 }{
+		.{ .needle = "= struct", .kind = "struct" },
+		.{ .needle = "= enum", .kind = "enum" },
+		.{ .needle = "= union", .kind = "union" },
+	};
+	for (patterns) |p| {
+		if (std.mem.indexOf(u8, signature, p.needle) != null) return p.kind;
+	}
 	return null;
 }
 
@@ -537,7 +574,7 @@ fn inferScope(name: []const u8, signature: []const u8, symbol_kind: ?[]const u8)
 	}
 	if (std.mem.indexOf(u8, name, ".") != null or std.mem.indexOf(u8, name, "::") != null) {
 		if (symbol_kind) |kind_value| {
-			if (std.ascii.eqlIgnoreCase(kind_value, "function")) return "method";
+			if (std.ascii.eqlIgnoreCase(kind_value, "fn")) return "method";
 		}
 		return "member";
 	}
@@ -1130,10 +1167,49 @@ test "enrichSymbolMetadata infers kind visibility scope and arity" {
 	try std.testing.expect(symbol.symbol_visibility != null);
 	try std.testing.expect(symbol.symbol_scope != null);
 	try std.testing.expect(symbol.symbol_arity != null);
-	try std.testing.expectEqualStrings("function", symbol.symbol_kind.?);
+	try std.testing.expectEqualStrings("fn", symbol.symbol_kind.?);
 	try std.testing.expectEqualStrings("public", symbol.symbol_visibility.?);
 	try std.testing.expectEqualStrings("top_level", symbol.symbol_scope.?);
 	try std.testing.expectEqual(@as(i32, 2), symbol.symbol_arity.?);
+}
+
+test "inferKindFromSignature returns short canonical forms with const/var split" {
+	// Functions → "fn"
+	try std.testing.expectEqualStrings("fn", inferKindFromSignature("pub fn add(a: i32) i32", "zig").?);
+	try std.testing.expectEqualStrings("fn", inferKindFromSignature("fn sub(a: i32) i32", "zig").?);
+	try std.testing.expectEqualStrings("fn", inferKindFromSignature("def foo(x):", "python").?);
+	try std.testing.expectEqualStrings("fn", inferKindFromSignature("inline fn vecToLower(v: Vec) Vec", "zig").?);
+	try std.testing.expectEqualStrings("fn", inferKindFromSignature("pub inline fn foo() void", "zig").?);
+	try std.testing.expectEqualStrings("fn", inferKindFromSignature("extern fn write() void", "zig").?);
+	// Structs/enums/unions from Zig patterns
+	try std.testing.expectEqualStrings("struct", inferKindFromSignature("pub const FsWatch = struct", "zig").?);
+	try std.testing.expectEqualStrings("struct", inferKindFromSignature("const Config = struct", "zig").?);
+	try std.testing.expectEqualStrings("enum", inferKindFromSignature("pub const Color = enum", "zig").?);
+	try std.testing.expectEqualStrings("union", inferKindFromSignature("pub const Value = union", "zig").?);
+	// Immutable → "const"
+	try std.testing.expectEqualStrings("const", inferKindFromSignature("pub const MAX_SIZE = 100", "zig").?);
+	try std.testing.expectEqualStrings("const", inferKindFromSignature("const name = \"hello\"", "zig").?);
+	try std.testing.expectEqualStrings("const", inferKindFromSignature("val x = 1", "kotlin").?);
+	// let in Rust/Swift → "const" (immutable)
+	try std.testing.expectEqualStrings("const", inferKindFromSignature("let x = 1", "rust").?);
+	try std.testing.expectEqualStrings("const", inferKindFromSignature("let x = 1", "swift").?);
+	// let in JS/TS → "var" (mutable)
+	try std.testing.expectEqualStrings("var", inferKindFromSignature("let x = 1", "typescript").?);
+	try std.testing.expectEqualStrings("var", inferKindFromSignature("let x = 1", "javascript").?);
+	// Mutable → "var"
+	try std.testing.expectEqualStrings("var", inferKindFromSignature("pub var count = 0", "zig").?);
+	try std.testing.expectEqualStrings("var", inferKindFromSignature("comptime var i: usize = 0", "zig").?);
+	try std.testing.expectEqualStrings("var", inferKindFromSignature("mut x = 1", "rust").?);
+	// Module → "mod"
+	try std.testing.expectEqualStrings("mod", inferKindFromSignature("module Foo", "elixir").?);
+	// Test
+	try std.testing.expectEqualStrings("test", inferKindFromSignature("test \"basic addition\"", "zig").?);
+	// Other kinds unchanged
+	try std.testing.expectEqualStrings("struct", inferKindFromSignature("struct Foo", "c").?);
+	try std.testing.expectEqualStrings("class", inferKindFromSignature("class Foo", "typescript").?);
+	try std.testing.expectEqualStrings("enum", inferKindFromSignature("enum Color", "rust").?);
+	try std.testing.expectEqualStrings("macro", inferKindFromSignature("macro foo", "elixir").?);
+	try std.testing.expectEqualStrings("type", inferKindFromSignature("type Foo = int", "go").?);
 }
 
 test "inferArityFromSignature supports slash arity fallback" {

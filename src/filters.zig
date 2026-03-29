@@ -262,6 +262,9 @@ pub fn parseSymbolKindList(
 	}
 }
 
+/// Normalizes user-facing symbol kind aliases to the short canonical form stored in the DB.
+/// Returns null for unknown kinds. For multi-value aliases (let, declaration, definition),
+/// see parseSymbolKindList which handles expansion.
 fn normalizeSymbolKind(value: []const u8) ?[]const u8 {
 	const map = .{
 		.{ "fn", "fn" },
@@ -276,16 +279,37 @@ fn normalizeSymbolKind(value: []const u8) ?[]const u8 {
 		.{ "impl", "impl" },
 		.{ "const", "const" },
 		.{ "constant", "const" },
+		.{ "val", "const" },
 		.{ "var", "var" },
 		.{ "variable", "var" },
+		.{ "mut", "var" },
 		.{ "field", "field" },
 		.{ "test", "test" },
 		.{ "mod", "mod" },
 		.{ "module", "mod" },
 		.{ "type", "type" },
+		.{ "macro", "macro" },
 	};
 	inline for (map) |entry| {
 		if (std.mem.eql(u8, value, entry[0])) return entry[1];
 	}
 	return null;
+}
+
+test "normalizeSymbolKind maps aliases to short DB canonical forms" {
+	try std.testing.expectEqualStrings("fn", normalizeSymbolKind("fn").?);
+	try std.testing.expectEqualStrings("fn", normalizeSymbolKind("func").?);
+	try std.testing.expectEqualStrings("fn", normalizeSymbolKind("function").?);
+	try std.testing.expectEqualStrings("const", normalizeSymbolKind("const").?);
+	try std.testing.expectEqualStrings("const", normalizeSymbolKind("constant").?);
+	try std.testing.expectEqualStrings("const", normalizeSymbolKind("val").?);
+	try std.testing.expectEqualStrings("var", normalizeSymbolKind("var").?);
+	try std.testing.expectEqualStrings("var", normalizeSymbolKind("variable").?);
+	try std.testing.expectEqualStrings("var", normalizeSymbolKind("mut").?);
+	try std.testing.expectEqualStrings("mod", normalizeSymbolKind("mod").?);
+	try std.testing.expectEqualStrings("mod", normalizeSymbolKind("module").?);
+	try std.testing.expectEqualStrings("macro", normalizeSymbolKind("macro").?);
+	try std.testing.expectEqualStrings("struct", normalizeSymbolKind("struct").?);
+	try std.testing.expectEqualStrings("test", normalizeSymbolKind("test").?);
+	try std.testing.expect(normalizeSymbolKind("bogus") == null);
 }

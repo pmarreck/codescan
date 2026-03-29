@@ -1095,7 +1095,7 @@ test "insertSymbol stores symbol metadata columns when provided" {
 		.name = try allocator.dupe(u8, "add"),
 		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
 		.doc_comment = null,
-		.symbol_kind = try allocator.dupe(u8, "function"),
+		.symbol_kind = try allocator.dupe(u8, "fn"),
 		.symbol_visibility = try allocator.dupe(u8, "public"),
 		.symbol_scope = try allocator.dupe(u8, "top_level"),
 		.symbol_arity = 2,
@@ -1117,7 +1117,7 @@ test "insertSymbol stores symbol metadata columns when provided" {
 
 	try std.testing.expectEqual(@as(c_int, c.SQLITE_ROW), c.sqlite3_step(stmt.?));
 	const kind_ptr = c.sqlite3_column_text(stmt.?, 0) orelse return error.TestExpectedEqual;
-	try std.testing.expectEqualStrings("function", std.mem.span(kind_ptr));
+	try std.testing.expectEqualStrings("fn", std.mem.span(kind_ptr));
 	const vis_ptr = c.sqlite3_column_text(stmt.?, 1) orelse return error.TestExpectedEqual;
 	try std.testing.expectEqualStrings("public", std.mem.span(vis_ptr));
 	const scope_ptr = c.sqlite3_column_text(stmt.?, 2) orelse return error.TestExpectedEqual;

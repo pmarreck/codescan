@@ -1043,7 +1043,7 @@ fn tokenToKind(token: []const u8) ?[]const u8 {
 		std.ascii.eqlIgnoreCase(token, "fn") or
 		std.ascii.eqlIgnoreCase(token, "def") or
 		std.ascii.eqlIgnoreCase(token, "method"))
-		return "function";
+		return "fn";
 	if (std.ascii.eqlIgnoreCase(token, "class")) return "class";
 	if (std.ascii.eqlIgnoreCase(token, "struct")) return "struct";
 	if (std.ascii.eqlIgnoreCase(token, "enum")) return "enum";
@@ -1052,13 +1052,13 @@ fn tokenToKind(token: []const u8) ?[]const u8 {
 	if (std.ascii.eqlIgnoreCase(token, "module") or
 		std.ascii.eqlIgnoreCase(token, "namespace") or
 		std.ascii.eqlIgnoreCase(token, "ns"))
-		return "module";
+		return "mod";
 	if (std.ascii.eqlIgnoreCase(token, "variable") or
 		std.ascii.eqlIgnoreCase(token, "var") or
 		std.ascii.eqlIgnoreCase(token, "const") or
 		std.ascii.eqlIgnoreCase(token, "let") or
 		std.ascii.eqlIgnoreCase(token, "field"))
-		return "variable";
+		return "var";
 	if (std.ascii.eqlIgnoreCase(token, "type")) return "type";
 	if (std.ascii.eqlIgnoreCase(token, "macro")) return "macro";
 	return null;
@@ -2657,7 +2657,7 @@ test "inferMetadataQuery parses kind visibility scope and arity cues" {
 	try std.testing.expect(meta.visibility != null);
 	try std.testing.expect(meta.scope != null);
 	try std.testing.expect(meta.arity != null);
-	try std.testing.expectEqualStrings("function", meta.kind.?);
+	try std.testing.expectEqualStrings("fn", meta.kind.?);
 	try std.testing.expectEqualStrings("public", meta.visibility.?);
 	try std.testing.expectEqualStrings("top_level", meta.scope.?);
 	try std.testing.expectEqual(@as(i32, 2), meta.arity.?);
@@ -2676,7 +2676,7 @@ test "search result retrieval includes symbol metadata columns" {
 		.name = try allocator.dupe(u8, "add"),
 		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
 		.doc_comment = null,
-		.symbol_kind = try allocator.dupe(u8, "function"),
+		.symbol_kind = try allocator.dupe(u8, "fn"),
 		.symbol_visibility = try allocator.dupe(u8, "public"),
 		.symbol_scope = try allocator.dupe(u8, "top_level"),
 		.symbol_arity = 2,
@@ -2700,7 +2700,7 @@ test "search result retrieval includes symbol metadata columns" {
 	try std.testing.expect(results[0].symbol.symbol_visibility != null);
 	try std.testing.expect(results[0].symbol.symbol_scope != null);
 	try std.testing.expect(results[0].symbol.symbol_arity != null);
-	try std.testing.expectEqualStrings("function", results[0].symbol.symbol_kind.?);
+	try std.testing.expectEqualStrings("fn", results[0].symbol.symbol_kind.?);
 	try std.testing.expectEqualStrings("public", results[0].symbol.symbol_visibility.?);
 	try std.testing.expectEqualStrings("top_level", results[0].symbol.symbol_scope.?);
 	try std.testing.expectEqual(@as(i32, 2), results[0].symbol.symbol_arity.?);
@@ -2719,7 +2719,7 @@ test "metadata weights prioritize matching symbol metadata for query cues" {
 		.name = try allocator.dupe(u8, "target"),
 		.signature = try allocator.dupe(u8, "symbol target"),
 		.doc_comment = null,
-		.symbol_kind = try allocator.dupe(u8, "function"),
+		.symbol_kind = try allocator.dupe(u8, "fn"),
 		.symbol_visibility = try allocator.dupe(u8, "public"),
 		.start_line = 1,
 		.end_line = 1,
@@ -2732,7 +2732,7 @@ test "metadata weights prioritize matching symbol metadata for query cues" {
 		.name = try allocator.dupe(u8, "target"),
 		.signature = try allocator.dupe(u8, "symbol target"),
 		.doc_comment = null,
-		.symbol_kind = try allocator.dupe(u8, "variable"),
+		.symbol_kind = try allocator.dupe(u8, "var"),
 		.symbol_visibility = try allocator.dupe(u8, "private"),
 		.start_line = 1,
 		.end_line = 1,
