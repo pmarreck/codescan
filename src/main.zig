@@ -3345,6 +3345,9 @@ const usage_search =
     \\                                  definition (any defined symbol), let (const+var)
     \\  --path <glob>                   Filter by file path (glob, repeatable)
     \\  --file <path>                   Filter to exact file path
+    \\  --regex                         Treat query as PCRE2 regex pattern
+    \\  --context <n>, -C <n>           Total lines of context around matches
+    \\                                  (includes match line, e.g. -C 5 = 2 before + 1 match + 2 after)
     \\  --include-body                  Include function body text in output
     \\                                  (limits to 3 results by default)
     \\  --json                          JSON output
@@ -3363,6 +3366,8 @@ const usage_search =
     \\  codescan search "init" --path "src/storage*"
     \\  codescan search "init" --file src/storage.zig
     \\  codescan search --kind definition --top 20
+    \\  codescan search "pub fn \w+Init" --regex --context 5
+    \\  codescan search "TODO|FIXME|HACK" --regex --top 20
     \\
 ;
 
