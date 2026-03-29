@@ -775,6 +775,11 @@ pub fn main() !void {
 			try runReadFile(allocator, file_path, parsed.from_line, parsed.to_line, parsed.output, stdout);
 			try stdout.flush();
 		},
+		.destroy_file => {
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: destroy-file requires --file <path>\nusage: codescan destroy-file --file <path> [--version <hash>]\n");
+			try runDestroyFile(allocator, file_path, parsed.version_hash, stdout);
+			try stdout.flush();
+		},
 		.references => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
@@ -2268,6 +2273,85 @@ pub fn runCreateFile(allocator: std.mem.Allocator, file_path: []const u8, body: 
 	} else {
 		try writer.print("Created {s} ({d} lines, version: ---)\n", .{ file_path, line_count });
 	}
+}
+
+pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
+	// Read source for version check (also verifies file exists)
+	const source = readFileContents(allocator, file_path) catch |err| {
+		try writer.print("error: cannot read file '{s}': {}\n", .{ file_path, err });
+		return;
+	};
+	defer allocator.free(source);
+
+	if (!try checkFileVersion(allocator, source, version, writer)) return;
+
+	// Get absolute path for trash commands
+	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
+	defer allocator.free(abs_path);
+
+	if (comptime builtin.os.tag == .macos) {
+		// macOS: move directly to ~/.Trash/ (avoids needing a Finder/UI session).
+		// Files moved here appear in Trash and support "Put Back".
+		const home = std.posix.getenv("HOME") orelse "/tmp";
+		const trash_dir = try std.fs.path.join(allocator, &.{ home, ".Trash" });
+		defer allocator.free(trash_dir);
+		std.fs.cwd().makePath(trash_dir) catch {};
+		const basename = std.fs.path.basename(abs_path);
+		const dest = try std.fs.path.join(allocator, &.{ trash_dir, basename });
+		defer allocator.free(dest);
+		std.fs.renameAbsolute(abs_path, dest) catch {
+			try writer.print("error: could not move '{s}' to trash\n", .{file_path});
+			return;
+		};
+	} else {
+		// Linux: try gio trash, then trash-put, then manual move
+		// Try gio trash
+		const gio_ok = blk: {
+			var child = std.process.Child.init(
+				&[_][]const u8{ "gio", "trash", abs_path },
+				allocator,
+			);
+			child.stderr_behavior = .Ignore;
+			child.stdout_behavior = .Ignore;
+			if (child.spawnAndWait()) |term| {
+				break :blk term.Exited == 0;
+			} else |_| {
+				break :blk false;
+			}
+		};
+
+		// Try trash-put
+		const trash_put_ok = if (!gio_ok) blk: {
+			var child = std.process.Child.init(
+				&[_][]const u8{ "trash-put", abs_path },
+				allocator,
+			);
+			child.stderr_behavior = .Ignore;
+			child.stdout_behavior = .Ignore;
+			if (child.spawnAndWait()) |term| {
+				break :blk term.Exited == 0;
+			} else |_| {
+				break :blk false;
+			}
+		} else true;
+
+		// Fallback: move to ~/.local/share/Trash/files/
+		if (!trash_put_ok) {
+			const home = std.posix.getenv("HOME") orelse "/tmp";
+			const trash_dir = try std.fs.path.join(allocator, &.{ home, ".local/share/Trash/files" });
+			defer allocator.free(trash_dir);
+			std.fs.cwd().makePath(trash_dir) catch {};
+			const basename = std.fs.path.basename(abs_path);
+			const dest = try std.fs.path.join(allocator, &.{ trash_dir, basename });
+			defer allocator.free(dest);
+			std.fs.renameAbsolute(abs_path, dest) catch {
+				try writer.print("error: could not move '{s}' to trash\n", .{file_path});
+				return;
+			};
+		}
+	}
+
+	try writer.print("Moved {s} to trash\n", .{file_path});
 }
 
 pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
@@ -5011,4 +5095,85 @@ test "runCreateFile errors on existing file" {
 	const content = try tmp.dir.readFileAlloc(allocator, "existing.txt", 1024 * 1024);
 	defer allocator.free(content);
 	try std.testing.expectEqualStrings("existing content\n", content);
+}
+
+test "runDestroyFile rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(.{ .sub_path = "doomed.zig", .data = "original content\n" });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "doomed.zig");
+	defer allocator.free(abs_path);
+
+	// Compute the correct version of the original file
+	const original_source = try readFileContents(allocator, abs_path);
+	defer allocator.free(original_source);
+	const correct_version = try hashline.computeFileVersion(allocator, original_source) orelse
+		return error.SkipZigTest;
+	_ = correct_version;
+
+	// Now modify the file so the version is stale
+	try tmp.dir.writeFile(.{ .sub_path = "doomed.zig", .data = "modified content\n" });
+
+	// Try to destroy with the old (now stale) version
+	const stale_version = "000"; // arbitrary wrong version
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runDestroyFile(allocator, abs_path, stale_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	// Should print a version mismatch error
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+
+	// File should still exist (not deleted)
+	tmp.dir.access("doomed.zig", .{}) catch {
+		return error.FileShouldStillExist;
+	};
+}
+
+test "runDestroyFile moves file to trash (file no longer accessible)" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(.{ .sub_path = "to_delete.txt", .data = "bye bye\n" });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "to_delete.txt");
+	defer allocator.free(abs_path);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	// No version: should print warning and proceed
+	try runDestroyFile(allocator, abs_path, null, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	// Should report success or warning (not an error)
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: cannot read file") == null);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Moved") != null or
+		std.mem.indexOf(u8, output_text, "warning:") != null);
+
+	// File should no longer be accessible at the original path
+	const still_exists = if (std.fs.cwd().access(abs_path, .{})) |_| true else |_| false;
+	try std.testing.expect(!still_exists);
+}
+
+test "runDestroyFile errors when file does not exist" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(abs_path);
+	const nonexistent = try std.fs.path.join(allocator, &.{ abs_path, "ghost.txt" });
+	defer allocator.free(nonexistent);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runDestroyFile(allocator, nonexistent, null, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error:") != null);
 }

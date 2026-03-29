@@ -23,6 +23,7 @@ pub const CommandTag = enum {
 	replace_content,
 	create_file,
 	read_file,
+	destroy_file,
 	references,
 	rename,
 	watch,
@@ -310,6 +311,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			parsed.pattern = args[i]; // reuse pattern for file path
 			i += 1;
 		}
+	} else if (std.mem.eql(u8, cmd, "destroy-file")) {
+		parsed.command = .destroy_file;
+        help_topic_default = "destroy-file";
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "references")) {
 		parsed.command = .references;
         help_topic_default = "references";
