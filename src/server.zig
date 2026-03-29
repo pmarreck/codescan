@@ -349,6 +349,7 @@ fn handleRequest(
 		var file_path: []const u8 = undefined;
 		var pattern: []const u8 = undefined;
 		var new_body: []const u8 = undefined;
+		var version_hash: ?[]const u8 = null;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
 				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
@@ -374,14 +375,16 @@ fn handleRequest(
 				return;
 			};
 			new_body = try allocator.dupe(u8, b.string);
+			if (obj.get("version")) |v| version_hash = try allocator.dupe(u8, v.string);
 		}
 		defer allocator.free(file_path);
 		defer allocator.free(pattern);
 		defer allocator.free(new_body);
+		defer if (version_hash) |vh| allocator.free(vh);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runReplaceSymbol(allocator, file_path, pattern, new_body, &out.writer) catch {
+		main.runReplaceSymbol(allocator, file_path, pattern, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"replace-symbol failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};
@@ -398,6 +401,7 @@ fn handleRequest(
 		var file_path: []const u8 = undefined;
 		var pattern: []const u8 = undefined;
 		var new_body: []const u8 = undefined;
+		var version_hash: ?[]const u8 = null;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
 				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
@@ -423,14 +427,16 @@ fn handleRequest(
 				return;
 			};
 			new_body = try allocator.dupe(u8, b.string);
+			if (obj.get("version")) |v| version_hash = try allocator.dupe(u8, v.string);
 		}
 		defer allocator.free(file_path);
 		defer allocator.free(pattern);
 		defer allocator.free(new_body);
+		defer if (version_hash) |vh| allocator.free(vh);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runInsertAfter(allocator, file_path, pattern, new_body, &out.writer) catch {
+		main.runInsertAfter(allocator, file_path, pattern, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"insert-after failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};
@@ -447,6 +453,7 @@ fn handleRequest(
 		var file_path: []const u8 = undefined;
 		var pattern: []const u8 = undefined;
 		var new_body: []const u8 = undefined;
+		var version_hash: ?[]const u8 = null;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
 				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
@@ -472,14 +479,16 @@ fn handleRequest(
 				return;
 			};
 			new_body = try allocator.dupe(u8, b.string);
+			if (obj.get("version")) |v| version_hash = try allocator.dupe(u8, v.string);
 		}
 		defer allocator.free(file_path);
 		defer allocator.free(pattern);
 		defer allocator.free(new_body);
+		defer if (version_hash) |vh| allocator.free(vh);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runInsertBefore(allocator, file_path, pattern, new_body, &out.writer) catch {
+		main.runInsertBefore(allocator, file_path, pattern, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"insert-before failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};
@@ -497,6 +506,7 @@ fn handleRequest(
 		var from_str: []const u8 = undefined;
 		var to_str: []const u8 = undefined;
 		var new_body: []const u8 = undefined;
+		var version_hash: ?[]const u8 = null;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
 				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
@@ -530,15 +540,17 @@ fn handleRequest(
 				return;
 			};
 			new_body = try allocator.dupe(u8, b.string);
+			if (obj.get("version")) |v| version_hash = try allocator.dupe(u8, v.string);
 		}
 		defer allocator.free(file_path);
 		defer allocator.free(from_str);
 		defer allocator.free(to_str);
 		defer allocator.free(new_body);
+		defer if (version_hash) |vh| allocator.free(vh);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runReplaceLines(allocator, file_path, from_str, to_str, new_body, &out.writer) catch {
+		main.runReplaceLines(allocator, file_path, from_str, to_str, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"replace-lines failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};
@@ -555,6 +567,7 @@ fn handleRequest(
 		var file_path: []const u8 = undefined;
 		var ref_str: []const u8 = undefined;
 		var new_body: []const u8 = undefined;
+		var version_hash: ?[]const u8 = null;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
 				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
@@ -580,14 +593,16 @@ fn handleRequest(
 				return;
 			};
 			new_body = try allocator.dupe(u8, b.string);
+			if (obj.get("version")) |v| version_hash = try allocator.dupe(u8, v.string);
 		}
 		defer allocator.free(file_path);
 		defer allocator.free(ref_str);
 		defer allocator.free(new_body);
+		defer if (version_hash) |vh| allocator.free(vh);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runInsertAt(allocator, file_path, ref_str, new_body, &out.writer) catch {
+		main.runInsertAt(allocator, file_path, ref_str, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"insert-at failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};
@@ -606,6 +621,7 @@ fn handleRequest(
 		var new_body: []const u8 = undefined;
 		var regex_mode: bool = false;
 		var replace_all_flag: bool = false;
+		var version_hash: ?[]const u8 = null;
 		{
 			const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
 				try req.respond("{\"error\":\"invalid JSON\"}\n", .{ .status = .bad_request });
@@ -633,14 +649,16 @@ fn handleRequest(
 			new_body = try allocator.dupe(u8, b.string);
 			if (obj.get("regex")) |r| regex_mode = r.bool;
 			if (obj.get("all")) |a| replace_all_flag = a.bool;
+			if (obj.get("version")) |v| version_hash = try allocator.dupe(u8, v.string);
 		}
 		defer allocator.free(file_path);
 		defer allocator.free(needle);
 		defer allocator.free(new_body);
+		defer if (version_hash) |vh| allocator.free(vh);
 
 		var out: std.io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runReplaceContent(allocator, file_path, needle, regex_mode, replace_all_flag, new_body, &out.writer) catch {
+		main.runReplaceContent(allocator, file_path, needle, regex_mode, replace_all_flag, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"replace-content failed\"}\n", .{ .status = .internal_server_error });
 			return;
 		};

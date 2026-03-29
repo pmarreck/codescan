@@ -16,6 +16,7 @@ const model = @import("model.zig");
 const symbol_tree = @import("symbol_tree.zig");
 const ts_symbols = @import("ts_symbols.zig");
 const hashline = @import("hashline.zig");
+const diff = @import("diff.zig");
 const lsp = @import("lsp.zig");
 const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
@@ -703,7 +704,7 @@ pub fn main() !void {
             const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-symbol requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runReplaceSymbol(allocator, file_path, pattern, input_text, stdout);
+			try runReplaceSymbol(allocator, file_path, pattern, input_text, parsed.version_hash, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
@@ -713,7 +714,7 @@ pub fn main() !void {
             const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: insert-after requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runInsertAfter(allocator, file_path, pattern, input_text, stdout);
+			try runInsertAfter(allocator, file_path, pattern, input_text, parsed.version_hash, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
@@ -723,7 +724,7 @@ pub fn main() !void {
             const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: insert-before requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runInsertBefore(allocator, file_path, pattern, input_text, stdout);
+			try runInsertBefore(allocator, file_path, pattern, input_text, parsed.version_hash, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
@@ -735,7 +736,7 @@ pub fn main() !void {
 				exitWithError("error: replace-lines requires --to <line:hash>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runReplaceLines(allocator, file_path, from_ref, to_ref, input_text, stdout);
+			try runReplaceLines(allocator, file_path, from_ref, to_ref, input_text, parsed.version_hash, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
@@ -745,7 +746,7 @@ pub fn main() !void {
 				exitWithError("error: insert-at requires a hashline ref\nusage: echo 'code' | codescan insert-at <line:hash> --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runInsertAt(allocator, file_path, ref, input_text, stdout);
+			try runInsertAt(allocator, file_path, ref, input_text, parsed.version_hash, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
@@ -756,8 +757,14 @@ pub fn main() !void {
             const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-content requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, stdout);
+			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, parsed.version_hash, stdout);
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
+			try stdout.flush();
+		},
+		.read_file => {
+			const file_path = parsed.pattern orelse
+				if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: read-file requires a file path\nusage: codescan read-file <path> [--from N] [--to N]\n");
+			try runReadFile(allocator, file_path, parsed.from_line, parsed.to_line, parsed.output, stdout);
 			try stdout.flush();
 		},
 		.references => {
@@ -2157,13 +2164,79 @@ fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 	return offsets.toOwnedSlice(allocator);
 }
 
+// ─── Read File Command ──────────────────────────────────────────────
+
+pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_line: ?usize, to_line: ?usize, format: cli.OutputFormat, writer: *std.Io.Writer) !void {
+	const source = try readFileContents(allocator, file_path);
+	defer allocator.free(source);
+
+	// Split into lines and compute chain hashes
+	var lines_list = try splitLines(allocator, source);
+	defer lines_list.deinit(allocator);
+	const lines = lines_list.items;
+	const total_lines = lines.len;
+
+	const hashes = try hashline.computeChainHashes(allocator, lines);
+	defer allocator.free(hashes);
+
+	// Version is the hash of the last line of the entire file
+	const version: hashline.Hash = if (hashes.len > 0) hashes[hashes.len - 1] else .{ '0', '0', '0' };
+
+	// Determine range (1-indexed, inclusive)
+	const from: usize = if (from_line) |f| if (f >= 1 and f <= total_lines) f else 1 else 1;
+	const to: usize = if (to_line) |t| if (t >= 1 and t <= total_lines) t else total_lines else total_lines;
+
+	if (from > to) {
+		try writer.print("error: --from ({d}) must be <= --to ({d})\n", .{ from, to });
+		return;
+	}
+
+	switch (format) {
+		.json => {
+			// Build the hashlined content as a string
+			var content_buf = std.ArrayListUnmanaged(u8){};
+			defer content_buf.deinit(allocator);
+			for (from - 1..to) |idx| {
+				if (content_buf.items.len > 0) {
+					try content_buf.append(allocator, '\n');
+				}
+				// Format: line_num:hash|content
+				var line_header: [32]u8 = undefined;
+				const header_len = (std.fmt.bufPrint(&line_header, "{d}:{s}|", .{ idx + 1, @as([]const u8, &hashes[idx]) }) catch unreachable).len;
+				try content_buf.appendSlice(allocator, line_header[0..header_len]);
+				try content_buf.appendSlice(allocator, lines[idx]);
+			}
+
+			// Write JSON object
+			try writer.writeAll("{\"file\":");
+			try writeJsonString(file_path, writer);
+			try writer.print(",\"version\":\"{s}\",\"total_lines\":{d},\"from\":{d},\"to\":{d},\"content\":", .{
+				@as([]const u8, &version), total_lines, from, to,
+			});
+			try writeJsonString(content_buf.items, writer);
+			try writer.writeAll("}\n");
+		},
+		.human => {
+			try writer.print("# {s}  (version: {s}, lines: {d})\n", .{
+				file_path, @as([]const u8, &version), total_lines,
+			});
+			for (from - 1..to) |idx| {
+				try writer.print("{d}:{s}|{s}\n", .{ idx + 1, @as([]const u8, &hashes[idx]), lines[idx] });
+			}
+		},
+	}
+}
+
 // ─── Editing Command Implementations ─────────────────────────────────
 
-pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
+pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
 	defer tree.deinit(allocator);
 	defer allocator.free(result.source);
+
+	// Version check for optimistic concurrency
+	if (!try checkFileVersion(allocator, result.source, version, writer)) return;
 
 	const match = try findFirstMatch(allocator, tree.symbols, pattern, null) orelse {
 		try writer.print("error: no symbol matching '{s}' found in {s}\n", .{ pattern, file_path });
@@ -2181,13 +2254,17 @@ pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pat
 			pattern, match.start_line, match.end_line, match.start_byte, match.end_byte,
 		});
 	}
+	try emitNewVersion(allocator, file_path, writer);
 }
 
-pub fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
+pub fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
 	defer tree.deinit(allocator);
 	defer allocator.free(result.source);
+
+	// Version check for optimistic concurrency
+	if (!try checkFileVersion(allocator, result.source, version, writer)) return;
 
 	const match = try findFirstMatch(allocator, tree.symbols, pattern, null) orelse {
 		try writer.print("error: no symbol matching '{s}' found in {s}\n", .{ pattern, file_path });
@@ -2206,13 +2283,17 @@ pub fn runInsertAfter(allocator: std.mem.Allocator, file_path: []const u8, patte
 	} else {
 		try writer.print("Inserted after {s} (after line {d})\n", .{ pattern, match.end_line });
 	}
+	try emitNewVersion(allocator, file_path, writer);
 }
 
-pub fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
+pub fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
 	defer tree.deinit(allocator);
 	defer allocator.free(result.source);
+
+	// Version check for optimistic concurrency
+	if (!try checkFileVersion(allocator, result.source, version, writer)) return;
 
 	const match = try findFirstMatch(allocator, tree.symbols, pattern, null) orelse {
 		try writer.print("error: no symbol matching '{s}' found in {s}\n", .{ pattern, file_path });
@@ -2230,9 +2311,10 @@ pub fn runInsertBefore(allocator: std.mem.Allocator, file_path: []const u8, patt
 	} else {
 		try writer.print("Inserted before {s} (before line {d})\n", .{ pattern, match.start_line });
 	}
+	try emitNewVersion(allocator, file_path, writer);
 }
 
-pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str: []const u8, to_str: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
+pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from_str: []const u8, to_str: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const from = parseHashlineRef(from_str) catch {
 		try writer.print("error: invalid --from hashline ref '{s}' (expected format: line:hash, e.g. 45:r2p)\n", .{from_str});
 		return;
@@ -2249,6 +2331,9 @@ pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from
 
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
+
+	// Version check for optimistic concurrency
+	if (!try checkFileVersion(allocator, source, version, writer)) return;
 
 	// Split into lines and compute hashes
 	var lines_list = try splitLines(allocator, source);
@@ -2293,9 +2378,10 @@ pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from
 
 	try spliceFile(allocator, file_path, start_byte, end_byte, input_text);
 	try writer.print("Replaced lines {d}-{d}\n", .{ from.line, to.line });
+	try emitNewVersion(allocator, file_path, writer);
 }
 
-pub fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []const u8, input_text: []const u8, writer: *std.Io.Writer) !void {
+pub fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const ref = parseHashlineRef(ref_str) catch {
 		try writer.print("error: invalid hashline ref '{s}' (expected format: line:hash, e.g. 47:3bw)\n", .{ref_str});
 		return;
@@ -2303,6 +2389,9 @@ pub fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str:
 
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
+
+	// Version check for optimistic concurrency
+	if (!try checkFileVersion(allocator, source, version, writer)) return;
 
 	var lines_list = try splitLines(allocator, source);
 	defer lines_list.deinit(allocator);
@@ -2344,9 +2433,34 @@ pub fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str:
 	} else {
 		try writer.print("Inserted after line {d}\n", .{ref.line});
 	}
+	try emitNewVersion(allocator, file_path, writer);
 }
 
-pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, needle: []const u8, regex_mode: bool, replace_all: bool, input_text: []const u8, writer: *std.Io.Writer) !void {
+/// Check if the file's current version matches the expected version.
+/// Returns false if version mismatch (error already printed to writer).
+/// Returns true if version matches or no version provided (warning printed).
+fn checkFileVersion(allocator: std.mem.Allocator, source: []const u8, expected: ?[]const u8, writer: *std.Io.Writer) !bool {
+	if (expected) |ev| {
+		if (hashline.computeFileVersion(allocator, source) catch null) |current| {
+			if (!std.mem.eql(u8, ev, &current)) {
+				try writer.print("error: file modified since last read (expected version {s}, current {s}) — re-read and retry\n", .{ ev, &current });
+				return false;
+			}
+		}
+	} else {
+		try writer.print("warning: no --version provided; edit is unprotected against concurrent modifications\n", .{});
+	}
+	return true;
+}
+
+/// Emit the new file version after a successful write.
+fn emitNewVersion(allocator: std.mem.Allocator, file_path: []const u8, writer: *std.Io.Writer) !void {
+	if (hashline.computeFileVersionFromPath(allocator, file_path)) |nv| {
+		try writer.print("version: {s}\n", .{&nv});
+	}
+}
+
+pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, needle: []const u8, regex_mode: bool, replace_all_flag: bool, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	// Strip trailing newline from replacement (stdin usually adds one)
 	const repl = if (input_text.len > 0 and input_text[input_text.len - 1] == '\n')
 		input_text[0 .. input_text.len - 1]
@@ -2355,6 +2469,9 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 
 	const source = try readFileContents(allocator, file_path);
 	defer allocator.free(source);
+
+	// Version check for optimistic concurrency
+	if (!try checkFileVersion(allocator, source, version, writer)) return;
 
 	if (regex_mode) {
 		// Regex mode: use PCRE2
@@ -2385,13 +2502,13 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 			try writer.print("error: no match found for '{s}' in {s}\n", .{ needle, file_path });
 			return;
 		}
-		if (match_count > 1 and !replace_all) {
+		if (match_count > 1 and !replace_all_flag) {
 			try writer.print("error: found {d} matches; use --all to replace all, or refine your pattern\n", .{match_count});
 			return;
 		}
 
 		// Perform substitution
-		const result = re.substituteOwned(allocator, source, repl, replace_all) catch {
+		const result = re.substituteOwned(allocator, source, repl, replace_all_flag) catch {
 			try writer.print("error: substitution failed\n", .{});
 			return;
 		};
@@ -2418,6 +2535,18 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 			}
 			try writer.writeAll(")\n");
 		}
+
+		// Emit diff
+		const diff_text = diff.generateUnifiedDiff(allocator, source, result.output, file_path) catch null;
+		if (diff_text) |d| {
+			defer allocator.free(d);
+			if (d.len > 0) {
+				try writer.writeAll(d);
+			}
+		}
+
+		// Emit new version
+		try emitNewVersion(allocator, file_path, writer);
 	} else {
 		// Literal mode: use std.mem.indexOf
 		var match_positions = std.ArrayListUnmanaged(usize){};
@@ -2437,13 +2566,13 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 			try writer.print("error: no match found for '{s}' in {s}\n", .{ needle, file_path });
 			return;
 		}
-		if (match_count > 1 and !replace_all) {
+		if (match_count > 1 and !replace_all_flag) {
 			try writer.print("error: found {d} matches; use --all to replace all, or refine your pattern\n", .{match_count});
 			return;
 		}
 
 		// Build result by splicing
-		const positions = if (replace_all) match_positions.items else match_positions.items[0..1];
+		const positions = if (replace_all_flag) match_positions.items else match_positions.items[0..1];
 		const result_len = source.len - (positions.len * needle.len) + (positions.len * repl.len);
 		const result = try allocator.alloc(u8, result_len);
 		defer allocator.free(result);
@@ -2483,6 +2612,18 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 			}
 			try writer.writeAll(")\n");
 		}
+
+		// Emit diff
+		const diff_text = diff.generateUnifiedDiff(allocator, source, result, file_path) catch null;
+		if (diff_text) |d| {
+			defer allocator.free(d);
+			if (d.len > 0) {
+				try writer.writeAll(d);
+			}
+		}
+
+		// Emit new version
+		try emitNewVersion(allocator, file_path, writer);
 	}
 }
 
@@ -4427,4 +4568,354 @@ test "findNameCol returns correct column even when byte_offset is mid-line" {
 	const line3_start = std.mem.indexOf(u8, source, "  %needle").?;
 	const col3 = findNameCol(source, line3_start + 2, "%needle"); // +2 points to '%'
 	try std.testing.expectEqual(@as(u32, 2), col3); // column 2 from line start
+}
+
+test "runReadFile returns JSON with hashlines and version" {
+	const allocator = std.testing.allocator;
+
+	// Create a temp file with known content
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "line one\nline two\nline three\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Capture output using the Allocating writer pattern (same as MCP callTool)
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	// Call runReadFile — full file, JSON format
+	try runReadFile(allocator, abs_path, null, null, .json, &out.writer);
+	const json_output = try out.toOwnedSlice();
+	defer allocator.free(json_output);
+
+	// Parse the JSON output
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_output, .{});
+	defer parsed.deinit();
+	const root = parsed.value.object;
+
+	// Verify file path
+	try std.testing.expectEqualStrings(abs_path, root.get("file").?.string);
+
+	// Verify version is 3 chars
+	const version = root.get("version").?.string;
+	try std.testing.expectEqual(@as(usize, 3), version.len);
+
+	// Verify total_lines (content has 4 lines: "line one", "line two", "line three", "")
+	const total_lines = @as(usize, @intCast(root.get("total_lines").?.integer));
+	try std.testing.expectEqual(@as(usize, 4), total_lines);
+
+	// Verify from/to default to full file
+	try std.testing.expectEqual(@as(i64, 1), root.get("from").?.integer);
+	try std.testing.expectEqual(@as(i64, 4), root.get("to").?.integer);
+
+	// Verify content contains hashline annotations (line_num:hash|content)
+	const out_content = root.get("content").?.string;
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "line one") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "line two") != null);
+	// Check hashline format: digit(s) colon 3-char-hash pipe
+	// Line 1 should start with "1:xxx|"
+	try std.testing.expect(out_content[0] == '1');
+	try std.testing.expect(out_content[1] == ':');
+	try std.testing.expect(out_content[5] == '|');
+}
+
+test "runReadFile partial read with from/to" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "alpha\nbeta\ngamma\ndelta\nepsilon\n";
+	try tmp.dir.writeFile(.{ .sub_path = "partial.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "partial.txt");
+	defer allocator.free(abs_path);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	// Read lines 2-4 only
+	try runReadFile(allocator, abs_path, 2, 4, .json, &out.writer);
+	const json_output = try out.toOwnedSlice();
+	defer allocator.free(json_output);
+
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_output, .{});
+	defer parsed.deinit();
+	const root = parsed.value.object;
+
+	// total_lines should be the FULL file line count (6 lines: alpha, beta, gamma, delta, epsilon, "")
+	const total_lines = @as(usize, @intCast(root.get("total_lines").?.integer));
+	try std.testing.expectEqual(@as(usize, 6), total_lines);
+
+	// from/to should reflect the request
+	try std.testing.expectEqual(@as(i64, 2), root.get("from").?.integer);
+	try std.testing.expectEqual(@as(i64, 4), root.get("to").?.integer);
+
+	// Content should contain beta, gamma, delta but NOT alpha or epsilon
+	const out_content = root.get("content").?.string;
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "beta") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "gamma") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "delta") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "alpha") == null);
+	try std.testing.expect(std.mem.indexOf(u8, out_content, "epsilon") == null);
+
+	// Version should still be based on the LAST line of the entire file
+	const version = root.get("version").?.string;
+	try std.testing.expectEqual(@as(usize, 3), version.len);
+}
+
+test "runReplaceContent rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	// Create a temp file with known content
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "hello world\ngoodbye world\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Compute the current version
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	// Modify the file externally (simulates concurrent edit)
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified content\n" });
+
+	// Try to replace with the old version — should be rejected
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceContent(allocator, abs_path, "modified", false, false, "replaced", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runReplaceContent succeeds with correct version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "hello world\ngoodbye world\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Compute the current version
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	// Replace with the correct version — should succeed
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceContent(allocator, abs_path, "hello", false, false, "hi", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	// Should contain success message, not error
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Replaced 1 occurrence") != null);
+	// Should contain a new version
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "version: ") != null);
+	// Should contain diff output
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "--- a/") != null);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "+++ b/") != null);
+}
+
+test "runReplaceContent warns when no version provided" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "hello world\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceContent(allocator, abs_path, "hello", false, false, "hi", null, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	// Should contain warning about no version
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "warning: no --version provided") != null);
+	// But should still succeed
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Replaced 1 occurrence") != null);
+}
+
+test "runReplaceSymbol rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "pub fn hello() void {}\npub fn world() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	// Compute version from original content
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	// Modify the file externally (simulates concurrent edit)
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceSymbol(allocator, abs_path, "hello", "pub fn hello() void { @panic(\"new\"); }\n", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runReplaceSymbol succeeds with correct version and emits new version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "pub fn hello() void {}\npub fn world() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceSymbol(allocator, abs_path, "hello", "pub fn hello() void { return; }\n", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Replaced hello") != null);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "version: ") != null);
+}
+
+test "runReplaceSymbol warns when no version provided" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "pub fn hello() void {}\npub fn world() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceSymbol(allocator, abs_path, "hello", "pub fn hello() void { return; }\n", null, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "warning: no --version provided") != null);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Replaced hello") != null);
+}
+
+test "runInsertAt rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "line one\nline two\nline three\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	// Compute version and hashline ref for line 2
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+	var lines_list = try splitLines(allocator, content);
+	defer lines_list.deinit(allocator);
+	const all_hashes = try hashline.computeChainHashes(allocator, lines_list.items);
+	defer allocator.free(all_hashes);
+	const ref_str = try std.fmt.allocPrint(allocator, "2:{s}", .{&all_hashes[1]});
+	defer allocator.free(ref_str);
+
+	// Modify the file externally
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runInsertAt(allocator, abs_path, ref_str, "inserted line\n", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runReplaceLines rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "line one\nline two\nline three\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	defer allocator.free(abs_path);
+
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+	var lines_list = try splitLines(allocator, content);
+	defer lines_list.deinit(allocator);
+	const all_hashes = try hashline.computeChainHashes(allocator, lines_list.items);
+	defer allocator.free(all_hashes);
+	const from_str = try std.fmt.allocPrint(allocator, "1:{s}", .{&all_hashes[0]});
+	defer allocator.free(from_str);
+	const to_str = try std.fmt.allocPrint(allocator, "2:{s}", .{&all_hashes[1]});
+	defer allocator.free(to_str);
+
+	// Modify the file externally
+	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceLines(allocator, abs_path, from_str, to_str, "replacement\n", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runInsertAfter rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "pub fn hello() void {}\npub fn world() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	// Modify the file externally
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runInsertAfter(allocator, abs_path, "hello", "// inserted\n", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runInsertBefore rejects stale version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content = "pub fn hello() void {}\npub fn world() void {}\n";
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	defer allocator.free(abs_path);
+
+	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	// Modify the file externally
+	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runInsertBefore(allocator, abs_path, "hello", "// inserted\n", &current_version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
 }

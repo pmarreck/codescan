@@ -249,32 +249,37 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runReplaceSymbol(allocator, file, pattern, body, &out.writer) catch |err|
+		const ver = getArg(args, "version");
+		main.runReplaceSymbol(allocator, file, pattern, body, ver, &out.writer) catch |err|
 			return toolError("MCP replace_symbol: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_after")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runInsertAfter(allocator, file, pattern, body, &out.writer) catch |err|
+		const ver = getArg(args, "version");
+		main.runInsertAfter(allocator, file, pattern, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_after: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_before")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runInsertBefore(allocator, file, pattern, body, &out.writer) catch |err|
+		const ver = getArg(args, "version");
+		main.runInsertBefore(allocator, file, pattern, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_before: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_lines")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const from = getArg(args, "from") orelse return error.MissingArgument;
 		const to = getArg(args, "to") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runReplaceLines(allocator, file, from, to, body, &out.writer) catch |err|
+		const ver = getArg(args, "version");
+		main.runReplaceLines(allocator, file, from, to, body, ver, &out.writer) catch |err|
 			return toolError("MCP replace_lines: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_at")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const ref = getArg(args, "ref") orelse return error.MissingArgument;
 		const body = getArg(args, "body") orelse return error.MissingArgument;
-		main.runInsertAt(allocator, file, ref, body, &out.writer) catch |err|
+		const ver = getArg(args, "version");
+		main.runInsertAt(allocator, file, ref, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_at: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_content")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
@@ -282,8 +287,15 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const body = getArg(args, "body") orelse return error.MissingArgument;
 		const regex = getArgBool(args, "regex");
 		const all = getArgBool(args, "all");
-		main.runReplaceContent(allocator, file, needle, regex, all, body, &out.writer) catch |err|
+		const ver = getArg(args, "version");
+		main.runReplaceContent(allocator, file, needle, regex, all, body, ver, &out.writer) catch |err|
 			return toolError("MCP replace_content: failed on '{s}': {}\n", .{ file, err });
+	} else if (std.mem.eql(u8, name, "read_file")) {
+		const file = getArg(args, "file") orelse return error.MissingArgument;
+		const from = getArgInt(args, "from");
+		const to = getArgInt(args, "to");
+		main.runReadFile(allocator, file, from, to, .json, &out.writer) catch |err|
+			return toolError("MCP read_file: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "references")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
@@ -631,12 +643,13 @@ const tools_list_json =
 	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"}}}},
 	\\{"name":"index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
 	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
-	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"}},"required":["file","pattern","body"]}},
-	\\{"name":"insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
-	\\{"name":"insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"}},"required":["file","pattern","body"]}},
-	\\{"name":"replace_lines","description":"Replace a hashline-validated line range","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"from":{"type":"string","description":"Start hashline ref (e.g. 10:k7m)"},"to":{"type":"string","description":"End hashline ref (e.g. 20:x9a)"},"body":{"type":"string","description":"Replacement text"}},"required":["file","from","to","body"]}},
-	\\{"name":"insert_at","description":"Insert code after a hashline-validated line","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"ref":{"type":"string","description":"Hashline ref (e.g. 47:3bw)"},"body":{"type":"string","description":"Code to insert"}},"required":["file","ref","body"]}},
-	\\{"name":"replace_content","description":"Find and replace text or regex in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"}},"required":["file","needle","body"]}},
+	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
+	\\{"name":"insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
+	\\{"name":"insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
+	\\{"name":"replace_lines","description":"Replace a hashline-validated line range","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"from":{"type":"string","description":"Start hashline ref (e.g. 10:k7m)"},"to":{"type":"string","description":"End hashline ref (e.g. 20:x9a)"},"body":{"type":"string","description":"Replacement text"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","from","to","body"]}},
+	\\{"name":"insert_at","description":"Insert code after a hashline-validated line","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"ref":{"type":"string","description":"Hashline ref (e.g. 47:3bw)"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","ref","body"]}},
+	\\{"name":"replace_content","description":"Find and replace text or regex in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","needle","body"]}},
+	\\{"name":"read_file","description":"Read a file with hashline annotations and version hash for safe concurrent editing","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"from":{"type":"integer","description":"Start line (1-indexed, optional)"},"to":{"type":"integer","description":"End line (inclusive, optional)"}},"required":["file"]}},
 	\\{"name":"references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
 	\\{"name":"rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
 	\\{"name":"config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
@@ -711,6 +724,7 @@ test "handleToolsList returns all tools" {
 		"replace_lines",
 		"insert_at",
 		"replace_content",
+		"read_file",
 		"references",
 		"rename",
 		"config",

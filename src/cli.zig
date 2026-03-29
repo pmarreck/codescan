@@ -21,6 +21,7 @@ pub const CommandTag = enum {
 	replace_lines,
 	insert_at,
 	replace_content,
+	read_file,
 	references,
 	rename,
 	watch,
@@ -118,10 +119,13 @@ pub const Parsed = struct {
 	include_body: bool,
 	from_ref: ?[]const u8,
 	to_ref: ?[]const u8,
+	from_line: ?usize,
+	to_line: ?usize,
 	hashline_ref: ?[]const u8,
 	rename_to: ?[]const u8,
 	regex_mode: bool,
 	replace_all: bool,
+	version_hash: ?[]const u8,
 	watch_interval: u64,
 	watch_action: WatchAction,
 	force: bool,
@@ -183,10 +187,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.include_body = false,
 		.from_ref = null,
 		.to_ref = null,
+		.from_line = null,
+		.to_line = null,
 		.hashline_ref = null,
 		.rename_to = null,
 		.regex_mode = false,
 		.replace_all = false,
+		.version_hash = null,
 		.watch_interval = 2000,
 		.watch_action = .run,
 		.force = false,
@@ -288,6 +295,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		i += 1;
 		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
 			parsed.pattern = args[i];
+			i += 1;
+		}
+	} else if (std.mem.eql(u8, cmd, "read-file")) {
+		parsed.command = .read_file;
+        help_topic_default = "read-file";
+		i += 1;
+		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+			parsed.pattern = args[i]; // reuse pattern for file path
 			i += 1;
 		}
 	} else if (std.mem.eql(u8, cmd, "references")) {
@@ -628,14 +643,20 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--from")) {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
-			parsed.from_ref = args[i];
+			if (parsed.command == .read_file) {
+				parsed.from_line = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidValue;
+			} else {
+				parsed.from_ref = args[i];
+			}
 			i += 1;
 			continue;
 		}
 		if (std.mem.eql(u8, arg, "--to")) {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
-			if (parsed.command == .rename) {
+			if (parsed.command == .read_file) {
+				parsed.to_line = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidValue;
+			} else if (parsed.command == .rename) {
 				parsed.rename_to = args[i];
 			} else {
 				parsed.to_ref = args[i];
@@ -683,6 +704,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--regex")) {
 			parsed.regex_mode = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--version")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.version_hash = args[i];
 			i += 1;
 			continue;
 		}

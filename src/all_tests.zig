@@ -1,4 +1,5 @@
 const _cli = @import("cli.zig");
+const _diff = @import("diff.zig");
 const _diagnostics = @import("diagnostics.zig");
 const _config = @import("config.zig");
 const _embedding = @import("embedding.zig");
@@ -45,6 +46,7 @@ const _weights = @import("weights.zig");
 
 test {
 	_ = _cli;
+	_ = _diff;
 	_ = _diagnostics;
 	_ = _config;
 	_ = _embedding;
