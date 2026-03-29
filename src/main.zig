@@ -761,6 +761,14 @@ pub fn main() !void {
 			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
 			try stdout.flush();
 		},
+		.create_file => {
+			const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: create-file requires --file <path>\nusage: echo 'content' | codescan create-file --file <path>\n");
+			const input_text = try readStdin(allocator);
+			defer allocator.free(input_text);
+			try runCreateFile(allocator, file_path, input_text, stdout);
+			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
+			try stdout.flush();
+		},
 		.read_file => {
 			const file_path = parsed.pattern orelse
 				if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: read-file requires a file path\nusage: codescan read-file <path> [--from N] [--to N]\n");
@@ -2228,6 +2236,39 @@ pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_lin
 }
 
 // ─── Editing Command Implementations ─────────────────────────────────
+
+pub fn runCreateFile(allocator: std.mem.Allocator, file_path: []const u8, body: []const u8, writer: *std.Io.Writer) !void {
+	// Check file doesn't already exist
+	if (std.fs.cwd().access(file_path, .{})) |_| {
+		try writer.print("error: file already exists: {s} (use replace_content to modify)\n", .{file_path});
+		return;
+	} else |_| {}
+
+	// Create parent directories as needed
+	if (std.fs.path.dirname(file_path)) |dir| {
+		std.fs.cwd().makePath(dir) catch {};
+	}
+
+	// Write the file
+	const file = try std.fs.cwd().createFile(file_path, .{});
+	defer file.close();
+	try file.writeAll(body);
+
+	// Compute version and line count
+	const version = hashline.computeFileVersionFromPath(allocator, file_path);
+	var line_count: usize = 0;
+	var i: usize = 0;
+	while (i < body.len) : (i += 1) {
+		if (body[i] == '\n') line_count += 1;
+	}
+	if (body.len > 0 and body[body.len - 1] != '\n') line_count += 1;
+
+	if (version) |v| {
+		try writer.print("Created {s} ({d} lines, version: {s})\n", .{ file_path, line_count, &v });
+	} else {
+		try writer.print("Created {s} ({d} lines, version: ---)\n", .{ file_path, line_count });
+	}
+}
 
 pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
@@ -4918,4 +4959,56 @@ test "runInsertBefore rejects stale version" {
 	defer allocator.free(output_text);
 
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runCreateFile creates new file with version" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const abs_dir = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(abs_dir);
+	const abs_path = try std.fs.path.join(allocator, &[_][]const u8{ abs_dir, "newfile.txt" });
+	defer allocator.free(abs_path);
+
+	const body = "hello world\nline two\n";
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runCreateFile(allocator, abs_path, body, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	// Should report Created with line count and version
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Created") != null);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "2 lines") != null);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "version:") != null);
+
+	// File should actually exist with correct content
+	const written = try tmp.dir.readFileAlloc(allocator, "newfile.txt", 1024 * 1024);
+	defer allocator.free(written);
+	try std.testing.expectEqualStrings(body, written);
+}
+
+test "runCreateFile errors on existing file" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(.{ .sub_path = "existing.txt", .data = "existing content\n" });
+	const abs_path = try tmp.dir.realpathAlloc(allocator, "existing.txt");
+	defer allocator.free(abs_path);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runCreateFile(allocator, abs_path, "new content\n", &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+
+	// Should report error about file already existing
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file already exists") != null);
+
+	// Original file should be unchanged
+	const content = try tmp.dir.readFileAlloc(allocator, "existing.txt", 1024 * 1024);
+	defer allocator.free(content);
+	try std.testing.expectEqualStrings("existing content\n", content);
 }

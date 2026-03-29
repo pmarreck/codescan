@@ -21,6 +21,7 @@ pub const CommandTag = enum {
 	replace_lines,
 	insert_at,
 	replace_content,
+	create_file,
 	read_file,
 	references,
 	rename,
@@ -297,6 +298,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			parsed.pattern = args[i];
 			i += 1;
 		}
+	} else if (std.mem.eql(u8, cmd, "create-file")) {
+		parsed.command = .create_file;
+        help_topic_default = "create-file";
+		i += 1;
 	} else if (std.mem.eql(u8, cmd, "read-file")) {
 		parsed.command = .read_file;
         help_topic_default = "read-file";
