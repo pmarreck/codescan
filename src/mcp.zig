@@ -637,9 +637,11 @@ fn getArgBool(args: ?std.json.ObjectMap, key: []const u8) bool {
 fn getArgInt(args: ?std.json.ObjectMap, key: []const u8) ?usize {
 	const a = args orelse return null;
 	const val = a.get(key) orelse return null;
-	if (val != .integer) return null;
-	if (val.integer < 0) return null;
-	return @intCast(val.integer);
+	return switch (val) {
+		.integer => if (val.integer < 0) null else @intCast(val.integer),
+		.string => std.fmt.parseInt(usize, val.string, 10) catch null,
+		else => null,
+	};
 }
 
 /// Extract a string-or-array-of-strings arg into an owned ArrayList.
@@ -1253,21 +1255,25 @@ test "MCP search applies language filters from settings" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "hello_python") == null);
 }
 
-test "getArgInt parses integer arguments" {
+test "getArgInt parses integer and string arguments" {
 	const allocator = std.testing.allocator;
-	const json_str = "{\"top\":42,\"name\":\"hello\",\"neg\":-1}";
+	const json_str = "{\"top\":42,\"name\":\"hello\",\"neg\":-1,\"str_num\":\"1376\",\"str_neg\":\"-5\"}";
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
 	defer parsed.deinit();
 	const map = parsed.value.object;
 
 	// Valid integer
 	try std.testing.expectEqual(@as(?usize, 42), getArgInt(map, "top"));
-	// String value returns null
+	// Non-numeric string returns null
 	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "name"));
 	// Missing key returns null
 	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "missing"));
-	// Negative returns null
+	// Negative integer returns null
 	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "neg"));
+	// String containing a number parses correctly
+	try std.testing.expectEqual(@as(?usize, 1376), getArgInt(map, "str_num"));
+	// String containing negative number returns null (usize can't be negative)
+	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "str_neg"));
 	// Null args returns null
 	try std.testing.expectEqual(@as(?usize, null), getArgInt(null, "top"));
 }
