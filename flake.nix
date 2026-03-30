@@ -82,6 +82,8 @@
 					packages = with pkgs; [
 						zig_0_15
 						jq
+						luajit
+						luajitPackages.cjson
 					];
 					shellHook = ''
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
