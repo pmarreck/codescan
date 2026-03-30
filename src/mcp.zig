@@ -604,8 +604,11 @@ fn getArg(args: ?std.json.ObjectMap, key: []const u8) ?[]const u8 {
 fn getArgBool(args: ?std.json.ObjectMap, key: []const u8) bool {
 	const a = args orelse return false;
 	const val = a.get(key) orelse return false;
-	if (val != .bool) return false;
-	return val.bool;
+	return switch (val) {
+		.bool => val.bool,
+		.string => std.mem.eql(u8, val.string, "true"),
+		else => false,
+	};
 }
 
 fn getArgInt(args: ?std.json.ObjectMap, key: []const u8) ?usize {
@@ -1243,6 +1246,27 @@ test "getArgInt parses integer arguments" {
 	try std.testing.expectEqual(@as(?usize, null), getArgInt(map, "neg"));
 	// Null args returns null
 	try std.testing.expectEqual(@as(?usize, null), getArgInt(null, "top"));
+}
+
+test "getArgBool accepts boolean and string values" {
+	const allocator = std.testing.allocator;
+	const json_str = "{\"flag_true\":true,\"flag_false\":false,\"str_true\":\"true\",\"str_false\":\"false\",\"str_other\":\"yes\",\"num\":42}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, json_str, .{});
+	defer parsed.deinit();
+	const map = parsed.value.object;
+
+	// Native booleans
+	try std.testing.expect(getArgBool(map, "flag_true") == true);
+	try std.testing.expect(getArgBool(map, "flag_false") == false);
+	// String "true" / "false"
+	try std.testing.expect(getArgBool(map, "str_true") == true);
+	try std.testing.expect(getArgBool(map, "str_false") == false);
+	// Other string values → false
+	try std.testing.expect(getArgBool(map, "str_other") == false);
+	// Non-boolean types → false
+	try std.testing.expect(getArgBool(map, "num") == false);
+	// Missing key → false
+	try std.testing.expect(getArgBool(null, "flag_true") == false);
 }
 
 test "MCP search returns error when no query and no filters" {
