@@ -11,6 +11,7 @@ const filters = @import("filters.zig");
 const weights = @import("weights.zig");
 const main = @import("main.zig");
 const cli = @import("cli.zig");
+const hashline = @import("hashline.zig");
 
 pub const Settings = struct {
 	root_path: []const u8,
@@ -1293,7 +1294,8 @@ test "handleRequest responds to POST /replace-symbol" {
 	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
 	defer allocator.free(abs_path);
 
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn foo() u32 {{ return 99; }}\"}}", .{abs_path});
+	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn foo() u32 {{ return 99; }}\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1334,7 +1336,8 @@ test "handleRequest responds to POST /insert-after" {
 	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
 	defer allocator.free(abs_path);
 
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\"}}", .{abs_path});
+	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-after HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1374,7 +1377,8 @@ test "handleRequest responds to POST /insert-before" {
 	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
 	defer allocator.free(abs_path);
 
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\"}}", .{abs_path});
+	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-before HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1417,7 +1421,8 @@ test "handleRequest responds to POST /replace-lines" {
 
 	// Hashline refs computed for "line1\nline2\nline3\nline4\n": line2=pZK, line3=yO7
 	// Replace lines 2-3 with new text
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"from\":\"2:pZK\",\"to\":\"3:yO7\",\"body\":\"replaced\\n\"}}", .{abs_path});
+	const ver = (try hashline.computeFileVersion(allocator, content)).?;
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"from\":\"2:pZK\",\"to\":\"3:yO7\",\"body\":\"replaced\\n\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-lines HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1460,7 +1465,8 @@ test "handleRequest responds to POST /insert-at" {
 
 	// Hashline ref computed for "line1\nline2\nline3\n": line2=pZK
 	// Insert after line 2
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"ref\":\"2:pZK\",\"body\":\"inserted\\n\"}}", .{abs_path});
+	const ver = (try hashline.computeFileVersion(allocator, content)).?;
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"ref\":\"2:pZK\",\"body\":\"inserted\\n\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-at HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1500,7 +1506,8 @@ test "handleRequest responds to POST /replace-content" {
 	defer allocator.free(abs_path);
 
 	// Replace "hello" with "howdy" using literal mode
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"needle\":\"hello\",\"body\":\"howdy\"}}", .{abs_path});
+	const ver = (try hashline.computeFileVersion(allocator, content)).?;
+	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"needle\":\"hello\",\"body\":\"howdy\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-content HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});

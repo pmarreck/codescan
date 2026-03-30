@@ -2607,7 +2607,8 @@ fn checkFileVersion(allocator: std.mem.Allocator, source: []const u8, expected: 
 			}
 		}
 	} else {
-		try writer.print("warning: no --version provided; edit is unprotected against concurrent modifications\n", .{});
+		try writer.print("error: --version is required. Use codescan read-file to get the current version hash.\n", .{});
+		return false;
 	}
 	return true;
 }
@@ -5296,7 +5297,7 @@ test "runReplaceContent succeeds with correct version" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "+++ b/") != null);
 }
 
-test "runReplaceContent warns when no version provided" {
+test "runReplaceContent errors when no version provided" {
 	const allocator = std.testing.allocator;
 
 	var tmp = std.testing.tmpDir(.{});
@@ -5312,10 +5313,12 @@ test "runReplaceContent warns when no version provided" {
 	const output_text = try out.toOwnedSlice();
 	defer allocator.free(output_text);
 
-	// Should contain warning about no version
-	try std.testing.expect(std.mem.indexOf(u8, output_text, "warning: no --version provided") != null);
-	// But should still succeed
-	try std.testing.expect(std.mem.indexOf(u8, output_text, "Replaced 1 occurrence") != null);
+	// Should contain error about missing version
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: --version is required") != null);
+	// File should NOT have been modified
+	const after = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	defer allocator.free(after);
+	try std.testing.expectEqualStrings(content, after);
 }
 
 test "runReplaceSymbol rejects stale version" {
@@ -5365,7 +5368,7 @@ test "runReplaceSymbol succeeds with correct version and emits new version" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "version: ") != null);
 }
 
-test "runReplaceSymbol warns when no version provided" {
+test "runReplaceSymbol errors when no version provided" {
 	const allocator = std.testing.allocator;
 
 	var tmp = std.testing.tmpDir(.{});
@@ -5381,8 +5384,12 @@ test "runReplaceSymbol warns when no version provided" {
 	const output_text = try out.toOwnedSlice();
 	defer allocator.free(output_text);
 
-	try std.testing.expect(std.mem.indexOf(u8, output_text, "warning: no --version provided") != null);
-	try std.testing.expect(std.mem.indexOf(u8, output_text, "Replaced hello") != null);
+	// Should contain error about missing version
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: --version is required") != null);
+	// File should NOT have been modified
+	const after = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	defer allocator.free(after);
+	try std.testing.expectEqualStrings(content, after);
 }
 
 test "runInsertAt rejects stale version" {
@@ -5589,14 +5596,17 @@ test "runDestroyFile moves file to trash (file no longer accessible)" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "to_delete.txt", .data = "bye bye\n" });
+	const file_content = "bye bye\n";
+	try tmp.dir.writeFile(.{ .sub_path = "to_delete.txt", .data = file_content });
 	const abs_path = try tmp.dir.realpathAlloc(allocator, "to_delete.txt");
 	defer allocator.free(abs_path);
 
+	// Compute version so --version requirement is satisfied
+	const file_version = (try hashline.computeFileVersion(allocator, file_content)).?;
+
 	var out: std.io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
-	// No version: should print warning and proceed
-	try runDestroyFile(allocator, abs_path, null, &out.writer);
+	try runDestroyFile(allocator, abs_path, &file_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
 	defer allocator.free(output_text);
 
