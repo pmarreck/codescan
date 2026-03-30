@@ -3374,6 +3374,8 @@ const usage_search =
     \\  codescan search --kind definition --top 20
     \\  codescan search "pub fn \w+Init" --regex --context 5
     \\  codescan search "TODO|FIXME|HACK" --regex --top 20
+    \\  codescan search "computeHash" --regex --include-body
+    \\  codescan search "init" --kind fn --include-body
     \\
 ;
 
