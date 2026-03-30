@@ -133,6 +133,10 @@ codescan search "defer.*free" --regex --path "src/*.zig"
 codescan search "fixme|todo" --regex -i  # case-insensitive
 codescan search "computeHash" --regex --include-body  # show full symbol body containing match
 
+# show uncommitted changes with hashlines (for safe editing from diff output)
+codescan diff
+codescan diff --staged
+
 # index node_modules too
 codescan index --include-node-modules
 
