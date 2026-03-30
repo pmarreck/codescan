@@ -142,3 +142,16 @@
 - [ ] Respect existing comments — if a symbol already has a comment block above it, skip or offer to enhance
 - [ ] `--dry-run` flag — print generated comments to stdout without modifying files
 - [ ] `--force` flag — regenerate even for symbols that already have comments
+
+### Refactor: Vendored deps → proper dependencies
+- [ ] Move tree-sitter grammars from `deps/` to Zig package dependencies (build.zig.zon) or Nix flake inputs
+- Currently: 20+ tree-sitter grammars are raw vendored C source in `deps/tree-sitter-*/`
+- Problem: patches to vendored code (like the tree-sitter-swift UB fix) are fragile and can be overwritten
+- Approach options:
+  1. **Zig packages**: Fork each grammar to add `build.zig.zon`, add as `.dependencies` in `build.zig.zon`. Most correct but high maintenance (20+ forks).
+  2. **Nix flake inputs**: Add each grammar repo as a flake input, pass source paths to the Zig build. Works for Nix builds, but non-Nix builds still need vendored copies.
+  3. **Git submodules**: Pin each grammar to a commit. Standard approach, but submodules are notoriously annoying.
+  4. **Hybrid**: Use Nix flake inputs for the Nix build path, keep vendored copies as fallback for non-Nix builds. Apply patches via Nix overlay.
+- Recommendation: Option 4 (hybrid) — Nix users get pinned+patched deps automatically, non-Nix users use vendored copies with a `scripts/update-deps.sh` that fetches and patches.
+- Also consider: tree-sitter core itself (`deps/tree-sitter/`) should be a proper dependency too.
+- Filed upstream: alex-pinkus/tree-sitter-swift#558 (UB fix)
