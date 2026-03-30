@@ -282,14 +282,33 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		main.runInsertAt(allocator, file, ref, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_at: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_content")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const needle = getArg(args, "needle") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		const body_arg = getArg(args, "body") orelse return error.MissingArgument;
 		const regex = getArgBool(args, "regex");
 		const all = getArgBool(args, "all");
-		const ver = getArg(args, "version");
-		main.runReplaceContent(allocator, file, needle, regex, all, body, ver, &out.writer) catch |err|
-			return toolError("MCP replace_content: failed on '{s}': {}\n", .{ file, err });
+		const path_arg = getArg(args, "path");
+		const confirm_arg = getArg(args, "confirm");
+		if (path_arg != null) {
+			// Multi-file mode
+			try ensureParentDir(settings.db_path);
+			const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
+				return toolError("MCP replace_content: failed to open DB: {}\n", .{err});
+			defer storage.close(db);
+			var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch |err|
+				return toolError("MCP replace_content: schema init failed: {}\n", .{err});
+			defer schema_result.deinit(allocator);
+			var path_filters = std.ArrayListUnmanaged([]const u8){};
+			defer path_filters.deinit(allocator);
+			if (path_arg) |p| try path_filters.append(allocator, p);
+			main.runReplaceContentMultiFile(allocator, db, needle, regex, all, body_arg, path_filters.items, confirm_arg, settings.root_path, &out.writer) catch |err|
+				return toolError("MCP replace_content: multi-file failed: {}\n", .{err});
+		} else {
+			// Single-file mode
+			const file = getArg(args, "file") orelse return error.MissingArgument;
+			const ver = getArg(args, "version");
+			main.runReplaceContent(allocator, file, needle, regex, all, body_arg, ver, &out.writer) catch |err|
+				return toolError("MCP replace_content: failed on '{s}': {}\n", .{ file, err });
+		}
 	} else if (std.mem.eql(u8, name, "read_file")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const from = getArgInt(args, "from");
@@ -706,7 +725,7 @@ const tools_list_json =
 	\\{"name":"insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
 	\\{"name":"replace_lines","description":"Replace a hashline-validated line range","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"from":{"type":"string","description":"Start hashline ref (e.g. 10:k7m)"},"to":{"type":"string","description":"End hashline ref (e.g. 20:x9a)"},"body":{"type":"string","description":"Replacement text"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","from","to","body"]}},
 	\\{"name":"insert_at","description":"Insert code after a hashline-validated line","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"ref":{"type":"string","description":"Hashline ref (e.g. 47:3bw)"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","ref","body"]}},
-	\\{"name":"replace_content","description":"Find and replace text or regex in a file","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","needle","body"]}},
+	\\{"name":"replace_content","description":"Find and replace text or regex in a file. With --path, operates across multiple files with dry-run preview.","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (single-file mode)"},"needle":{"type":"string","description":"Text or regex to find"},"body":{"type":"string","description":"Replacement text"},"regex":{"type":"boolean","description":"Treat needle as regex"},"all":{"type":"boolean","description":"Replace all occurrences"},"version":{"type":"string","description":"File version hash from read_file (single-file mode)"},"path":{"type":"string","description":"Glob pattern for multi-file mode (shows preview, requires --confirm to apply)"},"confirm":{"type":"string","description":"Confirmation hash from dry-run preview (multi-file mode)"}},"required":["needle","body"]}},
 	\\{"name":"read_file","description":"Read a file with hashline annotations and version hash for safe concurrent editing","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"from":{"type":"integer","description":"Start line (1-indexed, optional)"},"to":{"type":"integer","description":"End line (inclusive, optional)"}},"required":["file"]}},
 	\\{"name":"create_file","description":"Create a new file (errors if file exists)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"body":{"type":"string","description":"File content"}},"required":["file","body"]}},
 	\\{"name":"destroy_file","description":"Move a file to system trash (safer than rm, supports undo)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file"]}},

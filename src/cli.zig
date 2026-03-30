@@ -132,6 +132,7 @@ pub const Parsed = struct {
 	context_lines: usize,
 	replace_all: bool,
 	version_hash: ?[]const u8,
+	confirm_hash: ?[]const u8,
 	staged: bool,
 	watch_interval: u64,
 	watch_action: WatchAction,
@@ -204,6 +205,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.context_lines = 0,
 		.replace_all = false,
 		.version_hash = null,
+		.confirm_hash = null,
 		.staged = false,
 		.watch_interval = 2000,
 		.watch_action = .run,
@@ -755,6 +757,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			if (i >= args.len) return error.MissingValue;
 			parsed.version_hash = args[i];
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--confirm")) {
+			i += 1;
+			if (i >= args.len) return error.MissingValue;
+			parsed.confirm_hash = args[i];
 			i += 1;
 			continue;
 		}

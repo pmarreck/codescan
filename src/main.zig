@@ -788,11 +788,21 @@ pub fn main() !void {
 			const needle = parsed.pattern orelse
 				exitWithError("error: replace-content requires a pattern\n" ++
 					"usage: echo 'replacement' | codescan replace-content '<needle>' --file <path> [--regex] [--all]\n");
-            const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-content requires --file <path>\n");
 			const input_text = try readStdin(allocator);
 			defer allocator.free(input_text);
-			try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, parsed.version_hash, stdout);
-			tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
+			if (parsed.path_filters.items.len > 0) {
+				// Multi-file mode with --path
+				const db = try storage.openFileWithVec(allocator, settings.db_path);
+				defer storage.close(db);
+				var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+				defer schema_result.deinit(allocator);
+				try runReplaceContentMultiFile(allocator, db, needle, parsed.regex_mode, parsed.replace_all, input_text, parsed.path_filters.items, parsed.confirm_hash, settings.root_path, stdout);
+			} else {
+				// Single-file mode with --file
+				const file_path = if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: replace-content requires --file <path> or --path <glob>\n");
+				try runReplaceContent(allocator, file_path, needle, parsed.regex_mode, parsed.replace_all, input_text, parsed.version_hash, stdout);
+				tryReindexFile(allocator, settings.db_path, settings.root_path, file_path, registry, settings.embedding_dim);
+			}
 			try stdout.flush();
 		},
 		.create_file => {
@@ -2796,6 +2806,237 @@ fn checkFileVersion(allocator: std.mem.Allocator, source: []const u8, expected: 
 fn emitNewVersion(allocator: std.mem.Allocator, file_path: []const u8, writer: *std.Io.Writer) !void {
 	if (hashline.computeFileVersionFromPath(allocator, file_path)) |nv| {
 		try writer.print("version: {s}\n", .{&nv});
+	}
+}
+
+pub fn runReplaceContentMultiFile(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	needle: []const u8,
+	regex_mode: bool,
+	replace_all_flag: bool,
+	input_text: []const u8,
+	path_patterns: []const []const u8,
+	confirm_hash: ?[]const u8,
+	root_path: []const u8,
+	writer: *std.Io.Writer,
+) !void {
+	const repl = if (input_text.len > 0 and input_text[input_text.len - 1] == '\n')
+		input_text[0 .. input_text.len - 1]
+	else
+		input_text;
+
+	// Get indexed files
+	const indexed_files = try storage.getAllIndexedFiles(db, allocator);
+	defer {
+		for (indexed_files) |f| allocator.free(f.file_path);
+		allocator.free(indexed_files);
+	}
+
+	// Collect all planned changes
+	const FileChange = struct {
+		rel_path: []const u8,
+		abs_path: []const u8,
+		original: []const u8,
+		modified: []const u8,
+		diff_text: []const u8,
+		match_count: usize,
+	};
+	var changes = std.ArrayListUnmanaged(FileChange){};
+	defer {
+		for (changes.items) |c| {
+			allocator.free(c.abs_path);
+			allocator.free(c.original);
+			allocator.free(c.modified);
+			allocator.free(c.diff_text);
+		}
+		changes.deinit(allocator);
+	}
+
+	var total_matches: usize = 0;
+
+	for (indexed_files) |indexed_file| {
+		const rel_path = indexed_file.file_path;
+
+		// Apply path filters
+		var any_match = false;
+		for (path_patterns) |pf| {
+			if (search.pathMatchesGlob(rel_path, pf)) {
+				any_match = true;
+				break;
+			}
+		}
+		if (!any_match) continue;
+
+		// Read file
+		const abs_path = std.fs.path.join(allocator, &.{ root_path, rel_path }) catch continue;
+		errdefer allocator.free(abs_path);
+		const source = readFileContents(allocator, abs_path) catch {
+			allocator.free(abs_path);
+			continue;
+		};
+		errdefer allocator.free(source);
+
+		// Find matches
+		if (regex_mode) {
+			var re = pcre2.Regex.compile(allocator, needle) catch {
+				try writer.print("error: invalid regex pattern: {s}\n", .{needle});
+				return;
+			};
+			defer re.deinit();
+
+			var match_count: usize = 0;
+			var offset: usize = 0;
+			while (re.findPosition(source, offset)) |m| {
+				match_count += 1;
+				offset = if (m.end > m.start) m.end else m.start + 1;
+			}
+			if (match_count == 0) {
+				allocator.free(abs_path);
+				allocator.free(source);
+				continue;
+			}
+			if (match_count > 1 and !replace_all_flag) {
+				try writer.print("error: found {d} matches in {s}; use --all to replace all\n", .{ match_count, rel_path });
+				allocator.free(abs_path);
+				allocator.free(source);
+				return;
+			}
+			const result = re.substituteOwned(allocator, source, repl, replace_all_flag) catch {
+				allocator.free(abs_path);
+				allocator.free(source);
+				continue;
+			};
+			errdefer allocator.free(result.output);
+
+			const diff_text = diff.generateUnifiedDiff(allocator, source, result.output, rel_path) catch {
+				allocator.free(abs_path);
+				allocator.free(source);
+				allocator.free(result.output);
+				continue;
+			};
+			errdefer allocator.free(diff_text);
+
+			total_matches += match_count;
+			try changes.append(allocator, .{
+				.rel_path = rel_path,
+				.abs_path = abs_path,
+				.original = source,
+				.modified = result.output,
+				.diff_text = diff_text,
+				.match_count = match_count,
+			});
+		} else {
+			// Literal mode
+			var match_count: usize = 0;
+			var offset: usize = 0;
+			while (offset <= source.len -| needle.len) {
+				if (std.mem.indexOf(u8, source[offset..], needle)) |pos| {
+					match_count += 1;
+					offset = offset + pos + needle.len;
+				} else break;
+			}
+			if (match_count == 0) {
+				allocator.free(abs_path);
+				allocator.free(source);
+				continue;
+			}
+			if (match_count > 1 and !replace_all_flag) {
+				try writer.print("error: found {d} matches in {s}; use --all to replace all\n", .{ match_count, rel_path });
+				allocator.free(abs_path);
+				allocator.free(source);
+				return;
+			}
+
+			// Build replacement
+			var result_buf = std.ArrayListUnmanaged(u8){};
+			defer result_buf.deinit(allocator);
+			var src_off: usize = 0;
+			var replaced: usize = 0;
+			while (src_off <= source.len -| needle.len) {
+				if (std.mem.indexOf(u8, source[src_off..], needle)) |pos| {
+					try result_buf.appendSlice(allocator, source[src_off .. src_off + pos]);
+					try result_buf.appendSlice(allocator, repl);
+					src_off = src_off + pos + needle.len;
+					replaced += 1;
+					if (!replace_all_flag) break;
+				} else break;
+			}
+			try result_buf.appendSlice(allocator, source[src_off..]);
+			const modified = try allocator.dupe(u8, result_buf.items);
+			errdefer allocator.free(modified);
+
+			const diff_text = diff.generateUnifiedDiff(allocator, source, modified, rel_path) catch {
+				allocator.free(abs_path);
+				allocator.free(source);
+				allocator.free(modified);
+				continue;
+			};
+			errdefer allocator.free(diff_text);
+
+			total_matches += match_count;
+			try changes.append(allocator, .{
+				.rel_path = rel_path,
+				.abs_path = abs_path,
+				.original = source,
+				.modified = modified,
+				.diff_text = diff_text,
+				.match_count = match_count,
+			});
+		}
+	}
+
+	if (changes.items.len == 0) {
+		try writer.print("No matches found for '{s}' in files matching path filter.\n", .{needle});
+		return;
+	}
+
+	// Compute confirmation hash from all diffs combined
+	var hasher = std.hash.XxHash64.init(0);
+	for (changes.items) |c| {
+		hasher.update(c.diff_text);
+	}
+	const confirm_digest = hasher.final();
+	var confirm_code: hashline.Hash = undefined;
+	{
+		const ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+		var v = confirm_digest;
+		comptime var ci: usize = hashline.HASH_LEN;
+		inline while (ci > 0) {
+			ci -= 1;
+			confirm_code[ci] = ALPHABET[v % 62];
+			v /= 62;
+		}
+	}
+
+	if (confirm_hash) |expected| {
+		// Verify hash matches
+		if (!std.mem.eql(u8, expected, &confirm_code)) {
+			try writer.print("error: confirm hash mismatch (expected {s}, computed {s}) — changes differ from dry run, re-run without --confirm to preview\n", .{ expected, &confirm_code });
+			return;
+		}
+
+		// Apply all changes
+		for (changes.items) |c| {
+			const file = std.fs.cwd().createFile(c.abs_path, .{}) catch {
+				try writer.print("error: could not write {s}\n", .{c.rel_path});
+				continue;
+			};
+			defer file.close();
+			file.writeAll(c.modified) catch {
+				try writer.print("error: could not write {s}\n", .{c.rel_path});
+				continue;
+			};
+		}
+		try writer.print("Replaced {d} occurrences across {d} files.\n", .{ total_matches, changes.items.len });
+	} else {
+		// Dry run — show diffs and confirm hash
+		try writer.print("Would replace {d} occurrences across {d} files:\n\n", .{ total_matches, changes.items.len });
+		for (changes.items) |c| {
+			try writer.writeAll(c.diff_text);
+			try writer.writeAll("\n");
+		}
+		try writer.print("Confirm hash: {s}\nRe-run with --confirm {s} to apply.\n", .{ &confirm_code, &confirm_code });
 	}
 }
 
