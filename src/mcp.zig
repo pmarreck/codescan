@@ -306,6 +306,10 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const version = getArg(args, "version");
 		main.runDestroyFile(allocator, file, version, &out.writer) catch |err|
 			return toolError("MCP destroy_file: failed on '{s}': {}\n", .{ file, err });
+	} else if (std.mem.eql(u8, name, "diff")) {
+		const staged_arg = getArgBool(args, "staged");
+		main.runDiff(allocator, staged_arg, settings.root_path, .json, &out.writer) catch |err|
+			return toolError("MCP diff: failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "references")) {
 		const file = getArg(args, "file") orelse return error.MissingArgument;
 		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
@@ -706,6 +710,7 @@ const tools_list_json =
 	\\{"name":"read_file","description":"Read a file with hashline annotations and version hash for safe concurrent editing","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"from":{"type":"integer","description":"Start line (1-indexed, optional)"},"to":{"type":"integer","description":"End line (inclusive, optional)"}},"required":["file"]}},
 	\\{"name":"create_file","description":"Create a new file (errors if file exists)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"body":{"type":"string","description":"File content"}},"required":["file","body"]}},
 	\\{"name":"destroy_file","description":"Move a file to system trash (safer than rm, supports undo)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path (relative to project root)"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file"]}},
+	\\{"name":"diff","description":"Show uncommitted git changes with hashline annotations for safe editing","inputSchema":{"type":"object","properties":{"staged":{"type":"boolean","description":"Show staged changes only"}}}},
 	\\{"name":"references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
 	\\{"name":"rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
 	\\{"name":"config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},

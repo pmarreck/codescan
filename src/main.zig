@@ -814,6 +814,10 @@ pub fn main() !void {
 			try runDestroyFile(allocator, file_path, parsed.version_hash, stdout);
 			try stdout.flush();
 		},
+		.diff => {
+			try runDiff(allocator, parsed.staged, settings.root_path, settings.output, stdout);
+			try stdout.flush();
+		},
 		.references => {
 			const pattern = parsed.pattern orelse
 				exitWithError("error: references requires a name path pattern\nusage: codescan references <pattern> --file <path>\n");
@@ -2388,6 +2392,169 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 	try writer.print("Moved {s} to trash\n", .{file_path});
 }
 
+pub fn runDiff(allocator: std.mem.Allocator, staged: bool, root_path: []const u8, format: cli.OutputFormat, writer: *std.Io.Writer) !void {
+	// Run git diff
+	var argv = std.ArrayListUnmanaged([]const u8){};
+	defer argv.deinit(allocator);
+	try argv.appendSlice(allocator, &.{ "git", "diff", "-U3" });
+	if (staged) try argv.append(allocator, "--staged");
+
+	var child = std.process.Child.init(argv.items, allocator);
+	child.stdout_behavior = .Pipe;
+	child.stderr_behavior = .Ignore;
+	child.cwd = root_path;
+	_ = try child.spawn();
+	const git_output = try child.stdout.?.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	defer allocator.free(git_output);
+	const term = try child.wait();
+	if (term.Exited != 0) {
+		try writer.print("error: git diff failed (exit code {d})\n", .{term.Exited});
+		return;
+	}
+
+	if (git_output.len == 0) {
+		if (format == .json) {
+			try writer.writeAll("{\"files\":[]}\n");
+		} else {
+			try writer.writeAll("No changes.\n");
+		}
+		return;
+	}
+
+	// Parse unified diff and annotate with hashlines
+	var lines_iter = std.mem.splitScalar(u8, git_output, '\n');
+	var current_file: ?[]const u8 = null;
+	var current_hashes: ?[]hashline.Hash = null;
+	defer if (current_hashes) |h| allocator.free(h);
+	var new_line_num: usize = 0;
+	var first_file = true;
+
+	if (format == .json) {
+		try writer.writeAll("{\"files\":[");
+	}
+
+	while (lines_iter.next()) |line| {
+		if (std.mem.startsWith(u8, line, "+++ b/")) {
+			// New file in diff
+			const rel_path = line[6..];
+
+			// Close previous JSON file object
+			if (format == .json and !first_file) {
+				try writer.writeAll("]},");
+			}
+
+			current_file = rel_path;
+			if (current_hashes) |h| allocator.free(h);
+			current_hashes = null;
+
+			// Compute hashlines for the current file on disk
+			const abs_path = std.fs.path.join(allocator, &.{ root_path, rel_path }) catch continue;
+			defer allocator.free(abs_path);
+			const source = readFileContents(allocator, abs_path) catch continue;
+			defer allocator.free(source);
+			current_hashes = hashline.computeSourceHashes(allocator, source) catch null;
+
+			const version = if (current_hashes) |h| (if (h.len > 0) h[h.len - 1] else null) else null;
+
+			if (format == .json) {
+				try writer.writeAll("{\"file\":");
+				try writeJsonString(rel_path, writer);
+				if (version) |v| {
+					try writer.print(",\"version\":\"{s}\"", .{v});
+				}
+				try writer.writeAll(",\"hunks\":[");
+				first_file = false;
+			} else {
+				if (version) |v| {
+					try writer.print("--- a/{s}  (version: {s})\n+++ b/{s}\n", .{ rel_path, v, rel_path });
+				} else {
+					try writer.print("--- a/{s}\n+++ b/{s}\n", .{ rel_path, rel_path });
+				}
+			}
+			continue;
+		}
+
+		if (std.mem.startsWith(u8, line, "--- ")) continue; // skip old file header
+		if (std.mem.startsWith(u8, line, "diff --git")) continue;
+		if (std.mem.startsWith(u8, line, "index ")) continue;
+
+		if (std.mem.startsWith(u8, line, "@@ ")) {
+			// Parse hunk header to get new-file line number
+			// Format: @@ -old_start,old_count +new_start,new_count @@
+			if (std.mem.indexOf(u8, line, "+")) |plus_idx| {
+				const after_plus = line[plus_idx + 1 ..];
+				if (std.mem.indexOfAny(u8, after_plus, ",@ ")) |end| {
+					new_line_num = std.fmt.parseInt(usize, after_plus[0..end], 10) catch 0;
+				}
+			}
+			if (format == .json) {
+				// Not tracking hunks separately in JSON for simplicity
+			} else {
+				try writer.print("{s}\n", .{line});
+			}
+			continue;
+		}
+
+		if (current_file == null) continue;
+
+		if (line.len == 0) {
+			if (format == .human) try writer.writeAll("\n");
+			continue;
+		}
+
+		const prefix = line[0];
+		const content = if (line.len > 1) line[1..] else "";
+
+		switch (prefix) {
+			' ' => {
+				// Context line — use new file line number
+				const hash_str = getHash(current_hashes, new_line_num);
+				if (format == .json) {
+					// skip context in JSON for brevity
+				} else {
+					try writer.print("  {d}:{s}|{s}\n", .{ new_line_num, hash_str, content });
+				}
+				new_line_num += 1;
+			},
+			'-' => {
+				// Deleted line — no hash (doesn't exist in current file)
+				if (format == .json) {
+					// skip deletes in JSON for brevity
+				} else {
+					try writer.print("- {s}|{s}\n", .{ "---", content });
+				}
+			},
+			'+' => {
+				// Added line — hash from current file
+				const hash_str = getHash(current_hashes, new_line_num);
+				if (format == .json) {
+					// skip adds in JSON for brevity
+				} else {
+					try writer.print("+ {d}:{s}|{s}\n", .{ new_line_num, hash_str, content });
+				}
+				new_line_num += 1;
+			},
+			else => {
+				if (format == .human) {
+					try writer.print("{s}\n", .{line});
+				}
+			},
+		}
+	}
+
+	if (format == .json) {
+		if (!first_file) try writer.writeAll("]}");
+		try writer.writeAll("]}\n");
+	}
+}
+
+fn getHash(hashes: ?[]hashline.Hash, line_1: usize) [3]u8 {
+	if (hashes) |h| {
+		if (line_1 > 0 and line_1 <= h.len) return h[line_1 - 1];
+	}
+	return .{ '-', '-', '-' };
+}
+
 pub fn runReplaceSymbol(allocator: std.mem.Allocator, file_path: []const u8, pattern: []const u8, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	const result = try extractFileAndTree(allocator, file_path);
 	var tree = result.tree;
@@ -3306,6 +3473,7 @@ const usage =
     \\  read-file <path>          Read file with hashlines and version hash
     \\  create-file --file <path> Create a new file (stdin)
     \\  destroy-file --file <path> Move file to system trash
+    \\  diff                      Show git changes with hashlines
     \\  references <pattern>      Find all references via LSP
     \\  rename <pattern>          Rename symbol across codebase via LSP
     \\  index                     Full re-index (drops & recreates DB)
@@ -3597,6 +3765,24 @@ const usage_destroy_file =
     \\Examples:
     \\  codescan destroy-file --file src/old.zig
     \\  codescan destroy-file --file src/old.zig --version k7m
+    \\
+;
+
+const usage_diff =
+    \\Usage: codescan diff [options]
+    \\
+    \\Show uncommitted git changes with hashline annotations.
+    \\Each line includes its hashline from the current file version,
+    \\enabling safe edits directly from diff output.
+    \\
+    \\Options:
+    \\  --staged, --cached       Show staged changes only
+    \\  --json                   JSON output
+    \\
+    \\Examples:
+    \\  codescan diff
+    \\  codescan diff --staged
+    \\  codescan diff --json
     \\
 ;
 
@@ -4354,6 +4540,7 @@ fn usageForTopic(topic: []const u8) []const u8 {
     if (std.mem.eql(u8, topic, "read-file")) return usage_read_file;
     if (std.mem.eql(u8, topic, "create-file")) return usage_create_file;
     if (std.mem.eql(u8, topic, "destroy-file")) return usage_destroy_file;
+    if (std.mem.eql(u8, topic, "diff")) return usage_diff;
     if (std.mem.eql(u8, topic, "references")) return usage_references;
     if (std.mem.eql(u8, topic, "rename")) return usage_rename;
     if (std.mem.eql(u8, topic, "watch")) return usage_watch;

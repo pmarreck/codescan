@@ -24,6 +24,7 @@ pub const CommandTag = enum {
 	create_file,
 	read_file,
 	destroy_file,
+	diff,
 	references,
 	rename,
 	watch,
@@ -131,6 +132,7 @@ pub const Parsed = struct {
 	context_lines: usize,
 	replace_all: bool,
 	version_hash: ?[]const u8,
+	staged: bool,
 	watch_interval: u64,
 	watch_action: WatchAction,
 	force: bool,
@@ -202,6 +204,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.context_lines = 0,
 		.replace_all = false,
 		.version_hash = null,
+		.staged = false,
 		.watch_interval = 2000,
 		.watch_action = .run,
 		.force = false,
@@ -320,6 +323,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	} else if (std.mem.eql(u8, cmd, "destroy-file")) {
 		parsed.command = .destroy_file;
         help_topic_default = "destroy-file";
+		i += 1;
+	} else if (std.mem.eql(u8, cmd, "diff")) {
+		parsed.command = .diff;
+        help_topic_default = "diff";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "references")) {
 		parsed.command = .references;
@@ -724,6 +731,11 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			} else {
 				parsed.regex_mode = true;
 			}
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--staged") or std.mem.eql(u8, arg, "--cached")) {
+			parsed.staged = true;
 			i += 1;
 			continue;
 		}
