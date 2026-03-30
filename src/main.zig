@@ -2321,7 +2321,15 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 	};
 	defer allocator.free(source);
 
-	if (!try checkFileVersion(allocator, source, version, writer)) return;
+	// Version check is optional for destroy — soft mode
+	if (version) |expected| {
+		if (hashline.computeFileVersion(allocator, source) catch null) |current| {
+			if (!std.mem.eql(u8, expected, &current)) {
+				try writer.print("error: file modified since last read (expected version {s}, current {s}) — re-read and retry\n", .{ expected, &current });
+				return;
+			}
+		}
+	}
 
 	// Get absolute path for trash commands
 	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
@@ -2389,7 +2397,11 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 		}
 	}
 
-	try writer.print("Moved {s} to trash\n", .{file_path});
+	if (version != null) {
+		try writer.print("Moved {s} to trash\n", .{file_path});
+	} else {
+		try writer.print("Moved {s} to trash (without version check)\n", .{file_path});
+	}
 }
 
 pub fn runDiff(allocator: std.mem.Allocator, staged: bool, root_path: []const u8, format: cli.OutputFormat, writer: *std.Io.Writer) !void {
