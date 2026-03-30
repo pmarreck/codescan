@@ -351,6 +351,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			if (file_arg) |f| try path_filters_mcp.append(allocator, f);
 
 			const ignore_case_arg = getArgBool(args, "ignore_case");
+			const include_body_arg = getArgBool(args, "include_body");
 			main.runRegexSearch(
 				allocator,
 				db,
@@ -364,6 +365,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				settings.root_path,
 				.json,
 				&out.writer,
+				include_body_arg,
 			) catch |err|
 				return toolError("MCP search: regex search failed: {}\n", .{err});
 			return try out.toOwnedSlice();

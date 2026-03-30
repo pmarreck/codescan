@@ -507,6 +507,7 @@ pub fn main() !void {
 					settings.root_path,
 					settings.output,
 					stdout,
+					parsed.include_body,
 				);
 				try stdout.flush();
 				return;
@@ -4388,6 +4389,7 @@ pub fn runRegexSearch(
 	root_path: []const u8,
 	format: cli.OutputFormat,
 	writer: *std.Io.Writer,
+	include_body: bool,
 ) !void {
 	// Compile the regex
 	var regex = pcre2.Regex.compileEx(allocator, pattern_str, .{ .case_insensitive = ignore_case }) catch {
@@ -4419,6 +4421,11 @@ pub fn runRegexSearch(
 		hash: hashline.Hash,
 		match_text: []const u8,
 		context: []ContextLine,
+		// body fields (populated when include_body=true and a containing symbol is found)
+		body_name: ?[]const u8,
+		body_start: usize,
+		body_end: usize,
+		body_lines: ?[]ContextLine,
 	};
 
 	var results = std.ArrayListUnmanaged(Result){};
@@ -4427,6 +4434,11 @@ pub fn runRegexSearch(
 			allocator.free(r.match_text);
 			for (r.context) |ctx| allocator.free(ctx.content);
 			allocator.free(r.context);
+			if (r.body_name) |n| allocator.free(n);
+			if (r.body_lines) |bl| {
+				for (bl) |ctx| allocator.free(ctx.content);
+				allocator.free(bl);
+			}
 		}
 		results.deinit(allocator);
 	}
@@ -4564,12 +4576,64 @@ pub fn runRegexSearch(
 				allocator.free(ctx_owned);
 			}
 
+			// Body lookup: find the innermost symbol containing this line
+			var body_name: ?[]const u8 = null;
+			var body_start: usize = 0;
+			var body_end: usize = 0;
+			var body_lines: ?[]ContextLine = null;
+			if (include_body) blk: {
+				const matched_line_1indexed = line_num + 1;
+				const sql: [:0]const u8 =
+					"SELECT symbol_name, start_line, end_line FROM symbols " ++
+					"WHERE file_path = ?1 AND start_line <= ?2 AND end_line >= ?2 " ++
+					"ORDER BY (end_line - start_line) ASC LIMIT 1;\x00";
+				var stmt: ?*storage.sqlite.sqlite3_stmt = null;
+				if (storage.sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != storage.sqlite.SQLITE_OK) break :blk;
+				defer _ = storage.sqlite.sqlite3_finalize(stmt.?);
+
+				_ = storage.sqlite.sqlite3_bind_text(stmt.?, 1, rel_path.ptr, @intCast(rel_path.len), null);
+				_ = storage.sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(matched_line_1indexed));
+
+				if (storage.sqlite.sqlite3_step(stmt.?) == storage.sqlite.SQLITE_ROW) {
+					const name_ptr = storage.sqlite.sqlite3_column_text(stmt.?, 0) orelse break :blk;
+					const name_len: usize = @intCast(storage.sqlite.sqlite3_column_bytes(stmt.?, 0));
+					body_name = try allocator.dupe(u8, name_ptr[0..name_len]);
+					body_start = @intCast(storage.sqlite.sqlite3_column_int64(stmt.?, 1));
+					body_end = @intCast(storage.sqlite.sqlite3_column_int64(stmt.?, 2));
+
+					// Build body_lines from file source (0-indexed: body_start-1 .. body_end)
+					var bl_list = std.ArrayListUnmanaged(ContextLine){};
+					errdefer {
+						for (bl_list.items) |ctx| allocator.free(ctx.content);
+						bl_list.deinit(allocator);
+					}
+					const bl_start = body_start - 1; // convert to 0-indexed
+					const bl_end = @min(body_end, lines.len);
+					for (bl_start..bl_end) |li| {
+						if (li >= lines.len or li >= hashes.len) break;
+						const content_dupe = try allocator.dupe(u8, lines[li]);
+						errdefer allocator.free(content_dupe);
+						try bl_list.append(allocator, .{
+							.line = li + 1, // 1-indexed
+							.hash = hashes[li],
+							.content = content_dupe,
+							.is_match = li == line_num,
+						});
+					}
+					body_lines = try bl_list.toOwnedSlice(allocator);
+				}
+			}
+
 			try results.append(allocator, .{
 				.file = rel_path,
 				.line = line_num + 1, // 1-indexed
 				.hash = hashes[line_num],
 				.match_text = match_text,
 				.context = ctx_owned,
+				.body_name = body_name,
+				.body_start = body_start,
+				.body_end = body_end,
+				.body_lines = body_lines,
 			});
 			match_count += 1;
 
@@ -4607,6 +4671,25 @@ pub fn runRegexSearch(
 					}
 					try writer.writeAll("]");
 				}
+				if (r.body_name) |bname| {
+					try writer.writeAll(",\"body\":{\"symbol\":");
+					try writeJsonString(bname, writer);
+					try writer.print(",\"start_line\":{d},\"end_line\":{d},\"lines\":[", .{ r.body_start, r.body_end });
+					if (r.body_lines) |bl| {
+						for (bl, 0..) |ctx, bi| {
+							if (bi > 0) try writer.writeAll(",");
+							try writer.writeAll("{\"line\":");
+							try writer.print("{d}", .{ctx.line});
+							try writer.print(",\"hash\":\"{s}\",\"content\":", .{ctx.hash});
+							try writeJsonString(ctx.content, writer);
+							if (ctx.is_match) {
+								try writer.writeAll(",\"is_match\":true");
+							}
+							try writer.writeAll("}");
+						}
+					}
+					try writer.writeAll("]}");
+				}
 				try writer.writeAll("}");
 			}
 			try writer.writeAll("]}\n");
@@ -4617,11 +4700,21 @@ pub fn runRegexSearch(
 				return;
 			}
 			for (results.items) |r| {
-				try writer.print("{s}:{d}:{s}\n", .{ r.file, r.line, r.hash });
-				if (r.context.len > 0) {
-					for (r.context) |ctx| {
-						const prefix: []const u8 = if (ctx.is_match) "> " else "  ";
-						try writer.print("{s}{d}:{s}|{s}\n", .{ prefix, ctx.line, ctx.hash, ctx.content });
+				if (r.body_name) |bname| {
+					try writer.print("{s}:{d}:{s}  (in {s}, lines {d}-{d})\n", .{ r.file, r.line, r.hash, bname, r.body_start, r.body_end });
+					if (r.body_lines) |bl| {
+						for (bl) |ctx| {
+							const prefix: []const u8 = if (ctx.is_match) "> " else "  ";
+							try writer.print("{s}{d}:{s}|{s}\n", .{ prefix, ctx.line, ctx.hash, ctx.content });
+						}
+					}
+				} else {
+					try writer.print("{s}:{d}:{s}\n", .{ r.file, r.line, r.hash });
+					if (r.context.len > 0) {
+						for (r.context) |ctx| {
+							const prefix: []const u8 = if (ctx.is_match) "> " else "  ";
+							try writer.print("{s}{d}:{s}|{s}\n", .{ prefix, ctx.line, ctx.hash, ctx.content });
+						}
 					}
 				}
 			}
@@ -5564,7 +5657,7 @@ test "runRegexSearch finds matches with correct line numbers" {
 	try runRegexSearch(
 		allocator, db, "fn \\w+\\(\\)", 0, 20,
 		&[_][]const u8{}, null, false,
-		plugin.defaultRegistry(), root_path, .json, &out.writer,
+		plugin.defaultRegistry(), root_path, .json, &out.writer, false,
 	);
 	const result = try out.toOwnedSlice();
 	defer allocator.free(result);
@@ -5604,7 +5697,7 @@ test "runRegexSearch context lines shows surrounding lines" {
 	try runRegexSearch(
 		allocator, db, "TARGET", 5, 20,
 		&[_][]const u8{}, null, false,
-		plugin.defaultRegistry(), root_path, .json, &out.writer,
+		plugin.defaultRegistry(), root_path, .json, &out.writer, false,
 	);
 	const result = try out.toOwnedSlice();
 	defer allocator.free(result);
@@ -5657,7 +5750,7 @@ test "runRegexSearch path filter restricts files" {
 	try runRegexSearch(
 		allocator, db, "fn \\w+", 0, 20,
 		&[_][]const u8{path_filter}, null, false,
-		plugin.defaultRegistry(), root_path, .json, &out.writer,
+		plugin.defaultRegistry(), root_path, .json, &out.writer, false,
 	);
 	const result = try out.toOwnedSlice();
 	defer allocator.free(result);
@@ -5688,11 +5781,67 @@ test "runRegexSearch invalid regex returns error message" {
 	try runRegexSearch(
 		allocator, db, "[invalid(", 0, 20,
 		&[_][]const u8{}, null, false,
-		plugin.defaultRegistry(), root_path, .json, &out.writer,
+		plugin.defaultRegistry(), root_path, .json, &out.writer, false,
 	);
 	const result = try out.toOwnedSlice();
 	defer allocator.free(result);
 
 	try std.testing.expect(std.mem.indexOf(u8, result, "error") != null);
 	try std.testing.expect(std.mem.indexOf(u8, result, "invalid regex") != null);
+}
+
+test "runRegexSearch include_body shows full symbol body" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	// Create a source file with a clearly-delimited function
+	{
+		const f = try tmp.dir.createFile("body_test.zig", .{});
+		defer f.close();
+		try f.writeAll("// preamble\npub fn myFunc() void {\n    const x = 42;\n    _ = x;\n}\n// epilogue\n");
+	}
+
+	try tmp.dir.makePath(".codescan");
+	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	const db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try storage.upsertIndexedFile(db, "body_test.zig", 0, 0);
+
+	// Insert symbol spanning lines 2-5 (1-indexed)
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "body_test.zig"),
+		.name = try allocator.dupe(u8, "myFunc"),
+		.signature = try allocator.dupe(u8, "pub fn myFunc() void"),
+		.doc_comment = null,
+		.start_line = 2,
+		.end_line = 5,
+	};
+	defer sym.deinit(allocator);
+	_ = try storage.insertSymbol(db, sym);
+
+	var out: std.io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	// Search for something inside the function body with include_body = true
+	try runRegexSearch(
+		allocator, db, "const x = 42", 0, 20,
+		&[_][]const u8{}, null, false,
+		plugin.defaultRegistry(), root_path, .json, &out.writer, true,
+	);
+	const result = try out.toOwnedSlice();
+	defer allocator.free(result);
+
+	// Should include body object with symbol name and full body lines
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"body\"") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "\"myFunc\"") != null);
+	// Body should include the function opener and closer
+	try std.testing.expect(std.mem.indexOf(u8, result, "pub fn myFunc") != null);
+	try std.testing.expect(std.mem.indexOf(u8, result, "}") != null);
 }
