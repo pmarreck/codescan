@@ -21,6 +21,7 @@ const lsp = @import("lsp.zig");
 const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
 const pidfile = @import("pidfile.zig");
+const progress_mod = @import("progress.zig");
 const fs_watch = @import("fs_watch.zig");
 const weights = @import("weights.zig");
 const diagnostics = @import("diagnostics.zig");
@@ -4611,10 +4612,14 @@ pub fn runStatus(
 		break :blk stat.size;
 	};
 
+	// Read watcher progress
+	const watcher_progress = progress_mod.read(allocator, codescan_dir);
+	defer if (watcher_progress) |wp| allocator.free(wp);
+
 	if (format == .json) {
 		try writeStatusJson(writer, root_path, db_path, db_size, watcher_pid, file_count, symbol_count, embedding_count, comment_embedding_count, lang_stats, last_indexed);
 	} else {
-		try writeStatusHuman(writer, root_path, db_path, db_size, watcher_pid, file_count, symbol_count, embedding_count, comment_embedding_count, lang_stats, last_indexed);
+		try writeStatusHuman(writer, root_path, db_path, db_size, watcher_pid, watcher_progress, file_count, symbol_count, embedding_count, comment_embedding_count, lang_stats, last_indexed);
 	}
 }
 
@@ -4685,6 +4690,7 @@ fn writeStatusHuman(
 	db_path: []const u8,
 	db_size: u64,
 	watcher_pid: ?pidfile.PidType,
+	watcher_progress: ?[]const u8,
 	file_count: i64,
 	symbol_count: i64,
 	embedding_count: i64,
@@ -4707,7 +4713,12 @@ fn writeStatusHuman(
 
 	// Watcher
 	if (watcher_pid) |pid| {
-		try writer.print("Watcher:    running (PID {d})\n", .{pid});
+		if (watcher_progress) |wp| {
+			const trimmed = std.mem.trim(u8, wp, &std.ascii.whitespace);
+			try writer.print("Watcher:    {s} (PID {d})\n", .{ trimmed, pid });
+		} else {
+			try writer.print("Watcher:    running (PID {d})\n", .{pid});
+		}
 	} else {
 		try writer.writeAll("Watcher:    stopped\n");
 	}

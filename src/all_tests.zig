@@ -1,6 +1,7 @@
 const _cli = @import("cli.zig");
 const _diff = @import("diff.zig");
 const _diagnostics = @import("diagnostics.zig");
+const _progress = @import("progress.zig");
 const _config = @import("config.zig");
 const _embedding = @import("embedding.zig");
 const _extract_bash = @import("extract_bash.zig");
@@ -48,6 +49,7 @@ test {
 	_ = _cli;
 	_ = _diff;
 	_ = _diagnostics;
+	_ = _progress;
 	_ = _config;
 	_ = _embedding;
 	_ = _extract_bash;

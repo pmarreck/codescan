@@ -5,6 +5,7 @@ const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
 const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
+const progress = @import("progress.zig");
 
 pub const WatchOptions = struct {
 	interval_ms: u64 = 2000,
@@ -58,12 +59,17 @@ pub fn watchLoop(
 	_ = stderr.print("Watching {s} (native events, Ctrl-C to stop)\n", .{root_path}) catch {};
 	_ = stderr.flush() catch {};
 
+	// Set up progress file (symlink to TMPDIR)
+	const progress_path = progress.setup(allocator, options.codescan_dir orelse ".");
+	defer progress.clear(allocator, progress_path, options.codescan_dir);
+
 	// Snapshot config mtime so we can detect edits
 	const config_path = configPathFromDir(allocator, options.codescan_dir);
 	defer if (config_path) |p| allocator.free(p);
 	var config_mtime = getFileMtime(config_path);
 
 	// Initial full incremental pass
+	progress.write(progress_path, "indexing...");
 	const initial = try indexer.indexIncremental(
 		allocator,
 		db,
@@ -72,6 +78,7 @@ pub fn watchLoop(
 		embedder,
 		options.index_options,
 	);
+	progress.write(progress_path, "idle");
 	printChangeSummary(stderr, initial);
 
 	const max_consecutive_errors = 5;
@@ -89,6 +96,7 @@ pub fn watchLoop(
 		}
 
 		// Run incremental index on change or periodic timeout
+		progress.write(progress_path, "indexing...");
 		const stats = indexer.indexIncremental(
 			allocator,
 			db,
@@ -108,6 +116,7 @@ pub fn watchLoop(
 			continue;
 		};
 		consecutive_errors = 0;
+		progress.write(progress_path, "idle");
 
 		if (stats.new_files > 0 or stats.modified_files > 0 or stats.deleted_files > 0) {
 			printChangeSummary(stderr, stats);
@@ -135,12 +144,17 @@ fn watchLoopPolling(
 	}) catch {};
 	_ = stderr.flush() catch {};
 
+	// Set up progress file (symlink to TMPDIR)
+	const progress_path_poll = progress.setup(allocator, options.codescan_dir orelse ".");
+	defer progress.clear(allocator, progress_path_poll, options.codescan_dir);
+
 	// Snapshot config mtime so we can detect edits
 	const config_path = configPathFromDir(allocator, options.codescan_dir);
 	defer if (config_path) |p| allocator.free(p);
 	var config_mtime = getFileMtime(config_path);
 
 	// Initial full incremental pass
+	progress.write(progress_path_poll, "indexing...");
 	const initial = try indexer.indexIncremental(
 		allocator,
 		db,
@@ -149,6 +163,7 @@ fn watchLoopPolling(
 		embedder,
 		options.index_options,
 	);
+	progress.write(progress_path_poll, "idle");
 	printChangeSummary(stderr, initial);
 
 	const max_consecutive_errors = 5;
@@ -165,6 +180,7 @@ fn watchLoopPolling(
 			return;
 		}
 
+		progress.write(progress_path_poll, "indexing...");
 		const stats = indexer.indexIncremental(
 			allocator,
 			db,
@@ -174,6 +190,7 @@ fn watchLoopPolling(
 			options.index_options,
 		) catch |err| {
 			consecutive_errors += 1;
+			progress.write(progress_path_poll, "error");
 			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
 			_ = stderr.flush() catch {};
 			if (consecutive_errors >= max_consecutive_errors) {
@@ -184,6 +201,7 @@ fn watchLoopPolling(
 			continue;
 		};
 		consecutive_errors = 0;
+		progress.write(progress_path_poll, "idle");
 
 		if (stats.new_files > 0 or stats.modified_files > 0 or stats.deleted_files > 0) {
 			printChangeSummary(stderr, stats);

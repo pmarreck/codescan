@@ -1,0 +1,58 @@
+const std = @import("std");
+
+/// Manages a progress file as a symlink to TMPDIR for low-wear status reporting.
+/// The .codescan/watcher-progress path is a symlink to $TMPDIR/codescan-progress-<hash>.
+/// codescan status reads this file to show watcher activity.
+
+pub fn setup(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8 {
+    const tmpdir = std.posix.getenv("TMPDIR") orelse std.posix.getenv("TMP") orelse "/tmp";
+
+    // Build unique tmp path based on codescan_dir
+    var hasher = std.hash.XxHash64.init(0);
+    hasher.update(codescan_dir);
+    const hash = hasher.final();
+
+    const tmp_path = std.fmt.allocPrint(allocator, "{s}/codescan-progress-{x}", .{ tmpdir, hash }) catch return null;
+    errdefer allocator.free(tmp_path);
+
+    const link_path = std.fmt.allocPrint(allocator, "{s}/watcher-progress", .{codescan_dir}) catch {
+        allocator.free(tmp_path);
+        return null;
+    };
+    defer allocator.free(link_path);
+
+    // Clean up any stale symlink or file
+    std.fs.cwd().deleteFile(link_path) catch {};
+    std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    // Create symlink: .codescan/watcher-progress -> $TMPDIR/codescan-progress-<hash>
+    std.fs.cwd().symLink(tmp_path, link_path, .{}) catch {
+        // If symlink fails, just use the tmp_path directly
+        return tmp_path;
+    };
+
+    return tmp_path;
+}
+
+pub fn write(path: ?[]const u8, msg: []const u8) void {
+    const p = path orelse return;
+    const file = std.fs.cwd().createFile(p, .{}) catch return;
+    defer file.close();
+    file.writeAll(msg) catch {};
+}
+
+pub fn clear(allocator: std.mem.Allocator, path: ?[]const u8, codescan_dir: ?[]const u8) void {
+    if (path) |p| std.fs.cwd().deleteFile(p) catch {};
+    if (codescan_dir) |dir| {
+        const link_path = std.fmt.allocPrint(allocator, "{s}/watcher-progress", .{dir}) catch return;
+        defer allocator.free(link_path);
+        std.fs.cwd().deleteFile(link_path) catch {};
+    }
+}
+
+/// Read the progress file (follows symlink). Returns owned string or null.
+pub fn read(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8 {
+    const link_path = std.fmt.allocPrint(allocator, "{s}/watcher-progress", .{codescan_dir}) catch return null;
+    defer allocator.free(link_path);
+    return std.fs.cwd().readFileAlloc(allocator, link_path, 256) catch null;
+}
