@@ -681,7 +681,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	while (true) {
 		const msg = readMessage(allocator, reader) catch |err| switch (err) {
 			error.EndOfStream => return,
-			else => return err,
+			else => continue, // skip garbled input, keep serving
 		};
 		defer allocator.free(msg);
 
@@ -697,21 +697,28 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		defer parsed.deinit();
 		const req = result.req;
 
-		const response = if (std.mem.eql(u8, req.method, "initialize"))
-			try handleInitialize(allocator, req.id)
-		else if (std.mem.eql(u8, req.method, "tools/list"))
-			try handleToolsList(allocator, req.id)
-		else if (std.mem.eql(u8, req.method, "tools/call"))
-			try handleToolsCall(allocator, req.id, req.params, settings)
-		else if (std.mem.eql(u8, req.method, "notifications/initialized"))
-			continue // notification, no response
-		else if (std.mem.eql(u8, req.method, "shutdown"))
-			try formatResult(allocator, req.id, "null")
-		else
-			try formatError(allocator, req.id, -32601, "method not found");
+		if (std.mem.eql(u8, req.method, "notifications/initialized")) continue;
 
-		defer allocator.free(response);
-		try writeMessage(writer, response);
+		const response = if (std.mem.eql(u8, req.method, "initialize"))
+			handleInitialize(allocator, req.id)
+		else if (std.mem.eql(u8, req.method, "tools/list"))
+			handleToolsList(allocator, req.id)
+		else if (std.mem.eql(u8, req.method, "tools/call"))
+			handleToolsCall(allocator, req.id, req.params, settings)
+		else if (std.mem.eql(u8, req.method, "shutdown"))
+			formatResult(allocator, req.id, "null")
+		else
+			formatError(allocator, req.id, -32601, "method not found");
+
+		if (response) |resp| {
+			defer allocator.free(resp);
+			writeMessage(writer, resp) catch continue;
+		} else |_| {
+			// Request handler failed — send internal error, keep serving
+			const err_resp = formatError(allocator, req.id, -32603, "internal error") catch continue;
+			defer allocator.free(err_resp);
+			writeMessage(writer, err_resp) catch continue;
+		}
 	}
 }
 
