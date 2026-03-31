@@ -364,9 +364,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
 				return toolError("MCP search: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 			defer storage.close(db);
-			var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch |err|
-				return toolError("MCP search: schema init failed: {}\n", .{err});
-			defer schema_result.deinit(allocator);
+			// Skip initSchema for regex search — read-only, avoids write lock contention with watcher
 
 			var path_filters_mcp = std.ArrayListUnmanaged([]const u8){};
 			defer path_filters_mcp.deinit(allocator);
@@ -670,6 +668,17 @@ fn getArgStringArray(allocator: std.mem.Allocator, args: ?std.json.ObjectMap, ke
 /// Main MCP server loop. Reads JSON-RPC messages from stdin, writes responses to stdout.
 /// All diagnostic output goes to stderr.
 pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
+	// Ignore SIGPIPE — converts pipe breaks into EPIPE errors
+	// instead of killing the process. Critical for MCP stdio transport.
+	if (comptime @import("builtin").os.tag != .windows) {
+		const act = std.posix.Sigaction{
+			.handler = .{ .handler = std.posix.SIG.IGN },
+			.mask = std.posix.sigemptyset(),
+			.flags = 0,
+		};
+		std.posix.sigaction(std.posix.SIG.PIPE, &act, null);
+	}
+
 	var in_buf: [16 * 1024]u8 = undefined;
 	var stdin_reader = std.fs.File.stdin().reader(&in_buf);
 	const reader = &stdin_reader.interface;
