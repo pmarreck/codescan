@@ -1374,10 +1374,19 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse return;
 
 	// Check if watcher is already running
-	if (pidfile.isWatcherRunning(allocator, codescan_dir)) return;
+	if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+		return;
+	}
+
+	// Clean up stale PID file if it exists (process is dead)
+	pidfile.removePid(allocator, codescan_dir);
 
 	// Find our own binary
-	const self_exe = std.fs.selfExePathAlloc(allocator) catch return;
+	const self_exe = std.fs.selfExePathAlloc(allocator) catch |err| {
+		_ = stderr.print("note: could not find codescan binary to start watcher: {s}\n", .{@errorName(err)}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
 	defer allocator.free(self_exe);
 
 	// Spawn: codescan watch --root <path>
@@ -1389,7 +1398,11 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	child.stdout_behavior = .Close;
 	child.stderr_behavior = .Close;
 
-	child.spawn() catch return;
+	child.spawn() catch |err| {
+		_ = stderr.print("note: failed to start watcher: {s}\n", .{@errorName(err)}) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	};
 
 	// Don't wait — let it run in background (init adopts on parent exit)
 	if (comptime builtin.os.tag == .windows) {
