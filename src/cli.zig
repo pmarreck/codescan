@@ -350,7 +350,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		parsed.command = .mcp_serve;
         help_topic_default = "mcp-serve";
 		i += 1;
-	} else if (std.mem.eql(u8, cmd, "watch")) {
+	} else if (std.mem.eql(u8, cmd, "watch") or std.mem.eql(u8, cmd, "watcher")) {
 		parsed.command = .watch;
         help_topic_default = "watch";
 		i += 1;
