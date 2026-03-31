@@ -346,6 +346,18 @@ pub fn main() !void {
 		.update => {
 			checkTmpSpace();
 			try ensureParentDir(settings.db_path);
+			// Warn if watcher is already running (concurrent indexing causes constraint errors)
+			{
+				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+				if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+					var sb: [4096]u8 = undefined;
+					var sw = std.fs.File.stderr().writer(&sb);
+					const se = &sw.interface;
+					_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
+					_ = se.flush() catch {};
+					return;
+				}
+			}
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
 			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
 				storage.close(db);

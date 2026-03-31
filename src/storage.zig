@@ -403,7 +403,7 @@ pub fn getSymbolBody(allocator: std.mem.Allocator, db: Db, id: i64) !?[]const u8
 }
 
 pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
-	const sql: [:0]const u8 = "INSERT INTO embeddings (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
+	const sql: [:0]const u8 = "INSERT OR REPLACE INTO embeddings (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		logSqliteError(db, "insertEmbedding: prepare");
@@ -424,7 +424,7 @@ pub fn insertEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector:
 }
 
 pub fn insertCommentEmbedding(db: Db, allocator: std.mem.Allocator, rowid: i64, vector: []const f32) !void {
-	const sql: [:0]const u8 = "INSERT INTO embeddings_comment (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
+	const sql: [:0]const u8 = "INSERT OR REPLACE INTO embeddings_comment (rowid, embedding) VALUES (?1, vec_f32(?2));\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
 		logSqliteError(db, "insertCommentEmbedding: prepare");
