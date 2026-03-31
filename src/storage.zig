@@ -382,7 +382,7 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 		error.SqlPrepareFailed => {},
 		else => {
 			logSqliteError(db, "insertSymbolFts");
-			return err;
+			// Non-fatal: symbol is indexed, just FTS entry failed. Continue.
 		},
 	};
 	return rowid;
@@ -485,7 +485,7 @@ fn tryInitFts(allocator: std.mem.Allocator, db: Db) bool {
 
 fn insertSymbolFts(db: Db, symbol: model.Symbol, rowid: i64) !void {
 	const sql: [:0]const u8 =
-		"INSERT INTO symbols_fts (rowid, symbol_name, signature, doc_comment, file_path, body) "
+		"INSERT OR REPLACE INTO symbols_fts (rowid, symbol_name, signature, doc_comment, file_path, body) "
 		++ "VALUES (?1, ?2, ?3, ?4, ?5, ?6);\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
