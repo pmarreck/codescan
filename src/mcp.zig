@@ -678,19 +678,36 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	var stdout_writer = std.fs.File.stdout().writer(&out_buf);
 	const writer = &stdout_writer.interface;
 
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	const stderr = &stderr_writer.interface;
+
+	_ = stderr.print("codescan mcp: server started (root: {s})\n", .{settings.root_path}) catch {};
+	_ = stderr.flush() catch {};
+
 	while (true) {
 		const msg = readMessage(allocator, reader) catch |err| switch (err) {
-			error.EndOfStream => return,
-			else => continue, // skip garbled input, keep serving
+			error.EndOfStream => {
+				_ = stderr.print("codescan mcp: stdin closed, shutting down\n", .{}) catch {};
+				_ = stderr.flush() catch {};
+				return;
+			},
+			else => {
+				_ = stderr.print("codescan mcp: read error: {s}, skipping\n", .{@errorName(err)}) catch {};
+				_ = stderr.flush() catch {};
+				continue;
+			},
 		};
 		defer allocator.free(msg);
 
 		if (msg.len == 0) continue;
 
 		const result = parseRequest(allocator, msg) catch {
-			const err_resp = try formatError(allocator, null, -32700, "parse error");
+			_ = stderr.print("codescan mcp: JSON parse error, msg len={d}\n", .{msg.len}) catch {};
+			_ = stderr.flush() catch {};
+			const err_resp = formatError(allocator, null, -32700, "parse error") catch continue;
 			defer allocator.free(err_resp);
-			try writeMessage(writer, err_resp);
+			writeMessage(writer, err_resp) catch continue;
 			continue;
 		};
 		var parsed = result.parsed;
@@ -712,9 +729,14 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 
 		if (response) |resp| {
 			defer allocator.free(resp);
-			writeMessage(writer, resp) catch continue;
-		} else |_| {
-			// Request handler failed — send internal error, keep serving
+			writeMessage(writer, resp) catch |err| {
+				_ = stderr.print("codescan mcp: write error: {s}\n", .{@errorName(err)}) catch {};
+				_ = stderr.flush() catch {};
+				continue;
+			};
+		} else |err| {
+			_ = stderr.print("codescan mcp: handler error for {s}: {s}\n", .{ req.method, @errorName(err) }) catch {};
+			_ = stderr.flush() catch {};
 			const err_resp = formatError(allocator, req.id, -32603, "internal error") catch continue;
 			defer allocator.free(err_resp);
 			writeMessage(writer, err_resp) catch continue;
