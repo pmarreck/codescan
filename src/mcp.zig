@@ -1619,3 +1619,87 @@ test "MCP search tool schema includes regex and context params" {
 	}
 	try std.testing.expect(false); // search tool not found
 }
+
+test "MCP server handles malformed input without crashing" {
+	const allocator = std.testing.allocator;
+
+	// Mix of: garbage, valid JSON but not JSON-RPC, malformed JSON, then a valid request
+	const input =
+		"this is not json at all\n" ++
+		"{\"not_jsonrpc\": true}\n" ++
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n";
+
+	var reader = std.Io.Reader.fixed(input);
+	var w: std.io.Writer.Allocating = .init(allocator);
+	defer w.deinit();
+
+	var valid_responses: usize = 0;
+	var error_responses: usize = 0;
+
+	while (true) {
+		const msg = readMessage(allocator, &reader) catch |err| switch (err) {
+			error.EndOfStream => break,
+			else => continue,
+		};
+		defer allocator.free(msg);
+		if (msg.len == 0) continue;
+
+		const result = parseRequest(allocator, msg) catch {
+			// Should get a parse error response, not a crash
+			error_responses += 1;
+			continue;
+		};
+		var parsed = result.parsed;
+		defer parsed.deinit();
+		const req = result.req;
+
+		if (std.mem.eql(u8, req.method, "tools/list")) {
+			const response = try handleToolsList(allocator, req.id);
+			defer allocator.free(response);
+			try w.writer.writeAll(response);
+			try w.writer.writeAll("\n");
+			valid_responses += 1;
+		}
+	}
+
+	// The garbage lines should have been skipped (parse errors), not crashed
+	try std.testing.expect(error_responses >= 1); // at least the garbage line
+	// The valid request should have been processed
+	try std.testing.expectEqual(@as(usize, 1), valid_responses);
+}
+
+test "MCP server handles concurrent-style interleaved input gracefully" {
+	const allocator = std.testing.allocator;
+
+	// Simulate two requests smashed together on one line (interleaved stdio)
+	const input =
+		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\"}{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}\n" ++
+		"{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/list\",\"params\":{}}\n";
+
+	var reader = std.Io.Reader.fixed(input);
+
+	var parse_errors: usize = 0;
+	var valid_requests: usize = 0;
+
+	while (true) {
+		const msg = readMessage(allocator, &reader) catch |err| switch (err) {
+			error.EndOfStream => break,
+			else => continue,
+		};
+		defer allocator.free(msg);
+		if (msg.len == 0) continue;
+
+		const result = parseRequest(allocator, msg) catch {
+			parse_errors += 1;
+			continue;
+		};
+		var parsed = result.parsed;
+		defer parsed.deinit();
+		valid_requests += 1;
+	}
+
+	// First line is garbled (two JSON objects concatenated) — should parse-error
+	try std.testing.expect(parse_errors >= 1);
+	// Second line is valid — should parse
+	try std.testing.expect(valid_requests >= 1);
+}
