@@ -107,8 +107,12 @@ pub fn findFiles(
 		const is_file = entry.kind == .file or
 			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
 		if (!is_file) continue;
-		if (git_allow) |*set| {
-			if (!set.contains(entry.path)) continue;
+		// Symlinks are always indexed even if gitignored — the user explicitly
+		// created them, so they want them available for search/navigation.
+		if (entry.kind != .sym_link) {
+			if (git_allow) |*set| {
+				if (!set.contains(entry.path)) continue;
+			}
 		}
 		var extractor = registry.find(entry.path);
 		if (extractor == null) {
