@@ -40,6 +40,7 @@ pub const Settings = struct {
 	search_weight_lexical: f32,
 	search_min_score: f32,
 	ignore_global: []const []const u8,
+	always_include: []const []const u8 = &[_][]const u8{},
 	ignore_lang: []const config.IgnoreOverride,
 	include_node_modules: bool,
 	http_host: []const u8,

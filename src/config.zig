@@ -56,6 +56,11 @@ pub const default_template =
     \\#ignore=
     \\#ignore.zig=zig-cache,zig-out
     \\
+    \\# Always include patterns (comma-separated globs, overrides .gitignore)
+    \\# Use this for files you want indexed even if gitignored.
+    \\# Escape literal commas in patterns with \,
+    \\#always_include=*.md,docs/**
+    \\
     \\# LSP binary overrides (key = language ID, e.g. zig, rust, clojure)
     \\#lsp.zig=/custom/path/to/zls
     \\#lsp.rust=/custom/path/to/rust-analyzer
@@ -118,6 +123,7 @@ pub const Config = struct {
 	comments_only: ?bool = null,
 	include_node_modules: ?bool = null,
 	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
+	always_include: std.ArrayListUnmanaged([]const u8) = .{},
 	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
 	lsp_overrides: std.ArrayListUnmanaged(LspOverride) = .{},
 	http_host: ?[]const u8 = null,
@@ -141,6 +147,8 @@ pub const Config = struct {
 		if (self.http_host) |value| allocator.free(value);
 		for (self.ignore_global.items) |pattern| allocator.free(pattern);
 		self.ignore_global.deinit(allocator);
+		for (self.always_include.items) |pattern| allocator.free(pattern);
+		self.always_include.deinit(allocator);
 		for (self.ignore_lang.items) |*entry| entry.deinit(allocator);
 		self.ignore_lang.deinit(allocator);
 		for (self.lsp_overrides.items) |*entry| entry.deinit(allocator);
@@ -243,6 +251,11 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 
 		if (std.mem.eql(u8, key, "ignore")) {
 			try appendPatterns(allocator, &config.ignore_global, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "always_include")) {
+			try appendPatterns(allocator, &config.always_include, value);
 			continue;
 		}
 
@@ -394,10 +407,27 @@ fn appendPatterns(
 	list: *std.ArrayListUnmanaged([]const u8),
 	value: []const u8,
 ) !void {
-	var parts = std.mem.splitScalar(u8, value, ',');
-	while (parts.next()) |part| {
-		const trimmed = std.mem.trim(u8, part, " \t\r");
-		if (trimmed.len == 0) continue;
+	// Split on commas, respecting \, as an escaped literal comma
+	var buf = std.ArrayListUnmanaged(u8){};
+	defer buf.deinit(allocator);
+	var i: usize = 0;
+	while (i < value.len) : (i += 1) {
+		if (value[i] == '\\' and i + 1 < value.len and value[i + 1] == ',') {
+			try buf.append(allocator, ',');
+			i += 1; // skip the comma
+		} else if (value[i] == ',') {
+			const trimmed = std.mem.trim(u8, buf.items, " \t\r");
+			if (trimmed.len > 0) {
+				try list.append(allocator, try allocator.dupe(u8, trimmed));
+			}
+			buf.clearRetainingCapacity();
+		} else {
+			try buf.append(allocator, value[i]);
+		}
+	}
+	// Last segment
+	const trimmed = std.mem.trim(u8, buf.items, " \t\r");
+	if (trimmed.len > 0) {
 		try list.append(allocator, try allocator.dupe(u8, trimmed));
 	}
 }

@@ -85,6 +85,7 @@ const Settings = struct {
 	search_symbol_kind: ?[]const u8,
 	primary_lang: ?[]const u8,
 	ignore_global: []const []const u8,
+	always_include: []const []const u8,
 	ignore_lang: []const config.IgnoreOverride,
 	lsp_overrides: []const config.LspOverride,
 	http_host: []const u8,
@@ -332,6 +333,7 @@ pub fn main() !void {
 						.global = settings.ignore_global,
 						.per_language = settings.ignore_lang,
 						.include_node_modules = settings.include_node_modules,
+						.always_include = settings.always_include,
 					},
 					.show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
 				},
@@ -425,6 +427,7 @@ pub fn main() !void {
 						.global = settings.ignore_global,
 						.per_language = settings.ignore_lang,
 						.include_node_modules = settings.include_node_modules,
+						.always_include = settings.always_include,
 					},
 					.show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
 				},
@@ -733,6 +736,7 @@ pub fn main() !void {
 				.search_weight_lexical = settings.weight_lexical,
 				.search_min_score = settings.min_score,
 				.ignore_global = settings.ignore_global,
+				.always_include = settings.always_include,
 				.ignore_lang = settings.ignore_lang,
 				.include_node_modules = settings.include_node_modules,
 				.http_host = settings.http_host,
@@ -885,6 +889,7 @@ pub fn main() !void {
 				.docs_only = settings.docs_only,
 				.comments_only = settings.comments_only,
 				.ignore_global = settings.ignore_global,
+				.always_include = settings.always_include,
 				.ignore_lang = settings.ignore_lang,
 				.include_node_modules = settings.include_node_modules,
 				.search_weights = settings.search_weights,
@@ -1039,6 +1044,7 @@ pub fn main() !void {
 									.global = settings.ignore_global,
 									.per_language = settings.ignore_lang,
 									.include_node_modules = settings.include_node_modules,
+									.always_include = settings.always_include,
 								},
 								.show_progress = false,
 							},
@@ -1137,6 +1143,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.search_symbol_kind = null,
 		.primary_lang = null,
 		.ignore_global = &[_][]const u8{},
+		.always_include = &[_][]const u8{},
 		.ignore_lang = &[_]config.IgnoreOverride{},
 		.lsp_overrides = &[_]config.LspOverride{},
 		.http_host = defaults.http_host,
@@ -1180,6 +1187,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.comments_only) |value| settings.comments_only = value;
 	if (cfg.include_node_modules) |value| settings.include_node_modules = value;
 	settings.ignore_global = cfg.ignore_global.items;
+	settings.always_include = cfg.always_include.items;
 	settings.ignore_lang = cfg.ignore_lang.items;
 	settings.lsp_overrides = cfg.lsp_overrides.items;
 	if (cfg.http_host) |value| settings.http_host = value;
@@ -1367,6 +1375,7 @@ fn performFullIndex(
 				.global = settings.ignore_global,
 				.per_language = settings.ignore_lang,
 				.include_node_modules = settings.include_node_modules,
+				.always_include = settings.always_include,
 			},
 			.show_progress = show_progress,
 		},

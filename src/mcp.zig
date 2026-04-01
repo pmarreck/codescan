@@ -53,6 +53,7 @@ pub const Settings = struct {
 	docs_only: bool = false,
 	comments_only: bool = false,
 	ignore_global: []const []const u8 = &[_][]const u8{},
+	always_include: []const []const u8 = &[_][]const u8{},
 	ignore_lang: []const config.IgnoreOverride = &[_]config.IgnoreOverride{},
 	include_node_modules: bool = false,
 	search_weights: ?*const weights.Table = null,
@@ -591,6 +592,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				.global = settings.ignore_global,
 				.per_language = settings.ignore_lang,
 				.include_node_modules = settings.include_node_modules,
+				.always_include = settings.always_include,
 			},
 			.show_progress = false,
 		}) catch |err|

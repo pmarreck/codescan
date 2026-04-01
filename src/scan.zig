@@ -7,6 +7,8 @@ pub const IgnoreConfig = struct {
 	global: []const []const u8,
 	per_language: []const config.IgnoreOverride,
 	include_node_modules: bool,
+	/// Glob patterns for files to always index, even if gitignored.
+	always_include: []const []const u8 = &[_][]const u8{},
 };
 
 const IgnorePattern = struct {
@@ -107,9 +109,15 @@ pub fn findFiles(
 		const is_file = entry.kind == .file or
 			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
 		if (!is_file) continue;
-		// Symlinks are always indexed even if gitignored — the user explicitly
-		// created them, so they want them available for search/navigation.
-		if (entry.kind != .sym_link) {
+		// Check if file is in always_include (overrides gitignore)
+		const force_included = blk: {
+			if (entry.kind == .sym_link) break :blk true; // symlinks always included
+			for (ignore_cfg.always_include) |pattern| {
+				if (globMatch(entry.path, pattern)) break :blk true;
+			}
+			break :blk false;
+		};
+		if (!force_included) {
 			if (git_allow) |*set| {
 				if (!set.contains(entry.path)) continue;
 			}
@@ -201,6 +209,32 @@ fn isBashProject(dir: std.fs.Dir) bool {
 		if (dir.statFile(name)) |_| return true else |_| {}
 	}
 	return false;
+}
+
+/// Simple glob match: * matches any sequence, ? matches one char.
+fn globMatch(path: []const u8, pattern: []const u8) bool {
+	var pi: usize = 0;
+	var gi: usize = 0;
+	var star_pi: ?usize = null;
+	var star_gi: ?usize = null;
+	while (pi < path.len) {
+		if (gi < pattern.len and (pattern[gi] == '?' or pattern[gi] == path[pi])) {
+			pi += 1;
+			gi += 1;
+		} else if (gi < pattern.len and pattern[gi] == '*') {
+			star_pi = pi;
+			star_gi = gi;
+			gi += 1;
+		} else if (star_gi) |sg| {
+			gi = sg + 1;
+			star_pi = star_pi.? + 1;
+			pi = star_pi.?;
+		} else {
+			return false;
+		}
+	}
+	while (gi < pattern.len and pattern[gi] == '*') gi += 1;
+	return gi == pattern.len;
 }
 
 fn isSymlinkToFile(dir: std.fs.Dir, rel_path: []const u8) bool {
