@@ -172,8 +172,10 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 	} else null;
 
 	// Dispatch to tool handler
-	const result = callTool(allocator, name, args, settings) catch |err| {
-		const msg = switch (err) {
+	var err_detail: ?[]u8 = null;
+	defer if (err_detail) |d| allocator.free(d);
+	const result = callTool(allocator, name, args, settings, &err_detail) catch |err| {
+		const msg: []const u8 = err_detail orelse switch (err) {
 			error.OutOfMemory => "out of memory",
 			error.ToolFailed => "tool execution failed (check stderr for details)",
 			error.MissingArgument => "missing required argument",
@@ -231,7 +233,7 @@ fn ensureParentDir(path: []const u8) !void {
 	try std.fs.cwd().makePath(dir);
 }
 
-fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings) ![]u8 {
+fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings, err_detail: *?[]u8) ![]u8 {
 	var out: std.io.Writer.Allocating = .init(allocator);
 	errdefer out.deinit();
 
@@ -247,44 +249,50 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path) catch |err|
 			return toolError("MCP symbols: runSymbols failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "replace_symbol")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
+		const file = getArg(args, "file").?;
+		const pattern = getArg(args, "pattern").?;
+		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
 		main.runReplaceSymbol(allocator, file, pattern, body, ver, &out.writer) catch |err|
 			return toolError("MCP replace_symbol: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_after")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
+		const file = getArg(args, "file").?;
+		const pattern = getArg(args, "pattern").?;
+		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
 		main.runInsertAfter(allocator, file, pattern, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_after: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_before")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
+		const file = getArg(args, "file").?;
+		const pattern = getArg(args, "pattern").?;
+		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
 		main.runInsertBefore(allocator, file, pattern, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_before: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_lines")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const from = getArg(args, "from") orelse return error.MissingArgument;
-		const to = getArg(args, "to") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "from", "to", "body" }, err_detail);
+		const file = getArg(args, "file").?;
+		const from = getArg(args, "from").?;
+		const to = getArg(args, "to").?;
+		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
 		main.runReplaceLines(allocator, file, from, to, body, ver, &out.writer) catch |err|
 			return toolError("MCP replace_lines: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_at")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const ref = getArg(args, "ref") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "ref", "body" }, err_detail);
+		const file = getArg(args, "file").?;
+		const ref = getArg(args, "ref").?;
+		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
 		main.runInsertAt(allocator, file, ref, body, ver, &out.writer) catch |err|
 			return toolError("MCP insert_at: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_content")) {
-		const needle = getArg(args, "needle") orelse return error.MissingArgument;
-		const body_arg = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "needle", "body" }, err_detail);
+		const needle = getArg(args, "needle").?;
+		const body_arg = getArg(args, "body").?;
 		const regex = getArgBool(args, "regex");
 		const all = getArgBool(args, "all");
 		const path_arg = getArg(args, "path");
@@ -305,24 +313,28 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				return toolError("MCP replace_content: multi-file failed: {}\n", .{err});
 		} else {
 			// Single-file mode
-			const file = getArg(args, "file") orelse return error.MissingArgument;
+			try checkRequiredArgs(allocator, name, args, &.{"file"}, err_detail);
+			const file = getArg(args, "file").?;
 			const ver = getArg(args, "version");
 			main.runReplaceContent(allocator, file, needle, regex, all, body_arg, ver, &out.writer) catch |err|
 				return toolError("MCP replace_content: failed on '{s}': {}\n", .{ file, err });
 		}
 	} else if (std.mem.eql(u8, name, "read_file")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{"file"}, err_detail);
+		const file = getArg(args, "file").?;
 		const from = getArgInt(args, "from");
 		const to = getArgInt(args, "to");
 		main.runReadFile(allocator, file, from, to, .json, &out.writer) catch |err|
 			return toolError("MCP read_file: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "create_file")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const body = getArg(args, "body") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "body" }, err_detail);
+		const file = getArg(args, "file").?;
+		const body = getArg(args, "body").?;
 		main.runCreateFile(allocator, file, body, &out.writer) catch |err|
 			return toolError("MCP create_file: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "destroy_file")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{"file"}, err_detail);
+		const file = getArg(args, "file").?;
 		const version = getArg(args, "version");
 		main.runDestroyFile(allocator, file, version, &out.writer) catch |err|
 			return toolError("MCP destroy_file: failed on '{s}': {}\n", .{ file, err });
@@ -331,14 +343,16 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		main.runDiff(allocator, staged_arg, settings.root_path, .json, &out.writer) catch |err|
 			return toolError("MCP diff: failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "references")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern" }, err_detail);
+		const file = getArg(args, "file").?;
+		const pattern = getArg(args, "pattern").?;
 		main.runReferences(allocator, file, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch |err|
 			return toolError("MCP references: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "rename")) {
-		const file = getArg(args, "file") orelse return error.MissingArgument;
-		const pattern = getArg(args, "pattern") orelse return error.MissingArgument;
-		const to = getArg(args, "to") orelse return error.MissingArgument;
+		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "to" }, err_detail);
+		const file = getArg(args, "file").?;
+		const pattern = getArg(args, "pattern").?;
+		const to = getArg(args, "to").?;
 		const dry_run = getArgBool(args, "dry_run");
 		main.runRename(allocator, file, pattern, to, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch |err|
 			return toolError("MCP rename: failed on '{s}': {}\n", .{ file, err });
@@ -615,6 +629,39 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 	}
 
 	return out.toOwnedSlice();
+}
+
+/// Check that all required arguments are present; if any are missing, format a
+/// descriptive error message into err_detail and return error.MissingArgument.
+fn checkRequiredArgs(
+	allocator: std.mem.Allocator,
+	tool_name: []const u8,
+	args: ?std.json.ObjectMap,
+	required: []const []const u8,
+	err_detail: *?[]u8,
+) error{ OutOfMemory, MissingArgument }!void {
+	var missing_count: usize = 0;
+	for (required) |arg_name| {
+		if (getArg(args, arg_name) == null) missing_count += 1;
+	}
+	if (missing_count == 0) return;
+
+	var msg = std.ArrayListUnmanaged(u8){};
+	errdefer msg.deinit(allocator);
+	try msg.appendSlice(allocator, tool_name);
+	try msg.appendSlice(allocator, ": missing required argument");
+	if (missing_count > 1) try msg.append(allocator, 's');
+	try msg.appendSlice(allocator, ": ");
+	var first: bool = true;
+	for (required) |arg_name| {
+		if (getArg(args, arg_name) == null) {
+			if (!first) try msg.appendSlice(allocator, ", ");
+			try msg.appendSlice(allocator, arg_name);
+			first = false;
+		}
+	}
+	err_detail.* = try msg.toOwnedSlice(allocator);
+	return error.MissingArgument;
 }
 
 fn getArg(args: ?std.json.ObjectMap, key: []const u8) ?[]const u8 {
@@ -1713,4 +1760,42 @@ test "MCP server handles concurrent-style interleaved input gracefully" {
 	try std.testing.expect(parse_errors >= 1);
 	// Second line is valid — should parse
 	try std.testing.expect(valid_requests >= 1);
+}
+
+test "MCP missing argument error names the missing argument" {
+	const allocator = std.testing.allocator;
+	// Call read_file with no arguments — should report 'file' is missing
+	const params_str = "{\"name\":\"read_file\",\"arguments\":{}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = ".",
+		.db_path = ":memory:",
+	});
+	defer allocator.free(response);
+
+	// The error response must name the specific missing argument
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"error\"") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "file") != null);
+}
+
+test "MCP missing argument error lists all missing arguments at once" {
+	const allocator = std.testing.allocator;
+	// Call replace_symbol with no arguments — requires file, pattern, body
+	const params_str = "{\"name\":\"replace_symbol\",\"arguments\":{}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = ".",
+		.db_path = ":memory:",
+	});
+	defer allocator.free(response);
+
+	// The error response must name ALL missing arguments, not just the first
+	try std.testing.expect(std.mem.indexOf(u8, response, "\"error\"") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "file") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "pattern") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "body") != null);
 }

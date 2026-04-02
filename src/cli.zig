@@ -1,6 +1,9 @@
 const std = @import("std");
 const search = @import("search.zig");
 
+
+/// Set before returning MissingValue/InvalidValue errors to identify which flag caused the error.
+pub var last_err_context: []const u8 = "";
 pub const OutputFormat = enum {
 	human,
 	json,
@@ -410,12 +413,16 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--format")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			if (std.mem.eql(u8, args[i], "json")) {
 				parsed.output = .json;
 			} else if (std.mem.eql(u8, args[i], "human")) {
 				parsed.output = .human;
 			} else {
+				last_err_context = arg;
 				return error.InvalidValue;
 			}
 			parsed.seen.output = true;
@@ -457,7 +464,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
         if (std.mem.eql(u8, arg, "--scope")) {
             i += 1;
-            if (i >= args.len) return error.MissingValue;
+            if (i >= args.len) {
+                last_err_context = arg;
+                return error.MissingValue;
+            }
             const scope_value = args[i];
             if (std.mem.eql(u8, scope_value, "code")) {
                 parsed.include_docs = false;
@@ -476,6 +486,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
                 parsed.docs_only = false;
                 parsed.comments_only = false;
             } else {
+                last_err_context = arg;
                 return error.InvalidValue;
             }
             parsed.seen.include_docs = true;
@@ -487,7 +498,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
         }
 		if (std.mem.eql(u8, arg, "--top")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.top_n = try std.fmt.parseInt(usize, args[i], 10);
 			parsed.seen.top_n = true;
 			i += 1;
@@ -495,7 +509,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--root")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.root_path = args[i];
 			parsed.seen.root_path = true;
 			i += 1;
@@ -503,7 +520,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--db")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.db_path = args[i];
 			parsed.seen.db_path = true;
 			i += 1;
@@ -511,7 +531,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--ollama-url")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.ollama_url = args[i];
 			parsed.seen.ollama_url = true;
 			i += 1;
@@ -519,7 +542,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--ollama-model")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.ollama_model = args[i];
 			parsed.seen.ollama_model = true;
 			i += 1;
@@ -527,7 +553,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--embedding-dim")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.embedding_dim = try std.fmt.parseInt(usize, args[i], 10);
 			parsed.seen.embedding_dim = true;
 			i += 1;
@@ -535,7 +564,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--batch")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.batch_size = try std.fmt.parseInt(usize, args[i], 10);
 			parsed.seen.batch_size = true;
 			i += 1;
@@ -543,7 +575,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--max-file-size")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.max_file_size = try std.fmt.parseInt(usize, args[i], 10);
 			parsed.seen.max_file_size = true;
 			i += 1;
@@ -551,7 +586,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--http-host")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.http_host = args[i];
 			parsed.seen.http_host = true;
 			i += 1;
@@ -559,7 +597,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--http-port")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.http_port = try std.fmt.parseInt(u16, args[i], 10);
 			parsed.seen.http_port = true;
 			i += 1;
@@ -567,7 +608,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--mode")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.search_mode = try search.SearchMode.parse(args[i]);
 			parsed.seen.search_mode = true;
 			i += 1;
@@ -575,7 +619,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--fusion")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.fusion = try search.FusionMode.parse(args[i]);
 			parsed.seen.fusion = true;
 			i += 1;
@@ -583,7 +630,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--rrf-k")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.rrf_k = try std.fmt.parseFloat(f32, args[i]);
 			parsed.seen.rrf_k = true;
 			i += 1;
@@ -591,7 +641,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--fts-mode")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.fts_mode = try search.FtsMode.parse(args[i]);
 			parsed.seen.fts_mode = true;
 			i += 1;
@@ -599,7 +652,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--weight-vector")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.weight_vector = try std.fmt.parseFloat(f32, args[i]);
 			parsed.seen.weight_vector = true;
 			i += 1;
@@ -607,7 +663,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--weight-lexical")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.weight_lexical = try std.fmt.parseFloat(f32, args[i]);
 			parsed.seen.weight_lexical = true;
 			i += 1;
@@ -615,7 +674,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--min-score")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.min_score = try std.fmt.parseFloat(f32, args[i]);
 			parsed.seen.min_score = true;
 			i += 1;
@@ -623,7 +685,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--ext")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.ext_filter = args[i];
 			parsed.seen.ext_filter = true;
 			i += 1;
@@ -631,7 +696,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--type")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.type_filter = args[i];
 			parsed.seen.type_filter = true;
 			i += 1;
@@ -639,7 +707,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--lang")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.lang_filter = args[i];
 			parsed.seen.lang_filter = true;
 			i += 1;
@@ -647,7 +718,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--kind")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.kind_filter = args[i];
 			parsed.seen.kind_filter = true;
 			i += 1;
@@ -655,7 +729,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--path")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			try parsed.path_filters.append(allocator, args[i]);
 			i += 1;
 			continue;
@@ -667,9 +744,15 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--from")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			if (parsed.command == .read_file) {
-				parsed.from_line = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidValue;
+				parsed.from_line = std.fmt.parseInt(usize, args[i], 10) catch {
+					last_err_context = arg;
+					return error.InvalidValue;
+				};
 			} else {
 				parsed.from_ref = args[i];
 			}
@@ -678,9 +761,15 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--to")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			if (parsed.command == .read_file) {
-				parsed.to_line = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidValue;
+				parsed.to_line = std.fmt.parseInt(usize, args[i], 10) catch {
+					last_err_context = arg;
+					return error.InvalidValue;
+				};
 			} else if (parsed.command == .rename) {
 				parsed.rename_to = args[i];
 			} else {
@@ -691,14 +780,20 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--interval")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.watch_interval = std.fmt.parseInt(u64, args[i], 10) catch return error.InvalidNumber;
 			i += 1;
 			continue;
 		}
 		if (std.mem.eql(u8, arg, "--file")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			if (parsed.command == .search) {
 				const val = args[i];
 				if (std.mem.indexOfAny(u8, val, "*?[{") != null) return error.InvalidFileFilter;
@@ -748,21 +843,33 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--context") or std.mem.eql(u8, arg, "-C")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
-			parsed.context_lines = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
+			parsed.context_lines = std.fmt.parseInt(usize, args[i], 10) catch {
+					last_err_context = arg;
+					return error.InvalidValue;
+				};
 			i += 1;
 			continue;
 		}
 		if (std.mem.eql(u8, arg, "--version")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.version_hash = args[i];
 			i += 1;
 			continue;
 		}
 		if (std.mem.eql(u8, arg, "--confirm")) {
 			i += 1;
-			if (i >= args.len) return error.MissingValue;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
 			parsed.confirm_hash = args[i];
 			i += 1;
 			continue;
@@ -1389,4 +1496,18 @@ test "parse --regex on non-search command sets regex_mode not regex_search" {
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expect(parsed.regex_mode);
 	try std.testing.expect(!parsed.regex_search);
+}
+
+test "parse --format without value reports which flag" {
+	const args = [_][]const u8{ "codescan", "search", "--format" };
+	last_err_context = "";
+	try std.testing.expectError(error.MissingValue, parse(std.testing.allocator, &args));
+	try std.testing.expectEqualStrings("--format", last_err_context);
+}
+
+test "parse --top without value reports which flag" {
+	const args = [_][]const u8{ "codescan", "search", "--top" };
+	last_err_context = "";
+	try std.testing.expectError(error.MissingValue, parse(std.testing.allocator, &args));
+	try std.testing.expectEqualStrings("--top", last_err_context);
 }

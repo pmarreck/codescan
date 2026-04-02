@@ -126,8 +126,11 @@ pub fn main() !void {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 			const stderr = &stderr_writer.interface;
-			_ = stderr.print("error: {s}\n\n", .{usageErrorMessage(err)}) catch {};
-            _ = printUsage(stderr, null) catch {};
+			if (cli.last_err_context.len > 0) {
+				_ = stderr.print("error: {s} for {s}\n\n", .{ usageErrorMessage(err), cli.last_err_context }) catch {};
+			} else {
+				_ = stderr.print("error: {s}\n\n", .{usageErrorMessage(err)}) catch {};
+			}            _ = printUsage(stderr, null) catch {};
 			_ = stderr.flush() catch {};
 			std.process.exit(64);
 		}
