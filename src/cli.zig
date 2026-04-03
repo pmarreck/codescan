@@ -48,8 +48,9 @@ pub const WatchAction = enum {
 	restart,
 	status,
 	pid,
+	list, // list all running watchers system-wide
+	prune, // stop orphaned watchers
 };
-
 pub const Seen = struct {
 	output: bool = false,
 	show_comments: bool = false,
@@ -375,8 +376,13 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			} else if (std.mem.eql(u8, sub, "pid")) {
 				parsed.watch_action = .pid;
 				i += 1;
-			}
-		}
+			} else if (std.mem.eql(u8, sub, "list")) {
+				parsed.watch_action = .list;
+				i += 1;
+			} else if (std.mem.eql(u8, sub, "prune")) {
+				parsed.watch_action = .prune;
+				i += 1;
+			}		}
 	} else if (std.mem.eql(u8, cmd, "status")) {
 		parsed.command = .status;
         help_topic_default = "status";

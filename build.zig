@@ -412,6 +412,18 @@ pub fn build(b: *std.Build) void {
 	linkCommon(watcher_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(watcher_tests).step);
 
+
+	const watcher_mgmt_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/watcher_mgmt.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, watcher_mgmt_tests.root_module);
+	addPcre2Includes(watcher_mgmt_tests.root_module, pcre2_lib);
+	linkCommon(watcher_mgmt_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(watcher_mgmt_tests).step);
 	const scan_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/scan.zig"),

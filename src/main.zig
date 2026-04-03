@@ -21,6 +21,7 @@ const lsp = @import("lsp.zig");
 const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
 const pidfile = @import("pidfile.zig");
+const watcher_mgmt = @import("watcher_mgmt.zig");
 const progress_mod = @import("progress.zig");
 const fs_watch = @import("fs_watch.zig");
 const weights = @import("weights.zig");
@@ -959,6 +960,110 @@ pub fn main() !void {
 						try stdout.print("{d}\n", .{pid_val});
 					}
 					try stdout.flush();
+				},
+				.list => {
+					var watchers = watcher_mgmt.discoverWatchers(allocator) catch |err| {
+						try stdout.print("error: failed to discover watchers: {}\n", .{err});
+						try stdout.flush();
+						std.process.exit(1);
+					};
+					defer {
+						for (watchers.items) |*w| w.deinit(allocator);
+						watchers.deinit(allocator);
+					}
+
+					if (watchers.items.len == 0) {
+						try stdout.print("No codescan watchers running.\n", .{});
+						try stdout.flush();
+					} else {
+						// Get active cwds to mark orphans
+						var cwds = watcher_mgmt.getActiveCwds(allocator) catch std.ArrayListUnmanaged(watcher_mgmt.LsofEntry){};
+						defer {
+							for (cwds.items) |e| e.deinit(allocator);
+							cwds.deinit(allocator);
+						}
+						watcher_mgmt.markActiveWatchers(watchers.items, cwds.items);
+
+						try stdout.print("{s:<8}{s:<7}{s:<14}{s:<6}{s}\n", .{ "PID", "CPU%", "UPTIME", "USED", "ROOT" });
+						for (watchers.items) |w| {
+							try stdout.print("{:<8}{s:<7}{s:<14}{s:<6}{s}\n", .{
+								@as(u32, @intCast(w.pid)),
+								w.cpu_pct,
+								w.elapsed,
+								if (w.active) "yes" else "no",
+								w.root,
+							});						}
+						var orphan_count: usize = 0;
+						for (watchers.items) |w| {
+							if (!w.active) orphan_count += 1;
+						}
+						try stdout.print("\n{d} watcher{s}, {d} orphaned\n", .{
+							watchers.items.len,
+							if (watchers.items.len != 1) "s" else "",
+							orphan_count,
+						});
+						try stdout.flush();
+					}
+				},
+				.prune => {
+					var watchers = watcher_mgmt.discoverWatchers(allocator) catch |err| {
+						try stdout.print("error: failed to discover watchers: {}\n", .{err});
+						try stdout.flush();
+						std.process.exit(1);
+					};
+					defer {
+						for (watchers.items) |*w| w.deinit(allocator);
+						watchers.deinit(allocator);
+					}
+
+					var cwds = watcher_mgmt.getActiveCwds(allocator) catch std.ArrayListUnmanaged(watcher_mgmt.LsofEntry){};
+					defer {
+						for (cwds.items) |e| e.deinit(allocator);
+						cwds.deinit(allocator);
+					}
+					watcher_mgmt.markActiveWatchers(watchers.items, cwds.items);
+
+					var orphan_count: usize = 0;
+					for (watchers.items) |w| {
+						if (!w.active) orphan_count += 1;
+					}
+
+					if (orphan_count == 0) {
+						try stdout.print("No orphaned watchers found.\n", .{});
+						try stdout.flush();
+					} else if (!parsed.confirm) {
+						try stdout.print("Orphaned watchers (no active sessions):\n", .{});
+						for (watchers.items) |w| {
+							if (!w.active) {
+								try stdout.print("  PID {d}  {s}\n", .{ w.pid, w.root });
+							}
+						}
+						try stdout.print("\nRun with --confirm to stop {d} orphaned watcher{s}.\n", .{
+							orphan_count,
+							if (orphan_count != 1) "s" else "",
+						});
+						try stdout.flush();
+					} else {
+						var stopped: usize = 0;
+						for (watchers.items) |w| {
+							if (!w.active) {
+								if (watcher_mgmt.stopWatcher(w.pid)) {
+									try stdout.print("Stopped watcher for {s} (PID {d})\n", .{ w.root, w.pid });
+									stopped += 1;
+								} else {
+									try stdout.print("Failed to stop watcher for {s} (PID {d})\n", .{ w.root, w.pid });
+								}
+							}
+						}
+						const remaining = watchers.items.len - stopped;
+						try stdout.print("\nStopped {d} orphaned watcher{s}. {d} active watcher{s} remain.\n", .{
+							stopped,
+							if (stopped != 1) "s" else "",
+							remaining,
+							if (remaining != 1) "s" else "",
+						});
+						try stdout.flush();
+					}
 				},
 				.run => {
 					try ensureParentDir(settings.db_path);
