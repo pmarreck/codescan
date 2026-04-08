@@ -19,9 +19,11 @@ pub const default_template =
     \\# Number of search results to return
     \\#top=10
     \\
-    \\# Ollama embedding server
-    \\#ollama_url=http://localhost:11434
-    \\#ollama_model=bge-large
+    \\# Embedding server (ollama_url and ollama_model are accepted as aliases)
+    \\#embedding_url=http://localhost:11434
+    \\#embedding_model=bge-large
+    \\#embedding_api=ollama
+    \\#embedding_api_key=
     \\#embedding_dim=1024
     \\#batch_size=16
     \\
@@ -99,8 +101,10 @@ pub const Config = struct {
 	top_n: ?usize = null,
 	root_path: ?[]const u8 = null,
 	db_path: ?[]const u8 = null,
-	ollama_url: ?[]const u8 = null,
-	ollama_model: ?[]const u8 = null,
+	embedding_url: ?[]const u8 = null,
+	embedding_model: ?[]const u8 = null,
+	embedding_api: ?[]const u8 = null,
+	embedding_api_key: ?[]const u8 = null,
 	embedding_dim: ?usize = null,
 	batch_size: ?usize = null,
 	max_file_size: ?usize = null,
@@ -132,8 +136,10 @@ pub const Config = struct {
 	pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
 		if (self.root_path) |value| allocator.free(value);
 		if (self.db_path) |value| allocator.free(value);
-		if (self.ollama_url) |value| allocator.free(value);
-		if (self.ollama_model) |value| allocator.free(value);
+		if (self.embedding_url) |value| allocator.free(value);
+		if (self.embedding_model) |value| allocator.free(value);
+		if (self.embedding_api) |value| allocator.free(value);
+		if (self.embedding_api_key) |value| allocator.free(value);
 		if (self.search_mode) |value| allocator.free(value);
 		if (self.fusion) |value| allocator.free(value);
 		if (self.fts_mode) |value| allocator.free(value);
@@ -201,13 +207,27 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			continue;
 		}
 
-		if (std.mem.eql(u8, key, "ollama_url")) {
-			config.ollama_url = try allocator.dupe(u8, value);
+
+		if (std.mem.eql(u8, key, "embedding_url") or std.mem.eql(u8, key, "ollama_url")) {
+			config.embedding_url = try allocator.dupe(u8, value);
 			continue;
 		}
 
-		if (std.mem.eql(u8, key, "ollama_model")) {
-			config.ollama_model = try allocator.dupe(u8, value);
+		if (std.mem.eql(u8, key, "embedding_model") or std.mem.eql(u8, key, "ollama_model")) {
+			config.embedding_model = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "embedding_api")) {
+			if (!std.mem.eql(u8, value, "ollama") and !std.mem.eql(u8, value, "openai")) {
+				return error.InvalidValue;
+			}
+			config.embedding_api = try allocator.dupe(u8, value);
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "embedding_api_key")) {
+			config.embedding_api_key = try allocator.dupe(u8, value);
 			continue;
 		}
 
@@ -467,8 +487,10 @@ test "parseText empty yields defaults" {
 	try std.testing.expect(cfg.top_n == null);
 	try std.testing.expect(cfg.root_path == null);
 	try std.testing.expect(cfg.db_path == null);
-	try std.testing.expect(cfg.ollama_url == null);
-	try std.testing.expect(cfg.ollama_model == null);
+	try std.testing.expect(cfg.embedding_url == null);
+	try std.testing.expect(cfg.embedding_model == null);
+	try std.testing.expect(cfg.embedding_api == null);
+	try std.testing.expect(cfg.embedding_api_key == null);
 	try std.testing.expect(cfg.embedding_dim == null);
 	try std.testing.expect(cfg.batch_size == null);
 	try std.testing.expect(cfg.max_file_size == null);
@@ -519,8 +541,8 @@ test "parseText reads values" {
 	try std.testing.expectEqual(@as(usize, 7), cfg.top_n.?);
 	try std.testing.expectEqualStrings("/repo", cfg.root_path.?);
 	try std.testing.expectEqualStrings(".codescan/db.sqlite3", cfg.db_path.?);
-	try std.testing.expectEqualStrings("http://127.0.0.1:11434", cfg.ollama_url.?);
-	try std.testing.expectEqualStrings("bge-large", cfg.ollama_model.?);
+	try std.testing.expectEqualStrings("http://127.0.0.1:11434", cfg.embedding_url.?);
+	try std.testing.expectEqualStrings("bge-large", cfg.embedding_model.?);
 	try std.testing.expectEqual(@as(usize, 768), cfg.embedding_dim.?);
 	try std.testing.expectEqual(@as(usize, 8), cfg.batch_size.?);
 	try std.testing.expectEqual(@as(usize, 2048), cfg.max_file_size.?);
@@ -579,7 +601,7 @@ test "default_template parses without error" {
 	try std.testing.expect(cfg.output == null);
 	try std.testing.expect(cfg.top_n == null);
 	try std.testing.expect(cfg.max_file_size == null);
-	try std.testing.expect(cfg.ollama_url == null);
+	try std.testing.expect(cfg.embedding_url == null);
 	try std.testing.expect(cfg.search_mode == null);
 }
 
@@ -593,4 +615,33 @@ test "loadFromPath reads file" {
 	var cfg = try loadFromPath(allocator, path);
 	defer cfg.deinit(allocator);
 	try std.testing.expectEqual(@as(usize, 3), cfg.top_n.?);
+}
+
+test "parseText reads embedding_api and embedding_api_key" {
+	const allocator = std.testing.allocator;
+	var cfg = try parseText(allocator, "embedding_api=openai\nembedding_api_key=my-secret-key\n");
+	defer cfg.deinit(allocator);
+	try std.testing.expectEqualStrings("openai", cfg.embedding_api.?);
+	try std.testing.expectEqualStrings("my-secret-key", cfg.embedding_api_key.?);
+}
+
+test "parseText reads embedding_url and embedding_model" {
+	const allocator = std.testing.allocator;
+	var cfg = try parseText(allocator, "embedding_url=http://localhost:8000\nembedding_model=bge-m3\n");
+	defer cfg.deinit(allocator);
+	try std.testing.expectEqualStrings("http://localhost:8000", cfg.embedding_url.?);
+	try std.testing.expectEqualStrings("bge-m3", cfg.embedding_model.?);
+}
+
+test "parseText ollama_url alias populates embedding_url" {
+	const allocator = std.testing.allocator;
+	var cfg = try parseText(allocator, "ollama_url=http://localhost:11434\nollama_model=bge-large\n");
+	defer cfg.deinit(allocator);
+	try std.testing.expectEqualStrings("http://localhost:11434", cfg.embedding_url.?);
+	try std.testing.expectEqualStrings("bge-large", cfg.embedding_model.?);
+}
+
+test "parseText rejects invalid embedding_api" {
+	const allocator = std.testing.allocator;
+	try std.testing.expectError(error.InvalidValue, parseText(allocator, "embedding_api=banana\n"));
 }
