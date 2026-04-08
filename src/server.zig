@@ -19,9 +19,10 @@ pub const Settings = struct {
 	embedding_dim: usize,
 	batch_size: usize,
 	max_file_size: usize,
-	ollama_url: []const u8,
-	ollama_model: []const u8,
-	index_ext: ?[]const u8,
+	embedding_url: []const u8,
+	embedding_model: []const u8,
+	embedding_dialect: embedding_http.ApiDialect = .ollama,
+	embedding_auth_header: ?[]const u8 = null,	index_ext: ?[]const u8,
 	index_type: ?[]const u8,
 	search_ext: ?[]const u8,
 	search_type: ?[]const u8,
@@ -53,8 +54,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	try ensureParentDir(settings.db_path);
 	const db = try storage.openFileWithVec(allocator, settings.db_path);
 	defer storage.close(db);
-	var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
-	defer schema_result.deinit(allocator);
+	var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });	defer schema_result.deinit(allocator);
 	if (schema_result.did_schema_upgrade) {
 		var sb: [4096]u8 = undefined;
 		var sw = std.fs.File.stderr().writer(&sb);
@@ -67,8 +67,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		var sw = std.fs.File.stderr().writer(&sb);
 		const se = &sw.interface;
 		if (schema_result.embedding_model_mismatch) {
-			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
-		}
+			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};		}
 		if (schema_result.embedding_dim_mismatch) {
 			_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
 		}
@@ -80,12 +79,13 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
-	var embedder_adapter = embedding.OllamaEmbedder{
+	var embedder_adapter = embedding.HttpEmbedder{
 		.transport = http_client.transport(),
-		.base_url = settings.ollama_url,
-		.model = settings.ollama_model,
+		.base_url = settings.embedding_url,
+		.model = settings.embedding_model,
+		.dialect = settings.embedding_dialect,
+		.auth_header = settings.embedding_auth_header,
 	};
-
 	const address = try parseAddress(settings.http_host, settings.http_port);
 	var listener = try std.net.Address.listen(address, .{ .reuse_address = true });
 	defer listener.deinit();
@@ -118,8 +118,9 @@ fn ensureModelAvailableOrExit(
 	transport: embedding_http.Transport,
 	base_url: []const u8,
 	model_name: []const u8,
+	dialect: embedding_http.ApiDialect,
 ) !void {
-	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
+	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
@@ -146,7 +147,6 @@ fn ensureModelAvailableOrExit(
 		else => return err,
 	};
 }
-
 fn handleRequest(
 	allocator: std.mem.Allocator,
 	req: *std.http.Server.Request,
@@ -261,8 +261,7 @@ fn handleRequest(
 			embedder,
 			.{
 				.embedding_dim = settings.embedding_dim,
-				.embedding_model = settings.ollama_model,
-				.batch_size = settings.batch_size,
+				.embedding_model = settings.embedding_model,				.batch_size = settings.batch_size,
 				.max_file_size = settings.max_file_size,
 				.allowed_exts = index_filters.exts.items,
 				.allowed_kinds = index_filters.kinds.items,
@@ -1125,9 +1124,8 @@ fn testSettings() Settings {
 		.embedding_dim = 8,
 		.batch_size = 1,
 		.max_file_size = 1024,
-		.ollama_url = "http://localhost:11434",
-		.ollama_model = "bge-large",
-		.index_ext = null,
+		.embedding_url = "http://localhost:11434",
+		.embedding_model = "bge-large",		.index_ext = null,
 		.index_type = null,
 		.search_ext = null,
 		.search_type = null,
