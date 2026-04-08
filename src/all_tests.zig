@@ -78,7 +78,7 @@ test {
 	_ = _lsp;
 	_ = _main;
 	_ = _mcp;
-	_ = _ollama;
+	_ = _embedding_http;
 	_ = _output;
 	_ = _pcre2;
 	_ = _pidfile;
