@@ -151,17 +151,17 @@ pub fn build(b: *std.Build) void {
 	linkCommon(storage_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(storage_tests).step);
 
-	const ollama_tests = b.addTest(.{
+	const embedding_http_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/embedding_http.zig"),
 			.target = target,
 			.optimize = optimize,
 		}),
 	});
-	addTreeSitterIncludes(b, ollama_tests.root_module);
-	addPcre2Includes(ollama_tests.root_module, pcre2_lib);
-	linkCommon(ollama_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
-	test_step.dependOn(&b.addRunArtifact(ollama_tests).step);
+	addTreeSitterIncludes(b, embedding_http_tests.root_module);
+	addPcre2Includes(embedding_http_tests.root_module, pcre2_lib);
+	linkCommon(embedding_http_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(embedding_http_tests).step);
 
 	const plugin_tests = b.addTest(.{
 		.root_module = b.createModule(.{
