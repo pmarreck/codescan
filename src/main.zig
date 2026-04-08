@@ -1196,8 +1196,53 @@ pub fn main() !void {
 			try runStatus(allocator, settings.db_path, settings.root_path, parsed.output, stdout);
 			try stdout.flush();
 		},
-		.clean => {
-			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+        .setup_model => {
+            _ = stdout.print(
+                \\Recommended model: jina-code-embeddings-1.5b
+                \\  1536 dimensions, 32K token context, code-specific training
+                \\  License: CC-BY-NC-4.0 (non-commercial)
+                \\
+                \\
+            , .{}) catch {};
+
+            if (settings.embedding_dialect == .openai) {
+                _ = stdout.print(
+                    \\For oMLX Server, download the MLX model from HuggingFace:
+                    \\
+                    \\  huggingface-cli download jinaai/jina-code-embeddings-1.5b-mlx
+                    \\
+                    \\Then configure your oMLX Server to serve it and set in .codescan/config:
+                    \\
+                    \\  embedding_api=openai
+                    \\  embedding_url=http://localhost:8000
+                    \\  embedding_model=jinaai/jina-code-embeddings-1.5b-mlx
+                    \\  embedding_api_key=<your-omlx-key>
+                    \\
+                    \\
+                , .{}) catch {};
+            } else {
+                _ = stdout.print(
+                    \\To install via Ollama, run:
+                    \\
+                    \\  ollama pull hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0
+                    \\
+                    \\
+                , .{}) catch {};
+            }
+
+            _ = stdout.print(
+                \\Then reindex your project:
+                \\
+                \\  codescan index --force
+                \\
+                \\Note: If you use a different model, update embedding_model and embedding_dim
+                \\in .codescan/config to match. Mismatched dimensions will cause search errors.
+                \\
+            , .{}) catch {};
+
+            try stdout.flush();
+        },
+		.clean => {			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 
 			// Require confirmation to prevent accidental data loss
 			if (!parsed.confirm) {

@@ -34,8 +34,8 @@ pub const CommandTag = enum {
 	mcp_serve,
 	clean,
 	status,
+	setup_model,
 };
-
 pub const ConfigAction = enum {
 	show,
 	edit,
@@ -386,7 +386,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		parsed.command = .status;
         help_topic_default = "status";
 		i += 1;
-	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
+	} else if (std.mem.eql(u8, cmd, "setup-model")) {
+        parsed.command = .setup_model;
+        help_topic_default = "setup-model";
+        i += 1;	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
 		parsed.command = .clean;
         help_topic_default = "clean";
 		i += 1;
@@ -1515,4 +1518,11 @@ test "parse --top without value reports which flag" {
 	last_err_context = "";
 	try std.testing.expectError(error.MissingValue, parse(std.testing.allocator, &args));
 	try std.testing.expectEqualStrings("--top", last_err_context);
+}
+
+test "parse setup-model command" {
+	const args = [_][]const u8{ "codescan", "setup-model" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.setup_model, parsed.command);
 }
