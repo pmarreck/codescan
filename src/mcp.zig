@@ -31,8 +31,10 @@ pub const Settings = struct {
 	root_path: []const u8,
 	db_path: []const u8,
 	lsp_overrides: []const config.LspOverride = &[_]config.LspOverride{},
-	ollama_url: []const u8 = "http://localhost:11434",
-	ollama_model: []const u8 = "bge-large",
+	embedding_url: []const u8 = "http://localhost:11434",
+	embedding_model: []const u8 = "bge-large",
+	embedding_dialect: embedding_http.ApiDialect = .ollama,
+	embedding_auth_header: ?[]const u8 = null,
 	embedding_dim: usize = 1024,
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
@@ -303,7 +305,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
 				return toolError("MCP replace_content: failed to open DB: {}\n", .{err});
 			defer storage.close(db);
-			var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch |err|
+			var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch |err|
 				return toolError("MCP replace_content: schema init failed: {}\n", .{err});
 			defer schema_result.deinit(allocator);
 			var path_filters = std.ArrayListUnmanaged([]const u8){};
@@ -421,7 +423,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const db = storage.openFileWithVec(allocator, mcp_settings.db_path) catch |err|
 			return toolError("MCP search: failed to open DB '{s}': {}\n", .{ mcp_settings.db_path, err });
 		defer storage.close(db);
-		var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = mcp_settings.embedding_dim, .embedding_model = mcp_settings.ollama_model }) catch |err|
+		var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = mcp_settings.embedding_dim, .embedding_model = mcp_settings.embedding_model }) catch |err|
 			return toolError("MCP search: schema init failed: {}\n", .{err});
 		defer schema_result.deinit(allocator);
 		if (schema_result.did_schema_upgrade) {
@@ -436,7 +438,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			var msg_writer = std.io.fixedBufferStream(&msg_buf);
 			const mw = msg_writer.writer();
 			if (schema_result.embedding_model_mismatch) {
-				mw.print("Embedding model mismatch: index built with '{s}', current is '{s}'. ", .{ schema_result.stored_embedding_model orelse "unknown", mcp_settings.ollama_model }) catch {};
+				mw.print("Embedding model mismatch: index built with '{s}', current is '{s}'. ", .{ schema_result.stored_embedding_model orelse "unknown", mcp_settings.embedding_model }) catch {};
 			}
 			if (schema_result.embedding_dim_mismatch) {
 				mw.print("Embedding dim mismatch: index built with {d}, current is {d}. ", .{ schema_result.stored_embedding_dim orelse 0, mcp_settings.embedding_dim }) catch {};
@@ -452,21 +454,23 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		// Auto-index if DB is empty
 		var effective_search_mode = mcp_settings.search_mode;
 		if (!storage.isIndexPopulated(db)) {
-			embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
+			embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.embedding_url, mcp_settings.embedding_model, mcp_settings.embedding_dialect) catch |err| {
 				if (err != error.ModelLoading) {
 					// ModelNotFound or connection error — fall back to lexical
 					effective_search_mode = .lexical;
 				}
 				// ModelLoading: model exists, embed() will trigger loading — proceed
 			};
-			var embedder_for_index = embedding.OllamaEmbedder{
+			var embedder_for_index = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
-				.base_url = mcp_settings.ollama_url,
-				.model = mcp_settings.ollama_model,
+				.base_url = mcp_settings.embedding_url,
+				.model = mcp_settings.embedding_model,
+				.dialect = mcp_settings.embedding_dialect,
+				.auth_header = mcp_settings.embedding_auth_header,
 			};
 			_ = indexer.indexAll(allocator, db, mcp_settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
 				.embedding_dim = mcp_settings.embedding_dim,
-				.embedding_model = mcp_settings.ollama_model,
+				.embedding_model = mcp_settings.embedding_model,
 				.batch_size = mcp_settings.batch_size,
 				.max_file_size = mcp_settings.max_file_size,
 				.allowed_exts = &[_][]const u8{},
@@ -481,7 +485,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ mcp_settings.root_path, err });
 		} else {
 			if (effective_search_mode != .lexical) {
-				embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
+				embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.embedding_url, mcp_settings.embedding_model, mcp_settings.embedding_dialect) catch |err| {
 					if (err != error.ModelLoading) {
 						// ModelNotFound or connection error — fall back to lexical
 						effective_search_mode = .lexical;
@@ -491,10 +495,12 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			}
 		}
 
-		var embedder_adapter = embedding.OllamaEmbedder{
+		var embedder_adapter = embedding.HttpEmbedder{
 			.transport = http_client.transport(),
-			.base_url = mcp_settings.ollama_url,
-			.model = mcp_settings.ollama_model,
+			.base_url = mcp_settings.embedding_url,
+			.model = mcp_settings.embedding_model,
+			.dialect = mcp_settings.embedding_dialect,
+			.auth_header = mcp_settings.embedding_auth_header,
 		};
 
 		var search_filters = filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
@@ -568,36 +574,38 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 
 		var http_client = embedding_http.StdHttpTransport.init(allocator);
 		defer http_client.deinit();
-		embedding_http.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
+		embedding_http.ensureModelAvailable(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect) catch |err| {
 			switch (err) {
 				error.ModelLoading => {
 					// Model exists but not loaded — embed() will trigger loading. Log and proceed.
 					var sb: [4096]u8 = undefined;
 					var sw = std.fs.File.stderr().writer(&sb);
 					const se = &sw.interface;
-					_ = se.print("MCP index: model '{s}' is loading into memory. This may take a moment...\n", .{settings.ollama_model}) catch {};
+					_ = se.print("MCP index: model '{s}' is loading into memory. This may take a moment...\n", .{settings.embedding_model}) catch {};
 					_ = se.flush() catch {};
 				},
 				error.ModelNotFound => {
-					try out.writer.print("error: Ollama model '{s}' not found. Run: ollama pull {s}", .{ settings.ollama_model, settings.ollama_model });
+					try out.writer.print("error: Ollama model '{s}' not found. Run: ollama pull {s}", .{ settings.embedding_model, settings.embedding_model });
 					return out.toOwnedSlice();
 				},
 				else => {
-					try out.writer.print("error: Ollama model '{s}' not available: {}", .{ settings.ollama_model, err });
+					try out.writer.print("error: Ollama model '{s}' not available: {}", .{ settings.embedding_model, err });
 					return out.toOwnedSlice();
 				},
 			}
 		};
 
-		var embedder_adapter = embedding.OllamaEmbedder{
+		var embedder_adapter = embedding.HttpEmbedder{
 			.transport = http_client.transport(),
-			.base_url = settings.ollama_url,
-			.model = settings.ollama_model,
+			.base_url = settings.embedding_url,
+			.model = settings.embedding_model,
+			.dialect = settings.embedding_dialect,
+			.auth_header = settings.embedding_auth_header,
 		};
 
 		const stats = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
 			.embedding_dim = settings.embedding_dim,
-			.embedding_model = settings.ollama_model,
+			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
 			.allowed_exts = &[_][]const u8{},
@@ -614,11 +622,11 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 
 		try out.writer.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}", .{ stats.files, stats.symbols });
 	} else if (std.mem.eql(u8, name, "config")) {
-		try out.writer.print("{{\"root\":\"{s}\",\"db_path\":\"{s}\",\"ollama_url\":\"{s}\",\"ollama_model\":\"{s}\",\"embedding_dim\":{d}}}", .{
+		try out.writer.print("{{\"root\":\"{s}\",\"db_path\":\"{s}\",\"embedding_url\":\"{s}\",\"embedding_model\":\"{s}\",\"embedding_dim\":{d}}}", .{
 			settings.root_path,
 			settings.db_path,
-			settings.ollama_url,
-			settings.ollama_model,
+			settings.embedding_url,
+			settings.embedding_model,
 			settings.embedding_dim,
 		});
 	} else if (std.mem.eql(u8, name, "status")) {
@@ -987,8 +995,8 @@ test "handleToolsCall dispatches config with settings" {
 	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
 		.root_path = "/test/root",
 		.db_path = "/test/db",
-		.ollama_url = "http://localhost:11434",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:11434",
+		.embedding_model = "bge-large",
 	});
 	defer allocator.free(response);
 
@@ -1019,8 +1027,8 @@ test "handleToolsCall dispatches symbols and config" {
 	const test_settings: Settings = .{
 		.root_path = root_path,
 		.db_path = db_path,
-		.ollama_url = "http://localhost:11434",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:11434",
+		.embedding_model = "bge-large",
 	};
 
 	// Test symbols tool — no Ollama needed
@@ -1046,7 +1054,7 @@ test "handleToolsCall dispatches symbols and config" {
 	defer allocator.free(config_response);
 
 	try std.testing.expect(std.mem.indexOf(u8, config_response, "root") != null);
-	try std.testing.expect(std.mem.indexOf(u8, config_response, "ollama_url") != null);
+	try std.testing.expect(std.mem.indexOf(u8, config_response, "embedding_url") != null);
 }
 
 test "handleToolsCall dispatches index gracefully without Ollama" {
@@ -1065,8 +1073,8 @@ test "handleToolsCall dispatches index gracefully without Ollama" {
 		.root_path = root_path,
 		.db_path = db_path,
 		// Use a port that won't have Ollama running
-		.ollama_url = "http://localhost:19999",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:19999",
+		.embedding_model = "bge-large",
 	};
 
 	const index_params_str = "{\"name\":\"index\",\"arguments\":{}}";
@@ -1332,8 +1340,8 @@ test "MCP search applies language filters from settings" {
 		.search_mode = .lexical,
 		.search_lang = "zig",
 		// Use a port that won't have Ollama running
-		.ollama_url = "http://localhost:19999",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:19999",
+		.embedding_model = "bge-large",
 	});
 	defer allocator.free(response);
 
@@ -1445,8 +1453,8 @@ test "MCP search accepts kind filter without query (browse mode)" {
 		.db_path = db_path,
 		.embedding_dim = 2,
 		.search_mode = .lexical,
-		.ollama_url = "http://localhost:19999",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:19999",
+		.embedding_model = "bge-large",
 	});
 	defer allocator.free(response);
 
@@ -1500,8 +1508,8 @@ test "MCP search applies top parameter" {
 		.embedding_dim = 2,
 		.search_mode = .lexical,
 		.search_top_n = 20,
-		.ollama_url = "http://localhost:19999",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:19999",
+		.embedding_model = "bge-large",
 	});
 	defer allocator.free(response);
 
@@ -1569,8 +1577,8 @@ test "MCP search applies lang filter from arguments" {
 		.db_path = db_path,
 		.embedding_dim = 2,
 		.search_mode = .lexical,
-		.ollama_url = "http://localhost:19999",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:19999",
+		.embedding_model = "bge-large",
 	});
 	defer allocator.free(response);
 
@@ -1646,8 +1654,8 @@ test "MCP search with regex flag uses regex search path" {
 		.db_path = db_path,
 		.embedding_dim = 2,
 		.search_mode = .lexical,
-		.ollama_url = "http://localhost:19999",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:19999",
+		.embedding_model = "bge-large",
 	});
 	defer allocator.free(response);
 
