@@ -8,7 +8,7 @@ const embedding = @import("embedding.zig");
 const indexer = @import("indexer.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
-const ollama = @import("ollama.zig");
+const embedding_http = @import("embedding_http.zig");
 const filters = @import("filters.zig");
 const kind = @import("kind.zig");
 const model = @import("model.zig");
@@ -446,13 +446,13 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("{s}", .{msg});
 		}
 
-		var http_client = ollama.StdHttpTransport.init(allocator);
+		var http_client = embedding_http.StdHttpTransport.init(allocator);
 		defer http_client.deinit();
 
 		// Auto-index if DB is empty
 		var effective_search_mode = mcp_settings.search_mode;
 		if (!storage.isIndexPopulated(db)) {
-			ollama.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
+			embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
 				if (err != error.ModelLoading) {
 					// ModelNotFound or connection error — fall back to lexical
 					effective_search_mode = .lexical;
@@ -481,7 +481,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ mcp_settings.root_path, err });
 		} else {
 			if (effective_search_mode != .lexical) {
-				ollama.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
+				embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.ollama_url, mcp_settings.ollama_model) catch |err| {
 					if (err != error.ModelLoading) {
 						// ModelNotFound or connection error — fall back to lexical
 						effective_search_mode = .lexical;
@@ -566,9 +566,9 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP index: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 		defer storage.close(db);
 
-		var http_client = ollama.StdHttpTransport.init(allocator);
+		var http_client = embedding_http.StdHttpTransport.init(allocator);
 		defer http_client.deinit();
-		ollama.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
+		embedding_http.ensureModelAvailable(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model) catch |err| {
 			switch (err) {
 				error.ModelLoading => {
 					// Model exists but not loaded — embed() will trigger loading. Log and proceed.

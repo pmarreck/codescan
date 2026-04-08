@@ -153,7 +153,7 @@ pub fn build(b: *std.Build) void {
 
 	const ollama_tests = b.addTest(.{
 		.root_module = b.createModule(.{
-			.root_source_file = b.path("src/ollama.zig"),
+			.root_source_file = b.path("src/embedding_http.zig"),
 			.target = target,
 			.optimize = optimize,
 		}),

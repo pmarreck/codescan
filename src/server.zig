@@ -5,7 +5,7 @@ const indexer = @import("indexer.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
 const plugin = @import("plugin.zig");
-const ollama = @import("ollama.zig");
+const embedding_http = @import("embedding_http.zig");
 const config = @import("config.zig");
 const filters = @import("filters.zig");
 const weights = @import("weights.zig");
@@ -77,7 +77,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		return error.EmbeddingMismatch;
 	}
 
-	var http_client = ollama.StdHttpTransport.init(allocator);
+	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
 	var embedder_adapter = embedding.OllamaEmbedder{
@@ -115,11 +115,11 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 
 fn ensureModelAvailableOrExit(
 	allocator: std.mem.Allocator,
-	transport: ollama.Transport,
+	transport: embedding_http.Transport,
 	base_url: []const u8,
 	model_name: []const u8,
 ) !void {
-	ollama.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
+	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);

@@ -4,7 +4,7 @@ const cli = @import("cli.zig");
 const config = @import("config.zig");
 const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
-const ollama = @import("ollama.zig");
+const embedding_http = @import("embedding_http.zig");
 const indexer = @import("indexer.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
@@ -262,7 +262,7 @@ pub fn main() !void {
 			defer storage.close(db);
 
 			// Try Ollama; fall back to lexical-only if unavailable
-			var http_client = ollama.StdHttpTransport.init(allocator);
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 			const ollama_ok = tryInitOllama(allocator, &http_client, settings.ollama_url, settings.ollama_model, stderr);
 
@@ -308,7 +308,7 @@ pub fn main() !void {
 			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
 			defer storage.close(db);
 
-			var http_client = ollama.StdHttpTransport.init(allocator);
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
 			var embedder_adapter = embedding.OllamaEmbedder{
@@ -402,7 +402,7 @@ pub fn main() !void {
 				std.process.exit(1);
 			}
 
-			var http_client = ollama.StdHttpTransport.init(allocator);
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
 			var embedder_adapter = embedding.OllamaEmbedder{
@@ -533,7 +533,7 @@ pub fn main() !void {
 				return;
 			}
 
-			var http_client = ollama.StdHttpTransport.init(allocator);
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 
 			// Track whether we should use lexical-only (Ollama unavailable)
@@ -1105,7 +1105,7 @@ pub fn main() !void {
 						std.process.exit(1);
 					}
 
-					var http_client = ollama.StdHttpTransport.init(allocator);
+					var http_client = embedding_http.StdHttpTransport.init(allocator);
 					defer http_client.deinit();
 					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
 					var embedder_adapter = embedding.OllamaEmbedder{
@@ -1369,11 +1369,11 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 
 fn ensureModelAvailableOrExit(
 	allocator: std.mem.Allocator,
-	transport: ollama.Transport,
+	transport: embedding_http.Transport,
 	base_url: []const u8,
 	model_name: []const u8,
 ) !void {
-	ollama.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
+	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
@@ -1409,12 +1409,12 @@ fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat) bool {
 /// Returns whether Ollama is available. On failure, prints a warning to stderr.
 fn tryInitOllama(
 	allocator: std.mem.Allocator,
-	http_client: *ollama.StdHttpTransport,
+	http_client: *embedding_http.StdHttpTransport,
 	ollama_url: []const u8,
 	ollama_model: []const u8,
 	stderr: *std.Io.Writer,
 ) bool {
-	ollama.ensureModelAvailable(
+	embedding_http.ensureModelAvailable(
 		allocator,
 		http_client.transport(),
 		ollama_url,

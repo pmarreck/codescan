@@ -1,5 +1,5 @@
 const std = @import("std");
-const ollama = @import("ollama.zig");
+const embedding_http = @import("embedding_http.zig");
 
 pub const Embedder = struct {
 	ctx: *anyopaque,
@@ -8,7 +8,7 @@ pub const Embedder = struct {
 };
 
 pub const OllamaEmbedder = struct {
-	transport: ollama.Transport,
+	transport: embedding_http.Transport,
 	base_url: []const u8,
 	model: []const u8,
 	keep_alive: ?i64 = 900, // 15 minutes in seconds
@@ -23,21 +23,21 @@ pub const OllamaEmbedder = struct {
 
 	fn embed(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
 		const self: *OllamaEmbedder = @ptrCast(@alignCast(ctx));
-		return ollama.embed(allocator, self.transport, self.base_url, self.model, inputs, self.keep_alive);
+		return embedding_http.embed(allocator, self.transport, self.base_url, self.model, inputs, self.keep_alive);
 	}
 
 	fn free(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
 		_ = ctx;
-		ollama.freeEmbeddings(allocator, embeddings);
+		embedding_http.freeEmbeddings(allocator, embeddings);
 	}
 };
 
 test "OllamaEmbedder uses live Ollama" {
 	const allocator = std.testing.allocator;
-	try ollama.skipIfNoOllama(allocator);
+	try embedding_http.skipIfNoOllama(allocator);
 	const inputs = [_][]const u8{ "hash functions" };
 
-	var transport = ollama.StdHttpTransport.init(allocator);
+	var transport = embedding_http.StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
 	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
@@ -45,7 +45,7 @@ test "OllamaEmbedder uses live Ollama" {
 	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
-	ollama.ensureModelAvailable(allocator, transport.transport(), url, model) catch |err| switch (err) {
+	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model) catch |err| switch (err) {
 		error.ModelLoading => {}, // Model exists, embed will trigger loading
 		else => return err,
 	};

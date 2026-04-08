@@ -5,7 +5,7 @@ const scan = @import("scan.zig");
 const storage = @import("storage.zig");
 const model = @import("model.zig");
 const embedding = @import("embedding.zig");
-const ollama = @import("ollama.zig");
+const embedding_http = @import("embedding_http.zig");
 const config = @import("config.zig");
 const hashline = @import("hashline.zig");
 
@@ -1061,7 +1061,7 @@ test "buildSymbolText truncates long inputs" {
 
 test "doc truncation avoids Ollama context length errors" {
 	const allocator = std.testing.allocator;
-	try ollama.skipIfNoOllama(allocator);
+	try embedding_http.skipIfNoOllama(allocator);
 	const doc =
 		"## Images\n\n" ++
 		"| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |\n" ++
@@ -1095,7 +1095,7 @@ test "doc truncation avoids Ollama context length errors" {
 	const text = try buildSymbolText(allocator, symbol, .doc);
 	defer allocator.free(text);
 
-	var transport = ollama.StdHttpTransport.init(allocator);
+	var transport = embedding_http.StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
 	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
@@ -1103,7 +1103,7 @@ test "doc truncation avoids Ollama context length errors" {
 	const model_name = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model_name);
 
-	ollama.ensureModelAvailable(allocator, transport.transport(), url, model_name) catch |err| switch (err) {
+	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model_name) catch |err| switch (err) {
 		error.ModelLoading => {}, // Model exists, embed will trigger loading
 		else => return err,
 	};
