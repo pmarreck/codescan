@@ -35,8 +35,8 @@ const Defaults = struct {
 	top_n: usize = 5,
 	root_path: []const u8 = ".",
 	db_path: []const u8 = ".codescan/index.sqlite3",
-	ollama_url: []const u8 = "http://localhost:11434",
-	ollama_model: []const u8 = "bge-large",
+	embedding_url: []const u8 = "http://localhost:11434",
+	embedding_model: []const u8 = "bge-large",
 	embedding_dim: usize = 1024,
 	batch_size: usize = 16,
 	max_file_size: usize = 5 * 1024 * 1024,
@@ -61,9 +61,12 @@ const Settings = struct {
 	root_path: []const u8,
 	db_path: []const u8,
 	db_path_owned: bool,
-	ollama_url: []const u8,
-	ollama_model: []const u8,
-	ollama_model_owned: bool,
+	embedding_url: []const u8,
+	embedding_model: []const u8,
+	embedding_model_owned: bool,
+	embedding_dialect: embedding_http.ApiDialect = .ollama,
+	embedding_auth_header: ?[]const u8 = null,
+	embedding_auth_header_owned: bool = false,
 	embedding_dim: usize,
 	batch_size: usize,
 	max_file_size: usize,
@@ -173,7 +176,16 @@ pub fn main() !void {
 	var settings = try resolveSettings(allocator, parsed, cfg, config_root);
 	settings.search_weights = &search_weights;
 	defer if (settings.db_path_owned) allocator.free(settings.db_path);
-	defer if (settings.ollama_model_owned) allocator.free(settings.ollama_model);
+	defer if (settings.embedding_model_owned) allocator.free(settings.embedding_model);
+	defer if (settings.embedding_auth_header_owned) allocator.free(settings.embedding_auth_header.?);
+
+	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null) {
+		var stderr_buf: [4096]u8 = undefined;
+		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		const se = &stderr_writer.interface;
+		_ = se.print("error: embedding_api=openai requires embedding_api_key to be set in config\n", .{}) catch {};
+		std.process.exit(1);
+	}
 
 	const registry = plugin.defaultRegistry();
 
@@ -252,24 +264,26 @@ pub fn main() !void {
 
 			// Open DB and init schema; if the DB is corrupt, recreate it
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
-			_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch {
+			_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch {
 				storage.close(db);
 				_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
 				_ = stderr.flush() catch {};
 				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+				_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
 			};
 			defer storage.close(db);
 
 			// Try Ollama; fall back to lexical-only if unavailable
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			const ollama_ok = tryInitOllama(allocator, &http_client, settings.ollama_url, settings.ollama_model, stderr);
+			const ollama_ok = tryInitOllama(allocator, &http_client, settings.embedding_url, settings.embedding_model, settings.embedding_dialect, stderr);
 
-			var embedder_adapter = embedding.OllamaEmbedder{
+			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
-				.base_url = settings.ollama_url,
-				.model = settings.ollama_model,
+				.base_url = settings.embedding_url,
+				.model = settings.embedding_model,
+				.dialect = settings.embedding_dialect,
+				.auth_header = settings.embedding_auth_header,
 			};
 
 			const show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output);
@@ -310,11 +324,13 @@ pub fn main() !void {
 
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
-			var embedder_adapter = embedding.OllamaEmbedder{
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
-				.base_url = settings.ollama_url,
-				.model = settings.ollama_model,
+				.base_url = settings.embedding_url,
+				.model = settings.embedding_model,
+				.dialect = settings.embedding_dialect,
+				.auth_header = settings.embedding_auth_header,
 			};
 
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
@@ -328,7 +344,7 @@ pub fn main() !void {
 				embedder_adapter.embedder(),
 				.{
 					.embedding_dim = settings.embedding_dim,
-					.embedding_model = settings.ollama_model,
+					.embedding_model = settings.embedding_model,
 					.batch_size = settings.batch_size,
 					.max_file_size = settings.max_file_size,
 					.allowed_exts = index_filters.exts.items,
@@ -366,7 +382,7 @@ pub fn main() !void {
 				}
 			}
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
-			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
+			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
 				storage.close(db);
 				{
 					var sb2: [4096]u8 = undefined;
@@ -376,7 +392,7 @@ pub fn main() !void {
 					_ = se2.flush() catch {};
 				}
 				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
 			};
 			defer storage.close(db);
 			defer schema_result.deinit(allocator);
@@ -392,7 +408,7 @@ pub fn main() !void {
 				var sw = std.fs.File.stderr().writer(&sb);
 				const se = &sw.interface;
 				if (schema_result.embedding_model_mismatch) {
-					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
 				}
 				if (schema_result.embedding_dim_mismatch) {
 					_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
@@ -404,11 +420,13 @@ pub fn main() !void {
 
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
-			var embedder_adapter = embedding.OllamaEmbedder{
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
-				.base_url = settings.ollama_url,
-				.model = settings.ollama_model,
+				.base_url = settings.embedding_url,
+				.model = settings.embedding_model,
+				.dialect = settings.embedding_dialect,
+				.auth_header = settings.embedding_auth_header,
 			};
 
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
@@ -422,7 +440,7 @@ pub fn main() !void {
 				embedder_adapter.embedder(),
 				.{
 					.embedding_dim = settings.embedding_dim,
-					.embedding_model = settings.ollama_model,
+					.embedding_model = settings.embedding_model,
 					.batch_size = settings.batch_size,
 					.max_file_size = settings.max_file_size,
 					.allowed_exts = index_filters.exts.items,
@@ -474,12 +492,12 @@ pub fn main() !void {
 			const stderr = &stderr_writer.interface;
 
 			// Always run schema init/migration so older DBs get new columns
-			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
+			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
 				storage.close(db);
 				_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
 				_ = stderr.flush() catch {};
 				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
 			};
 			defer storage.close(db);
 			defer schema_result.deinit(allocator);
@@ -489,7 +507,7 @@ pub fn main() !void {
 			}
 			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 				if (schema_result.embedding_model_mismatch) {
-					_ = stderr.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+					_ = stderr.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
 				}
 				if (schema_result.embedding_dim_mismatch) {
 					_ = stderr.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
@@ -546,15 +564,17 @@ pub fn main() !void {
 				_ = stderr.flush() catch {};
 
 				// Try Ollama; fall back to lexical if unavailable
-				const ollama_ok = tryInitOllama(allocator, &http_client, settings.ollama_url, settings.ollama_model, stderr);
+				const ollama_ok = tryInitOllama(allocator, &http_client, settings.embedding_url, settings.embedding_model, settings.embedding_dialect, stderr);
 				if (!ollama_ok) {
 					effective_search_mode = .lexical;
 				}
 
-				var embedder_adapter = embedding.OllamaEmbedder{
+				var embedder_adapter = embedding.HttpEmbedder{
 					.transport = http_client.transport(),
-					.base_url = settings.ollama_url,
-					.model = settings.ollama_model,
+					.base_url = settings.embedding_url,
+					.model = settings.embedding_model,
+					.dialect = settings.embedding_dialect,
+					.auth_header = settings.embedding_auth_header,
 				};
 
 				_ = try performFullIndex(
@@ -570,14 +590,16 @@ pub fn main() !void {
 			} else {
 				// Normal path: ensure Ollama if needed
 				if (effective_search_mode != .lexical) {
-					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
+					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
 				}
 			}
 
-			var embedder_adapter = embedding.OllamaEmbedder{
+			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
-				.base_url = settings.ollama_url,
-				.model = settings.ollama_model,
+				.base_url = settings.embedding_url,
+				.model = settings.embedding_model,
+				.dialect = settings.embedding_dialect,
+				.auth_header = settings.embedding_auth_header,
 			};
 
 			var search_filters = try filters.buildSearchFilters(allocator, registry, db, .{
@@ -719,8 +741,8 @@ pub fn main() !void {
 				.embedding_dim = settings.embedding_dim,
 				.batch_size = settings.batch_size,
 				.max_file_size = settings.max_file_size,
-				.ollama_url = settings.ollama_url,
-				.ollama_model = settings.ollama_model,
+				.ollama_url = settings.embedding_url,
+				.ollama_model = settings.embedding_model,
 				.index_ext = settings.index_ext,
 				.index_type = settings.index_type,
 				.search_ext = settings.search_ext,
@@ -815,7 +837,7 @@ pub fn main() !void {
 				// Multi-file mode with --path
 				const db = try storage.openFileWithVec(allocator, settings.db_path);
 				defer storage.close(db);
-				var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+				var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
 				defer schema_result.deinit(allocator);
 				try runReplaceContentMultiFile(allocator, db, needle, parsed.regex_mode, parsed.replace_all, input_text, parsed.path_filters.items, parsed.confirm_hash, settings.root_path, stdout);
 			} else {
@@ -871,8 +893,8 @@ pub fn main() !void {
 				.root_path = settings.root_path,
 				.db_path = settings.db_path,
 				.lsp_overrides = settings.lsp_overrides,
-				.ollama_url = settings.ollama_url,
-				.ollama_model = settings.ollama_model,
+				.ollama_url = settings.embedding_url,
+				.ollama_model = settings.embedding_model,
 				.embedding_dim = settings.embedding_dim,
 				.batch_size = settings.batch_size,
 				.max_file_size = settings.max_file_size,
@@ -1069,7 +1091,7 @@ pub fn main() !void {
 					try ensureParentDir(settings.db_path);
 					// Open existing DB or create new one (don't destroy existing index)
 					var db = try storage.openFileWithVec(allocator, settings.db_path);
-					var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model }) catch blk_retry: {
+					var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
 						storage.close(db);
 						{
 							var sb2: [4096]u8 = undefined;
@@ -1079,7 +1101,7 @@ pub fn main() !void {
 							_ = se2.flush() catch {};
 						}
 						db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-						break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.ollama_model });
+						break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
 					};
 					defer storage.close(db);
 					defer schema_result.deinit(allocator);
@@ -1095,7 +1117,7 @@ pub fn main() !void {
 						var sw = std.fs.File.stderr().writer(&sb);
 						const se = &sw.interface;
 						if (schema_result.embedding_model_mismatch) {
-							_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.ollama_model }) catch {};
+							_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
 						}
 						if (schema_result.embedding_dim_mismatch) {
 							_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
@@ -1107,11 +1129,13 @@ pub fn main() !void {
 
 					var http_client = embedding_http.StdHttpTransport.init(allocator);
 					defer http_client.deinit();
-					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.ollama_url, settings.ollama_model);
-					var embedder_adapter = embedding.OllamaEmbedder{
+					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+					var embedder_adapter = embedding.HttpEmbedder{
 						.transport = http_client.transport(),
-						.base_url = settings.ollama_url,
-						.model = settings.ollama_model,
+						.base_url = settings.embedding_url,
+						.model = settings.embedding_model,
+						.dialect = settings.embedding_dialect,
+						.auth_header = settings.embedding_auth_header,
 					};
 
 					var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
@@ -1143,7 +1167,7 @@ pub fn main() !void {
 							.codescan_dir = codescan_dir,
 							.index_options = .{
 								.embedding_dim = settings.embedding_dim,
-								.embedding_model = settings.ollama_model,
+								.embedding_model = settings.embedding_model,
 								.batch_size = settings.batch_size,
 								.max_file_size = settings.max_file_size,
 								.allowed_exts = index_filters.exts.items,
@@ -1226,9 +1250,9 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.root_path = default_root,
 		.db_path = defaults.db_path,
 		.db_path_owned = false,
-		.ollama_url = defaults.ollama_url,
-		.ollama_model = defaults.ollama_model,
-		.ollama_model_owned = false,
+		.embedding_url = defaults.embedding_url,
+		.embedding_model = defaults.embedding_model,
+		.embedding_model_owned = false,
 		.embedding_dim = defaults.embedding_dim,
 		.batch_size = defaults.batch_size,
 		.max_file_size = defaults.max_file_size,
@@ -1271,8 +1295,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.top_n) |value| settings.top_n = value;
 	if (cfg.root_path) |value| settings.root_path = value;
 	if (cfg.db_path) |value| settings.db_path = value;
-	if (cfg.ollama_url) |value| settings.ollama_url = value;
-	if (cfg.ollama_model) |value| settings.ollama_model = value;
+	if (cfg.embedding_url) |value| settings.embedding_url = value;
+	if (cfg.embedding_model) |value| settings.embedding_model = value;
 	if (cfg.embedding_dim) |value| settings.embedding_dim = value;
 	if (cfg.batch_size) |value| settings.batch_size = value;
 	if (cfg.max_file_size) |value| settings.max_file_size = value;
@@ -1302,8 +1326,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.http_port) |value| settings.http_port = value;
 
 	if (env_model) |value| {
-		settings.ollama_model = value;
-		settings.ollama_model_owned = true;
+		settings.embedding_model = value;
+		settings.embedding_model_owned = true;
 	}
 
 	if (parsed.seen.output) settings.output = parsed.output;
@@ -1311,13 +1335,13 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (parsed.seen.top_n) settings.top_n = parsed.top_n;
 	if (parsed.seen.root_path) settings.root_path = parsed.root_path;
 	if (parsed.seen.db_path) settings.db_path = parsed.db_path;
-	if (parsed.seen.ollama_url) settings.ollama_url = parsed.ollama_url;
-	if (parsed.seen.ollama_model) {
-		if (settings.ollama_model_owned) {
-			allocator.free(settings.ollama_model);
-			settings.ollama_model_owned = false;
+	if (parsed.seen.embedding_url) settings.embedding_url = parsed.embedding_url;
+	if (parsed.seen.embedding_model) {
+		if (settings.embedding_model_owned) {
+			allocator.free(settings.embedding_model);
+			settings.embedding_model_owned = false;
 		}
-		settings.ollama_model = parsed.ollama_model;
+		settings.embedding_model = parsed.embedding_model;
 	}
 	if (parsed.seen.embedding_dim) settings.embedding_dim = parsed.embedding_dim;
 	if (parsed.seen.batch_size) settings.batch_size = parsed.batch_size;
@@ -1364,6 +1388,19 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		settings.db_path_owned = true;
 	}
 
+	// Parse embedding_api dialect from config
+	if (cfg.embedding_api) |api_str| {
+		if (std.mem.eql(u8, api_str, "openai")) {
+			settings.embedding_dialect = .openai;
+		}
+	}
+
+	// Format Bearer token from api key
+	if (cfg.embedding_api_key) |key| {
+		settings.embedding_auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key});
+		settings.embedding_auth_header_owned = true;
+	}
+
 	return settings;
 }
 
@@ -1372,8 +1409,10 @@ fn ensureModelAvailableOrExit(
 	transport: embedding_http.Transport,
 	base_url: []const u8,
 	model_name: []const u8,
+	dialect: embedding_http.ApiDialect,
 ) !void {
-	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name) catch |err| switch (err) {
+	if (dialect == .openai) return;
+	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
 			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
@@ -1410,22 +1449,25 @@ fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat) bool {
 fn tryInitOllama(
 	allocator: std.mem.Allocator,
 	http_client: *embedding_http.StdHttpTransport,
-	ollama_url: []const u8,
-	ollama_model: []const u8,
+	embedding_url: []const u8,
+	embedding_model: []const u8,
+	dialect: embedding_http.ApiDialect,
 	stderr: *std.Io.Writer,
 ) bool {
+	if (dialect == .openai) return true;
 	embedding_http.ensureModelAvailable(
 		allocator,
 		http_client.transport(),
-		ollama_url,
-		ollama_model,
+		embedding_url,
+		embedding_model,
+		dialect,
 	) catch |err| {
 		switch (err) {
 			error.ModelNotFound => {
 				_ = stderr.print(
 					"  note: Ollama model '{s}' not found. Using lexical-only search.\n" ++
 						"  Run 'ollama pull {s}' then 'codescan update' for semantic search.\n",
-					.{ ollama_model, ollama_model },
+					.{ embedding_model, embedding_model },
 				) catch {};
 				_ = stderr.flush() catch {};
 				return false;
@@ -1434,7 +1476,7 @@ fn tryInitOllama(
 				// Model exists but not loaded — embed() will trigger loading
 				_ = stderr.print(
 					"  note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
-					.{ollama_model},
+					.{embedding_model},
 				) catch {};
 				_ = stderr.flush() catch {};
 				return true; // Proceed — embed will block until loaded
@@ -1474,7 +1516,7 @@ fn performFullIndex(
 		embedder,
 		.{
 			.embedding_dim = settings.embedding_dim,
-			.embedding_model = settings.ollama_model,
+			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
 			.allowed_exts = index_filters.exts.items,
