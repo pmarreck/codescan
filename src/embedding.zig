@@ -7,32 +7,33 @@ pub const Embedder = struct {
 	free: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void,
 };
 
-pub const OllamaEmbedder = struct {
+pub const HttpEmbedder = struct {
 	transport: embedding_http.Transport,
 	base_url: []const u8,
 	model: []const u8,
 	keep_alive: ?i64 = 900, // 15 minutes in seconds
+	dialect: embedding_http.ApiDialect = .ollama,
+	auth_header: ?[]const u8 = null,
 
-	pub fn embedder(self: *OllamaEmbedder) Embedder {
+	pub fn embedder(self: *HttpEmbedder) Embedder {
 		return .{
 			.ctx = self,
-			.embed = embed,
-			.free = free,
+			.embed = embed_fn,
+			.free = free_fn,
 		};
 	}
 
-	fn embed(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
-		const self: *OllamaEmbedder = @ptrCast(@alignCast(ctx));
-		return embedding_http.embed(allocator, self.transport, self.base_url, self.model, inputs, self.keep_alive);
+	fn embed_fn(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
+		const self: *HttpEmbedder = @ptrCast(@alignCast(ctx));
+		return embedding_http.embed(allocator, self.transport, self.base_url, self.model, inputs, self.keep_alive, self.dialect, self.auth_header);
 	}
 
-	fn free(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
+	fn free_fn(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
 		_ = ctx;
 		embedding_http.freeEmbeddings(allocator, embeddings);
 	}
 };
-
-test "OllamaEmbedder uses live Ollama" {
+test "HttpEmbedder uses live Ollama" {
 	const allocator = std.testing.allocator;
 	try embedding_http.skipIfNoOllama(allocator);
 	const inputs = [_][]const u8{ "hash functions" };
@@ -45,17 +46,16 @@ test "OllamaEmbedder uses live Ollama" {
 	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
-	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model) catch |err| switch (err) {
+	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model, .ollama) catch |err| switch (err) {
 		error.ModelLoading => {}, // Model exists, embed will trigger loading
 		else => return err,
 	};
 
-	var adapter = OllamaEmbedder{
+	var adapter = HttpEmbedder{
 		.transport = transport.transport(),
 		.base_url = url,
 		.model = model,
 	};
-
 	const embedder = adapter.embedder();
 	const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
 	defer embedder.free(embedder.ctx, allocator, embeddings);
