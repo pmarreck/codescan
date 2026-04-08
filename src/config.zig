@@ -21,11 +21,10 @@ pub const default_template =
     \\
     \\# Embedding server (ollama_url and ollama_model are accepted as aliases)
     \\#embedding_url=http://localhost:11434
-    \\#embedding_model=bge-large
+    \\#embedding_model=jina-code-embeddings-1.5b
     \\#embedding_api=ollama
     \\#embedding_api_key=
-    \\#embedding_dim=1024
-    \\#batch_size=16
+    \\#embedding_dim=1536    \\#batch_size=16
     \\
     \\# Maximum file size to index (bytes, default 5 MiB)
     \\#max_file_size=5242880
