@@ -61,8 +61,8 @@ pub const Seen = struct {
 	top_n: bool = false,
 	root_path: bool = false,
 	db_path: bool = false,
-	ollama_url: bool = false,
-	ollama_model: bool = false,
+	embedding_url: bool = false,
+	embedding_model: bool = false,
 	embedding_dim: bool = false,
 	batch_size: bool = false,
 	max_file_size: bool = false,
@@ -101,8 +101,8 @@ pub const Parsed = struct {
 	top_n: usize,
 	root_path: []const u8,
 	db_path: []const u8,
-	ollama_url: []const u8,
-	ollama_model: []const u8,
+	embedding_url: []const u8,
+	embedding_model: []const u8,
 	embedding_dim: usize,
 	batch_size: usize,
 	max_file_size: usize,
@@ -174,8 +174,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.top_n = 5,
 		.root_path = ".",
 		.db_path = ".codescan/index.sqlite3",
-		.ollama_url = "http://localhost:11434",
-		.ollama_model = "bge-large",
+		.embedding_url = "http://localhost:11434",
+		.embedding_model = "bge-large",
 		.embedding_dim = 1024,
 		.batch_size = 16,
 		.max_file_size = 2 * 1024 * 1024,
@@ -541,8 +541,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 				last_err_context = arg;
 				return error.MissingValue;
 			}
-			parsed.ollama_url = args[i];
-			parsed.seen.ollama_url = true;
+			parsed.embedding_url = args[i];
+			parsed.seen.embedding_url = true;
 			i += 1;
 			continue;
 		}
@@ -552,8 +552,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 				last_err_context = arg;
 				return error.MissingValue;
 			}
-			parsed.ollama_model = args[i];
-			parsed.seen.ollama_model = true;
+			parsed.embedding_model = args[i];
+			parsed.seen.embedding_model = true;
 			i += 1;
 			continue;
 		}
@@ -1028,7 +1028,7 @@ test "parse search with query defaults" {
 	try std.testing.expectEqual(@as(usize, 5), parsed.top_n);
 	try std.testing.expectEqualStrings(".", parsed.root_path);
 	try std.testing.expectEqualStrings(".codescan/index.sqlite3", parsed.db_path);
-	try std.testing.expectEqualStrings("http://localhost:11434", parsed.ollama_url);
+	try std.testing.expectEqualStrings("http://localhost:11434", parsed.embedding_url);
 	try std.testing.expect(parsed.search_mode == .hybrid);
 	try std.testing.expect(parsed.seen.top_n == false);
 }
@@ -1123,8 +1123,8 @@ test "parse search with flags" {
 	try std.testing.expectEqual(@as(usize, 5), parsed.top_n);
 	try std.testing.expectEqualStrings("/repo", parsed.root_path);
 	try std.testing.expectEqualStrings("/repo/.codescan/db.sqlite3", parsed.db_path);
-	try std.testing.expectEqualStrings("http://127.0.0.1:11434", parsed.ollama_url);
-	try std.testing.expectEqualStrings("bge-large", parsed.ollama_model);
+	try std.testing.expectEqualStrings("http://127.0.0.1:11434", parsed.embedding_url);
+	try std.testing.expectEqualStrings("bge-large", parsed.embedding_model);
 	try std.testing.expectEqual(@as(usize, 768), parsed.embedding_dim);
 	try std.testing.expectEqual(@as(usize, 8), parsed.batch_size);
 	try std.testing.expectEqual(@as(usize, 2048), parsed.max_file_size);
