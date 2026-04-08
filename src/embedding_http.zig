@@ -17,6 +17,11 @@ pub const Transport = struct {
 	send: *const fn (ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) anyerror!HttpResponse,
 };
 
+pub const ApiDialect = enum {
+	ollama,
+	openai,
+};
+
 pub fn embed(
 	allocator: std.mem.Allocator,
 	transport: Transport,
@@ -24,34 +29,47 @@ pub fn embed(
 	model: []const u8,
 	inputs: []const []const u8,
 	keep_alive: ?i64,
+	dialect: ApiDialect,
+	auth_header: ?[]const u8,
 ) ![][]f32 {
-	const url = try buildEmbedUrl(allocator, base_url);
+	const url = try buildEmbedUrl(allocator, base_url, dialect);
 	defer allocator.free(url);
-	const body = try buildEmbedRequest(allocator, model, inputs, keep_alive);
+	const body = try buildEmbedRequest(allocator, model, inputs, keep_alive, dialect);
 	defer allocator.free(body);
 
-	const headers = [_]std.http.Header{
-		.{ .name = "Content-Type", .value = "application/json" },
-		.{ .name = "Accept", .value = "application/json" },
-	};
+	var header_buf: [4]std.http.Header = undefined;
+	var header_count: usize = 2;
+	header_buf[0] = .{ .name = "Content-Type", .value = "application/json" };
+	header_buf[1] = .{ .name = "Accept", .value = "application/json" };
+	if (dialect == .openai) {
+		if (auth_header) |key| {
+			header_buf[2] = .{ .name = "Authorization", .value = key };
+			header_count = 3;
+		}
+	}
 
 	const response = try transport.send(transport.ctx, allocator, .{
 		.method = "POST",
 		.url = url,
-		.headers = &headers,
+		.headers = header_buf[0..header_count],
 		.body = body,
 	});
 	defer allocator.free(response.body);
 
+	if (response.status == 401) return error.Unauthorized;
 	if (response.status != 200) return error.HttpStatus;
-	return parseEmbeddings(allocator, response.body);
+	return parseEmbeddings(allocator, response.body, dialect);
 }
 
-pub fn buildEmbedUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+pub fn buildEmbedUrl(allocator: std.mem.Allocator, base_url: []const u8, dialect: ApiDialect) ![]u8 {
+	const path: []const u8 = switch (dialect) {
+		.ollama => "api/embed",
+		.openai => "v1/embeddings",
+	};
 	if (std.mem.endsWith(u8, base_url, "/")) {
-		return std.fmt.allocPrint(allocator, "{s}api/embed", .{base_url});
+		return std.fmt.allocPrint(allocator, "{s}{s}", .{ base_url, path });
 	}
-	return std.fmt.allocPrint(allocator, "{s}/api/embed", .{base_url});
+	return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_url, path });
 }
 
 pub fn buildTagsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
@@ -73,8 +91,14 @@ pub fn buildEmbedRequest(
 	model: []const u8,
 	inputs: []const []const u8,
 	keep_alive: ?i64,
+	dialect: ApiDialect,
 ) ![]u8 {
-	const payload = EmbedRequest{ .model = model, .input = inputs, .keep_alive = keep_alive };
+	// For OpenAI dialect, suppress keep_alive
+	const effective_keep_alive: ?i64 = switch (dialect) {
+		.ollama => keep_alive,
+		.openai => null,
+	};
+	const payload = EmbedRequest{ .model = model, .input = inputs, .keep_alive = effective_keep_alive };
 	var out: std.io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
@@ -88,7 +112,11 @@ pub fn ensureModelAvailable(
 	transport: Transport,
 	base_url: []const u8,
 	model_name: []const u8,
+	dialect: ApiDialect,
 ) !void {
+	// OpenAI-compatible servers don't have /api/tags or /api/ps — skip entirely
+	if (dialect == .openai) return;
+
 	// Step 1: Check /api/tags — model exists on disk?
 	{
 		const url = try buildTagsUrl(allocator, base_url);
@@ -145,7 +173,14 @@ pub fn isModelLoaded(
 	return hasModel(allocator, response.body, model_name) catch false;
 }
 
-pub fn parseEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 {
+pub fn parseEmbeddings(allocator: std.mem.Allocator, body: []const u8, dialect: ApiDialect) ![][]f32 {
+	return switch (dialect) {
+		.ollama => parseOllamaEmbeddings(allocator, body),
+		.openai => parseOpenAiEmbeddings(allocator, body),
+	};
+}
+
+fn parseOllamaEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 {
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
 	defer parsed.deinit();
 
@@ -161,10 +196,46 @@ pub fn parseEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 
 		if (row_value != .array) return error.InvalidEmbeddings;
 		const values = row_value.array.items;
 		var vec = try allocator.alloc(f32, values.len);
+		errdefer allocator.free(vec);
 		for (values, 0..) |value, col_idx| {
 			vec[col_idx] = try parseNumber(value);
 		}
 		result[row_idx] = vec;
+	}
+
+	return result;
+}
+
+fn parseOpenAiEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f32 {
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
+	defer parsed.deinit();
+
+	if (parsed.value != .object) return error.InvalidResponse;
+	const data_value = parsed.value.object.get("data") orelse return error.MissingEmbeddings;
+	if (data_value != .array) return error.InvalidEmbeddings;
+
+	const items = data_value.array.items;
+	var result = try allocator.alloc([]f32, items.len);
+	// Initialize all slots to empty so partial-fill errdefer works cleanly
+	for (result) |*slot| slot.* = &.{};
+	errdefer freeEmbeddings(allocator, result);
+
+	for (items) |item| {
+		if (item != .object) return error.InvalidEmbeddings;
+		const index_value = item.object.get("index") orelse return error.InvalidEmbeddings;
+		if (index_value != .integer) return error.InvalidEmbeddings;
+		const idx: usize = @intCast(index_value.integer);
+		if (idx >= result.len) return error.InvalidEmbeddings;
+
+		const embedding_value = item.object.get("embedding") orelse return error.InvalidEmbeddings;
+		if (embedding_value != .array) return error.InvalidEmbeddings;
+		const values = embedding_value.array.items;
+		var vec = try allocator.alloc(f32, values.len);
+		errdefer allocator.free(vec);
+		for (values, 0..) |value, col_idx| {
+			vec[col_idx] = try parseNumber(value);
+		}
+		result[idx] = vec;
 	}
 
 	return result;
@@ -265,38 +336,185 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 	return reader.allocRemaining(allocator, .limited(max_size));
 }
 
+/// A mock transport for unit tests — returns canned responses based on URL path.
+const MockTransportCtx = struct {
+	tags_body: []const u8,
+	ps_body: []const u8,
+	embed_should_fail: bool = false,
+	status_override: ?u16 = null,
+	auth_header_sent: bool = false,
+
+	fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
+		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
+		for (req.headers) |h| {
+			if (std.mem.eql(u8, h.name, "Authorization")) {
+				self.auth_header_sent = true;
+				break;
+			}
+		}
+		if (std.mem.endsWith(u8, req.url, "/api/tags")) {
+			return .{ .status = 200, .body = try allocator.dupe(u8, self.tags_body) };
+		}
+		if (std.mem.endsWith(u8, req.url, "/api/ps")) {
+			return .{ .status = 200, .body = try allocator.dupe(u8, self.ps_body) };
+		}
+		if (std.mem.endsWith(u8, req.url, "/api/embed")) {
+			if (self.embed_should_fail) return error.ConnectionRefused;
+			if (self.status_override) |status| {
+				return .{ .status = status, .body = try allocator.dupe(u8, "{\"error\":\"unauthorized\"}") };
+			}
+			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"embeddings\":[[0.1,0.2]]}") };
+		}
+		if (std.mem.endsWith(u8, req.url, "/v1/embeddings")) {
+			if (self.embed_should_fail) return error.ConnectionRefused;
+			if (self.status_override) |status| {
+				return .{ .status = status, .body = try allocator.dupe(u8, "{\"error\":\"unauthorized\"}") };
+			}
+			return .{ .status = 200, .body = try allocator.dupe(u8,
+				\\{"data":[{"embedding":[0.1,0.2],"index":0}],"model":"test"}
+			) };
+		}
+		return error.UnsupportedMethod;
+	}
+
+	fn transport(self: *MockTransportCtx) Transport {
+		return .{ .ctx = self, .send = send };
+	}
+};
+
+// ── Tests ────────────────────────────────────────────────────────────────────
+
 test "buildEmbedUrl handles trailing slash" {
 	const allocator = std.testing.allocator;
-	const url = try buildEmbedUrl(allocator, "http://localhost:11434/");
+	const url = try buildEmbedUrl(allocator, "http://localhost:11434/", .ollama);
 	defer allocator.free(url);
 	try std.testing.expectEqualStrings("http://localhost:11434/api/embed", url);
+}
+
+test "buildEmbedUrl returns openai path for openai dialect" {
+	const allocator = std.testing.allocator;
+	const url = try buildEmbedUrl(allocator, "https://api.openai.com", .openai);
+	defer allocator.free(url);
+	try std.testing.expectEqualStrings("https://api.openai.com/v1/embeddings", url);
 }
 
 test "buildEmbedRequest serializes inputs" {
 	const allocator = std.testing.allocator;
 	const inputs = [_][]const u8{ "hello", "world" };
-	const body = try buildEmbedRequest(allocator, "bge-large", &inputs, null);
+	const body = try buildEmbedRequest(allocator, "bge-large", &inputs, null, .ollama);
 	defer allocator.free(body);
 	try std.testing.expectEqualStrings("{\"model\":\"bge-large\",\"input\":[\"hello\",\"world\"]}", body);
 }
 
-test "buildEmbedRequest includes keep_alive when set" {
+test "buildEmbedRequest includes keep_alive for ollama dialect" {
 	const allocator = std.testing.allocator;
 	const inputs = [_][]const u8{"hello"};
-	const body = try buildEmbedRequest(allocator, "bge-large", &inputs, -1);
+	const body = try buildEmbedRequest(allocator, "bge-large", &inputs, -1, .ollama);
 	defer allocator.free(body);
 	try std.testing.expectEqualStrings("{\"model\":\"bge-large\",\"input\":[\"hello\"],\"keep_alive\":-1}", body);
+}
+
+test "buildEmbedRequest omits keep_alive for openai dialect" {
+	const allocator = std.testing.allocator;
+	const inputs = [_][]const u8{"hello"};
+	// Pass keep_alive=-1 but expect it to be suppressed for openai dialect
+	const body = try buildEmbedRequest(allocator, "text-embedding-3-small", &inputs, -1, .openai);
+	defer allocator.free(body);
+	// keep_alive must NOT appear in output
+	try std.testing.expectEqualStrings("{\"model\":\"text-embedding-3-small\",\"input\":[\"hello\"]}", body);
 }
 
 test "parseEmbeddings reads vectors" {
 	const allocator = std.testing.allocator;
 	const body = "{\"embeddings\":[[0.1,0.2],[1,2]]}";
-	const embeddings = try parseEmbeddings(allocator, body);
+	const embeddings = try parseEmbeddings(allocator, body, .ollama);
 	defer freeEmbeddings(allocator, embeddings);
 	try std.testing.expectEqual(@as(usize, 2), embeddings.len);
 	try std.testing.expectEqual(@as(usize, 2), embeddings[0].len);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.1), embeddings[0][0], 0.0001);
 	try std.testing.expectEqual(@as(f32, 2), embeddings[1][1]);
+}
+
+test "parseEmbeddings reads openai format" {
+	const allocator = std.testing.allocator;
+	const body =
+		\\{"data":[{"embedding":[0.1,0.2],"index":0}],"model":"test"}
+	;
+	const embeddings = try parseEmbeddings(allocator, body, .openai);
+	defer freeEmbeddings(allocator, embeddings);
+	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
+	try std.testing.expectEqual(@as(usize, 2), embeddings[0].len);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.1), embeddings[0][0], 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.2), embeddings[0][1], 0.0001);
+}
+
+test "parseEmbeddings reads openai format sorted by index" {
+	const allocator = std.testing.allocator;
+	// index 1 comes before index 0 in the JSON array — result must be sorted
+	const body =
+		\\{"data":[{"embedding":[9.0,8.0],"index":1},{"embedding":[1.0,2.0],"index":0}],"model":"test"}
+	;
+	const embeddings = try parseEmbeddings(allocator, body, .openai);
+	defer freeEmbeddings(allocator, embeddings);
+	try std.testing.expectEqual(@as(usize, 2), embeddings.len);
+	// index 0 => [1.0, 2.0]
+	try std.testing.expectApproxEqAbs(@as(f32, 1.0), embeddings[0][0], 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 2.0), embeddings[0][1], 0.0001);
+	// index 1 => [9.0, 8.0]
+	try std.testing.expectApproxEqAbs(@as(f32, 9.0), embeddings[1][0], 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 8.0), embeddings[1][1], 0.0001);
+}
+
+test "ensureModelAvailable is no-op for openai dialect" {
+	const allocator = std.testing.allocator;
+	// tags_body and ps_body contain invalid JSON — if we tried to parse them the test would fail
+	var mock = MockTransportCtx{
+		.tags_body = "NOT_VALID_JSON",
+		.ps_body = "NOT_VALID_JSON",
+	};
+	// Should return immediately without touching the network
+	try ensureModelAvailable(allocator, mock.transport(), "https://api.openai.com", "text-embedding-3-small", .openai);
+}
+
+test "embed with openai dialect returns correct embeddings" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body = "",
+	};
+	const inputs = [_][]const u8{"hello"};
+	const embeddings = try embed(allocator, mock.transport(), "https://api.openai.com", "text-embedding-3-small", &inputs, null, .openai, null);
+	defer freeEmbeddings(allocator, embeddings);
+	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
+	try std.testing.expectEqual(@as(usize, 2), embeddings[0].len);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.1), embeddings[0][0], 0.0001);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.2), embeddings[0][1], 0.0001);
+}
+
+test "embed returns Unauthorized on 401" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body = "",
+		.status_override = 401,
+	};
+	const inputs = [_][]const u8{"hello"};
+	try std.testing.expectError(
+		error.Unauthorized,
+		embed(allocator, mock.transport(), "https://api.openai.com", "text-embedding-3-small", &inputs, null, .openai, "Bearer bad-key"),
+	);
+}
+
+test "embed with ollama dialect does not send auth header" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body = "",
+	};
+	const inputs = [_][]const u8{"hello"};
+	const embeddings = try embed(allocator, mock.transport(), "http://localhost:11434", "bge-large", &inputs, null, .ollama, "Bearer should-be-ignored");
+	defer freeEmbeddings(allocator, embeddings);
+	try std.testing.expect(!mock.auth_header_sent);
 }
 
 test "ensureModelAvailable reports missing model" {
@@ -311,7 +529,7 @@ test "ensureModelAvailable reports missing model" {
 
 	try std.testing.expectError(
 		error.ModelNotFound,
-		ensureModelAvailable(allocator, transport.transport(), url, "codescan-does-not-exist"),
+		ensureModelAvailable(allocator, transport.transport(), url, "codescan-does-not-exist", .ollama),
 	);
 }
 
@@ -327,13 +545,13 @@ test "embed uses live Ollama" {
 	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
-	ensureModelAvailable(allocator, transport.transport(), url, model) catch |err| switch (err) {
+	ensureModelAvailable(allocator, transport.transport(), url, model, .ollama) catch |err| switch (err) {
 		error.ModelLoading => {}, // Model exists, embed will trigger loading
 		else => return err,
 	};
 
 	const inputs = [_][]const u8{ "hash functions" };
-	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs, null);
+	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs, null, .ollama, null);
 	defer freeEmbeddings(allocator, embeddings);
 	try std.testing.expect(embeddings.len == 1);
 	try std.testing.expect(embeddings[0].len > 0);
@@ -346,32 +564,6 @@ fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const
 	};
 	return value;
 }
-
-/// A mock transport for unit tests — returns canned responses based on URL path.
-const MockTransportCtx = struct {
-	tags_body: []const u8,
-	ps_body: []const u8,
-	embed_should_fail: bool = false,
-
-	fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
-		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
-		if (std.mem.endsWith(u8, req.url, "/api/tags")) {
-			return .{ .status = 200, .body = try allocator.dupe(u8, self.tags_body) };
-		}
-		if (std.mem.endsWith(u8, req.url, "/api/ps")) {
-			return .{ .status = 200, .body = try allocator.dupe(u8, self.ps_body) };
-		}
-		if (std.mem.endsWith(u8, req.url, "/api/embed")) {
-			if (self.embed_should_fail) return error.ConnectionRefused;
-			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"embeddings\":[[0.1,0.2]]}") };
-		}
-		return error.UnsupportedMethod;
-	}
-
-	fn transport(self: *MockTransportCtx) Transport {
-		return .{ .ctx = self, .send = send };
-	}
-};
 
 test "isModelLoaded returns true when model is in ps" {
 	const allocator = std.testing.allocator;
@@ -421,7 +613,7 @@ test "ensureModelAvailable returns ModelNotFound when not in tags" {
 	};
 	try std.testing.expectError(
 		error.ModelNotFound,
-		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large"),
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama),
 	);
 }
 
@@ -435,7 +627,7 @@ test "ensureModelAvailable succeeds when model is loaded in ps" {
 		\\{"models":[{"name":"bge-large:latest"}]}
 		,
 	};
-	try ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large");
+	try ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama);
 }
 
 test "ensureModelAvailable returns ModelLoading when in tags but not ps and embed fails" {
@@ -451,7 +643,7 @@ test "ensureModelAvailable returns ModelLoading when in tags but not ps and embe
 	};
 	try std.testing.expectError(
 		error.ModelLoading,
-		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large"),
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama),
 	);
 }
 
@@ -468,7 +660,7 @@ test "ensureModelAvailable returns ModelLoading when in tags but not ps" {
 	};
 	try std.testing.expectError(
 		error.ModelLoading,
-		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large"),
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama),
 	);
 }
 
