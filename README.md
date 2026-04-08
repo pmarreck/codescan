@@ -6,7 +6,7 @@
 Semantic code search for local repositories.
 
 - Zig CLI + HTTP API + MCP server
-- Ollama embeddings (default: `bge-large`, override with `OLLAMA_MODEL`)
+- Embedding providers: Ollama and OpenAI-compatible (oMLX, LiteLLM, vLLM) — default model: `jina-code-embeddings-1.5b`
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
 - Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift, LLVM IR, Clojure, Assembly
@@ -65,7 +65,7 @@ nix develop -c ./tests/http/test-http
 ## Integration test
 
 ```bash
-# requires Ollama running with bge-large pulled (or set OLLAMA_MODEL)
+# requires Ollama running with jina-code-embeddings-1.5b pulled (or set OLLAMA_MODEL)
 nix develop -c ./tests/integration/test-integration
 ```
 
@@ -261,6 +261,7 @@ launch environment includes the directory that contains `codescan`.
 | `rename` | Rename symbol via LSP |
 | `config` | Show configuration |
 | `status` | Index and watcher status |
+| `setup-model` | Show model installation instructions |
 
 ## Semantic Editing
 
@@ -336,8 +337,14 @@ search_ext=zig
 search_type=code
 search_lang=zig
 
-# Ollama model override (CLI flag or OLLAMA_MODEL env var also supported)
-ollama_model=bge-large
+# Embedding model (default: jina-code-embeddings-1.5b)
+# Use ollama_model as alias, or OLLAMA_MODEL env var
+embedding_model=jina-code-embeddings-1.5b
+
+# For OpenAI-compatible providers (oMLX, LiteLLM, vLLM):
+#embedding_api=openai
+#embedding_url=http://localhost:8000
+#embedding_api_key=<your-key>
 
 # ignores
 ignore=**/.git/**, **/.codescan/**
@@ -368,6 +375,21 @@ When both are present:
 - otherwise `.codescan/config` global `weight_*` applies
 
 Metadata weights apply when the query includes metadata cues such as `function`, `public`, `top-level`, or `arity 2`.
+
+## Model Setup
+
+codescan defaults to `jina-code-embeddings-1.5b`, a code-specific embedding model with 1536 dimensions and 32K token context. Run `codescan setup-model` for provider-specific installation instructions.
+
+### Quick start (Ollama)
+
+```bash
+ollama pull hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0
+codescan index --force
+```
+
+### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
+
+Set `embedding_api=openai` in `.codescan/config` along with `embedding_url` and `embedding_api_key`. See `codescan setup-model` for details.
 
 ## AI Agent Integration (Optional)
 
