@@ -1484,7 +1484,18 @@ fn ensureModelAvailableOrExit(
 			_ = stderr.flush() catch {};
 			// Continue — embed() will block until model is loaded
 		},
-		else => return err,
+		else => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"error: Cannot connect to embedding server at {s}\n" ++
+					"  Is Ollama running? Start it with: ollama serve\n",
+				.{ base_url },
+			) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		},
 	};
 }
 
