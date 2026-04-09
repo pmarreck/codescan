@@ -1718,7 +1718,21 @@ fn loadWeights(allocator: std.mem.Allocator, root_path: []const u8) !weights.Tab
 }
 
 fn configPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
-	return std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
+	// Prefer config.ini, fall back to legacy config for backwards compatibility
+	const ini_path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "config.ini" });
+	if (std.fs.cwd().statFile(ini_path)) |_| {
+		return ini_path;
+	} else |_| {
+		allocator.free(ini_path);
+		const legacy_path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
+		if (std.fs.cwd().statFile(legacy_path)) |_| {
+			return legacy_path;
+		} else |_| {
+			allocator.free(legacy_path);
+			// Neither exists — return config.ini for creation
+			return std.fs.path.join(allocator, &.{ root_path, ".codescan", "config.ini" });
+		}
+	}
 }
 
 fn weightsPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
