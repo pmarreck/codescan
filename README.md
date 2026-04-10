@@ -6,7 +6,7 @@
 Semantic code search for local repositories.
 
 - Zig CLI + HTTP API + MCP server
-- Embedding providers: Ollama and OpenAI-compatible (oMLX, LiteLLM, vLLM) — default model: `jina-code-embeddings-1.5b`
+- Embedding providers: Ollama and OpenAI-compatible (oMLX, LiteLLM, vLLM) — default model: `bge-large`
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
 - Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift, LLVM IR, Clojure, Assembly
@@ -65,7 +65,7 @@ nix develop -c ./tests/http/test-http
 ## Integration test
 
 ```bash
-# requires Ollama running with jina-code-embeddings-1.5b pulled (or set OLLAMA_MODEL)
+# requires Ollama running with bge-large pulled (or set OLLAMA_MODEL)
 nix develop -c ./tests/integration/test-integration
 ```
 
@@ -339,7 +339,7 @@ search_lang=zig
 
 # Embedding model (default: jina-code-embeddings-1.5b)
 # Use ollama_model as alias, or OLLAMA_MODEL env var
-embedding_model=jina-code-embeddings-1.5b
+embedding_model=bge-large
 
 # For OpenAI-compatible providers (oMLX, LiteLLM, vLLM):
 #embedding_api=openai
@@ -378,18 +378,15 @@ Metadata weights apply when the query includes metadata cues such as `function`,
 
 ## Model Setup
 
-codescan defaults to `jina-code-embeddings-1.5b`, a code-specific embedding model with 1536 dimensions and 32K token context. Run `codescan setup-model` for provider-specific installation instructions.
+codescan defaults to `bge-large` via Ollama — no extra setup needed beyond `ollama pull bge-large`.
 
-### Quick start (Ollama)
-
-```bash
-ollama pull hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0
-codescan index --force
-```
+For better code search quality, run `codescan setup-model` to see instructions for upgrading to `jina-code-embeddings-1.5b` (1536-dim, 32K context, code-specific training).
 
 ### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
 
 Set `embedding_api=openai` in `.codescan/config` along with `embedding_url` and `embedding_api_key`. See `codescan setup-model` for details.
+
+For oMLX users wanting the jina model specifically, see [jina-code-embeddings on oMLX](docs/jina-code-embeddings-omlx.md) (requires interim patches until oMLX adds native Qwen2 embedding support).
 
 ## AI Agent Integration (Optional)
 

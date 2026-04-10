@@ -175,7 +175,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.root_path = ".",
 		.db_path = ".codescan/index.sqlite3",
 		.embedding_url = "http://localhost:11434",
-		.embedding_model = "jina-code-embeddings-1.5b",
+		.embedding_model = "bge-large",
 		.embedding_dim = 1536,		.batch_size = 16,
 		.max_file_size = 2 * 1024 * 1024,
 		.http_host = "127.0.0.1",
