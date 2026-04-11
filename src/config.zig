@@ -478,6 +478,71 @@ fn validFtsMode(value: []const u8) bool {
 	return std.mem.eql(u8, value, "broad") or std.mem.eql(u8, value, "balanced") or std.mem.eql(u8, value, "strict");
 }
 
+pub const KV = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+/// Rewrites config content, uncommenting and updating keys that match `kvs`.
+/// Keys not found in the original content are appended at the end.
+/// Returns a new allocated string with the updated content.
+pub fn writeConfigValues(allocator: std.mem.Allocator, content: []const u8, kvs: []const KV) ![]u8 {
+    var output: std.ArrayListUnmanaged(u8) = .{};
+    defer output.deinit(allocator);
+
+    // Track which kvs were matched
+    var matched = try allocator.alloc(bool, kvs.len);
+    defer allocator.free(matched);
+    @memset(matched, false);
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    var first_line = true;
+    while (line_iter.next()) |line| {
+        if (!first_line) try output.append(allocator, '\n');
+        first_line = false;
+
+        // Check if this line matches any key (commented or uncommented)
+        var was_matched = false;
+        for (kvs, 0..) |kv, idx| {
+            // Match "#key=..." or "# key=..." or "key=..."
+            const trimmed = std.mem.trimLeft(u8, line, " \t");
+            const after_hash = if (std.mem.startsWith(u8, trimmed, "#"))
+                std.mem.trimLeft(u8, trimmed[1..], " \t")
+            else
+                trimmed;
+
+            if (std.mem.startsWith(u8, after_hash, kv.key)) {
+                const rest = after_hash[kv.key.len..];
+                if (rest.len > 0 and rest[0] == '=') {
+                    // This line matches — write the uncommented updated value
+                    try output.appendSlice(allocator, kv.key);
+                    try output.append(allocator, '=');
+                    try output.appendSlice(allocator, kv.value);
+                    matched[idx] = true;
+                    was_matched = true;
+                    break;
+                }
+            }
+        }
+
+        if (!was_matched) {
+            try output.appendSlice(allocator, line);
+        }
+    }
+
+    // Append any unmatched keys at the end
+    for (kvs, 0..) |kv, idx| {
+        if (!matched[idx]) {
+            try output.append(allocator, '\n');
+            try output.appendSlice(allocator, kv.key);
+            try output.append(allocator, '=');
+            try output.appendSlice(allocator, kv.value);
+        }
+    }
+
+    return try output.toOwnedSlice(allocator);
+}
+
 test "parseText empty yields defaults" {
 	const allocator = std.testing.allocator;
 	var cfg = try parseText(allocator, "\n\n# comment\n");
@@ -643,4 +708,62 @@ test "parseText ollama_url alias populates embedding_url" {
 test "parseText rejects invalid embedding_api" {
 	const allocator = std.testing.allocator;
 	try std.testing.expectError(error.InvalidValue, parseText(allocator, "embedding_api=banana\n"));
+}
+
+test "writeConfigValues updates commented keys" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\# codescan config
+        \\#embedding_url=http://localhost:11434
+        \\#embedding_api=ollama
+        \\#embedding_model=bge-large
+        \\#search_mode=hybrid
+        \\
+    ;
+    const kvs = [_]KV{
+        .{ .key = "embedding_url", .value = "http://localhost:8000" },
+        .{ .key = "embedding_api", .value = "openai" },
+        .{ .key = "embedding_model", .value = "jina-code" },
+    };
+    const result = try writeConfigValues(allocator, input, &kvs);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "embedding_url=http://localhost:8000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "embedding_api=openai") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "embedding_model=jina-code") != null);
+    // search_mode should remain commented
+    try std.testing.expect(std.mem.indexOf(u8, result, "#search_mode=hybrid") != null);
+}
+
+test "writeConfigValues updates uncommented keys" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\embedding_url=http://localhost:11434
+        \\embedding_model=bge-large
+        \\
+    ;
+    const kvs = [_]KV{
+        .{ .key = "embedding_url", .value = "http://localhost:8000" },
+    };
+    const result = try writeConfigValues(allocator, input, &kvs);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "embedding_url=http://localhost:8000") != null);
+    // embedding_model should be unchanged
+    try std.testing.expect(std.mem.indexOf(u8, result, "embedding_model=bge-large") != null);
+}
+
+test "writeConfigValues appends missing keys" {
+    const allocator = std.testing.allocator;
+    const input =
+        \\# codescan config
+        \\#embedding_url=http://localhost:11434
+        \\
+    ;
+    const kvs = [_]KV{
+        .{ .key = "embedding_url", .value = "http://localhost:8000" },
+        .{ .key = "search_mode", .value = "lexical" },
+    };
+    const result = try writeConfigValues(allocator, input, &kvs);
+    defer allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "embedding_url=http://localhost:8000") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result, "search_mode=lexical") != null);
 }
