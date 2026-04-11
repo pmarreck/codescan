@@ -117,7 +117,7 @@
 - [x] Auto-reindex after CLI edits (skip re-embedding, daemon catches up on vectors)
 - [x] `codescan rename` applies edits by default (`--dry-run` for preview-only)
 - [x] Hashlines in `codescan references` output for stale-edit protection
-
+- [x] Auto-detect embedding server (Ollama/oMLX) on init, graceful lexical-only fallback when unavailable, `--lexical-only` flag (completed 2026-04-11 EST)
 ### Phase 6: New Language Grammars
 - [x] Add Clojure tree-sitter grammar + symbol mappings (`.clj`, `.cljs`, `.cljc`, `.edn`) — custom list_lit extraction for defn/def/ns/etc.
 - [x] Add Assembly tree-sitter grammar + symbol mappings (`.s`, `.S`, `.asm`) — labels + constants via RubixDev/tree-sitter-asm
