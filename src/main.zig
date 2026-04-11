@@ -373,7 +373,14 @@ pub fn main() !void {
 
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			var use_null_embedder = false;
+			if (parsed.lexical_only) {
+				use_null_embedder = true;
+			} else {
+				ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
+					std.process.exit(1);
+				};
+			}
 			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
 				.base_url = settings.embedding_url,
@@ -381,6 +388,10 @@ pub fn main() !void {
 				.dialect = settings.embedding_dialect,
 				.auth_header = settings.embedding_auth_header,
 			};
+			const active_embedder = if (use_null_embedder)
+				embedding.NullEmbedder.embedder()
+			else
+				embedder_adapter.embedder();
 
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 			defer index_filters.deinit(allocator);
@@ -390,8 +401,7 @@ pub fn main() !void {
 				db,
 				settings.root_path,
 				registry,
-				embedder_adapter.embedder(),
-				.{
+				active_embedder,				.{
 					.embedding_dim = settings.embedding_dim,
 					.embedding_model = settings.embedding_model,
 					.batch_size = settings.batch_size,
@@ -469,7 +479,14 @@ pub fn main() !void {
 
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			var use_null_embedder = false;
+			if (parsed.lexical_only) {
+				use_null_embedder = true;
+			} else {
+				ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
+					std.process.exit(1);
+				};
+			}
 			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
 				.base_url = settings.embedding_url,
@@ -477,6 +494,10 @@ pub fn main() !void {
 				.dialect = settings.embedding_dialect,
 				.auth_header = settings.embedding_auth_header,
 			};
+			const active_embedder = if (use_null_embedder)
+				embedding.NullEmbedder.embedder()
+			else
+				embedder_adapter.embedder();
 
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 			defer index_filters.deinit(allocator);
@@ -486,8 +507,7 @@ pub fn main() !void {
 				db,
 				settings.root_path,
 				registry,
-				embedder_adapter.embedder(),
-				.{
+				active_embedder,				.{
 					.embedding_dim = settings.embedding_dim,
 					.embedding_model = settings.embedding_model,
 					.batch_size = settings.batch_size,
@@ -1564,6 +1584,66 @@ fn ensureModelAvailableOrExit(
 		},
 	};
 }
+
+/// Like ensureModelAvailableOrExit, but prompts for lexical-only fallback instead of exiting.
+/// Sets use_null to true if user opts for lexical-only. Returns error if user declines.
+fn ensureModelAvailableOrPrompt(
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+	dialect: embedding_http.ApiDialect,
+	use_null: *bool,
+) !void {
+	if (dialect == .openai) return;
+	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
+		error.ModelNotFound => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"  Ollama model '{s}' not found.\n" ++
+					"  Index in lexical-only mode? [Y/n] ",
+				.{model_name},
+			) catch {};
+			if (promptYesNo(stderr, false)) {
+				use_null.* = true;
+				return;
+			}
+			_ = stderr.print("Run 'ollama pull {s}' to install, then try again.\n", .{model_name}) catch {};
+			_ = stderr.flush() catch {};
+			return error.ModelNotFound;
+		},
+		error.ModelLoading => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"  note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
+				.{model_name},
+			) catch {};
+			_ = stderr.flush() catch {};
+		},
+		else => {
+			var stderr_buf: [4096]u8 = undefined;
+			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			_ = stderr.print(
+				"  Embedding server unreachable at {s}.\n" ++
+					"  Index in lexical-only mode? [Y/n] ",
+				.{base_url},
+			) catch {};
+			if (promptYesNo(stderr, false)) {
+				use_null.* = true;
+				return;
+			}
+			_ = stderr.print("Start Ollama with: ollama serve\n", .{}) catch {};
+			_ = stderr.flush() catch {};
+			return err;
+		},
+	};
+}
+
 
 fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat) bool {
 	return is_tty and out_format == .human;
