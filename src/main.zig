@@ -1554,6 +1554,109 @@ fn tryInitOllama(
 	return true;
 }
 
+const DetectedServer = struct {
+    url: []const u8,
+    dialect: embedding_http.ApiDialect,
+    model_available: bool,
+};
+
+/// Probes well-known embedding server ports and returns the first that responds.
+/// Tries Ollama on the configured URL first, then oMLX on :8000.
+/// Returns null if no server responds.
+fn detectEmbeddingServer(
+    allocator: std.mem.Allocator,
+    transport: embedding_http.Transport,
+    configured_url: []const u8,
+    model_name: []const u8,
+) ?DetectedServer {
+    // Try 1: Ollama at configured URL (default http://localhost:11434)
+    if (probeOllama(allocator, transport, configured_url, model_name)) |result| {
+        return result;
+    }
+
+    // Try 2: oMLX at http://localhost:8000 (OpenAI-compatible)
+    if (probeOpenAI(allocator, transport, "http://localhost:8000")) |result| {
+        return result;
+    }
+
+    return null;
+}
+
+fn probeOllama(
+    allocator: std.mem.Allocator,
+    transport: embedding_http.Transport,
+    base_url: []const u8,
+    model_name: []const u8,
+) ?DetectedServer {
+    embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, .ollama) catch |err| {
+        switch (err) {
+            error.ModelNotFound => return .{
+                .url = base_url,
+                .dialect = .ollama,
+                .model_available = false,
+            },
+            error.ModelLoading => return .{
+                .url = base_url,
+                .dialect = .ollama,
+                .model_available = true,
+            },
+            else => return null, // Server not reachable
+        }
+    };
+    return .{
+        .url = base_url,
+        .dialect = .ollama,
+        .model_available = true,
+    };
+}
+
+fn probeOpenAI(
+    allocator: std.mem.Allocator,
+    transport: embedding_http.Transport,
+    base_url: []const u8,
+) ?DetectedServer {
+    const url = buildOpenAIModelsUrl(allocator, base_url) catch return null;
+    defer allocator.free(url);
+
+    const headers = [_]std.http.Header{
+        .{ .name = "Accept", .value = "application/json" },
+    };
+
+    const response = transport.send(transport.ctx, allocator, .{
+        .method = "GET",
+        .url = url,
+        .headers = &headers,
+        .body = "",
+    }) catch return null;
+    defer allocator.free(response.body);
+
+    if (response.status != 200) return null;
+
+    return .{
+        .url = base_url,
+        .dialect = .openai,
+        .model_available = true,
+    };
+}
+
+fn buildOpenAIModelsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+    const trimmed = std.mem.trimRight(u8, base_url, "/");
+    return std.fmt.allocPrint(allocator, "{s}/v1/models", .{trimmed});
+}
+
+/// Prompts the user with a yes/no question. Returns true for yes.
+/// In non-TTY mode, returns `non_tty_default`.
+fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
+    _ = stderr.flush() catch {};
+    if (!std.fs.File.stdin().isTty()) return non_tty_default;
+    var input_buf: [16]u8 = undefined;
+    const stdin = std.fs.File.stdin();
+    const n = stdin.read(&input_buf) catch return false;
+    if (n == 0) return false;
+    return input_buf[0] == 'y' or input_buf[0] == 'Y';
+}
+
+
 /// Performs a full index (shared between `codescan index` and auto-index-before-search).
 fn performFullIndex(
 	allocator: std.mem.Allocator,
@@ -5434,6 +5537,99 @@ pub fn runRegexSearch(
 }
 
 // writeJsonString is defined earlier in this file (takes s, writer)
+
+// ── Test mocks for detectEmbeddingServer ─────────────────────────────────────
+
+const OpenAIFallbackMock = struct {
+    fn send(_: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
+        if (std.mem.endsWith(u8, req.url, "/v1/models")) {
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"data\":[]}") };
+        }
+        return error.ConnectionRefused;
+    }
+    fn transport(self: *OpenAIFallbackMock) embedding_http.Transport {
+        return .{ .ctx = self, .send = send };
+    }
+};
+
+const AllFailMock = struct {
+    fn send(_: *anyopaque, _: std.mem.Allocator, _: embedding_http.HttpRequest) !embedding_http.HttpResponse {
+        return error.ConnectionRefused;
+    }
+    fn transport(self: *AllFailMock) embedding_http.Transport {
+        return .{ .ctx = self, .send = send };
+    }
+};
+
+test "detectEmbeddingServer finds Ollama" {
+    const allocator = std.testing.allocator;
+    var mock = embedding_http.MockTransportCtx{
+        .tags_body =
+            \\{"models":[{"name":"bge-large:latest"}]}
+        ,
+        .ps_body =
+            \\{"models":[]}
+        ,
+    };
+    const result = detectEmbeddingServer(
+        allocator,
+        mock.transport(),
+        "http://localhost:11434",
+        "bge-large",
+    );
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("http://localhost:11434", result.?.url);
+    try std.testing.expectEqual(embedding_http.ApiDialect.ollama, result.?.dialect);
+    try std.testing.expect(result.?.model_available);
+}
+
+test "detectEmbeddingServer finds oMLX when Ollama unavailable" {
+    const allocator = std.testing.allocator;
+    var mock = OpenAIFallbackMock{};
+    const result = detectEmbeddingServer(
+        allocator,
+        mock.transport(),
+        "http://localhost:11434",
+        "bge-large",
+    );
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("http://localhost:8000", result.?.url);
+    try std.testing.expectEqual(embedding_http.ApiDialect.openai, result.?.dialect);
+}
+
+test "detectEmbeddingServer returns null when nothing available" {
+    const allocator = std.testing.allocator;
+    var mock = AllFailMock{};
+    const result = detectEmbeddingServer(
+        allocator,
+        mock.transport(),
+        "http://localhost:11434",
+        "bge-large",
+    );
+    try std.testing.expect(result == null);
+}
+
+test "detectEmbeddingServer Ollama up but model missing" {
+    const allocator = std.testing.allocator;
+    var mock = embedding_http.MockTransportCtx{
+        .tags_body =
+            \\{"models":[{"name":"llama3:latest"}]}
+        ,
+        .ps_body =
+            \\{"models":[]}
+        ,
+    };
+    const result = detectEmbeddingServer(
+        allocator,
+        mock.transport(),
+        "http://localhost:11434",
+        "bge-large",
+    );
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("http://localhost:11434", result.?.url);
+    try std.testing.expect(!result.?.model_available);
+}
+
 
 test "findRepoRoot finds nearest .codescan ancestor" {
 	const allocator = std.testing.allocator;

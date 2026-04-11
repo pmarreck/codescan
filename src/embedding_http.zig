@@ -337,15 +337,13 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 }
 
 /// A mock transport for unit tests — returns canned responses based on URL path.
-const MockTransportCtx = struct {
-	tags_body: []const u8,
+pub const MockTransportCtx = struct {	tags_body: []const u8,
 	ps_body: []const u8,
 	embed_should_fail: bool = false,
 	status_override: ?u16 = null,
 	auth_header_sent: bool = false,
 
-	fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
-		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
+	pub fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
 		for (req.headers) |h| {
 			if (std.mem.eql(u8, h.name, "Authorization")) {
 				self.auth_header_sent = true;
@@ -377,8 +375,7 @@ const MockTransportCtx = struct {
 		return error.UnsupportedMethod;
 	}
 
-	fn transport(self: *MockTransportCtx) Transport {
-		return .{ .ctx = self, .send = send };
+	pub fn transport(self: *MockTransportCtx) Transport {		return .{ .ctx = self, .send = send };
 	}
 };
 
