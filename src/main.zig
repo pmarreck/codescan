@@ -272,10 +272,58 @@ pub fn main() !void {
 			};
 			defer storage.close(db);
 
-			// Try Ollama; fall back to lexical-only if unavailable
+			// Auto-detect embedding server
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
-			const ollama_ok = tryInitOllama(allocator, &http_client, settings.embedding_url, settings.embedding_model, settings.embedding_dialect, stderr);
+
+			const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model);
+			var use_embeddings = false;
+
+			if (detected) |d| {
+				if (d.model_available) {
+					// Server found with model — write config and proceed with embeddings
+					_ = stderr.print("  Detected {s} on {s} with model '{s}'. Saved to .codescan/config.ini.\n", .{
+						if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, settings.embedding_model,
+					}) catch {};
+					_ = stderr.flush() catch {};
+					use_embeddings = true;
+				} else {
+					// Server found but model missing
+					_ = stderr.print("  Found {s} on {s} but model '{s}' not installed.\n" ++
+						"  Run 'ollama pull {s}' then 'codescan index' for semantic search.\n", .{
+						if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, settings.embedding_model, settings.embedding_model,
+					}) catch {};
+					_ = stderr.flush() catch {};
+					_ = stderr.print("  Index in lexical-only mode? [Y/n] ", .{}) catch {};
+					if (!promptYesNo(stderr, true)) {
+						try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
+						try stdout.flush();
+						return;
+					}
+				}
+				// Write detected server config
+				writeDetectedConfig(allocator, config_root, d.url, d.dialect) catch |err| {
+					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
+					_ = stderr.flush() catch {};
+				};
+			} else {
+				// No server found
+				_ = stderr.print("  No embedding server detected.\n" ++
+					"  Index in lexical-only mode? (Semantic search available later via 'codescan setup-model'). [Y/n] ", .{}) catch {};
+				if (!promptYesNo(stderr, true)) {
+					try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
+					try stdout.flush();
+					return;
+				}
+			}
+
+			if (!use_embeddings) {
+				// Write search_mode=lexical to config
+				writeDetectedConfigLexical(allocator, config_root) catch |err| {
+					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
+					_ = stderr.flush() catch {};
+				};
+			}
 
 			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
@@ -284,16 +332,19 @@ pub fn main() !void {
 				.dialect = settings.embedding_dialect,
 				.auth_header = settings.embedding_auth_header,
 			};
+			const active_embedder = if (use_embeddings)
+				embedder_adapter.embedder()
+			else
+				embedding.NullEmbedder.embedder();
 
 			const show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output);
 
-			// Perform full index
 			const stats = try performFullIndex(
 				allocator,
 				db,
 				settings,
 				registry,
-				embedder_adapter.embedder(),
+				active_embedder,
 				stderr,
 				show_progress,
 			);
@@ -301,17 +352,16 @@ pub fn main() !void {
 			// Print summary
 			if (settings.output == .json) {
 				try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d},\"semantic\":{s}}}\n", .{
-					stats.files, stats.symbols, if (ollama_ok) "true" else "false",
+					stats.files, stats.symbols, if (use_embeddings) "true" else "false",
 				});
 			} else {
 				try stdout.print("Initialized codescan: {d} files, {d} symbols indexed", .{ stats.files, stats.symbols });
-				if (!ollama_ok) {
+				if (!use_embeddings) {
 					try stdout.print(" (lexical only)", .{});
 				}
 				try stdout.print("\n", .{});
 			}
 			try stdout.flush();
-
 			// Start background watcher
 			maybeStartWatcher(allocator, settings, stderr);
 		},
@@ -1671,6 +1721,39 @@ fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     if (n == 0) return false;
     return input_buf[0] == 'y' or input_buf[0] == 'Y';
 }
+
+fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, url: []const u8, dialect: embedding_http.ApiDialect) !void {
+    const cfg_path = try configPath(allocator, config_root);
+    defer allocator.free(cfg_path);
+    const content = try std.fs.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
+    defer allocator.free(content);
+    const dialect_str = if (dialect == .ollama) "ollama" else "openai";
+    const kvs = [_]config.KV{
+        .{ .key = "embedding_url", .value = url },
+        .{ .key = "embedding_api", .value = dialect_str },
+    };
+    const updated = try config.writeConfigValues(allocator, content, &kvs);
+    defer allocator.free(updated);
+    const file = try std.fs.cwd().createFile(cfg_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(updated);
+}
+
+fn writeDetectedConfigLexical(allocator: std.mem.Allocator, config_root: []const u8) !void {
+    const cfg_path = try configPath(allocator, config_root);
+    defer allocator.free(cfg_path);
+    const content = try std.fs.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
+    defer allocator.free(content);
+    const kvs = [_]config.KV{
+        .{ .key = "search_mode", .value = "lexical" },
+    };
+    const updated = try config.writeConfigValues(allocator, content, &kvs);
+    defer allocator.free(updated);
+    const file = try std.fs.cwd().createFile(cfg_path, .{ .truncate = true });
+    defer file.close();
+    try file.writeAll(updated);
+}
+
 
 
 /// Performs a full index (shared between `codescan index` and auto-index-before-search).
