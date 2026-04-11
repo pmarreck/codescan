@@ -868,6 +868,14 @@ fn flushBatch(
 	const embeddings = try embedder.embed(embedder.ctx, allocator, batch_texts.items);
 	defer embedder.free(embedder.ctx, allocator, embeddings);
 
+	// NullEmbedder returns empty — skip vector insertion, just clean up texts
+	if (embeddings.len == 0) {
+		for (batch_texts.items) |text| allocator.free(text);
+		batch_texts.clearRetainingCapacity();
+		batch_rowids.clearRetainingCapacity();
+		return;
+	}
+
 	if (embeddings.len != batch_texts.items.len) return error.EmbeddingCountMismatch;
 	for (embeddings, 0..) |vector, idx| {
 		if (vector.len != options.embedding_dim) return error.EmbeddingDimMismatch;
@@ -889,6 +897,14 @@ fn flushCommentBatch(
 ) !void {
 	const embeddings = try embedder.embed(embedder.ctx, allocator, batch_texts.items);
 	defer embedder.free(embedder.ctx, allocator, embeddings);
+
+	// NullEmbedder returns empty — skip vector insertion, just clean up texts
+	if (embeddings.len == 0) {
+		for (batch_texts.items) |text| allocator.free(text);
+		batch_texts.clearRetainingCapacity();
+		batch_rowids.clearRetainingCapacity();
+		return;
+	}
 
 	if (embeddings.len != batch_texts.items.len) return error.EmbeddingCountMismatch;
 	for (embeddings, 0..) |vector, idx| {

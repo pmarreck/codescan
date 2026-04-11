@@ -33,6 +33,19 @@ pub const HttpEmbedder = struct {
 		embedding_http.freeEmbeddings(allocator, embeddings);
 	}
 };
+pub const NullEmbedder = struct {
+	pub fn embedder() Embedder {
+		return .{ .ctx = @ptrFromInt(1), .embed = embed_fn, .free = free_fn };
+	}
+
+	fn embed_fn(_: *anyopaque, allocator: std.mem.Allocator, _: []const []const u8) ![][]f32 {
+		return try allocator.alloc([]f32, 0);
+	}
+
+	fn free_fn(_: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
+		allocator.free(embeddings);
+	}
+};
 test "HttpEmbedder uses live Ollama" {
 	const allocator = std.testing.allocator;
 	try embedding_http.skipIfNoOllama(allocator);
@@ -63,6 +76,16 @@ test "HttpEmbedder uses live Ollama" {
 	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
 	try std.testing.expect(embeddings[0].len > 0);
 }
+
+test "NullEmbedder returns empty embeddings and free is safe" {
+    const allocator = std.testing.allocator;
+    const null_embedder = NullEmbedder.embedder();
+    const inputs = [_][]const u8{ "hello", "world" };
+    const embeddings = try null_embedder.embed(null_embedder.ctx, allocator, &inputs);
+    defer null_embedder.free(null_embedder.ctx, allocator, embeddings);
+    try std.testing.expectEqual(@as(usize, 0), embeddings.len);
+}
+
 
 fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
 	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
