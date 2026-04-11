@@ -83,7 +83,7 @@ pub const Seen = struct {
 	force: bool = false,
 	dry_run: bool = false,
 	confirm: bool = false,
-};
+    lexical_only: bool = false,};
 
 pub const Parsed = struct {
 	command: CommandTag,
@@ -143,7 +143,7 @@ pub const Parsed = struct {
 	force: bool,
 	dry_run: bool,
 	confirm: bool,
-	seen: Seen,
+    lexical_only: bool,	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
 		if (self.query_owned and self.query != null) {
@@ -215,7 +215,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.force = false,
 		.dry_run = false,
 		.confirm = false,
-		.seen = .{},
+		.lexical_only = false,		.seen = .{},
 	};
 
 	var query_parts: std.ArrayList([]const u8) = undefined;
@@ -818,7 +818,12 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
-		if (std.mem.eql(u8, arg, "--confirm") or std.mem.eql(u8, arg, "-y")) {
+        if (std.mem.eql(u8, arg, "--lexical-only")) {
+            parsed.lexical_only = true;
+            parsed.seen.lexical_only = true;
+            i += 1;
+            continue;
+        }		if (std.mem.eql(u8, arg, "--confirm") or std.mem.eql(u8, arg, "-y")) {
 			parsed.confirm = true;
 			parsed.seen.confirm = true;
 			i += 1;
@@ -1525,4 +1530,12 @@ test "parse setup-model command" {
 	var parsed = try parse(std.testing.allocator, &args);
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.setup_model, parsed.command);
+}
+
+test "parse --lexical-only flag" {
+    const args = [_][]const u8{ "codescan", "index", "--lexical-only" };
+    var parsed = try parse(std.testing.allocator, &args);
+    defer parsed.deinit(std.testing.allocator);
+    try std.testing.expect(parsed.lexical_only);
+    try std.testing.expect(parsed.seen.lexical_only);
 }
