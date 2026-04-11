@@ -4353,14 +4353,13 @@ const usage_index =
     \\  --type <csv>                    Index types (default code,doc)
     \\  --ext <csv>                     Restrict indexed extensions
     \\  --include-node-modules          Include node_modules
+    \\  --lexical-only                  Skip embeddings, index for lexical search only
     \\  --json                          JSON output
     \\
     \\Examples:
     \\  codescan index
     \\  codescan index --root /path/to/repo
-    \\
 ;
-
 const usage_update =
     \\Usage: codescan update [options]
     \\
@@ -4373,14 +4372,13 @@ const usage_update =
     \\  --type <csv>                    Indexed types (default code,doc)
     \\  --ext <csv>                     Restrict indexed extensions
     \\  --include-node-modules          Include node_modules
+    \\  --lexical-only                  Skip embeddings, index for lexical search only
     \\  --json                          JSON output
     \\
     \\Examples:
     \\  codescan update
     \\  codescan update --root /path/to/repo
-    \\
 ;
-
 const usage_config =
     \\Usage: codescan config [show|edit]
     \\
