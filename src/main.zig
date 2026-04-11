@@ -562,10 +562,22 @@ pub fn main() !void {
 				_ = stderr.print("note: No index found. Setting up codescan for this project...\n", .{}) catch {};
 				_ = stderr.flush() catch {};
 
-				// Try Ollama; fall back to lexical if unavailable
-				const ollama_ok = tryInitOllama(allocator, &http_client, settings.embedding_url, settings.embedding_model, settings.embedding_dialect, stderr);
-				if (!ollama_ok) {
+				// Auto-detect embedding server; use NullEmbedder if unavailable
+				const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model);
+				const use_embeddings = detected != null and detected.?.model_available;
+
+				if (!use_embeddings) {
 					effective_search_mode = .lexical;
+					if (detected) |d| {
+						if (!d.model_available) {
+							_ = stderr.print("  note: Embedding server found at {s} but model '{s}' not installed.\n" ++
+								"  Run 'codescan setup-model' then 'codescan update' for semantic search.\n", .{ d.url, settings.embedding_model }) catch {};
+						}
+					} else {
+						_ = stderr.print("  note: No embedding server found. Using lexical-only search.\n" ++
+							"  Run 'codescan setup-model' for semantic search.\n", .{}) catch {};
+					}
+					_ = stderr.flush() catch {};
 				}
 
 				var embedder_adapter = embedding.HttpEmbedder{
@@ -575,13 +587,17 @@ pub fn main() !void {
 					.dialect = settings.embedding_dialect,
 					.auth_header = settings.embedding_auth_header,
 				};
+				const active_embedder = if (use_embeddings)
+					embedder_adapter.embedder()
+				else
+					embedding.NullEmbedder.embedder();
 
 				_ = try performFullIndex(
 					allocator,
 					db,
 					settings,
 					registry,
-					embedder_adapter.embedder(),
+					active_embedder,
 					stderr,
 					shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
 				);
