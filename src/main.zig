@@ -1761,16 +1761,37 @@ fn probeOpenAI(
     transport: embedding_http.Transport,
     base_url: []const u8,
 ) ?DetectedServer {
-    const url = buildOpenAIModelsUrl(allocator, base_url) catch return null;
-    defer allocator.free(url);
+    // Try /health first (oMLX returns 401 on /v1/models without auth)
+    const health_url = buildUrl(allocator, base_url, "/health") catch return null;
+    defer allocator.free(health_url);
 
     const headers = [_]std.http.Header{
         .{ .name = "Accept", .value = "application/json" },
     };
 
+    if (transport.send(transport.ctx, allocator, .{
+        .method = "GET",
+        .url = health_url,
+        .headers = &headers,
+        .body = "",
+    })) |response| {
+        defer allocator.free(response.body);
+        if (response.status == 200) {
+            return .{
+                .url = base_url,
+                .dialect = .openai,
+                .model_available = true,
+            };
+        }
+    } else |_| {}
+
+    // Fall back to /v1/models
+    const models_url = buildUrl(allocator, base_url, "/v1/models") catch return null;
+    defer allocator.free(models_url);
+
     const response = transport.send(transport.ctx, allocator, .{
         .method = "GET",
-        .url = url,
+        .url = models_url,
         .headers = &headers,
         .body = "",
     }) catch return null;
@@ -1785,9 +1806,9 @@ fn probeOpenAI(
     };
 }
 
-fn buildOpenAIModelsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+fn buildUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const u8) ![]u8 {
     const trimmed = std.mem.trimRight(u8, base_url, "/");
-    return std.fmt.allocPrint(allocator, "{s}/v1/models", .{trimmed});
+    return std.fmt.allocPrint(allocator, "{s}{s}", .{ trimmed, path });
 }
 
 /// Prompts the user with a yes/no question. Returns true for yes.
@@ -5719,6 +5740,9 @@ pub fn runRegexSearch(
 
 const OpenAIFallbackMock = struct {
     fn send(_: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
+        if (std.mem.endsWith(u8, req.url, "/health")) {
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"healthy\"}") };
+        }
         if (std.mem.endsWith(u8, req.url, "/v1/models")) {
             return .{ .status = 200, .body = try allocator.dupe(u8, "{\"data\":[]}") };
         }
