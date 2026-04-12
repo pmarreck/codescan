@@ -288,11 +288,16 @@ pub fn main() !void {
 					_ = stderr.flush() catch {};
 					use_embeddings = true;
 				} else {
-					// Server found but model missing
-					_ = stderr.print("  Found {s} on {s} but model '{s}' not installed.\n" ++
-						"  Run 'ollama pull {s}' then 'codescan index' for semantic search.\n", .{
-						if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, settings.embedding_model, settings.embedding_model,
-					}) catch {};
+					// Server found but model/auth not verified
+					if (d.dialect == .ollama) {
+						_ = stderr.print("  Found Ollama on {s} but model '{s}' not installed.\n" ++
+							"  Run 'ollama pull {s}' then 'codescan index' for semantic search.\n", .{
+							d.url, settings.embedding_model, settings.embedding_model,
+						}) catch {};
+					} else {
+						_ = stderr.print("  Found oMLX on {s}. Configure embedding_api_key in .codescan/config.ini\n" ++
+							"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
+					}
 					_ = stderr.flush() catch {};
 					_ = stderr.print("  Index in lexical-only mode? [Y/n] ", .{}) catch {};
 					if (!promptYesNo(stderr, true)) {
@@ -325,11 +330,13 @@ pub fn main() !void {
 				};
 			}
 
+			const emb_url = if (detected) |d| d.url else settings.embedding_url;
+			const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
 			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
-				.base_url = settings.embedding_url,
+				.base_url = emb_url,
 				.model = settings.embedding_model,
-				.dialect = settings.embedding_dialect,
+				.dialect = emb_dialect,
 				.auth_header = settings.embedding_auth_header,
 			};
 			const active_embedder = if (use_embeddings)
@@ -650,11 +657,13 @@ pub fn main() !void {
 					_ = stderr.flush() catch {};
 				}
 
+				const emb_url = if (detected) |d| d.url else settings.embedding_url;
+				const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
 				var embedder_adapter = embedding.HttpEmbedder{
 					.transport = http_client.transport(),
-					.base_url = settings.embedding_url,
+					.base_url = emb_url,
 					.model = settings.embedding_model,
-					.dialect = settings.embedding_dialect,
+					.dialect = emb_dialect,
 					.auth_header = settings.embedding_auth_header,
 				};
 				const active_embedder = if (use_embeddings)
@@ -1780,7 +1789,7 @@ fn probeOpenAI(
             return .{
                 .url = base_url,
                 .dialect = .openai,
-                .model_available = true,
+                .model_available = false, // /health confirms server exists but not auth/model
             };
         }
     } else |_| {}
