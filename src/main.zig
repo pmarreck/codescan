@@ -282,8 +282,9 @@ pub fn main() !void {
 			if (detected) |d| {
 				if (d.model_available) {
 					// Server found with model — write config and proceed with embeddings
+					const model_name = d.default_model orelse settings.embedding_model;
 					_ = stderr.print("  Detected {s} on {s} with model '{s}'. Saved to .codescan/config.ini.\n", .{
-						if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, settings.embedding_model,
+						if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, model_name,
 					}) catch {};
 					_ = stderr.flush() catch {};
 					use_embeddings = true;
@@ -295,8 +296,13 @@ pub fn main() !void {
 							d.url, settings.embedding_model, settings.embedding_model,
 						}) catch {};
 					} else {
-						_ = stderr.print("  Found oMLX on {s}. Configure embedding_api_key in .codescan/config.ini\n" ++
-							"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
+						if (d.default_model) |dm| {
+							_ = stderr.print("  Found oMLX on {s} with model '{s}'.\n" ++
+								"  Set embedding_api_key in .codescan/config.ini then run 'codescan index'.\n", .{ d.url, dm }) catch {};
+						} else {
+							_ = stderr.print("  Found oMLX on {s}. Configure embedding_api_key in .codescan/config.ini\n" ++
+								"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
+						}
 					}
 					_ = stderr.flush() catch {};
 					_ = stderr.print("  Index in lexical-only mode? [Y/n] ", .{}) catch {};
@@ -306,8 +312,8 @@ pub fn main() !void {
 						return;
 					}
 				}
-				// Write detected server config
-				writeDetectedConfig(allocator, config_root, d.url, d.dialect) catch |err| {
+				// Write detected server config (including model name if discovered)
+				writeDetectedConfig(allocator, config_root, d.url, d.dialect, d.default_model) catch |err| {
 					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
 					_ = stderr.flush() catch {};
 				};
@@ -332,10 +338,11 @@ pub fn main() !void {
 
 			const emb_url = if (detected) |d| d.url else settings.embedding_url;
 			const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
+			const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
 			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
 				.base_url = emb_url,
-				.model = settings.embedding_model,
+				.model = emb_model,
 				.dialect = emb_dialect,
 				.auth_header = settings.embedding_auth_header,
 			};
@@ -659,10 +666,11 @@ pub fn main() !void {
 
 				const emb_url = if (detected) |d| d.url else settings.embedding_url;
 				const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
+				const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
 				var embedder_adapter = embedding.HttpEmbedder{
 					.transport = http_client.transport(),
 					.base_url = emb_url,
-					.model = settings.embedding_model,
+					.model = emb_model,
 					.dialect = emb_dialect,
 					.auth_header = settings.embedding_auth_header,
 				};
@@ -1713,6 +1721,7 @@ const DetectedServer = struct {
     url: []const u8,
     dialect: embedding_http.ApiDialect,
     model_available: bool,
+    default_model: ?[]const u8 = null, // from oMLX /health response
 };
 
 /// Probes well-known embedding server ports and returns the first that responds.
@@ -1786,10 +1795,13 @@ fn probeOpenAI(
     })) |response| {
         defer allocator.free(response.body);
         if (response.status == 200) {
+            // Try to parse default_model from health response
+            const model_name = parseHealthDefaultModel(allocator, response.body);
             return .{
                 .url = base_url,
                 .dialect = .openai,
-                .model_available = false, // /health confirms server exists but not auth/model
+                .model_available = false, // can't verify auth via /health alone
+                .default_model = model_name,
             };
         }
     } else |_| {}
@@ -1822,6 +1834,18 @@ fn buildUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const u8
 
 /// Prompts the user with a yes/no question. Returns true for yes.
 /// In non-TTY mode, returns `non_tty_default`.
+/// Parse "default_model" from an oMLX /health JSON response.
+/// Returns an allocator-owned string, or null if not found.
+fn parseHealthDefaultModel(allocator: std.mem.Allocator, body: []const u8) ?[]const u8 {
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const model_value = parsed.value.object.get("default_model") orelse return null;
+    if (model_value != .string) return null;
+    return allocator.dupe(u8, model_value.string) catch null;
+}
+
 fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     _ = stderr.flush() catch {};
     if (!std.fs.File.stdin().isTty()) return non_tty_default;
@@ -1832,17 +1856,21 @@ fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     return input_buf[0] == 'y' or input_buf[0] == 'Y';
 }
 
-fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, url: []const u8, dialect: embedding_http.ApiDialect) !void {
+fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, url: []const u8, dialect: embedding_http.ApiDialect, detected_model: ?[]const u8) !void {
     const cfg_path = try configPath(allocator, config_root);
     defer allocator.free(cfg_path);
     const content = try std.fs.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
     defer allocator.free(content);
     const dialect_str = if (dialect == .ollama) "ollama" else "openai";
-    const kvs = [_]config.KV{
-        .{ .key = "embedding_url", .value = url },
-        .{ .key = "embedding_api", .value = dialect_str },
-    };
-    const updated = try config.writeConfigValues(allocator, content, &kvs);
+    var kvs_buf: [3]config.KV = undefined;
+    kvs_buf[0] = .{ .key = "embedding_url", .value = url };
+    kvs_buf[1] = .{ .key = "embedding_api", .value = dialect_str };
+    var kv_count: usize = 2;
+    if (detected_model) |m| {
+        kvs_buf[2] = .{ .key = "embedding_model", .value = m };
+        kv_count = 3;
+    }
+    const updated = try config.writeConfigValues(allocator, content, kvs_buf[0..kv_count]);
     defer allocator.free(updated);
     const file = try std.fs.cwd().createFile(cfg_path, .{ .truncate = true });
     defer file.close();
@@ -5759,7 +5787,7 @@ pub fn runRegexSearch(
 const OpenAIFallbackMock = struct {
     fn send(_: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
         if (std.mem.endsWith(u8, req.url, "/health")) {
-            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"healthy\"}") };
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"healthy\",\"default_model\":\"test-model-mlx\"}") };
         }
         if (std.mem.endsWith(u8, req.url, "/v1/models")) {
             return .{ .status = 200, .body = try allocator.dupe(u8, "{\"data\":[]}") };
@@ -5814,6 +5842,10 @@ test "detectEmbeddingServer finds oMLX when Ollama unavailable" {
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("http://localhost:8000", result.?.url);
     try std.testing.expectEqual(embedding_http.ApiDialect.openai, result.?.dialect);
+    try std.testing.expect(!result.?.model_available); // can't verify auth via /health
+    try std.testing.expect(result.?.default_model != null);
+    try std.testing.expectEqualStrings("test-model-mlx", result.?.default_model.?);
+    allocator.free(result.?.default_model.?);
 }
 
 test "detectEmbeddingServer returns null when nothing available" {
