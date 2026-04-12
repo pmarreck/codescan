@@ -3294,7 +3294,16 @@ pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from
 	const start_byte = offsets[from_idx];
 	const end_byte = if (to_idx + 1 < offsets.len) offsets[to_idx + 1] else source.len;
 
-	try spliceFile(allocator, file_path, start_byte, end_byte, input_text);
+	// Ensure body ends with newline so replacement doesn't merge with next line
+	const body = if (input_text.len > 0 and input_text[input_text.len - 1] != '\n') blk: {
+		const with_nl = try allocator.alloc(u8, input_text.len + 1);
+		@memcpy(with_nl[0..input_text.len], input_text);
+		with_nl[input_text.len] = '\n';
+		break :blk with_nl;
+	} else input_text;
+	defer if (body.ptr != input_text.ptr) allocator.free(body);
+
+	try spliceFile(allocator, file_path, start_byte, end_byte, body);
 	try writer.print("Replaced lines {d}-{d}\n", .{ from.line, to.line });
 	try emitNewVersion(allocator, file_path, writer);
 }
