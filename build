@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if command -v nix >/dev/null 2>&1; then
+  nix build "$@"
+  mkdir -p zig-out/bin
+  install -m755 result/bin/* zig-out/bin/
+else
+  zig build -Doptimize=ReleaseSafe "$@"
+fi
