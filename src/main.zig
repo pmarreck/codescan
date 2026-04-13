@@ -277,7 +277,7 @@ pub fn main() !void {
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 
-			const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model);
+			const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
 			var use_embeddings = false;
 
 			if (detected) |d| {
@@ -410,6 +410,12 @@ pub fn main() !void {
 			else
 				embedder_adapter.embedder();
 
+			// Auto-detect embedding dimension if using a real embedder
+			const effective_dim = if (!use_null_embedder)
+				probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
+			else
+				settings.embedding_dim;
+
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 			defer index_filters.deinit(allocator);
 
@@ -419,7 +425,7 @@ pub fn main() !void {
 				settings.root_path,
 				registry,
 				active_embedder,				.{
-					.embedding_dim = settings.embedding_dim,
+					.embedding_dim = effective_dim,
 					.embedding_model = settings.embedding_model,
 					.batch_size = settings.batch_size,
 					.max_file_size = settings.max_file_size,
@@ -516,6 +522,12 @@ pub fn main() !void {
 			else
 				embedder_adapter.embedder();
 
+			// Auto-detect embedding dimension if using a real embedder
+			const effective_dim = if (!use_null_embedder)
+				probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
+			else
+				settings.embedding_dim;
+
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 			defer index_filters.deinit(allocator);
 
@@ -525,7 +537,7 @@ pub fn main() !void {
 				settings.root_path,
 				registry,
 				active_embedder,				.{
-					.embedding_dim = settings.embedding_dim,
+					.embedding_dim = effective_dim,
 					.embedding_model = settings.embedding_model,
 					.batch_size = settings.batch_size,
 					.max_file_size = settings.max_file_size,
@@ -650,7 +662,7 @@ pub fn main() !void {
 				_ = stderr.flush() catch {};
 
 				// Auto-detect embedding server; use NullEmbedder if unavailable
-				const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model);
+				const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
 				const use_embeddings = detected != null and detected.?.model_available;
 
 				if (!use_embeddings) {
@@ -1568,6 +1580,18 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	return settings;
 }
 
+/// Probe the actual embedding dimension by sending a single test input.
+/// Returns the detected dimension, or null if the probe fails.
+fn probeEmbeddingDim(allocator: std.mem.Allocator, embedder: embedding.Embedder) ?usize {
+    const inputs = [_][]const u8{"dimension probe"};
+    const embeddings = embedder.embed(embedder.ctx, allocator, &inputs) catch return null;
+    defer embedder.free(embedder.ctx, allocator, embeddings);
+    if (embeddings.len == 0) return null;
+    if (embeddings[0].len == 0) return null;
+    return embeddings[0].len;
+}
+
+
 fn ensureModelAvailableOrExit(
 	allocator: std.mem.Allocator,
 	transport: embedding_http.Transport,
@@ -1745,6 +1769,7 @@ fn detectEmbeddingServer(
     transport: embedding_http.Transport,
     configured_url: []const u8,
     model_name: []const u8,
+    auth_header: ?[]const u8,
 ) ?DetectedServer {
     // Try 1: Ollama at configured URL (default http://localhost:11434)
     if (probeOllama(allocator, transport, configured_url, model_name)) |result| {
@@ -1752,7 +1777,7 @@ fn detectEmbeddingServer(
     }
 
     // Try 2: oMLX at http://localhost:8000 (OpenAI-compatible)
-    if (probeOpenAI(allocator, transport, "http://localhost:8000")) |result| {
+    if (probeOpenAI(allocator, transport, "http://localhost:8000", auth_header)) |result| {
         return result;
     }
 
@@ -1791,6 +1816,7 @@ fn probeOpenAI(
     allocator: std.mem.Allocator,
     transport: embedding_http.Transport,
     base_url: []const u8,
+    auth_header: ?[]const u8,
 ) ?DetectedServer {
     // Try /health first (oMLX returns 401 on /v1/models without auth)
     const health_url = buildUrl(allocator, base_url, "/health") catch return null;
@@ -1800,6 +1826,7 @@ fn probeOpenAI(
         .{ .name = "Accept", .value = "application/json" },
     };
 
+    var health_model: ?[]const u8 = null;
     if (transport.send(transport.ctx, allocator, .{
         .method = "GET",
         .url = health_url,
@@ -1808,24 +1835,52 @@ fn probeOpenAI(
     })) |response| {
         defer allocator.free(response.body);
         if (response.status == 200) {
-            // Try to parse default_model from health response
-            const model_name = parseHealthDefaultModel(allocator, response.body);
-            return .{
-                .url = base_url,
-                .dialect = .openai,
-                .model_available = false, // can't verify auth via /health alone
-                .default_model = model_name,
-            };
+            health_model = parseHealthDefaultModel(allocator, response.body);
+        } else {
+            return null;
         }
-    } else |_| {}
+    } else |_| {
+        return null;
+    }
 
-    // Fall back to /v1/models
-    const models_url = buildUrl(allocator, base_url, "/v1/models") catch return null;
-    defer allocator.free(models_url);
+    // If we have auth, try /v1/models to find a code-specific model
+    var best_model: ?[]const u8 = null;
+    if (auth_header) |auth| {
+        best_model = probeOpenAIModels(allocator, transport, base_url, auth);
+    }
+
+    const chosen_model = best_model orelse health_model;
+    // Free the one we didn't choose
+    if (best_model != null and health_model != null) {
+        allocator.free(health_model.?);
+    }
+
+    return .{
+        .url = base_url,
+        .dialect = .openai,
+        .model_available = false,
+        .default_model = chosen_model,
+    };
+}
+
+/// Query /v1/models with auth and prefer a model with "code" in its name.
+fn probeOpenAIModels(
+    allocator: std.mem.Allocator,
+    transport: embedding_http.Transport,
+    base_url: []const u8,
+    auth_header: []const u8,
+) ?[]const u8 {
+    const url = buildUrl(allocator, base_url, "/v1/models") catch return null;
+    defer allocator.free(url);
+
+    const headers = [_]std.http.Header{
+        .{ .name = "Accept", .value = "application/json" },
+        .{ .name = "Authorization", .value = auth_header },
+    };
 
     const response = transport.send(transport.ctx, allocator, .{
         .method = "GET",
-        .url = models_url,
+        .url = url,
         .headers = &headers,
         .body = "",
     }) catch return null;
@@ -1833,11 +1888,23 @@ fn probeOpenAI(
 
     if (response.status != 200) return null;
 
-    return .{
-        .url = base_url,
-        .dialect = .openai,
-        .model_available = true,
-    };
+    var parsed = std.json.parseFromSlice(std.json.Value, allocator, response.body, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .object) return null;
+    const data = parsed.value.object.get("data") orelse return null;
+    if (data != .array) return null;
+
+    for (data.array.items) |item| {
+        if (item != .object) continue;
+        const id_val = item.object.get("id") orelse continue;
+        if (id_val != .string) continue;
+        if (std.mem.indexOf(u8, id_val.string, "code") != null) {
+            return allocator.dupe(u8, id_val.string) catch null;
+        }
+    }
+
+    return null; // No code model found — health default_model will be used
 }
 
 fn buildUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const u8) ![]u8 {
@@ -1920,6 +1987,9 @@ fn performFullIndex(
 	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 	defer index_filters.deinit(allocator);
 
+	// Auto-detect embedding dimension from a test embed
+	const effective_dim = probeEmbeddingDim(allocator, embedder) orelse settings.embedding_dim;
+
 	const stats = try indexer.indexAll(
 		allocator,
 		db,
@@ -1927,7 +1997,7 @@ fn performFullIndex(
 		registry,
 		embedder,
 		.{
-			.embedding_dim = settings.embedding_dim,
+			.embedding_dim = effective_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
@@ -5836,6 +5906,7 @@ test "detectEmbeddingServer finds Ollama" {
         mock.transport(),
         "http://localhost:11434",
         "bge-large",
+        null,
     );
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("http://localhost:11434", result.?.url);
@@ -5851,6 +5922,7 @@ test "detectEmbeddingServer finds oMLX when Ollama unavailable" {
         mock.transport(),
         "http://localhost:11434",
         "bge-large",
+        null,
     );
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("http://localhost:8000", result.?.url);
@@ -5869,6 +5941,7 @@ test "detectEmbeddingServer returns null when nothing available" {
         mock.transport(),
         "http://localhost:11434",
         "bge-large",
+        null,
     );
     try std.testing.expect(result == null);
 }
@@ -5888,6 +5961,7 @@ test "detectEmbeddingServer Ollama up but model missing" {
         mock.transport(),
         "http://localhost:11434",
         "bge-large",
+        null,
     );
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("http://localhost:11434", result.?.url);
