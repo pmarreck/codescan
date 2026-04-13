@@ -61,7 +61,7 @@
 
 						zig build \
 							--system ${zigPkgCache} \
-							-Doptimize=ReleaseSafe \
+							-Doptimize=ReleaseFast \
 							--color off
 					'';
 
