@@ -182,7 +182,8 @@ pub fn main() !void {
 		var stderr_buf: [4096]u8 = undefined;
 		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
 		const se = &stderr_writer.interface;
-		_ = se.print("error: embedding_api=openai requires embedding_api_key to be set in config\n", .{}) catch {};
+		_ = se.print("error: embedding_api=openai requires an API key.\n" ++
+			"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var or embedding_api_key in .codescan/config.ini\n", .{}) catch {};
 		std.process.exit(1);
 	}
 
@@ -298,9 +299,11 @@ pub fn main() !void {
 					} else {
 						if (d.default_model) |dm| {
 							_ = stderr.print("  Found oMLX on {s} with model '{s}'.\n" ++
-								"  Set embedding_api_key in .codescan/config.ini then run 'codescan index'.\n", .{ d.url, dm }) catch {};
+								"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
+								"  then run 'codescan index'.\n", .{ d.url, dm }) catch {};
 						} else {
-							_ = stderr.print("  Found oMLX on {s}. Configure embedding_api_key in .codescan/config.ini\n" ++
+							_ = stderr.print("  Found oMLX on {s}.\n" ++
+								"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
 								"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
 						}
 					}
@@ -1442,6 +1445,14 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		else => return err,
 	}
 
+	var env_api_key: ?[]u8 = null;
+	if (std.process.getEnvVarOwned(allocator, "CODESCAN_EMBEDDING_SERVER_API_KEY")) |value| {
+		env_api_key = value;
+	} else |err| switch (err) {
+		error.EnvironmentVariableNotFound => {},
+		else => return err,
+	}
+
 	if (cfg.output) |value| settings.output = value;
 	if (cfg.top_n) |value| settings.top_n = value;
 	if (cfg.root_path) |value| settings.root_path = value;
@@ -1546,8 +1557,10 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		}
 	}
 
-	// Format Bearer token from api key
-	if (cfg.embedding_api_key) |key| {
+	// Format Bearer token from api key (env var overrides config)
+	const api_key = env_api_key orelse cfg.embedding_api_key;
+	defer if (env_api_key) |k| allocator.free(k); // always free owned env string
+	if (api_key) |key| {
 		settings.embedding_auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key});
 		settings.embedding_auth_header_owned = true;
 	}
