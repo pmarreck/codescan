@@ -26,6 +26,7 @@ const progress_mod = @import("progress.zig");
 const fs_watch = @import("fs_watch.zig");
 const weights = @import("weights.zig");
 const diagnostics = @import("diagnostics.zig");
+const syslog = @import("syslog.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
 var g_stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -1208,8 +1209,10 @@ pub fn main() !void {
 						try stdout.flush();
 					}
 				},
-				.run => {
-					try ensureParentDir(settings.db_path);
+			.run => {
+				syslog.init("codescan");
+				defer syslog.deinit();
+				try ensureParentDir(settings.db_path);
 					// Open existing DB or create new one (don't destroy existing index)
 					var db = try storage.openFileWithVec(allocator, settings.db_path);
 					var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
@@ -2055,6 +2058,11 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	child.spawn() catch |err| {
 		_ = stderr.print("note: failed to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
+		syslog.init("codescan");
+		defer syslog.deinit();
+		var msg_buf: [256]u8 = undefined;
+		const msg = std.fmt.bufPrint(&msg_buf, "failed to start watcher: {s}", .{@errorName(err)}) catch "failed to start watcher";
+		syslog.logWithRoot(syslog.LOG_ERR, settings.root_path, msg);
 		return;
 	};
 
