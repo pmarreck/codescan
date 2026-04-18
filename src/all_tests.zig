@@ -40,6 +40,7 @@ const _search = @import("search.zig");
 const _simd = @import("simd.zig");
 const _server = @import("server.zig");
 const _storage = @import("storage.zig");
+const _syslog = @import("syslog.zig");
 const _symbol_tree = @import("symbol_tree.zig");
 const _ts_symbols = @import("ts_symbols.zig");
 const _watcher = @import("watcher.zig");
@@ -88,6 +89,7 @@ test {
 	_ = _simd;
 	_ = _server;
 	_ = _storage;
+	_ = _syslog;
 	_ = _symbol_tree;
 	_ = _ts_symbols;
 	_ = _watcher;
