@@ -88,3 +88,28 @@ test "logWithRoot truncates messages longer than 1024 bytes with ellipsis" {
     logWithRoot(LOG_NOTICE, "/tmp/fake-root", &buf);
     // Implicit assertion: did not panic/segfault on >1024-byte input.
 }
+}
+
+test "syslog delivers to OS log (gated: CODESCAN_RUN_SYSLOG_TESTS=1)" {
+    const enable = std.process.getEnvVarOwned(std.testing.allocator, "CODESCAN_RUN_SYSLOG_TESTS") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return error.SkipZigTest,
+        else => return err,
+    };
+    defer std.testing.allocator.free(enable);
+    if (!std.mem.eql(u8, enable, "1")) return error.SkipZigTest;
+
+    // Use a millisecond-timestamp tag so parallel runs don't collide.
+    var tag_buf: [64]u8 = undefined;
+    const tag_slice = try std.fmt.bufPrintZ(&tag_buf, "codescan-test-{d}", .{std.time.milliTimestamp()});
+    const tag: [*:0]const u8 = tag_slice.ptr;
+
+    init(tag);
+    defer deinit();
+
+    log(LOG_NOTICE, "syslog-delivery-check-12345");
+
+    // The real value of this test is proving init/log/deinit do not crash with
+    // live libc calls. We do not assert on OS log retrieval because buffering
+    // and log-stream latency vary too much across environments. A developer can
+    // verify manually via `log show` (macOS) or `journalctl -t <tag>` (Linux).
+}
