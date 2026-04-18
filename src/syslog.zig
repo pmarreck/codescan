@@ -88,7 +88,6 @@ test "logWithRoot truncates messages longer than 1024 bytes with ellipsis" {
     logWithRoot(LOG_NOTICE, "/tmp/fake-root", &buf);
     // Implicit assertion: did not panic/segfault on >1024-byte input.
 }
-}
 
 test "syslog delivers to OS log (gated: CODESCAN_RUN_SYSLOG_TESTS=1)" {
     const enable = std.process.getEnvVarOwned(std.testing.allocator, "CODESCAN_RUN_SYSLOG_TESTS") catch |err| switch (err) {

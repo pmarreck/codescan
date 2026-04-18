@@ -6,6 +6,7 @@ const embedding = @import("embedding.zig");
 const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
 const progress = @import("progress.zig");
+const syslog = @import("syslog.zig");
 
 pub const WatchOptions = struct {
 	interval_ms: u64 = 2000,
@@ -58,6 +59,7 @@ pub fn watchLoop(
 
 	_ = stderr.print("Watching {s} (native events, Ctrl-C to stop)\n", .{root_path}) catch {};
 	_ = stderr.flush() catch {};
+	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher started (native events)");
 
 	// Set up progress file (symlink to TMPDIR)
 	const progress_path = progress.setup(allocator, options.codescan_dir orelse ".");
@@ -92,6 +94,7 @@ pub fn watchLoop(
 		if (configChanged(config_path, &config_mtime)) {
 			_ = stderr.print("watcher: config changed, stopping (restart to apply new settings)\n", .{}) catch {};
 			_ = stderr.flush() catch {};
+			syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher stopping: config changed");
 			return;
 		}
 
@@ -108,9 +111,13 @@ pub fn watchLoop(
 			consecutive_errors += 1;
 			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
 			_ = stderr.flush() catch {};
+			var msg_buf_w: [256]u8 = undefined;
+			const msg_w = std.fmt.bufPrint(&msg_buf_w, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_w);
 			if (consecutive_errors >= max_consecutive_errors) {
 				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
 				_ = stderr.flush() catch {};
+				syslog.logWithRoot(syslog.LOG_ERR, root_path, "watcher stopping: too many consecutive errors");
 				return;
 			}
 			continue;
@@ -143,6 +150,7 @@ fn watchLoopPolling(
 		options.interval_ms,
 	}) catch {};
 	_ = stderr.flush() catch {};
+	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher started (polling)");
 
 	// Set up progress file (symlink to TMPDIR)
 	const progress_path_poll = progress.setup(allocator, options.codescan_dir orelse ".");
@@ -177,6 +185,7 @@ fn watchLoopPolling(
 		if (configChanged(config_path, &config_mtime)) {
 			_ = stderr.print("watcher: config changed, stopping (restart to apply new settings)\n", .{}) catch {};
 			_ = stderr.flush() catch {};
+			syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher stopping: config changed");
 			return;
 		}
 
@@ -193,9 +202,13 @@ fn watchLoopPolling(
 			progress.write(progress_path_poll, "error");
 			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
 			_ = stderr.flush() catch {};
+			var msg_buf_p: [256]u8 = undefined;
+			const msg_p = std.fmt.bufPrint(&msg_buf_p, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_p);
 			if (consecutive_errors >= max_consecutive_errors) {
 				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
 				_ = stderr.flush() catch {};
+				syslog.logWithRoot(syslog.LOG_ERR, root_path, "watcher stopping: too many consecutive errors");
 				return;
 			}
 			continue;
@@ -301,4 +314,15 @@ test "printChangeSummary shows up to date" {
 	defer allocator.free(text);
 
 	try std.testing.expect(std.mem.indexOf(u8, text, "Up to date") != null);
+}
+
+test "watcher source contains syslog calls at all error paths" {
+    const src = @embedFile("watcher.zig");
+    var count: usize = 0;
+    var i: usize = 0;
+    const needle = "syslog." ++ "logWithRoot(";
+    while (std.mem.indexOfPos(u8, src, i, needle)) |pos| : (i = pos + 1) {
+        count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 8), count);
 }
