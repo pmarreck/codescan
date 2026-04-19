@@ -631,6 +631,31 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 	} else if (std.mem.eql(u8, name, "status")) {
 		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch |err|
 			return toolError("MCP status: failed: {}\n", .{err});
+	} else if (std.mem.eql(u8, name, "logs")) {
+		const log_cmd = @import("log_cmd.zig");
+		const platform = log_cmd.currentPlatform();
+		if (platform == .unsupported) return toolError("MCP logs: unsupported platform (macOS/Linux only)\n", .{});
+
+		const root_arg = getArg(args, "root");
+		const since_arg = getArg(args, "since") orelse "1h";
+		const all_arg = getArgBool(args, "all");
+		const limit_arg = getArgInt(args, "limit");
+
+		const effective_root: ?[]const u8 = if (all_arg) null else (root_arg orelse settings.root_path);
+
+		const opts: log_cmd.Options = .{
+			.root = effective_root,
+			.since = since_arg,
+			.follow = false,
+			.all = all_arg,
+			.limit = limit_arg,
+		};
+
+		const log_output = log_cmd.run(allocator, opts, null) catch |err|
+			return toolError("MCP logs: run failed: {}\n", .{err});
+		defer allocator.free(log_output);
+
+		try out.writer.writeAll(log_output);
 	} else {
 		return error.UnknownTool;
 	}
@@ -829,7 +854,8 @@ const tools_list_json =
 	\\{"name":"references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
 	\\{"name":"rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
 	\\{"name":"config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
-		\\{"name":"status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}}
+		\\{"name":"status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}},
+	\\{"name":"logs","description":"Read recent watcher logs from the OS log (macOS unified log / Linux journald), filtered to codescan and optionally to a project root.","inputSchema":{"type":"object","properties":{"root":{"type":"string","description":"Absolute project root path; filters messages to this project"},"since":{"type":"string","description":"Time window (e.g. '1h', '15m'). Default 1h."},"limit":{"type":"integer","description":"Max lines to return (last N after filter)"},"all":{"type":"boolean","description":"If true, show logs from all codescan projects"}}}}
 	\\]}
 ;
 
@@ -1615,6 +1641,29 @@ test "tools_list_json contains new search parameters" {
 		}
 	}
 	try std.testing.expect(found_search);
+}
+
+test "tools_list_json contains logs tool" {
+	const allocator = std.testing.allocator;
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, tools_list_json, .{});
+	defer parsed.deinit();
+
+	const tools = parsed.value.object.get("tools").?.array;
+	var found = false;
+	for (tools.items) |tool| {
+		const name = tool.object.get("name").?.string;
+		if (std.mem.eql(u8, name, "logs")) {
+			found = true;
+			const schema = tool.object.get("inputSchema").?.object;
+			const props = schema.get("properties").?.object;
+			try std.testing.expect(props.get("root") != null);
+			try std.testing.expect(props.get("since") != null);
+			try std.testing.expect(props.get("limit") != null);
+			try std.testing.expect(props.get("all") != null);
+			break;
+		}
+	}
+	try std.testing.expect(found);
 }
 
 test "MCP search with regex flag uses regex search path" {
