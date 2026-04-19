@@ -183,6 +183,7 @@ fn realRunner(
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Inherit;
     try child.spawn();
+    errdefer _ = child.wait() catch {};
 
     var out = std.ArrayListUnmanaged(u8){};
     errdefer out.deinit(allocator);

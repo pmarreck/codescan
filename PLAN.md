@@ -114,6 +114,8 @@
 ### Phase 5: Enhancements
 - [ ] `codescan symbols --depth N` — limit nesting depth in output (e.g. struct methods without reading bodies)
 - [ ] CamelCase/snake_case normalization in lexical search (so `nameRelevance` matches `name_relevance`)
+- [x] Watcher syslog logging + `codescan log` subcommand and MCP tool (completed 2026-04-18 EST) — OS-managed logs so we can diagnose watcher stops after the fact; filterable by project root via `log show` / `journalctl -t codescan`. Spec: `docs/superpowers/specs/2026-04-18-watcher-syslog-logging-design.md`. Plan: `docs/superpowers/plans/2026-04-18-watcher-syslog-logging.md`.
+- [ ] Env-var expansion in config file values (`$VAR`, `${VAR}`, `${VAR:-default}`, `${VAR-default}`, nested) with raw-preservation on save for secret fields — inbox note: `inbox/2026-04-18-config-env-var-expansion.md`. Reference impl in docscan `cli/main.c:1344-1509`. Lets users commit a config with `embedding_api_key = ${CODESCAN_EMBEDDING_SERVER_API_KEY}` without leaking the secret.
 - [x] Auto-reindex after CLI edits (skip re-embedding, daemon catches up on vectors)
 - [x] `codescan rename` applies edits by default (`--dry-run` for preview-only)
 - [x] Hashlines in `codescan references` output for stale-edit protection
