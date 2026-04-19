@@ -167,3 +167,80 @@ test "filterOutput applies limit to keep the last N lines" {
     defer allocator.free(filtered);
     try std.testing.expectEqualStrings("d\ne\n", filtered);
 }
+
+// Seam for tests: allows injecting a fake command runner.
+pub const CommandRunner = *const fn (
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+) anyerror![]u8;
+
+fn realRunner(
+    allocator: std.mem.Allocator,
+    argv: []const []const u8,
+) anyerror![]u8 {
+    var child = std.process.Child.init(argv, allocator);
+    child.stdin_behavior = .Close;
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Inherit;
+    try child.spawn();
+
+    var out = std.ArrayListUnmanaged(u8){};
+    errdefer out.deinit(allocator);
+
+    var buf: [4096]u8 = undefined;
+    while (true) {
+        const n = try child.stdout.?.read(&buf);
+        if (n == 0) break;
+        try out.appendSlice(allocator, buf[0..n]);
+    }
+
+    _ = try child.wait();
+    return out.toOwnedSlice(allocator);
+}
+
+/// Run the log retrieval pipeline and return the filtered output.
+/// Caller owns the returned slice.
+pub fn run(
+    allocator: std.mem.Allocator,
+    opts: Options,
+    runner: ?CommandRunner,
+) ![]u8 {
+    const platform = currentPlatform();
+    if (platform == .unsupported) return error.UnsupportedPlatform;
+
+    const argv = try buildArgv(allocator, platform, opts);
+    defer allocator.free(argv);
+
+    const raw = try (runner orelse realRunner)(allocator, argv);
+    defer allocator.free(raw);
+
+    const effective_root: ?[]const u8 = if (opts.all) null else opts.root;
+    return filterOutput(allocator, raw, effective_root, opts.limit);
+}
+
+// --- Test fakes ---
+
+var fake_output: []const u8 = "";
+
+fn fakeRunner(allocator: std.mem.Allocator, argv: []const []const u8) anyerror![]u8 {
+    _ = argv;
+    return allocator.dupe(u8, fake_output);
+}
+
+test "run applies root filter and honors --all" {
+    const allocator = std.testing.allocator;
+    fake_output =
+        \\2026-04-18 codescan[1]: /proj-a: watcher started
+        \\2026-04-18 codescan[2]: /proj-b: watcher started
+    ;
+
+    const filtered = try run(allocator, .{ .root = "/proj-a" }, fakeRunner);
+    defer allocator.free(filtered);
+    try std.testing.expect(std.mem.indexOf(u8, filtered, "/proj-a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, filtered, "/proj-b") == null);
+
+    const all = try run(allocator, .{ .root = "/proj-a", .all = true }, fakeRunner);
+    defer allocator.free(all);
+    try std.testing.expect(std.mem.indexOf(u8, all, "/proj-a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, all, "/proj-b") != null);
+}
