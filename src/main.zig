@@ -4459,6 +4459,7 @@ const usage =
     \\  mcp-serve                 Start MCP server
     \\  status                    Show index & watcher status
     \\  clean                     Remove all codescan data
+    \\  log                       Read recent watcher logs from the system log
     \\
     \\Use 'codescan help <command>' for details on any command.
     \\Topics: hashlines, name-paths, languages, lsp
@@ -4815,6 +4816,35 @@ const usage_watch =
     \\  codescan watch
     \\  codescan watch start --interval 5000
     \\  codescan watch stop
+    \\
+;
+
+const usage_log =
+    \\Usage: codescan log [options]
+    \\
+    \\Read recent codescan watcher logs from the system log.
+    \\
+    \\Defaults:
+    \\  --root = current project root (auto-detected, like codescan status)
+    \\  --since = 1h
+    \\  --limit = none
+    \\
+    \\Options:
+    \\  --root <path>     Filter to messages tagged with this project root
+    \\  --since <dur>     Time window (e.g. "30m", "2h", "1d")
+    \\  --follow          Live tail mode (foreground only)
+    \\  --all             Show messages from all codescan projects
+    \\  --limit <n>       Keep only the last N matching lines
+    \\
+    \\Examples:
+    \\  codescan log                      # last 1h for current project
+    \\  codescan log --since 15m
+    \\  codescan log --all --since 2h     # all projects
+    \\  codescan log --follow             # live tail
+    \\
+    \\Backend:
+    \\  macOS: log show --predicate 'process == "codescan"'
+    \\  Linux: journalctl -t codescan
     \\
 ;
 
@@ -5527,6 +5557,7 @@ fn usageForTopic(topic: []const u8) []const u8 {
     if (std.mem.eql(u8, topic, "references")) return usage_references;
     if (std.mem.eql(u8, topic, "rename")) return usage_rename;
     if (std.mem.eql(u8, topic, "watch")) return usage_watch;
+    if (std.mem.eql(u8, topic, "log")) return usage_log;
     if (std.mem.eql(u8, topic, "serve")) return usage_serve;
     if (std.mem.eql(u8, topic, "mcp-serve")) return usage_mcp_serve;
     if (std.mem.eql(u8, topic, "status")) return usage_status;
