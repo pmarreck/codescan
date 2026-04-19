@@ -35,6 +35,7 @@ pub const CommandTag = enum {
 	clean,
 	status,
 	setup_model,
+	log,
 };
 pub const ConfigAction = enum {
 	show,
@@ -143,12 +144,22 @@ pub const Parsed = struct {
 	force: bool,
 	dry_run: bool,
 	confirm: bool,
-    lexical_only: bool,	seen: Seen,
+    lexical_only: bool,
+    // log subcommand fields
+    log_root: ?[]const u8 = null,
+    log_since: []const u8 = "1h",
+    log_since_owned: bool = false,
+    log_follow: bool = false,
+    log_all: bool = false,
+    log_limit: ?usize = null,
+	seen: Seen,
 
 	pub fn deinit(self: *Parsed, allocator: std.mem.Allocator) void {
 		if (self.query_owned and self.query != null) {
 			allocator.free(self.query.?);
 		}
+		if (self.log_since_owned) allocator.free(self.log_since);
+		if (self.log_root) |r| allocator.free(r);
 		self.path_filters.deinit(allocator);
 		self.symbols_files.deinit(allocator);
 	}
@@ -215,7 +226,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.force = false,
 		.dry_run = false,
 		.confirm = false,
-		.lexical_only = false,		.seen = .{},
+		.lexical_only = false,
+		.log_root = null,
+		.log_since = "1h",
+		.log_since_owned = false,
+		.log_follow = false,
+		.log_all = false,
+		.log_limit = null,
+		.seen = .{},
 	};
 
 	var query_parts: std.ArrayList([]const u8) = undefined;
@@ -389,7 +407,12 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	} else if (std.mem.eql(u8, cmd, "setup-model")) {
         parsed.command = .setup_model;
         help_topic_default = "setup-model";
-        i += 1;	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
+        i += 1;
+	} else if (std.mem.eql(u8, cmd, "log")) {
+		parsed.command = .log;
+		help_topic_default = "log";
+		i += 1;
+	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
 		parsed.command = .clean;
         help_topic_default = "clean";
 		i += 1;
@@ -523,6 +546,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			}
 			parsed.root_path = args[i];
 			parsed.seen.root_path = true;
+			if (parsed.command == .log) {
+				parsed.log_root = try allocator.dupe(u8, args[i]);
+			}
 			i += 1;
 			continue;
 		}
@@ -884,6 +910,37 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 				return error.MissingValue;
 			}
 			parsed.confirm_hash = args[i];
+			i += 1;
+			continue;
+		}
+		if (parsed.command == .log and std.mem.eql(u8, arg, "--since")) {
+			i += 1;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
+			parsed.log_since = try allocator.dupe(u8, args[i]);
+			parsed.log_since_owned = true;
+			i += 1;
+			continue;
+		}
+		if (parsed.command == .log and std.mem.eql(u8, arg, "--follow")) {
+			parsed.log_follow = true;
+			i += 1;
+			continue;
+		}
+		if (parsed.command == .log and std.mem.eql(u8, arg, "--all")) {
+			parsed.log_all = true;
+			i += 1;
+			continue;
+		}
+		if (parsed.command == .log and std.mem.eql(u8, arg, "--limit")) {
+			i += 1;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
+			parsed.log_limit = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidNumber;
 			i += 1;
 			continue;
 		}
@@ -1538,4 +1595,37 @@ test "parse --lexical-only flag" {
     defer parsed.deinit(std.testing.allocator);
     try std.testing.expect(parsed.lexical_only);
     try std.testing.expect(parsed.seen.lexical_only);
+}
+
+test "parse: codescan log defaults" {
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{ "codescan", "log" };
+    var parsed = try parse(allocator, &args);
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(CommandTag.log, parsed.command);
+    try std.testing.expectEqualStrings("1h", parsed.log_since);
+    try std.testing.expectEqual(false, parsed.log_follow);
+    try std.testing.expectEqual(false, parsed.log_all);
+    try std.testing.expectEqual(@as(?usize, null), parsed.log_limit);
+    try std.testing.expectEqual(@as(?[]const u8, null), parsed.log_root);
+}
+
+test "parse: codescan log --since 5m --follow --limit 50" {
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{ "codescan", "log", "--since", "5m", "--follow", "--limit", "50" };
+    var parsed = try parse(allocator, &args);
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(CommandTag.log, parsed.command);
+    try std.testing.expectEqualStrings("5m", parsed.log_since);
+    try std.testing.expectEqual(true, parsed.log_follow);
+    try std.testing.expectEqual(@as(?usize, 50), parsed.log_limit);
+}
+
+test "parse: codescan log --all --root /tmp/foo" {
+    const allocator = std.testing.allocator;
+    const args = [_][]const u8{ "codescan", "log", "--all", "--root", "/tmp/foo" };
+    var parsed = try parse(allocator, &args);
+    defer parsed.deinit(allocator);
+    try std.testing.expectEqual(true, parsed.log_all);
+    try std.testing.expectEqualStrings("/tmp/foo", parsed.log_root.?);
 }
