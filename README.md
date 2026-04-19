@@ -469,6 +469,16 @@ codescan replace-content src/foo.zig "old text" --version k7m <<< "new text"
 # → error: file modified since last read (expected version k7m, current p3q) — re-read and retry
 ```
 
+## Troubleshooting
+
+### Diagnosing watcher stops
+
+The background watcher logs its lifecycle and error events to the system log. If your watcher appears to have stopped unexpectedly, inspect recent logs with:
+
+    codescan log --since 1h
+
+Pass `--all` to see activity across every codescan project. Under the hood this uses `log show` on macOS and `journalctl -t codescan` on Linux, so the OS handles rotation and compression automatically.
+
 ## Notes
 
 - SQLite vector extension is statically linked (no runtime extension loading).
