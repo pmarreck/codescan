@@ -1317,6 +1317,30 @@ pub fn main() !void {
 			try runStatus(allocator, settings.db_path, settings.root_path, parsed.output, stdout);
 			try stdout.flush();
 		},
+		.log => {
+			const log_cmd = @import("log_cmd.zig");
+			const platform = log_cmd.currentPlatform();
+			if (platform == .unsupported) {
+				try stdout.print("codescan log: unsupported platform (supported: macOS, Linux)\n", .{});
+				try stdout.flush();
+				std.process.exit(1);
+			}
+
+			const effective_root: ?[]const u8 = if (parsed.log_all) null else (parsed.log_root orelse settings.root_path);
+
+			const opts: log_cmd.Options = .{
+				.root = effective_root,
+				.since = parsed.log_since,
+				.follow = parsed.log_follow,
+				.all = parsed.log_all,
+				.limit = parsed.log_limit,
+			};
+
+			const log_output = try log_cmd.run(allocator, opts, null);
+			defer allocator.free(log_output);
+			try stdout.writeAll(log_output);
+			try stdout.flush();
+		},
         .setup_model => {
             _ = stdout.print(
                 \\Recommended model: jina-code-embeddings-1.5b
