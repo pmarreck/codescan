@@ -304,3 +304,39 @@ test "expandWith: no refs, plain passthrough" {
     defer allocator.free(out);
     try std.testing.expectEqualStrings("no refs here", out);
 }
+
+test "expandWith: nested ${A:-${B:-${C:-bottom}}} all unset → bottom" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{});
+    defer env.deinit();
+    const out = try expandWith(allocator, "${A:-${B:-${C:-bottom}}}", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("bottom", out);
+}
+
+test "expandWith: nested ${A:-${B:-default}} B set → B's value" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{.{ "B", "middle" }});
+    defer env.deinit();
+    const out = try expandWith(allocator, "${A:-${B:-default}}", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("middle", out);
+}
+
+test "expandWith: nested ${A:-${B:-default}} A set → A's value (short-circuit)" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{ .{ "A", "top" }, .{ "B", "middle" } });
+    defer env.deinit();
+    const out = try expandWith(allocator, "${A:-${B:-default}}", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("top", out);
+}
+
+test "expandWith: default slice can contain literal text around nested ref" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{.{ "INNER", "inside" }});
+    defer env.deinit();
+    const out = try expandWith(allocator, "${OUTER:-pre-${INNER}-post}", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("pre-inside-post", out);
+}
