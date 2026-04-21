@@ -340,3 +340,61 @@ test "expandWith: default slice can contain literal text around nested ref" {
     defer allocator.free(out);
     try std.testing.expectEqualStrings("pre-inside-post", out);
 }
+
+test "expandWith: $$ escapes to literal $" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{});
+    defer env.deinit();
+    const out = try expandWith(allocator, "price: $$100", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("price: $100", out);
+}
+
+test "expandWith: $$ followed by real ref works" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{.{ "X", "hi" }});
+    defer env.deinit();
+    const out = try expandWith(allocator, "$$literal $X", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("$literal hi", out);
+}
+
+test "expandWith: unterminated ${ passes through literally" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{});
+    defer env.deinit();
+    const out = try expandWith(allocator, "abc${DEF", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("abc${DEF", out);
+}
+
+test "expandWith: bare $ at end of input passes through" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{});
+    defer env.deinit();
+    const out = try expandWith(allocator, "trailing $", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("trailing $", out);
+}
+
+test "expandWith: $ followed by digit passes through" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{});
+    defer env.deinit();
+    const out = try expandWith(allocator, "price: $5", &env);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("price: $5", out);
+}
+
+test "expandWith: recursion cap on deeply nested defaults" {
+    const allocator = std.testing.allocator;
+    var env = try makeEnv(allocator, &.{});
+    defer env.deinit();
+    // 14 levels of defaults, all unset — we cap at depth 10. The call must
+    // terminate in bounded time. We don't assert exact output (silent
+    // truncation behavior); the test's point is "no infinite loop".
+    const input = "${A1:-${A2:-${A3:-${A4:-${A5:-${A6:-${A7:-${A8:-${A9:-${A10:-${A11:-${A12:-${A13:-${A14:-bottom}}}}}}}}}}}}}}";
+    const out = try expandWith(allocator, input, &env);
+    defer allocator.free(out);
+    _ = out;
+}
