@@ -1,5 +1,6 @@
 const std = @import("std");
 const cli = @import("cli.zig");
+const env_expand = @import("env_expand.zig");
 
 /// Default config template written to new .codescan/config files.
 /// All values are commented out; uncomment to override defaults.
@@ -198,36 +199,38 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		}
 
 		if (std.mem.eql(u8, key, "root")) {
-			config.root_path = try allocator.dupe(u8, value);
+			config.root_path = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "db")) {
-			config.db_path = try allocator.dupe(u8, value);
+			config.db_path = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 
 		if (std.mem.eql(u8, key, "embedding_url") or std.mem.eql(u8, key, "ollama_url")) {
-			config.embedding_url = try allocator.dupe(u8, value);
+			config.embedding_url = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "embedding_model") or std.mem.eql(u8, key, "ollama_model")) {
-			config.embedding_model = try allocator.dupe(u8, value);
+			config.embedding_model = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "embedding_api")) {
-			if (!std.mem.eql(u8, value, "ollama") and !std.mem.eql(u8, value, "openai")) {
+			const expanded = try env_expand.expand(allocator, value);
+			errdefer allocator.free(expanded);
+			if (!std.mem.eql(u8, expanded, "ollama") and !std.mem.eql(u8, expanded, "openai")) {
 				return error.InvalidValue;
 			}
-			config.embedding_api = try allocator.dupe(u8, value);
+			config.embedding_api = expanded;
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "embedding_api_key")) {
-			config.embedding_api_key = try allocator.dupe(u8, value);
+			config.embedding_api_key = try env_expand.expand(allocator, value);
 			continue;
 		}
 
@@ -247,14 +250,18 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		}
 
 		if (std.mem.eql(u8, key, "search_mode")) {
-			if (!validMode(value)) return error.InvalidValue;
-			config.search_mode = try allocator.dupe(u8, value);
+			const expanded = try env_expand.expand(allocator, value);
+			errdefer allocator.free(expanded);
+			if (!validMode(expanded)) return error.InvalidValue;
+			config.search_mode = expanded;
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "fusion")) {
-			if (!validFusion(value)) return error.InvalidValue;
-			config.fusion = try allocator.dupe(u8, value);
+			const expanded = try env_expand.expand(allocator, value);
+			errdefer allocator.free(expanded);
+			if (!validFusion(expanded)) return error.InvalidValue;
+			config.fusion = expanded;
 			continue;
 		}
 
@@ -264,18 +271,24 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		}
 
 		if (std.mem.eql(u8, key, "fts_mode")) {
-			if (!validFtsMode(value)) return error.InvalidValue;
-			config.fts_mode = try allocator.dupe(u8, value);
+			const expanded = try env_expand.expand(allocator, value);
+			errdefer allocator.free(expanded);
+			if (!validFtsMode(expanded)) return error.InvalidValue;
+			config.fts_mode = expanded;
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "ignore")) {
-			try appendPatterns(allocator, &config.ignore_global, value);
+			const expanded = try env_expand.expand(allocator, value);
+			defer allocator.free(expanded);
+			try appendPatterns(allocator, &config.ignore_global, expanded);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "always_include")) {
-			try appendPatterns(allocator, &config.always_include, value);
+			const expanded = try env_expand.expand(allocator, value);
+			defer allocator.free(expanded);
+			try appendPatterns(allocator, &config.always_include, expanded);
 			continue;
 		}
 
@@ -283,7 +296,9 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			const lang = key["ignore.".len..];
 			if (lang.len == 0) return error.InvalidValue;
 			var entry = try getOrCreateOverride(allocator, &config.ignore_lang, lang);
-			try appendPatterns(allocator, &entry.patterns, value);
+			const expanded = try env_expand.expand(allocator, value);
+			defer allocator.free(expanded);
+			try appendPatterns(allocator, &entry.patterns, expanded);
 			continue;
 		}
 
@@ -292,7 +307,7 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			if (lang.len == 0) return error.InvalidValue;
 			try config.lsp_overrides.append(allocator, .{
 				.language = try allocator.dupe(u8, lang),
-				.binary_path = try allocator.dupe(u8, value),
+				.binary_path = try env_expand.expand(allocator, value),
 			});
 			continue;
 		}
@@ -313,37 +328,37 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		}
 
 		if (std.mem.eql(u8, key, "index_ext")) {
-			config.index_ext = try allocator.dupe(u8, value);
+			config.index_ext = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "index_type")) {
-			config.index_type = try allocator.dupe(u8, value);
+			config.index_type = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "search_ext")) {
-			config.search_ext = try allocator.dupe(u8, value);
+			config.search_ext = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "search_type")) {
-			config.search_type = try allocator.dupe(u8, value);
+			config.search_type = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "search_lang")) {
-			config.search_lang = try allocator.dupe(u8, value);
+			config.search_lang = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "search_symbol_kind")) {
-			config.search_symbol_kind = try allocator.dupe(u8, value);
+			config.search_symbol_kind = try env_expand.expand(allocator, value);
 			continue;
 		}
 
 		if (std.mem.eql(u8, key, "primary_lang")) {
-			config.primary_lang = try allocator.dupe(u8, value);
+			config.primary_lang = try env_expand.expand(allocator, value);
 			continue;
 		}
 
@@ -392,7 +407,7 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		}
 
 		if (std.mem.eql(u8, key, "http_host")) {
-			config.http_host = try allocator.dupe(u8, value);
+			config.http_host = try env_expand.expand(allocator, value);
 			continue;
 		}
 
@@ -767,4 +782,28 @@ test "writeConfigValues appends missing keys" {
     defer allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "embedding_url=http://localhost:8000") != null);
     try std.testing.expect(std.mem.indexOf(u8, result, "search_mode=lexical") != null);
+}
+
+test "parseText expands ${VAR} in embedding_api_key when set via env" {
+    const allocator = std.testing.allocator;
+    // PATH is universally set in unix envs, including the nix dev shell.
+    var cfg = try parseText(allocator, "embedding_api_key=${PATH}\n");
+    defer cfg.deinit(allocator);
+    try std.testing.expect(cfg.embedding_api_key != null);
+    try std.testing.expect(cfg.embedding_api_key.?.len > 0);
+    try std.testing.expect(!std.mem.eql(u8, cfg.embedding_api_key.?, "${PATH}"));
+}
+
+test "parseText expands ${UNSET:-default} to default when unset" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_model=${CODESCAN_DEFINITELY_UNSET_123XYZ:-fallback-model}\n");
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("fallback-model", cfg.embedding_model.?);
+}
+
+test "parseText passes plain values through unchanged" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_model=bge-large\n");
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("bge-large", cfg.embedding_model.?);
 }

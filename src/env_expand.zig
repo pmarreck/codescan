@@ -79,7 +79,7 @@ fn expandInto(
     input: []const u8,
     env: *const std.process.EnvMap,
     depth: u8,
-) !void {
+) std.mem.Allocator.Error!void {
     if (depth > max_depth) {
         try out.appendSlice(allocator, input);
         return;
@@ -148,7 +148,7 @@ fn expandBracedBody(
     body: []const u8,
     env: *const std.process.EnvMap,
     depth: u8,
-) !void {
+) std.mem.Allocator.Error!void {
     if (body.len == 0) return; // `${}` → empty
 
     const name_end = scanVarName(body, 0);
@@ -396,5 +396,5 @@ test "expandWith: recursion cap on deeply nested defaults" {
     const input = "${A1:-${A2:-${A3:-${A4:-${A5:-${A6:-${A7:-${A8:-${A9:-${A10:-${A11:-${A12:-${A13:-${A14:-bottom}}}}}}}}}}}}}}";
     const out = try expandWith(allocator, input, &env);
     defer allocator.free(out);
-    _ = out;
+    try std.testing.expect(out.len >= 0); // just use the result
 }
