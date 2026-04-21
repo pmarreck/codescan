@@ -106,6 +106,11 @@ pub const Config = struct {
 	embedding_model: ?[]const u8 = null,
 	embedding_api: ?[]const u8 = null,
 	embedding_api_key: ?[]const u8 = null,
+	/// Pre-expansion verbatim string when `embedding_api_key` was loaded from a
+	/// reference-containing literal (e.g. `${OMLX_API_KEY}`). Used for
+	/// write-back to avoid baking the resolved secret into the file.
+	/// Null if the config value contained no references.
+	embedding_api_key_raw: ?[]const u8 = null,
 	embedding_dim: ?usize = null,
 	batch_size: ?usize = null,
 	max_file_size: ?usize = null,
@@ -141,6 +146,7 @@ pub const Config = struct {
 		if (self.embedding_model) |value| allocator.free(value);
 		if (self.embedding_api) |value| allocator.free(value);
 		if (self.embedding_api_key) |value| allocator.free(value);
+		if (self.embedding_api_key_raw) |value| allocator.free(value);
 		if (self.search_mode) |value| allocator.free(value);
 		if (self.fusion) |value| allocator.free(value);
 		if (self.fts_mode) |value| allocator.free(value);
@@ -230,7 +236,12 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 		}
 
 		if (std.mem.eql(u8, key, "embedding_api_key")) {
-			config.embedding_api_key = try env_expand.expand(allocator, value);
+			if (env_expand.hasRef(value)) {
+				config.embedding_api_key_raw = try allocator.dupe(u8, value);
+				config.embedding_api_key = try env_expand.expand(allocator, value);
+			} else {
+				config.embedding_api_key = try allocator.dupe(u8, value);
+			}
 			continue;
 		}
 
@@ -806,4 +817,23 @@ test "parseText passes plain values through unchanged" {
     var cfg = try parseText(allocator, "embedding_model=bge-large\n");
     defer cfg.deinit(allocator);
     try std.testing.expectEqualStrings("bge-large", cfg.embedding_model.?);
+}
+
+test "parseText preserves raw ${VAR} for embedding_api_key when reference present" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_api_key=${PATH}\n");
+    defer cfg.deinit(allocator);
+    // _raw is set verbatim to the pre-expansion string.
+    try std.testing.expect(cfg.embedding_api_key_raw != null);
+    try std.testing.expectEqualStrings("${PATH}", cfg.embedding_api_key_raw.?);
+    // expanded value is distinct from the placeholder.
+    try std.testing.expect(!std.mem.eql(u8, cfg.embedding_api_key.?, "${PATH}"));
+}
+
+test "parseText leaves _raw null for plain embedding_api_key value" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_api_key=plain-literal-key\n");
+    defer cfg.deinit(allocator);
+    try std.testing.expect(cfg.embedding_api_key_raw == null);
+    try std.testing.expectEqualStrings("plain-literal-key", cfg.embedding_api_key.?);
 }
