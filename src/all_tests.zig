@@ -31,6 +31,7 @@ const _lsp = @import("lsp.zig");
 const _main = @import("main.zig");
 const _mcp = @import("mcp.zig");
 const _embedding_http = @import("embedding_http.zig");
+const _env_expand = @import("env_expand.zig");
 const _output = @import("output.zig");
 const _pcre2 = @import("pcre2.zig");
 const _pidfile = @import("pidfile.zig");
@@ -81,6 +82,7 @@ test {
 	_ = _main;
 	_ = _mcp;
 	_ = _embedding_http;
+	_ = _env_expand;
 	_ = _output;
 	_ = _pcre2;
 	_ = _pidfile;
