@@ -169,9 +169,13 @@ pub const Config = struct {
 		self.* = .{};
 	}
 
-	/// Returns the value to write to disk for `key`. For secret fields with a
-	/// raw placeholder, returns the placeholder. Otherwise returns the current
-	/// expanded value. Returns empty string for unset/unknown fields.
+	/// Returns the value to write to disk for `key`. For `embedding_api_key`
+	/// with a raw placeholder, returns the placeholder. For the explicitly
+	/// enumerated write-back keys, returns the stored (expanded) value.
+	///
+	/// Supported keys: `embedding_api_key`, `embedding_url`, `embedding_model`,
+	/// `embedding_api`, `http_host`. Callers passing other keys get `""` —
+	/// add the key here before wiring a new write-back call site.
 	pub fn writeValueFor(self: *const Config, key: []const u8) []const u8 {
 		if (std.mem.eql(u8, key, "embedding_api_key")) {
 			if (self.embedding_api_key_raw) |raw| return raw;
@@ -266,8 +270,10 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 
 		if (std.mem.eql(u8, key, "embedding_api_key")) {
 			if (env_expand.hasRef(value)) {
-				config.embedding_api_key_raw = try allocator.dupe(u8, value);
+				const raw_dup = try allocator.dupe(u8, value);
+				errdefer allocator.free(raw_dup);
 				config.embedding_api_key = try env_expand.expand(allocator, value);
+				config.embedding_api_key_raw = raw_dup;
 			} else {
 				config.embedding_api_key = try allocator.dupe(u8, value);
 			}
