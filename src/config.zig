@@ -168,6 +168,35 @@ pub const Config = struct {
 		self.lsp_overrides.deinit(allocator);
 		self.* = .{};
 	}
+
+	/// Returns the value to write to disk for `key`. For secret fields with a
+	/// raw placeholder, returns the placeholder. Otherwise returns the current
+	/// expanded value. Returns empty string for unset/unknown fields.
+	pub fn writeValueFor(self: *const Config, key: []const u8) []const u8 {
+		if (std.mem.eql(u8, key, "embedding_api_key")) {
+			if (self.embedding_api_key_raw) |raw| return raw;
+			if (self.embedding_api_key) |v| return v;
+			return "";
+		}
+		if (std.mem.eql(u8, key, "embedding_url")) return self.embedding_url orelse "";
+		if (std.mem.eql(u8, key, "embedding_model")) return self.embedding_model orelse "";
+		if (std.mem.eql(u8, key, "embedding_api")) return self.embedding_api orelse "";
+		if (std.mem.eql(u8, key, "http_host")) return self.http_host orelse "";
+		return "";
+	}
+
+	/// Replace `embedding_api_key` with an explicit literal value, clearing any
+	/// raw placeholder that was tracked. Use when code writes a NEW literal
+	/// (e.g. first-time auto-detection) that should be persisted as-is.
+	pub fn setApiKeyLiteral(self: *Config, allocator: std.mem.Allocator, new_value: []const u8) !void {
+		if (self.embedding_api_key) |old| allocator.free(old);
+		if (self.embedding_api_key_raw) |raw| {
+			allocator.free(raw);
+			self.embedding_api_key_raw = null;
+		}
+		self.embedding_api_key = try allocator.dupe(u8, new_value);
+	}
+
 };
 
 pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
@@ -836,4 +865,69 @@ test "parseText leaves _raw null for plain embedding_api_key value" {
     defer cfg.deinit(allocator);
     try std.testing.expect(cfg.embedding_api_key_raw == null);
     try std.testing.expectEqualStrings("plain-literal-key", cfg.embedding_api_key.?);
+}
+
+test "writeValueFor returns raw placeholder for embedding_api_key when _raw is set" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_api_key=${PATH}\n");
+    defer cfg.deinit(allocator);
+    const v = cfg.writeValueFor("embedding_api_key");
+    try std.testing.expectEqualStrings("${PATH}", v);
+}
+
+test "writeValueFor returns expanded value for embedding_api_key when _raw is null" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_api_key=plain-key\n");
+    defer cfg.deinit(allocator);
+    const v = cfg.writeValueFor("embedding_api_key");
+    try std.testing.expectEqualStrings("plain-key", v);
+}
+
+test "writeValueFor returns expanded value for non-secret fields" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_url=http://host\n");
+    defer cfg.deinit(allocator);
+    const v = cfg.writeValueFor("embedding_url");
+    try std.testing.expectEqualStrings("http://host", v);
+}
+
+test "writeValueFor returns empty string for unset fields" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "\n");
+    defer cfg.deinit(allocator);
+    try std.testing.expectEqualStrings("", cfg.writeValueFor("embedding_api_key"));
+    try std.testing.expectEqualStrings("", cfg.writeValueFor("embedding_url"));
+}
+
+test "setApiKeyLiteral clears _raw and replaces expanded with new literal" {
+    const allocator = std.testing.allocator;
+    var cfg = try parseText(allocator, "embedding_api_key=${PATH}\n");
+    defer cfg.deinit(allocator);
+    try std.testing.expect(cfg.embedding_api_key_raw != null);
+    try cfg.setApiKeyLiteral(allocator, "new-literal");
+    try std.testing.expect(cfg.embedding_api_key_raw == null);
+    try std.testing.expectEqualStrings("new-literal", cfg.embedding_api_key.?);
+    // Subsequent writeValueFor returns the new literal.
+    try std.testing.expectEqualStrings("new-literal", cfg.writeValueFor("embedding_api_key"));
+}
+
+test "writeConfigValues roundtrip preserves ${VAR} placeholder via writeValueFor" {
+    const allocator = std.testing.allocator;
+    const original =
+        \\#embedding_url=http://localhost:11434
+        \\embedding_api_key=${PATH}
+        \\
+    ;
+    var cfg = try parseText(allocator, original);
+    defer cfg.deinit(allocator);
+
+    const kvs = [_]KV{
+        .{ .key = "embedding_api_key", .value = cfg.writeValueFor("embedding_api_key") },
+    };
+    const updated = try writeConfigValues(allocator, original, &kvs);
+    defer allocator.free(updated);
+
+    try std.testing.expect(std.mem.indexOf(u8, updated, "embedding_api_key=${PATH}") != null);
+    // Must NOT contain the resolved PATH value:
+    try std.testing.expect(std.mem.indexOf(u8, updated, cfg.embedding_api_key.?) == null);
 }
