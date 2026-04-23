@@ -40,6 +40,7 @@ const _scan = @import("scan.zig");
 const _search = @import("search.zig");
 const _simd = @import("simd.zig");
 const _server = @import("server.zig");
+const _setup_model_text = @import("setup_model_text.zig");
 const _storage = @import("storage.zig");
 const _syslog = @import("syslog.zig");
 const _log_cmd = @import("log_cmd.zig");
@@ -91,6 +92,7 @@ test {
 	_ = _search;
 	_ = _simd;
 	_ = _server;
+	_ = _setup_model_text;
 	_ = _storage;
 	_ = _syslog;
 	_ = _log_cmd;

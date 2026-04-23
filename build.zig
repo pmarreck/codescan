@@ -223,6 +223,15 @@ pub fn build(b: *std.Build) void {
 	linkCommon(extract_util_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(extract_util_tests).step);
 
+	const setup_model_text_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/setup_model_text.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	test_step.dependOn(&b.addRunArtifact(setup_model_text_tests).step);
+
 	const extract_typescript_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/extract_typescript.zig"),
