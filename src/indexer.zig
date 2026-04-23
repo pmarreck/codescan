@@ -857,6 +857,44 @@ fn trimRight(text: []const u8) []const u8 {
 	return std.mem.trimRight(u8, text, " \t\r\n");
 }
 
+fn isTransientHttpError(err: anyerror) bool {
+	return switch (err) {
+		error.HttpConnectionClosing,
+		error.ConnectionResetByPeer,
+		error.BrokenPipe,
+		error.EndOfStream,
+		error.UnexpectedEndOfStream,
+		error.ConnectionRefused,
+		error.NetworkUnreachable,
+		error.TemporaryNameServerFailure,
+		=> true,
+		else => false,
+	};
+}
+
+fn embedWithRetry(
+	allocator: std.mem.Allocator,
+	embedder: embedding.Embedder,
+	inputs: []const []const u8,
+) ![][]f32 {
+	const max_attempts: usize = 3;
+	var attempt: usize = 0;
+	while (true) {
+		attempt += 1;
+		if (embedder.embed(embedder.ctx, allocator, inputs)) |embeddings| {
+			return embeddings;
+		} else |err| {
+			if (attempt >= max_attempts or !isTransientHttpError(err)) return err;
+			const delay_ns: u64 = switch (attempt) {
+				1 => 100 * std.time.ns_per_ms,
+				else => 500 * std.time.ns_per_ms,
+			};
+			std.Thread.sleep(delay_ns);
+		}
+	}
+}
+
+
 fn flushBatch(
 	allocator: std.mem.Allocator,
 	db: storage.Db,
@@ -865,7 +903,7 @@ fn flushBatch(
 	batch_texts: *std.ArrayListUnmanaged([]const u8),
 	batch_rowids: *std.ArrayListUnmanaged(i64),
 ) !void {
-	const embeddings = try embedder.embed(embedder.ctx, allocator, batch_texts.items);
+	const embeddings = try embedWithRetry(allocator, embedder, batch_texts.items);
 	defer embedder.free(embedder.ctx, allocator, embeddings);
 
 	// NullEmbedder returns empty — skip vector insertion, just clean up texts
@@ -895,7 +933,7 @@ fn flushCommentBatch(
 	batch_texts: *std.ArrayListUnmanaged([]const u8),
 	batch_rowids: *std.ArrayListUnmanaged(i64),
 ) !void {
-	const embeddings = try embedder.embed(embedder.ctx, allocator, batch_texts.items);
+	const embeddings = try embedWithRetry(allocator, embedder, batch_texts.items);
 	defer embedder.free(embedder.ctx, allocator, embeddings);
 
 	// NullEmbedder returns empty — skip vector insertion, just clean up texts
@@ -1435,3 +1473,70 @@ const FakeEmbedder = struct {
 		allocator.free(embeddings);
 	}
 };
+
+const FlakyEmbedder = struct {
+	fail_remaining: usize = 0,
+	call_count: usize = 0,
+
+	pub fn embedder(self: *FlakyEmbedder) embedding.Embedder {
+		return .{ .ctx = self, .embed = embed, .free = free };
+	}
+
+	fn embed(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
+		const self: *FlakyEmbedder = @ptrCast(@alignCast(ctx));
+		self.call_count += 1;
+		if (self.fail_remaining > 0) {
+			self.fail_remaining -= 1;
+			return error.HttpConnectionClosing;
+		}
+		var rows = try allocator.alloc([]f32, inputs.len);
+		errdefer {
+			for (rows) |row| allocator.free(row);
+			allocator.free(rows);
+		}
+		for (inputs, 0..) |input, idx| {
+			var row = try allocator.alloc(f32, 2);
+			const len: f32 = @floatFromInt(input.len);
+			row[0] = len;
+			row[1] = len + 0.5;
+			rows[idx] = row;
+		}
+		return rows;
+	}
+
+	fn free(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
+		_ = ctx;
+		for (embeddings) |row| allocator.free(row);
+		allocator.free(embeddings);
+	}
+};
+
+test "indexAll retries flushBatch on HttpConnectionClosing" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	const source =
+		"/// Adds\n" ++
+		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n" ++
+		"fn sub(a: i32, b: i32) i32 { return a - b; }\n";
+	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var flaky = FlakyEmbedder{ .fail_remaining = 1 };
+	const stats = try indexAll(allocator, db, root, plugin.defaultRegistry(), flaky.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.files);
+	try std.testing.expectEqual(@as(usize, 2), stats.symbols);
+	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expect(flaky.call_count >= 2);
+}
