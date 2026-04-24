@@ -867,6 +867,9 @@ fn isTransientHttpError(err: anyerror) bool {
 		error.ConnectionRefused,
 		error.NetworkUnreachable,
 		error.TemporaryNameServerFailure,
+		error.WriteFailed,
+		error.ReadFailed,
+		error.ConnectionTimedOut,
 		=> true,
 		else => false,
 	};
@@ -1477,6 +1480,7 @@ const FakeEmbedder = struct {
 const FlakyEmbedder = struct {
 	fail_remaining: usize = 0,
 	call_count: usize = 0,
+	fail_error: anyerror = error.HttpConnectionClosing,
 
 	pub fn embedder(self: *FlakyEmbedder) embedding.Embedder {
 		return .{ .ctx = self, .embed = embed, .free = free };
@@ -1487,7 +1491,7 @@ const FlakyEmbedder = struct {
 		self.call_count += 1;
 		if (self.fail_remaining > 0) {
 			self.fail_remaining -= 1;
-			return error.HttpConnectionClosing;
+			return self.fail_error;
 		}
 		var rows = try allocator.alloc([]f32, inputs.len);
 		errdefer {
@@ -1538,5 +1542,31 @@ test "indexAll retries flushBatch on HttpConnectionClosing" {
 	try std.testing.expectEqual(@as(usize, 1), stats.files);
 	try std.testing.expectEqual(@as(usize, 2), stats.symbols);
 	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expect(flaky.call_count >= 2);
+}
+
+test "indexAll retries flushBatch on WriteFailed" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.makePath("src");
+	const source =
+		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n";
+	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var flaky = FlakyEmbedder{ .fail_remaining = 1, .fail_error = error.WriteFailed };
+	const stats = try indexAll(allocator, db, root, plugin.defaultRegistry(), flaky.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.files);
 	try std.testing.expect(flaky.call_count >= 2);
 }
