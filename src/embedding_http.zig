@@ -37,14 +37,18 @@ pub fn embed(
 	const body = try buildEmbedRequest(allocator, model, inputs, keep_alive, dialect);
 	defer allocator.free(body);
 
-	var header_buf: [4]std.http.Header = undefined;
-	var header_count: usize = 2;
+	var header_buf: [5]std.http.Header = undefined;
+	var header_count: usize = 3;
 	header_buf[0] = .{ .name = "Content-Type", .value = "application/json" };
 	header_buf[1] = .{ .name = "Accept", .value = "application/json" };
+	// std.http.Client reuses keep-alive sockets; servers may close them after
+	// short idle windows, which surfaces as WriteFailed mid-batch on re-use.
+	// Force a fresh TCP connection per embed request.
+	header_buf[2] = .{ .name = "Connection", .value = "close" };
 	if (dialect == .openai) {
 		if (auth_header) |key| {
-			header_buf[2] = .{ .name = "Authorization", .value = key };
-			header_count = 3;
+			header_buf[3] = .{ .name = "Authorization", .value = key };
+			header_count = 4;
 		}
 	}
 
@@ -342,12 +346,14 @@ pub const MockTransportCtx = struct {	tags_body: []const u8,
 	embed_should_fail: bool = false,
 	status_override: ?u16 = null,
 	auth_header_sent: bool = false,
+	connection_close_sent: bool = false,
 
 	pub fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
 		for (req.headers) |h| {
 			if (std.mem.eql(u8, h.name, "Authorization")) {
 				self.auth_header_sent = true;
-				break;
+			} else if (std.ascii.eqlIgnoreCase(h.name, "Connection") and std.ascii.eqlIgnoreCase(h.value, "close")) {
+				self.connection_close_sent = true;
 			}
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/tags")) {
@@ -512,6 +518,18 @@ test "embed with ollama dialect does not send auth header" {
 	const embeddings = try embed(allocator, mock.transport(), "http://localhost:11434", "bge-large", &inputs, null, .ollama, "Bearer should-be-ignored");
 	defer freeEmbeddings(allocator, embeddings);
 	try std.testing.expect(!mock.auth_header_sent);
+}
+
+test "embed sends Connection: close to force fresh TCP connections" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body = "",
+		.ps_body = "",
+	};
+	const inputs = [_][]const u8{"hello"};
+	const embeddings = try embed(allocator, mock.transport(), "http://localhost:11434", "bge-large", &inputs, null, .ollama, null);
+	defer freeEmbeddings(allocator, embeddings);
+	try std.testing.expect(mock.connection_close_sent);
 }
 
 test "ensureModelAvailable reports missing model" {
