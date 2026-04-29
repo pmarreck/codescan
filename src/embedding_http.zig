@@ -60,8 +60,22 @@ pub fn embed(
 	});
 	defer allocator.free(response.body);
 
-	if (response.status == 401) return error.Unauthorized;
-	if (response.status != 200) return error.HttpStatus;
+	if (response.status != 200) {
+		var stderr_buf: [256]u8 = undefined;
+		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		const stderr = &stderr_writer.interface;
+		const preview_len = @min(response.body.len, 500);
+		_ = stderr.print("error: embedding server returned HTTP {d}\n  url: {s}\n  model: {s}\n  body: {s}{s}\n", .{
+			response.status,
+			url,
+			model,
+			response.body[0..preview_len],
+			if (response.body.len > preview_len) "..." else "",
+		}) catch {};
+		_ = stderr.flush() catch {};
+		if (response.status == 401) return error.Unauthorized;
+		return error.HttpStatus;
+	}
 	return parseEmbeddings(allocator, response.body, dialect);
 }
 
