@@ -1342,6 +1342,10 @@ pub fn main() !void {
 			try stdout.writeAll(log_output);
 			try stdout.flush();
 		},
+		.root => {
+			try runRoot(allocator, parsed.output, stdout);
+			try stdout.flush();
+		},
         .setup_model => {
             const dialect: setup_model_text.Dialect = switch (settings.embedding_dialect) {
                 .ollama => .ollama,
@@ -2110,6 +2114,41 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
 	return findRepoRootUntil(allocator, start_path, null);
 }
+
+pub const RootInfo = struct {
+	project_root: []const u8, // absolute path of the dir containing .codescan/
+	codescan_dir: []const u8, // absolute path of the .codescan/ dir itself
+	walk_up_steps: usize,     // number of dir levels traversed from start_path
+};
+
+/// Walk up from `start_path` looking for the nearest `.codescan/` ancestor.
+/// Caller owns `project_root` and `codescan_dir` (each freed independently).
+pub fn findRepoRootInfo(allocator: std.mem.Allocator, start_path: []const u8) !?RootInfo {
+	const start_abs = try std.fs.cwd().realpathAlloc(allocator, start_path);
+	errdefer allocator.free(start_abs);
+
+	var current = start_abs;
+	var steps: usize = 0;
+	while (true) {
+		if (try hasCodescanDir(current)) {
+			const codescan_dir = try std.fs.path.join(allocator, &.{ current, ".codescan" });
+			return RootInfo{
+				.project_root = current,
+				.codescan_dir = codescan_dir,
+				.walk_up_steps = steps,
+			};
+		}
+		const parent = std.fs.path.dirname(current) orelse break;
+		if (std.mem.eql(u8, parent, current)) break;
+		const next = try allocator.dupe(u8, parent);
+		allocator.free(current);
+		current = next;
+		steps += 1;
+	}
+	allocator.free(current);
+	return null;
+}
+
 
 fn findRepoRootUntil(
 	allocator: std.mem.Allocator,
@@ -5294,6 +5333,67 @@ fn appendJsonBoolFlag(
         else => return error.InvalidJsonEnvelope,
     };
     if (enabled) try args.append(allocator, flag);
+}
+
+pub fn runRoot(
+	allocator: std.mem.Allocator,
+	format: cli.OutputFormat,
+	writer: *std.Io.Writer,
+) !void {
+	const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+	defer allocator.free(cwd_path);
+
+	const info_opt = findRepoRootInfo(allocator, cwd_path) catch |err| {
+		if (format == .json) {
+			try writer.print("{{\"error\":\"{s}\"}}\n", .{@errorName(err)});
+		} else {
+			try writer.print("error: {s}\n", .{@errorName(err)});
+		}
+		return err;
+	};
+
+	const info = info_opt orelse {
+		if (format == .json) {
+			try writer.print("{{\"root\":null,\"error\":\"no .codescan/ directory found walking up from {s}\"}}\n", .{cwd_path});
+		} else {
+			try writer.print("error: no .codescan/ directory found walking up from {s}\n", .{cwd_path});
+		}
+		std.process.exit(1);
+	};
+	defer {
+		allocator.free(info.project_root);
+		allocator.free(info.codescan_dir);
+	}
+
+	if (format == .human) {
+		try writer.print("{s}\n", .{info.project_root});
+		return;
+	}
+
+	// JSON output: include codescan_dir, db_path, watcher pid/status, walk_up_steps
+	const db_path = try std.fs.path.join(allocator, &.{ info.codescan_dir, "index.sqlite3" });
+	defer allocator.free(db_path);
+
+	const pid_opt = pidfile.readAndCheckPid(allocator, info.codescan_dir) catch null;
+	const watcher_status: []const u8 = if (pidfile.isWatcherRunning(allocator, info.codescan_dir))
+		"running"
+	else if (pid_opt != null)
+		"stale"
+	else
+		"stopped";
+
+	try writer.writeAll("{");
+	try writer.print("\"project_root\":\"{s}\",", .{info.project_root});
+	try writer.print("\"root\":\"{s}\",", .{info.codescan_dir});
+	try writer.print("\"db_path\":\"{s}\",", .{db_path});
+	if (pid_opt) |pid| {
+		try writer.print("\"watcher_pid\":{d},", .{pid});
+	} else {
+		try writer.writeAll("\"watcher_pid\":null,");
+	}
+	try writer.print("\"watcher_status\":\"{s}\",", .{watcher_status});
+	try writer.print("\"walk_up_steps\":{d}", .{info.walk_up_steps});
+	try writer.writeAll("}\n");
 }
 
 pub fn runStatus(

@@ -36,6 +36,7 @@ pub const CommandTag = enum {
 	status,
 	setup_model,
 	log,
+	root,
 };
 pub const ConfigAction = enum {
 	show,
@@ -411,6 +412,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	} else if (std.mem.eql(u8, cmd, "log")) {
 		parsed.command = .log;
 		help_topic_default = "log";
+		i += 1;
+	} else if (std.mem.eql(u8, cmd, "root")) {
+		parsed.command = .root;
+		help_topic_default = "root";
 		i += 1;
 	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
 		parsed.command = .clean;

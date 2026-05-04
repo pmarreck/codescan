@@ -656,6 +656,46 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		defer allocator.free(log_output);
 
 		try out.writer.writeAll(log_output);
+	} else if (std.mem.eql(u8, name, "root")) {
+		// Resolve from the server's project root rather than CWD — the MCP
+		// server may have been launched from anywhere; settings.root_path
+		// is the authoritative starting point.
+		const info_opt = main.findRepoRootInfo(allocator, settings.root_path) catch |err|
+			return toolError("MCP root: walk-up failed: {}\n", .{err});
+
+		if (info_opt) |info| {
+			defer {
+				allocator.free(info.project_root);
+				allocator.free(info.codescan_dir);
+			}
+			const db_path = std.fs.path.join(allocator, &.{ info.codescan_dir, "index.sqlite3" }) catch
+				return toolError("MCP root: db_path join failed\n", .{});
+			defer allocator.free(db_path);
+
+			const pidfile_mod = @import("pidfile.zig");
+			const pid_opt = pidfile_mod.readAndCheckPid(allocator, info.codescan_dir) catch null;
+			const watcher_status: []const u8 = if (pidfile_mod.isWatcherRunning(allocator, info.codescan_dir))
+				"running"
+			else if (pid_opt != null)
+				"stale"
+			else
+				"stopped";
+
+			try out.writer.writeAll("{");
+			try out.writer.print("\"project_root\":\"{s}\",", .{info.project_root});
+			try out.writer.print("\"root\":\"{s}\",", .{info.codescan_dir});
+			try out.writer.print("\"db_path\":\"{s}\",", .{db_path});
+			if (pid_opt) |pid| {
+				try out.writer.print("\"watcher_pid\":{d},", .{pid});
+			} else {
+				try out.writer.writeAll("\"watcher_pid\":null,");
+			}
+			try out.writer.print("\"watcher_status\":\"{s}\",", .{watcher_status});
+			try out.writer.print("\"walk_up_steps\":{d}", .{info.walk_up_steps});
+			try out.writer.writeAll("}");
+		} else {
+			try out.writer.print("{{\"root\":null,\"error\":\"no .codescan/ directory found walking up from {s}\"}}", .{settings.root_path});
+		}
 	} else {
 		return error.UnknownTool;
 	}
@@ -855,7 +895,8 @@ const tools_list_json =
 	\\{"name":"rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
 	\\{"name":"config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
 		\\{"name":"status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}},
-	\\{"name":"logs","description":"Read recent watcher logs from the OS log (macOS unified log / Linux journald), filtered to codescan and optionally to a project root.","inputSchema":{"type":"object","properties":{"root":{"type":"string","description":"Absolute project root path; filters messages to this project"},"since":{"type":"string","description":"Time window (e.g. '1h', '15m'). Default 1h."},"limit":{"type":"integer","description":"Max lines to return (last N after filter)"},"all":{"type":"boolean","description":"If true, show logs from all codescan projects"}}}}
+	\\{"name":"logs","description":"Read recent watcher logs from the OS log (macOS unified log / Linux journald), filtered to codescan and optionally to a project root.","inputSchema":{"type":"object","properties":{"root":{"type":"string","description":"Absolute project root path; filters messages to this project"},"since":{"type":"string","description":"Time window (e.g. '1h', '15m'). Default 1h."},"limit":{"type":"integer","description":"Max lines to return (last N after filter)"},"all":{"type":"boolean","description":"If true, show logs from all codescan projects"}}}},
+	\\{"name":"root","description":"Report which .codescan/ directory codescan resolves to from the server's project root. Returns absolute path of project root, the .codescan dir, db_path, watcher pid/status, and how many directory levels were walked up.","inputSchema":{"type":"object","properties":{}}}
 	\\]}
 ;
 
