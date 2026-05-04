@@ -2011,6 +2011,19 @@ fn performFullIndex(
 	return stats;
 }
 
+fn canConnectToEmbeddingServer(allocator: std.mem.Allocator, url: []const u8) bool {
+	const uri = std.Uri.parse(url) catch return false;
+	const host_component = uri.host orelse return false;
+	const host = switch (host_component) {
+		.raw, .percent_encoded => |s| s,
+	};
+	const scheme_is_tls = std.mem.eql(u8, uri.scheme, "https");
+	const port: u16 = if (uri.port) |p| p else if (scheme_is_tls) @as(u16, 443) else @as(u16, 80);
+	var stream = std.net.tcpConnectToHost(allocator, host, port) catch return false;
+	stream.close();
+	return true;
+}
+
 /// Spawns `codescan watch` in the background if not already running.
 fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *std.Io.Writer) void {
 
@@ -2024,6 +2037,38 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 
 	// Clean up stale PID file if it exists (process is dead)
 	pidfile.removePid(allocator, codescan_dir);
+
+	// Preflight: refuse to spawn if the embedding server is unreachable. The
+	// daemon would otherwise die silently — its stderr is closed, and the
+	// failure happens before syslog.init in some paths.
+	if (!canConnectToEmbeddingServer(allocator, settings.embedding_url)) {
+		const dialect_name: []const u8 = switch (settings.embedding_dialect) {
+			.ollama => "ollama",
+			.openai => "openai (oMLX / OpenAI-compatible)",
+		};
+		_ = stderr.print(
+			"\x1b[31merror: cannot reach embedding server at {s}\x1b[0m\n" ++
+				"  configured dialect: {s}\n" ++
+				"  configured model:   {s}\n" ++
+				"  fix one of:\n" ++
+				"    - start the embedding server\n" ++
+				"    - update embedding_url / embedding_api in .codescan/config\n" ++
+				"    - run 'codescan setup-model' for setup instructions\n" ++
+				"  watcher NOT started.\n",
+			.{ settings.embedding_url, dialect_name, settings.embedding_model },
+		) catch {};
+		_ = stderr.flush() catch {};
+		syslog.init("codescan");
+		defer syslog.deinit();
+		var msg_buf: [512]u8 = undefined;
+		const msg = std.fmt.bufPrint(
+			&msg_buf,
+			"failed to start watcher: cannot reach embedding server at {s} (dialect={s})",
+			.{ settings.embedding_url, dialect_name },
+		) catch "failed to start watcher: cannot reach embedding server";
+		syslog.logWithRoot(syslog.LOG_ERR, settings.root_path, msg);
+		return;
+	}
 
 	// Find our own binary
 	const self_exe = std.fs.selfExePathAlloc(allocator) catch |err| {
