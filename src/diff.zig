@@ -59,10 +59,9 @@ pub fn generateUnifiedDiff(allocator: std.mem.Allocator, old: []const u8, new: [
     const hunk_end_new = @min(last_diff_new.? + context, new_lines.len);
 
     // Build output
-    var buf = @as(std.ArrayListUnmanaged(u8), .empty);
-    defer buf.deinit(allocator);
-
-    const writer = buf.writer(allocator);
+    var alloc_writer = std.Io.Writer.Allocating.init(allocator);
+    defer alloc_writer.deinit();
+    const writer = &alloc_writer.writer;
 
     // File headers
     try writer.print("--- a/{s}\n", .{file_path});
@@ -96,9 +95,7 @@ pub fn generateUnifiedDiff(allocator: std.mem.Allocator, old: []const u8, new: [
         try writer.print(" {s}\n", .{old_lines[i]});
     }
 
-    const result = try allocator.alloc(u8, buf.items.len);
-    @memcpy(result, buf.items);
-    return result;
+    return try alloc_writer.toOwnedSlice();
 }
 
 /// Split content into lines (slices into the original content, no copying).

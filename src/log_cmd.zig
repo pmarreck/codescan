@@ -1,5 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const io_singleton = @import("io_singleton.zig");
 
 pub const Options = struct {
     root: ?[]const u8 = null,
@@ -178,25 +179,20 @@ fn realRunner(
     allocator: std.mem.Allocator,
     argv: []const []const u8,
 ) anyerror![]u8 {
-    var child = std.process.Child.init(argv, allocator);
-    child.stdin_behavior = .Close;
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Inherit;
-    try child.spawn();
-    errdefer _ = child.wait() catch {};
+    const io = io_singleton.getOrInit();
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .stdin = .close,
+        .stdout = .pipe,
+        .stderr = .inherit,
+    });
+    errdefer _ = child.wait(io) catch {};
 
-    var out = @as(std.ArrayListUnmanaged(u8), .empty);
-    errdefer out.deinit(allocator);
+    const out = try io_singleton.readToEndAlloc(child.stdout.?, allocator, std.math.maxInt(usize));
+    errdefer allocator.free(out);
 
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = try child.stdout.?.read(&buf);
-        if (n == 0) break;
-        try out.appendSlice(allocator, buf[0..n]);
-    }
-
-    _ = try child.wait();
-    return out.toOwnedSlice(allocator);
+    _ = try child.wait(io);
+    return out;
 }
 
 /// Run the log retrieval pipeline and return the filtered output.

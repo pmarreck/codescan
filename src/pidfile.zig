@@ -37,7 +37,7 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	const path = try pidPath(allocator, codescan_dir);
 	defer allocator.free(path);
 
-	const contents = std.Io.Dir.cwd().readFileAlloc(allocator, path, 64) catch return null;
+	const contents = std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), path, allocator, .limited(64)) catch return null;
 	defer allocator.free(contents);
 
 	const trimmed = std.mem.trim(u8, contents, &std.ascii.whitespace);
@@ -46,7 +46,7 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	if (pid <= 0) return null;
 
 	// kill(pid, 0) checks if process exists without sending a signal
-	const result = std.c.kill(pid, 0);
+	const result = std.c.kill(pid, @enumFromInt(0));
 	if (result == 0) return pid;
 
 	// Check errno: EPERM means process exists but we lack permission (still alive)

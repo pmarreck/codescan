@@ -333,7 +333,7 @@ const PollingBackend = struct {
 
 	fn wait(_: *PollingBackend, timeout_ms: ?u64) !FsWatch.WaitResult {
 		if (timeout_ms) |ms| {
-			std.Thread.sleep(ms * std.time.ns_per_ms);
+			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((ms * std.time.ns_per_ms)), .awake) catch {};
 		}
 		return .timeout;
 	}
@@ -383,8 +383,8 @@ test "FsWatch wait detects file creation" {
 
 	// Create a file from another thread after a short delay
 	const handle = try std.Thread.spawn(.{}, struct {
-		fn run(dir: std.fs.Dir) void {
-			std.Thread.sleep(50 * std.time.ns_per_ms);
+		fn run(dir: std.Io.Dir) void {
+			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((50 * std.time.ns_per_ms)), .awake) catch {};
 			const f = dir.createFile(io_singleton.getOrInit(), "test_trigger.txt", .{}) catch return;
 			f.close(io_singleton.getOrInit());
 		}

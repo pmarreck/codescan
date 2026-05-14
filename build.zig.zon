@@ -10,7 +10,8 @@
     },
     .dependencies = .{
         .sqlite_vec = .{
-            .path = "vendor/sqlite_vec",
+            .url = "git+https://github.com/pmarreck/sqlite-vec.git#c9d3630f56637276829d9ab0c54b1116c6d3e2ef",
+            .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0CTyBADFzDhhNOTSAUplRsfH1qs-DqwP6FwrZ641",
         },
         .pcre2 = .{
             .path = "vendor/pcre2",

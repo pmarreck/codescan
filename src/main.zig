@@ -224,7 +224,7 @@ pub fn main(init: std.process.Init) !void {
 			if (dir_exists) {
 				if (parsed.force) {
 					// --force: delete and recreate
-					std.Io.Dir.cwd().deleteTree(codescan_dir) catch |err| {
+					std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 						_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
 						_ = stderr.flush() catch {};
 						std.process.exit(1);
@@ -235,9 +235,10 @@ pub fn main(init: std.process.Init) !void {
 					_ = stderr.flush() catch {};
 					var input_buf: [16]u8 = undefined;
 					const stdin = std.Io.File.stdin();
-					const n = stdin.read(&input_buf) catch 0;
+					var stdin_reader = stdin.reader(io_singleton.getOrInit(), &input_buf);
+					const n = stdin_reader.interface.readSliceShort(&input_buf) catch 0;
 					if (n > 0 and (input_buf[0] == 'y' or input_buf[0] == 'Y')) {
-						std.Io.Dir.cwd().deleteTree(codescan_dir) catch |err| {
+						std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 							_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
 							_ = stderr.flush() catch {};
 							std.process.exit(1);
@@ -842,7 +843,11 @@ pub fn main(init: std.process.Init) !void {
 				}
 			}
 
-			const use_color = settings.output == .human and !std.process.hasEnvVarConstant("NO_COLOR");
+			const no_color_set = blk: {
+				const env_map = io_singleton.getEnvMap() orelse break :blk false;
+				break :blk env_map.get("NO_COLOR") != null;
+			};
+			const use_color = settings.output == .human and !no_color_set;
 			try output.writeResults(allocator, stdout, settings.output, display_results, .{
 				.show_comments = settings.show_comments,
 				.show_body = parsed.include_body,
@@ -1090,7 +1095,7 @@ pub fn main(init: std.process.Init) !void {
 							_ = std.c.kill(pid_val, std.posix.SIG.TERM);
 							try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
 							// Brief pause for process cleanup
-							std.Thread.sleep(200 * std.time.ns_per_ms);
+							io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
 							pidfile.removePid(allocator, codescan_dir);
 						}
 						maybeStartWatcher(allocator, settings, stdout);
@@ -1274,7 +1279,7 @@ pub fn main(init: std.process.Init) !void {
 					if (comptime builtin.os.tag != .windows) {
 						const act = std.posix.Sigaction{
 							.handler = .{ .handler = struct {
-								fn handler(_: c_int) callconv(.c) void {
+								fn handler(_: std.c.SIG) callconv(.c) void {
 									g_stop_flag.store(true, .release);
 								}
 							}.handler },
@@ -1369,7 +1374,8 @@ pub fn main(init: std.process.Init) !void {
 					_ = stderr.print("This will stop the watcher and delete {s}/. Continue? [y/N] ", .{codescan_dir}) catch {};
 					_ = stderr.flush() catch {};
 					var input_buf: [16]u8 = undefined;
-					const n = std.Io.File.stdin().read(&input_buf) catch 0;
+					var stdin_reader2 = std.Io.File.stdin().reader(io_singleton.getOrInit(), &input_buf);
+					const n = stdin_reader2.interface.readSliceShort(&input_buf) catch 0;
 					if (n == 0 or (input_buf[0] != 'y' and input_buf[0] != 'Y')) {
 						try stdout.print("Aborted.\n", .{});
 						try stdout.flush();
@@ -1393,7 +1399,7 @@ pub fn main(init: std.process.Init) !void {
 			}
 
 			// Delete .codescan/ directory
-			std.Io.Dir.cwd().deleteTree(codescan_dir) catch |err| {
+			std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 				try stdout.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) });
 				try stdout.flush();
 				std.process.exit(1);
@@ -1926,10 +1932,13 @@ fn parseHealthDefaultModel(allocator: std.mem.Allocator, body: []const u8) ?[]co
 
 fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     _ = stderr.flush() catch {};
-    if (!std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) return non_tty_default;
+    const io = io_singleton.getOrInit();
+    const is_tty = std.Io.File.stdin().isTty(io) catch false;
+    if (!is_tty) return non_tty_default;
     var input_buf: [16]u8 = undefined;
     const stdin = std.Io.File.stdin();
-    const n = stdin.read(&input_buf) catch return false;
+    var stdin_reader = stdin.reader(io, &input_buf);
+    const n = stdin_reader.interface.readSliceShort(&input_buf) catch return false;
     if (n == 0) return false;
     return input_buf[0] == 'y' or input_buf[0] == 'Y';
 }
@@ -1937,7 +1946,7 @@ fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
 fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, url: []const u8, dialect: embedding_http.ApiDialect, detected_model: ?[]const u8) !void {
     const cfg_path = try configPath(allocator, config_root);
     defer allocator.free(cfg_path);
-    const content = try std.Io.Dir.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const dialect_str = if (dialect == .ollama) "ollama" else "openai";
     var kvs_buf: [3]config.KV = undefined;
@@ -1958,7 +1967,7 @@ fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, ur
 fn writeDetectedConfigLexical(allocator: std.mem.Allocator, config_root: []const u8) !void {
     const cfg_path = try configPath(allocator, config_root);
     defer allocator.free(cfg_path);
-    const content = try std.Io.Dir.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const kvs = [_]config.KV{
         .{ .key = "search_mode", .value = "lexical" },
@@ -2027,8 +2036,11 @@ fn canConnectToEmbeddingServer(allocator: std.mem.Allocator, url: []const u8) bo
 	};
 	const scheme_is_tls = std.mem.eql(u8, uri.scheme, "https");
 	const port: u16 = if (uri.port) |p| p else if (scheme_is_tls) @as(u16, 443) else @as(u16, 80);
-	var stream = std.net.tcpConnectToHost(allocator, host, port) catch return false;
-	stream.close();
+	const io_net = io_singleton.getOrInit();
+	const addr = std.Io.net.IpAddress.resolve(io_net, host, port) catch return false;
+	var stream = addr.connect(io_net, .{ .mode = .stream }) catch return false;
+	stream.close(io_net);
+	_ = allocator;
 	return true;
 }
 
@@ -2079,7 +2091,7 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	}
 
 	// Find our own binary
-	const self_exe = std.fs.selfExePathAlloc(allocator) catch |err| {
+	const self_exe = std.process.executablePathAlloc(io_singleton.getOrInit(), allocator) catch |err| {
 		_ = stderr.print("note: could not find codescan binary to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
 		return;
@@ -2087,15 +2099,13 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	defer allocator.free(self_exe);
 
 	// Spawn: codescan watch --root <path>
-	var child = std.process.Child.init(
-		&.{ self_exe, "watch", "--root", settings.root_path },
-		allocator,
-	);
-	child.stdin_behavior = .Close;
-	child.stdout_behavior = .Close;
-	child.stderr_behavior = .Close;
-
-	child.spawn() catch |err| {
+	const io_spawn = io_singleton.getOrInit();
+	const child = std.process.spawn(io_spawn, .{
+		.argv = &.{ self_exe, "watch", "--root", settings.root_path },
+		.stdin = .close,
+		.stdout = .close,
+		.stderr = .close,
+	}) catch |err| {
 		_ = stderr.print("note: failed to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
 		syslog.init("codescan");
@@ -2110,7 +2120,7 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	if (comptime builtin.os.tag == .windows) {
 		_ = stderr.print("note: Started background watcher\n", .{}) catch {};
 	} else {
-		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id}) catch {};
+		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id orelse 0}) catch {};
 	}
 	_ = stderr.flush() catch {};
 }
@@ -2128,7 +2138,9 @@ pub const RootInfo = struct {
 /// Walk up from `start_path` looking for the nearest `.codescan/` ancestor.
 /// Caller owns `project_root` and `codescan_dir` (each freed independently).
 pub fn findRepoRootInfo(allocator: std.mem.Allocator, start_path: []const u8) !?RootInfo {
-	const start_abs = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), start_path, allocator);
+	const start_abs_z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), start_path, allocator);
+	defer allocator.free(start_abs_z);
+	const start_abs = try allocator.dupe(u8, start_abs_z);
 	errdefer allocator.free(start_abs);
 
 	var current = start_abs;
@@ -2297,14 +2309,17 @@ fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 	defer allocator.free(cmd);
 
 	const argv = &[_][]const u8{ "sh", "-c", cmd };
-	var child = std.process.Child.init(argv, allocator);
-	child.stdin_behavior = .Inherit;
-	child.stdout_behavior = .Inherit;
-	child.stderr_behavior = .Inherit;
+	const io = io_singleton.getOrInit();
+	var child = try std.process.spawn(io, .{
+		.argv = argv,
+		.stdin = .inherit,
+		.stdout = .inherit,
+		.stderr = .inherit,
+	});
 
-	const term = try child.spawnAndWait();
+	const term = try child.wait(io);
 	switch (term) {
-		.Exited => |code| {
+		.exited => |code| {
 			if (code != 0) return error.EditorFailed;
 		},
 		else => return error.EditorFailed,
@@ -2426,7 +2441,10 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 		return;
 	};
 	defer allocator.free(abs_file);
-	const rel_path = std.fs.path.relative(allocator, abs_root, abs_file) catch |err| {
+	const rel_path_io = io_singleton.getOrInit();
+	const cwd_buf = std.process.currentPathAlloc(rel_path_io, allocator) catch return;
+	defer allocator.free(cwd_buf);
+	const rel_path = std.fs.path.relative(allocator, cwd_buf, io_singleton.getEnvMap(), abs_root, abs_file) catch |err| {
 		_ = stderr.print("warning: reindex skipped (could not compute relative path): {}\n", .{err}) catch {};
 		_ = stderr.flush() catch {};
 		return;
@@ -2489,11 +2507,17 @@ const posix_fs = if (builtin.os.tag == .linux) struct {
 /// journal/WAL writes. Prints an error to stderr and exits if space
 /// is below the threshold. Best-effort: silently succeeds on any
 /// failure to read filesystem stats (e.g. unsupported platform).
+var tmp_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+
 fn checkTmpSpace() void {
-	const tmp_path: [*:0]const u8 = if (std.posix.getenv("TMPDIR")) |t|
-		@ptrCast(t.ptr)
-	else
-		"/tmp";
+	const tmp_path: [*:0]const u8 = blk: {
+		const env_map = io_singleton.getEnvMap() orelse break :blk "/tmp";
+		const v = env_map.get("TMPDIR") orelse break :blk "/tmp";
+		if (v.len >= tmp_path_buf.len) break :blk "/tmp";
+		@memcpy(tmp_path_buf[0..v.len], v);
+		tmp_path_buf[v.len] = 0;
+		break :blk @as([*:0]const u8, @ptrCast(&tmp_path_buf[0]));
+	};
 	const avail = posix_fs.avail(tmp_path) orelse return;
 	if (avail >= MIN_TMP_SPACE_BYTES) return;
 	var eb: [512]u8 = undefined;
@@ -3063,7 +3087,7 @@ pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_lin
 
 pub fn runCreateFile(allocator: std.mem.Allocator, file_path: []const u8, body: []const u8, writer: *std.Io.Writer) !void {
 	// Check file doesn't already exist
-	if (std.Io.Dir.cwd().access(file_path, .{})) |_| {
+	if (std.Io.Dir.cwd().access(io_singleton.getOrInit(), file_path, .{})) |_| {
 		try writer.print("error: file already exists: {s} (use replace_content to modify)\n", .{file_path});
 		return;
 	} else |_| {}
@@ -3119,29 +3143,29 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 	if (comptime builtin.os.tag == .macos) {
 		// macOS: move directly to ~/.Trash/ (avoids needing a Finder/UI session).
 		// Files moved here appear in Trash and support "Put Back".
-		const home = std.posix.getenv("HOME") orelse "/tmp";
+		const home = if (io_singleton.getEnvMap()) |env_map| (env_map.get("HOME") orelse "/tmp") else "/tmp";
 		const trash_dir = try std.fs.path.join(allocator, &.{ home, ".Trash" });
 		defer allocator.free(trash_dir);
 		std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), trash_dir) catch {};
 		const basename = std.fs.path.basename(abs_path);
 		const dest = try std.fs.path.join(allocator, &.{ trash_dir, basename });
 		defer allocator.free(dest);
-		std.fs.renameAbsolute(abs_path, dest) catch {
+		std.Io.Dir.renameAbsolute(abs_path, dest, io_singleton.getOrInit()) catch {
 			try writer.print("error: could not move '{s}' to trash\n", .{file_path});
 			return;
 		};
 	} else {
 		// Linux: try gio trash, then trash-put, then manual move
 		// Try gio trash
+		const io_trash = io_singleton.getOrInit();
 		const gio_ok = blk: {
-			var child = std.process.Child.init(
-				&[_][]const u8{ "gio", "trash", abs_path },
-				allocator,
-			);
-			child.stderr_behavior = .Ignore;
-			child.stdout_behavior = .Ignore;
-			if (child.spawnAndWait()) |term| {
-				break :blk term.Exited == 0;
+			var child = std.process.spawn(io_trash, .{
+				.argv = &[_][]const u8{ "gio", "trash", abs_path },
+				.stderr = .ignore,
+				.stdout = .ignore,
+			}) catch break :blk false;
+			if (child.wait(io_trash)) |term| {
+				break :blk term.exited == 0;
 			} else |_| {
 				break :blk false;
 			}
@@ -3149,14 +3173,13 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 
 		// Try trash-put
 		const trash_put_ok = if (!gio_ok) blk: {
-			var child = std.process.Child.init(
-				&[_][]const u8{ "trash-put", abs_path },
-				allocator,
-			);
-			child.stderr_behavior = .Ignore;
-			child.stdout_behavior = .Ignore;
-			if (child.spawnAndWait()) |term| {
-				break :blk term.Exited == 0;
+			var child = std.process.spawn(io_trash, .{
+				.argv = &[_][]const u8{ "trash-put", abs_path },
+				.stderr = .ignore,
+				.stdout = .ignore,
+			}) catch break :blk false;
+			if (child.wait(io_trash)) |term| {
+				break :blk term.exited == 0;
 			} else |_| {
 				break :blk false;
 			}
@@ -3164,14 +3187,14 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 
 		// Fallback: move to ~/.local/share/Trash/files/
 		if (!trash_put_ok) {
-			const home = std.posix.getenv("HOME") orelse "/tmp";
+			const home = if (io_singleton.getEnvMap()) |env_map| (env_map.get("HOME") orelse "/tmp") else "/tmp";
 			const trash_dir = try std.fs.path.join(allocator, &.{ home, ".local/share/Trash/files" });
 			defer allocator.free(trash_dir);
 			std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), trash_dir) catch {};
 			const basename = std.fs.path.basename(abs_path);
 			const dest = try std.fs.path.join(allocator, &.{ trash_dir, basename });
 			defer allocator.free(dest);
-			std.fs.renameAbsolute(abs_path, dest) catch {
+			std.Io.Dir.renameAbsolute(abs_path, dest, io_singleton.getOrInit()) catch {
 				try writer.print("error: could not move '{s}' to trash\n", .{file_path});
 				return;
 			};
@@ -3192,16 +3215,18 @@ pub fn runDiff(allocator: std.mem.Allocator, staged: bool, root_path: []const u8
 	try argv.appendSlice(allocator, &.{ "git", "diff", "-U3" });
 	if (staged) try argv.append(allocator, "--staged");
 
-	var child = std.process.Child.init(argv.items, allocator);
-	child.stdout_behavior = .Pipe;
-	child.stderr_behavior = .Ignore;
-	child.cwd = root_path;
-	_ = try child.spawn();
+	const io_diff = io_singleton.getOrInit();
+	var child = try std.process.spawn(io_diff, .{
+		.argv = argv.items,
+		.stdout = .pipe,
+		.stderr = .ignore,
+		.cwd = .{ .path = root_path },
+	});
 	const git_output = try io_singleton.readToEndAlloc(child.stdout.?, allocator, 10 * 1024 * 1024);
 	defer allocator.free(git_output);
-	const term = try child.wait();
-	if (term.Exited != 0) {
-		try writer.print("error: git diff failed (exit code {d})\n", .{term.Exited});
+	const term = try child.wait(io_diff);
+	if (term.exited != 0) {
+		try writer.print("error: git diff failed (exit code {d})\n", .{term.exited});
 		return;
 	}
 
@@ -7010,7 +7035,7 @@ test "runDestroyFile rejects stale version" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
 
 	// File should still exist (not deleted)
-	tmp.dir.access("doomed.zig", .{}) catch {
+	tmp.dir.access(io_singleton.getOrInit(), "doomed.zig", .{}) catch {
 		return error.FileShouldStillExist;
 	};
 }
@@ -7040,7 +7065,7 @@ test "runDestroyFile moves file to trash (file no longer accessible)" {
 		std.mem.indexOf(u8, output_text, "warning:") != null);
 
 	// File should no longer be accessible at the original path
-	const still_exists = if (std.Io.Dir.cwd().access(abs_path, .{})) |_| true else |_| false;
+	const still_exists = if (std.Io.Dir.cwd().access(io_singleton.getOrInit(), abs_path, .{})) |_| true else |_| false;
 	try std.testing.expect(!still_exists);
 }
 

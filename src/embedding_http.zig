@@ -307,7 +307,7 @@ pub const StdHttpTransport = struct {
 	client: std.http.Client,
 
 	pub fn init(allocator: std.mem.Allocator) StdHttpTransport {
-		return .{ .client = .{ .allocator = allocator } };
+		return .{ .client = .{ .allocator = allocator, .io = io_singleton.getOrInit() } };
 	}
 
 	pub fn deinit(self: *StdHttpTransport) void {

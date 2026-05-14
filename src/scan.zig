@@ -106,7 +106,7 @@ pub fn findFiles(
 		results.deinit(allocator);
 	}
 
-	while (try walker.next()) |entry| {
+	while (try walker.next(io_singleton.getOrInit())) |entry| {
 		const is_file = entry.kind == .file or
 			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
 		if (!is_file) continue;
@@ -178,18 +178,19 @@ fn buildGitAllowSet(allocator: std.mem.Allocator, root_path: []const u8) !?std.S
 }
 
 fn gitCaptureStdout(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-	var child = std.process.Child.init(argv, allocator);
-	child.stdin_behavior = .Close;
-	child.stdout_behavior = .Pipe;
-	child.stderr_behavior = .Ignore;
-
-	try child.spawn();
+	const io = io_singleton.getOrInit();
+	var child = try std.process.spawn(io, .{
+		.argv = argv,
+		.stdin = .close,
+		.stdout = .pipe,
+		.stderr = .ignore,
+	});
 	const stdout = try io_singleton.readToEndAlloc(child.stdout.?, allocator, 256 * 1024 * 1024);
 	errdefer allocator.free(stdout);
 
-	const term = try child.wait();
+	const term = try child.wait(io);
 	switch (term) {
-		.Exited => |code| if (code != 0) return error.ChildProcessFailed,
+		.exited => |code| if (code != 0) return error.ChildProcessFailed,
 		else => return error.ChildProcessFailed,
 	}
 
@@ -204,7 +205,7 @@ fn deinitGitAllowSet(allocator: std.mem.Allocator, set: *std.StringHashMapUnmana
 
 /// Returns true if the project root contains typical bash dotfiles,
 /// indicating bin/ likely contains shell scripts rather than build artifacts.
-fn isBashProject(dir: std.fs.Dir) bool {
+fn isBashProject(dir: std.Io.Dir) bool {
 	const markers = [_][]const u8{ ".bashrc", ".bash_profile", ".profile", ".bash_aliases" };
 	for (&markers) |name| {
 		if (dir.statFile(io_singleton.getOrInit(), name, .{})) |_| return true else |_| {}
@@ -238,17 +239,19 @@ fn globMatch(path: []const u8, pattern: []const u8) bool {
 	return gi == pattern.len;
 }
 
-fn isSymlinkToFile(dir: std.fs.Dir, rel_path: []const u8) bool {
+fn isSymlinkToFile(dir: std.Io.Dir, rel_path: []const u8) bool {
 	const stat = dir.statFile(io_singleton.getOrInit(), rel_path, .{}) catch return false;
 	return stat.kind == .file;
 }
 
-fn detectShebangLanguage(dir: std.fs.Dir, rel_path: []const u8) ?[]const u8 {
+fn detectShebangLanguage(dir: std.Io.Dir, rel_path: []const u8) ?[]const u8 {
 	var file = dir.openFile(io_singleton.getOrInit(), rel_path, .{}) catch return null;
 	defer file.close(io_singleton.getOrInit());
 
 	var buf: [256]u8 = undefined;
-	const n = file.read(&buf) catch return null;
+	const io = io_singleton.getOrInit();
+	var freader = file.reader(io, &buf);
+	const n = freader.interface.readSliceShort(&buf) catch return null;
 	if (n < 2) return null;
 	if (buf[0] != '#' or buf[1] != '!') return null;
 
@@ -595,14 +598,16 @@ test "findFiles respects .gitignore for untracked files" {
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
-	var init_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "init", "-q" }, allocator);
-	init_child.stdin_behavior = .Close;
-	init_child.stdout_behavior = .Ignore;
-	init_child.stderr_behavior = .Ignore;
-	init_child.spawn() catch return error.SkipZigTest;
-	const init_term = try init_child.wait();
+	const io_t1 = io_singleton.getOrInit();
+	var init_child = std.process.spawn(io_t1, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const init_term = try init_child.wait(io_t1);
 	switch (init_term) {
-		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		.exited => |code| if (code != 0) return error.SkipZigTest,
 		else => return error.SkipZigTest,
 	}
 
@@ -632,25 +637,28 @@ test "findFiles still includes tracked files even if matched by .gitignore" {
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
-	var init_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "init", "-q" }, allocator);
-	init_child.stdin_behavior = .Close;
-	init_child.stdout_behavior = .Ignore;
-	init_child.stderr_behavior = .Ignore;
-	init_child.spawn() catch return error.SkipZigTest;
-	const init_term = try init_child.wait();
+	const io_t2 = io_singleton.getOrInit();
+	var init_child = std.process.spawn(io_t2, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const init_term = try init_child.wait(io_t2);
 	switch (init_term) {
-		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		.exited => |code| if (code != 0) return error.SkipZigTest,
 		else => return error.SkipZigTest,
 	}
 
-	var add_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "add", ".gitignore", "src/main.zig" }, allocator);
-	add_child.stdin_behavior = .Close;
-	add_child.stdout_behavior = .Ignore;
-	add_child.stderr_behavior = .Ignore;
-	add_child.spawn() catch return error.SkipZigTest;
-	const add_term = try add_child.wait();
+	var add_child = std.process.spawn(io_t2, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "add", ".gitignore", "src/main.zig" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const add_term = try add_child.wait(io_t2);
 	switch (add_term) {
-		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		.exited => |code| if (code != 0) return error.SkipZigTest,
 		else => return error.SkipZigTest,
 	}
 

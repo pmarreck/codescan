@@ -179,7 +179,7 @@ fn watchLoopPolling(
 	var consecutive_errors: u32 = 0;
 
 	while (!stop.load(.acquire)) {
-		std.Thread.sleep(options.interval_ms * std.time.ns_per_ms);
+		io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((options.interval_ms * std.time.ns_per_ms)), .awake) catch {};
 		if (stop.load(.acquire)) break;
 
 		// Check if config file was edited
@@ -235,7 +235,7 @@ fn getFileMtime(path: ?[]const u8) ?i128 {
 	const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), p, .{}) catch return null;
 	defer file.close(io_singleton.getOrInit());
 	const stat = file.stat(io_singleton.getOrInit()) catch return null;
-	return stat.mtime;
+	return stat.mtime.nanoseconds;
 }
 
 /// Returns true if the config file's mtime differs from the stored value, updating it in place.

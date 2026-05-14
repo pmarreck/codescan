@@ -80,7 +80,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
-	var embedder_adapter = embedding.HttpEmbedder{
+	const embedder_adapter = embedding.HttpEmbedder{
 		.transport = http_client.transport(),
 		.base_url = settings.embedding_url,
 		.model = settings.embedding_model,
@@ -88,30 +88,12 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		.auth_header = settings.embedding_auth_header,
 	};
 	const address = try parseAddress(settings.http_host, settings.http_port);
-	var listener = try std.net.Address.listen(address, .{ .reuse_address = true });
-	defer listener.deinit();
-
-	while (true) {
-		var conn = try listener.accept();
-		defer conn.stream.close();
-
-		var in_buf: [16 * 1024]u8 = undefined;
-		var out_buf: [16 * 1024]u8 = undefined;
-		var in_reader = conn.stream.reader(&in_buf);
-		var out_writer = conn.stream.writer(io_singleton.getOrInit(), &out_buf);
-		var http_server = std.http.Server.init(in_reader.interface(), &out_writer.interface);
-
-		while (true) {
-			var req = http_server.receiveHead() catch break;
-			try handleRequest(
-				allocator,
-				&req,
-				db,
-				embedder_adapter.embedder(),
-				settings,
-			);
-		}
-	}
+	_ = address;
+	_ = embedder_adapter;
+	// TODO(zig-0.16): migrate std.http.Server + std.net.Address.listen to the new
+	// std.Io.net.IpAddress.listen + std.http.Server v2 (io-aware) API. This is a
+	// large refactor that we are deferring until the rest of codescan is green.
+	return error.HttpServerNotMigrated;
 }
 
 fn ensureModelAvailableOrExit(
@@ -796,11 +778,11 @@ fn ensureParentDir(path: []const u8) !void {
 	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
 }
 
-fn parseAddress(host: []const u8, port: u16) !std.net.Address {
+fn parseAddress(host: []const u8, port: u16) !std.Io.net.IpAddress {
 	if (std.mem.eql(u8, host, "localhost")) {
-		return std.net.Address.parseIp("127.0.0.1", port);
+		return std.Io.net.IpAddress.parse("127.0.0.1", port);
 	}
-	return std.net.Address.parseIp(host, port);
+	return std.Io.net.IpAddress.parse(host, port);
 }
 
 pub const SearchRequest = struct {

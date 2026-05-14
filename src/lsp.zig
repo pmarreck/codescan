@@ -244,12 +244,13 @@ pub const LspClient = struct {
 			try argv_list.append(allocator, arg);
 		}
 
-		var child = std.process.Child.init(argv_list.items, allocator);
-		child.stdin_behavior = .Pipe;
-		child.stdout_behavior = .Pipe;
-		child.stderr_behavior = .Pipe;
-
-		child.spawn() catch return error.ServerNotFound;
+		const io_spawn = io_singleton.getOrInit();
+		const child = std.process.spawn(io_spawn, .{
+			.argv = argv_list.items,
+			.stdin = .pipe,
+			.stdout = .pipe,
+			.stderr = .pipe,
+		}) catch return error.ServerNotFound;
 
 		var client = LspClient{
 			.allocator = allocator,
@@ -287,7 +288,7 @@ pub const LspClient = struct {
 		self.child.stderr = null;
 
 		// Wait for process to exit
-		_ = self.child.wait() catch {};
+		_ = self.child.wait(io_singleton.getOrInit()) catch {};
 	}
 
 	pub fn deinit(self: *LspClient) void {
@@ -471,7 +472,7 @@ pub const LspClient = struct {
 	fn readMessage(self: *LspClient, allocator: std.mem.Allocator) ![]u8 {
 		const stdout = self.child.stdout orelse return error.ProtocolError;
 		var read_buf: [4096]u8 = undefined;
-		var r = stdout.readerStreaming(&read_buf);
+		var r = stdout.readerStreaming(io_singleton.getOrInit(), &read_buf);
 		const reader = &r.interface;
 
 		// Read headers byte-by-byte until \r\n\r\n

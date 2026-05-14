@@ -174,7 +174,7 @@ pub fn indexAll(
 		}
 
 		// Track indexed file so indexIncremental knows about it
-		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
 		const current_size: i64 = @intCast(size);
 		try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
 	}
@@ -317,7 +317,7 @@ pub fn indexIncremental(
 		const size = stat.size;
 		if (options.max_file_size > 0 and size > options.max_file_size) continue;
 
-		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
 		const current_size: i64 = @intCast(size);
 
 		// Check if file is unchanged (both mtime and size must match to catch same-second edits)
@@ -469,7 +469,7 @@ pub fn reindexFile(
 	}
 
 	// Update file metadata
-	const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+	const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
 	const current_size: i64 = @intCast(stat.size);
 	try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
 }
@@ -893,7 +893,7 @@ fn embedWithRetry(
 				1 => 100 * std.time.ns_per_ms,
 				else => 500 * std.time.ns_per_ms,
 			};
-			std.Thread.sleep(delay_ns);
+			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((delay_ns)), .awake) catch {};
 		}
 	}
 }

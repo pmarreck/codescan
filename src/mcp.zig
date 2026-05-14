@@ -801,7 +801,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	}
 
 	var in_buf: [16 * 1024]u8 = undefined;
-	var stdin_reader = std.Io.File.stdin().reader(&in_buf);
+	var stdin_reader = std.Io.File.stdin().reader(io_singleton.getOrInit(), &in_buf);
 	const reader = &stdin_reader.interface;
 
 	var out_buf: [16 * 1024]u8 = undefined;

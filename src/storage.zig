@@ -78,14 +78,6 @@ pub fn openFileWithVecRecreate(allocator: std.mem.Allocator, path: []const u8) !
 }
 
 fn deleteFileIfExists(path: []const u8) !void {
-	if (std.fs.path.isAbsolute(path)) {
-		std.fs.deleteFileAbsolute(path) catch |err| switch (err) {
-			error.FileNotFound => {},
-			else => return err,
-		};
-		return;
-	}
-
 	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), path) catch |err| switch (err) {
 		error.FileNotFound => {},
 		else => return err,

@@ -166,14 +166,16 @@ pub fn stopWatcher(pid: std.posix.pid_t) bool {
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-	var child = std.process.Child.init(argv, allocator);
-	child.stdout_behavior = .Pipe;
-	child.stderr_behavior = .Ignore;
-	_ = try child.spawn();
+	const io = io_singleton.getOrInit();
+	var child = try std.process.spawn(io, .{
+		.argv = argv,
+		.stdout = .pipe,
+		.stderr = .ignore,
+	});
 	const output = try io_singleton.readToEndAlloc(child.stdout.?, allocator, 10 * 1024 * 1024);
 	errdefer allocator.free(output);
-	const term = try child.wait();
-	if (term.Exited != 0) return error.CommandFailed;
+	const term = try child.wait(io);
+	if (term.exited != 0) return error.CommandFailed;
 	return output;
 }
 // ─── Tests ───────────────────────────────────────────────────────────────────
