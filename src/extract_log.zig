@@ -10,7 +10,7 @@ pub fn extract(
 	var lines = try util.splitLines(allocator, source);
 	defer lines.deinit(allocator);
 
-	var symbols = std.ArrayListUnmanaged(model.Symbol){};
+	var symbols = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (symbols.items) |*sym| sym.deinit(allocator);
 		symbols.deinit(allocator);

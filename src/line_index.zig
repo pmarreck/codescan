@@ -7,7 +7,7 @@ pub const LineIndex = struct {
 
     /// Build the index by scanning source once for newlines. O(n) in source length.
     pub fn build(allocator: std.mem.Allocator, source: []const u8) !LineIndex {
-        var starts = std.ArrayListUnmanaged(usize){};
+        var starts = @as(std.ArrayListUnmanaged(usize), .empty);
         errdefer starts.deinit(allocator);
         try starts.append(allocator, 0); // line 0 starts at byte 0
         for (source, 0..) |byte, i| {

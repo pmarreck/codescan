@@ -91,7 +91,7 @@ pub const Registry = struct {
 		allocator: std.mem.Allocator,
 		kinds: []const kind.Kind,
 	) ![]const []const u8 {
-		var out = std.ArrayListUnmanaged([]const u8){};
+		var out = @as(std.ArrayListUnmanaged([]const u8), .empty);
 		errdefer {
 			for (out.items) |item| allocator.free(item);
 			out.deinit(allocator);

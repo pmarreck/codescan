@@ -120,7 +120,7 @@ pub fn search(
 		weight_lexical /= sum;
 	}
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
 		results.deinit(allocator);
@@ -189,7 +189,7 @@ pub fn search(
 	}
 
 	if (options.comments_only) {
-		var filtered = std.ArrayListUnmanaged(Result){};
+		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
 		errdefer {
 			for (filtered.items) |*res| res.deinit(allocator);
 			filtered.deinit(allocator);
@@ -207,7 +207,7 @@ pub fn search(
 	}
 
 	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0 or options.allowed_symbol_kinds.len > 0) {
-		var filtered = std.ArrayListUnmanaged(Result){};
+		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
 		errdefer {
 			for (filtered.items) |*res| res.deinit(allocator);
 			filtered.deinit(allocator);
@@ -350,7 +350,7 @@ pub fn search(
 			res.score = applyMetadataBoost(res.score, res.symbol, metadata_query, options);
 		}
 
-	var filtered = std.ArrayListUnmanaged(Result){};
+	var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (filtered.items) |*res| res.deinit(allocator);
 		filtered.deinit(allocator);
@@ -398,7 +398,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 	if (options.top_n == 0) return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
 
 	// Build WHERE clauses
-	var where_parts = std.ArrayListUnmanaged([]const u8){};
+	var where_parts = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer {
 		for (where_parts.items) |part| allocator.free(part);
 		where_parts.deinit(allocator);
@@ -418,7 +418,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 			try where_parts.append(allocator, try allocator.dupe(u8, "symbol_kind IS NOT NULL"));
 		} else {
 			// Build IN clause
-			var in_buf = std.ArrayListUnmanaged(u8){};
+			var in_buf = @as(std.ArrayListUnmanaged(u8), .empty);
 			defer in_buf.deinit(allocator);
 			try in_buf.appendSlice(allocator, "symbol_kind IN (");
 			for (options.allowed_symbol_kinds, 0..) |k, idx| {
@@ -434,7 +434,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 
 	// Handle language filter
 	if (options.allowed_langs.len > 0) {
-		var in_buf = std.ArrayListUnmanaged(u8){};
+		var in_buf = @as(std.ArrayListUnmanaged(u8), .empty);
 		defer in_buf.deinit(allocator);
 		try in_buf.appendSlice(allocator, "lang IN (");
 		for (options.allowed_langs, 0..) |lang, idx| {
@@ -451,7 +451,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 	// Extensions are checked on file_path which is harder in SQL, so we over-fetch and filter.
 
 	// Build final SQL
-	var sql_buf = std.ArrayListUnmanaged(u8){};
+	var sql_buf = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer sql_buf.deinit(allocator);
 	try sql_buf.appendSlice(allocator,
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
@@ -487,7 +487,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 	}
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
 		results.deinit(allocator);
@@ -679,7 +679,7 @@ fn vectorCandidates(
 	try bindText(stmt.?, 1, json);
 	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
 		results.deinit(allocator);
@@ -767,7 +767,7 @@ fn likeCandidates(
 	_ = sqlite.sqlite3_bind_text(stmt.?, 3, prefix_z.ptr, @intCast(prefix.len), null);
 	_ = sqlite.sqlite3_bind_int64(stmt.?, 4, @intCast(limit));
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
 		results.deinit(allocator);
@@ -819,7 +819,7 @@ fn commentCandidates(
 	_ = sqlite.sqlite3_bind_text(stmt.?, 1, pattern_z.ptr, @intCast(pattern.len), null);
 	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
 		results.deinit(allocator);
@@ -890,7 +890,7 @@ fn ftsCandidates(
 	}
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
 		for (results.items) |*res| res.deinit(allocator);
 		results.deinit(allocator);
@@ -988,7 +988,7 @@ fn dupColumnTextOptional(
 }
 
 fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try out.writer.writeAll("[");
@@ -1105,7 +1105,7 @@ fn isCodeLikeToken(token: []const u8) bool {
 }
 
 fn isLikelyLocalBindingSignature(signature: []const u8) bool {
-	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	const trimmed = std.mem.trimStart(u8, signature, " \t");
 	return std.mem.startsWith(u8, trimmed, "var ") or
 		std.mem.startsWith(u8, trimmed, "const ") or
 		std.mem.startsWith(u8, trimmed, "let ") or
@@ -1336,7 +1336,7 @@ fn nameRelevance(allocator: std.mem.Allocator, query: []const u8, name: []const 
 /// Join query words as camelCase: "draw rectangle" → "drawRectangle"
 fn joinCamelCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
-	var parts = std.ArrayListUnmanaged(u8){};
+	var parts = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer parts.deinit(allocator);
 	var first = true;
 	while (tokens.next()) |tok| {
@@ -1357,7 +1357,7 @@ fn joinCamelCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 /// Join query words as snake_case: "draw rectangle" → "draw_rectangle"
 fn joinSnakeCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 	var tokens = std.mem.tokenizeAny(u8, query, " \t\r\n");
-	var parts = std.ArrayListUnmanaged(u8){};
+	var parts = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer parts.deinit(allocator);
 	var first = true;
 	while (tokens.next()) |tok| {
@@ -1376,7 +1376,7 @@ fn joinSnakeCase(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 /// - "parseJSON"      → ["parse", "json"]
 /// - "simple"         → ["simple"]
 fn splitCamelSnake(allocator: std.mem.Allocator, token: []const u8) ![][]u8 {
-	var parts = std.ArrayListUnmanaged([]u8){};
+	var parts = @as(std.ArrayListUnmanaged([]u8), .empty);
 	errdefer {
 		for (parts.items) |p| allocator.free(p);
 		parts.deinit(allocator);
@@ -1535,7 +1535,7 @@ fn crossCaseQueryMatch(allocator: std.mem.Allocator, query: []const u8, name: []
 
 /// Join pre-split parts as camelCase: ["name", "relevance"] → "nameRelevance"
 fn joinPartsAsCamel(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
-	var buf = std.ArrayListUnmanaged(u8){};
+	var buf = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer buf.deinit(allocator);
 	for (parts, 0..) |part, idx| {
 		if (part.len == 0) continue;
@@ -1552,7 +1552,7 @@ fn joinPartsAsCamel(allocator: std.mem.Allocator, parts: []const []const u8) ![]
 
 /// Join pre-split parts as snake_case: ["name", "relevance"] → "name_relevance"
 fn joinPartsAsSnake(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
-	var buf = std.ArrayListUnmanaged(u8){};
+	var buf = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer buf.deinit(allocator);
 	for (parts, 0..) |part, idx| {
 		if (part.len == 0) continue;
@@ -1567,7 +1567,7 @@ fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
 }
 
 fn buildFtsQueryMode(allocator: std.mem.Allocator, query: []const u8, fts_mode: FtsMode) ![]u8 {
-	var out = std.ArrayListUnmanaged(u8){};
+	var out = @as(std.ArrayListUnmanaged(u8), .empty);
 	errdefer out.deinit(allocator);
 
 	const joiner: []const u8 = switch (fts_mode) {
@@ -1602,7 +1602,7 @@ fn buildFtsQueryMode(allocator: std.mem.Allocator, query: []const u8, fts_mode: 
 }
 
 fn escapeSqlLiteral(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-	var out = std.ArrayListUnmanaged(u8){};
+	var out = @as(std.ArrayListUnmanaged(u8), .empty);
 	errdefer out.deinit(allocator);
 
 	for (input) |ch| {

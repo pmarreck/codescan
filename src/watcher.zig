@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const indexer = @import("indexer.zig");
 const plugin = @import("plugin.zig");
 const storage = @import("storage.zig");
@@ -27,7 +28,7 @@ pub fn watchLoop(
 	stop: *const std.atomic.Value(bool),
 ) !void {
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	// Acquire PID file — reject if another watcher is already running
@@ -231,9 +232,9 @@ fn configPathFromDir(allocator: std.mem.Allocator, codescan_dir: ?[]const u8) ?[
 /// Get a file's mtime (nanoseconds), or null if the file doesn't exist / can't be stat'd.
 fn getFileMtime(path: ?[]const u8) ?i128 {
 	const p = path orelse return null;
-	const file = std.fs.cwd().openFile(p, .{}) catch return null;
-	defer file.close();
-	const stat = file.stat() catch return null;
+	const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), p, .{}) catch return null;
+	defer file.close(io_singleton.getOrInit());
+	const stat = file.stat(io_singleton.getOrInit()) catch return null;
 	return stat.mtime;
 }
 
@@ -278,7 +279,7 @@ fn printChangeSummary(writer: *std.Io.Writer, stats: indexer.IncrementalStats) v
 
 test "printChangeSummary formats correctly" {
 	const allocator = std.testing.allocator;
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	printChangeSummary(&out.writer, .{
@@ -299,7 +300,7 @@ test "printChangeSummary formats correctly" {
 
 test "printChangeSummary shows up to date" {
 	const allocator = std.testing.allocator;
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	printChangeSummary(&out.writer, .{

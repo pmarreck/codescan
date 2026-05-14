@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const builtin = @import("builtin");
 
 /// Minimal LSP client for cross-file operations (references, rename).
@@ -236,7 +237,7 @@ pub const LspClient = struct {
 	/// Spawn the language server and perform the initialize handshake.
 	pub fn start(allocator: std.mem.Allocator, server: ServerInfo, root_uri: []const u8) !LspClient {
 		// Build argv: binary + args
-		var argv_list: std.ArrayList([]const u8) = .{};
+		var argv_list: std.ArrayList([]const u8) = .empty;
 		defer argv_list.deinit(allocator);
 		try argv_list.append(allocator, server.binary);
 		for (server.args) |arg| {
@@ -278,11 +279,11 @@ pub const LspClient = struct {
 		}
 
 		// Close pipes
-		if (self.child.stdin) |f| f.close();
+		if (self.child.stdin) |f| f.close(io_singleton.getOrInit());
 		self.child.stdin = null;
-		if (self.child.stdout) |f| f.close();
+		if (self.child.stdout) |f| f.close(io_singleton.getOrInit());
 		self.child.stdout = null;
-		if (self.child.stderr) |f| f.close();
+		if (self.child.stderr) |f| f.close(io_singleton.getOrInit());
 		self.child.stderr = null;
 
 		// Wait for process to exit
@@ -409,7 +410,7 @@ pub const LspClient = struct {
 	fn writeMessage(self: *LspClient, json_body: []const u8) !void {
 		const stdin = self.child.stdin orelse return error.ProtocolError;
 		var write_buf: [256]u8 = undefined;
-		var w = stdin.writer(&write_buf);
+		var w = stdin.writer(io_singleton.getOrInit(), &write_buf);
 		const wr = &w.interface;
 
 		// Write Content-Length header
@@ -516,7 +517,7 @@ pub const LspClient = struct {
 		}
 		if (result != .array) return error.InvalidResponse;
 
-		var locations: std.ArrayList(Location) = .{};
+		var locations: std.ArrayList(Location) = .empty;
 		errdefer locations.deinit(self.allocator);
 
 		for (result.array.items) |item| {
@@ -542,7 +543,7 @@ pub const LspClient = struct {
 			return WorkspaceEdit{ .file_edits = &.{} };
 		if (changes != .object) return error.InvalidResponse;
 
-		var file_edits: std.ArrayList(FileEdits) = .{};
+		var file_edits: std.ArrayList(FileEdits) = .empty;
 		errdefer file_edits.deinit(self.allocator);
 
 		var it = changes.object.iterator();
@@ -551,7 +552,7 @@ pub const LspClient = struct {
 			const edits_val = entry.value_ptr.*;
 			if (edits_val != .array) continue;
 
-			var edits: std.ArrayList(TextEdit) = .{};
+			var edits: std.ArrayList(TextEdit) = .empty;
 			errdefer edits.deinit(self.allocator);
 
 			for (edits_val.array.items) |edit_val| {

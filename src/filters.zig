@@ -4,10 +4,10 @@ const plugin = @import("plugin.zig");
 const storage = @import("storage.zig");
 
 pub const FilterLists = struct {
-	exts: std.ArrayListUnmanaged([]const u8) = .{},
-	langs: std.ArrayListUnmanaged([]const u8) = .{},
-	kinds: std.ArrayListUnmanaged(kind.Kind) = .{},
-	symbol_kinds: std.ArrayListUnmanaged([]const u8) = .{},
+	exts: std.ArrayListUnmanaged([]const u8) = .empty,
+	langs: std.ArrayListUnmanaged([]const u8) = .empty,
+	kinds: std.ArrayListUnmanaged(kind.Kind) = .empty,
+	symbol_kinds: std.ArrayListUnmanaged([]const u8) = .empty,
 
 	pub fn deinit(self: *FilterLists, allocator: std.mem.Allocator) void {
 		for (self.exts.items) |item| allocator.free(item);
@@ -133,7 +133,7 @@ pub fn buildSearchFilters(
 				try filters.langs.append(allocator, try allocator.dupe(u8, item));
 			}
 		} else {
-			var kept = std.ArrayListUnmanaged([]const u8){};
+			var kept = @as(std.ArrayListUnmanaged([]const u8), .empty);
 			errdefer {
 				for (kept.items) |item| allocator.free(item);
 				kept.deinit(allocator);
@@ -335,7 +335,7 @@ test "normalizeSymbolKind maps aliases to short DB canonical forms" {
 
 test "parseSymbolKindList expands meta-kinds" {
 	const allocator = std.testing.allocator;
-	var list: std.ArrayListUnmanaged([]const u8) = .{};
+	var list: std.ArrayListUnmanaged([]const u8) = .empty;
 	defer {
 		for (list.items) |item| allocator.free(item);
 		list.deinit(allocator);

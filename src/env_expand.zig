@@ -22,18 +22,20 @@ const max_depth: u8 = 10;
 /// Expand `$VAR` / `${VAR}` / `${VAR:-DEF}` / `${VAR-DEF}` / `$$` references
 /// against the process environment. Caller owns the returned slice.
 pub fn expand(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-    var env = try std.process.getEnvMap(allocator);
-    defer env.deinit();
-    return expandWith(allocator, input, &env);
+    // Use the env map set in main() at startup. Tests use expandWith with an
+    // explicit env map and don't go through this path.
+    const io_singleton = @import("io_singleton.zig");
+    const env_map = io_singleton.getEnvMap() orelse @panic("env_expand.expand: io_singleton.setEnvMap() not called yet");
+    return expandWith(allocator, input, env_map);
 }
 
 /// Hermetic variant used by tests — pass an explicit EnvMap.
 pub fn expandWith(
     allocator: std.mem.Allocator,
     input: []const u8,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
 ) ![]u8 {
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = @as(std.ArrayListUnmanaged(u8), .empty);
     errdefer out.deinit(allocator);
     try expandInto(allocator, &out, input, env, 0);
     return out.toOwnedSlice(allocator);
@@ -77,7 +79,7 @@ fn expandInto(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
     input: []const u8,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
     depth: u8,
 ) std.mem.Allocator.Error!void {
     if (depth > max_depth) {
@@ -146,7 +148,7 @@ fn expandBracedBody(
     allocator: std.mem.Allocator,
     out: *std.ArrayListUnmanaged(u8),
     body: []const u8,
-    env: *const std.process.EnvMap,
+    env: *const std.process.Environ.Map,
     depth: u8,
 ) std.mem.Allocator.Error!void {
     if (body.len == 0) return; // `${}` → empty
@@ -194,8 +196,8 @@ fn expandBracedBody(
 
 // ---- Tests ----
 
-fn makeEnv(allocator: std.mem.Allocator, pairs: []const [2][]const u8) !std.process.EnvMap {
-    var env = std.process.EnvMap.init(allocator);
+fn makeEnv(allocator: std.mem.Allocator, pairs: []const [2][]const u8) !std.process.Environ.Map {
+    var env = std.process.Environ.Map.init(allocator);
     errdefer env.deinit();
     for (pairs) |p| try env.put(p[0], p[1]);
     return env;

@@ -26,7 +26,7 @@ pub fn buildArgv(
     platform: Platform,
     opts: Options,
 ) ![]const []const u8 {
-    var list = std.ArrayListUnmanaged([]const u8){};
+    var list = @as(std.ArrayListUnmanaged([]const u8), .empty);
     errdefer list.deinit(allocator);
 
     switch (platform) {
@@ -72,7 +72,7 @@ pub fn filterOutput(
     root: ?[]const u8,
     limit: ?usize,
 ) ![]u8 {
-    var kept = std.ArrayListUnmanaged([]const u8){};
+    var kept = @as(std.ArrayListUnmanaged([]const u8), .empty);
     defer kept.deinit(allocator);
 
     var line_iter = std.mem.splitScalar(u8, output, '\n');
@@ -92,7 +92,7 @@ pub fn filterOutput(
 
     const start: usize = if (limit) |n| (if (kept.items.len > n) kept.items.len - n else 0) else 0;
 
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = @as(std.ArrayListUnmanaged(u8), .empty);
     errdefer out.deinit(allocator);
     for (kept.items[start..]) |line| {
         try out.appendSlice(allocator, line);
@@ -185,7 +185,7 @@ fn realRunner(
     try child.spawn();
     errdefer _ = child.wait() catch {};
 
-    var out = std.ArrayListUnmanaged(u8){};
+    var out = @as(std.ArrayListUnmanaged(u8), .empty);
     errdefer out.deinit(allocator);
 
     var buf: [4096]u8 = undefined;

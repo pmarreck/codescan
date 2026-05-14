@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const builtin = @import("builtin");
 const pidfile = @import("pidfile.zig");
 
@@ -59,7 +60,7 @@ pub fn parseWatcherLine(allocator: std.mem.Allocator, line: []const u8) !?Watche
 /// Parse lsof -d cwd output to extract (pid, cwd_path) pairs.
 /// Returns a list of cwd paths (caller must free each + the list).
 pub fn parseLsofCwds(allocator: std.mem.Allocator, output: []const u8) !std.ArrayListUnmanaged(LsofEntry) {
-	var result = std.ArrayListUnmanaged(LsofEntry){};
+	var result = @as(std.ArrayListUnmanaged(LsofEntry), .empty);
 	errdefer {
 		for (result.items) |e| e.deinit(allocator);
 		result.deinit(allocator);
@@ -118,13 +119,13 @@ pub fn hasActiveSessions(watcher_pid: std.posix.pid_t, watcher_root: []const u8,
 /// Run /bin/ps and discover all running codescan watchers.
 pub fn discoverWatchers(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(WatcherInfo) {
 	if (comptime builtin.os.tag == .windows) {
-		return std.ArrayListUnmanaged(WatcherInfo){};
+		return @as(std.ArrayListUnmanaged(WatcherInfo), .empty);
 	}
 
 	const ps_output = try runCommand(allocator, &.{ "/bin/ps", "-eo", "pid,pcpu,etime,args" });
 	defer allocator.free(ps_output);
 
-	var watchers = std.ArrayListUnmanaged(WatcherInfo){};
+	var watchers = @as(std.ArrayListUnmanaged(WatcherInfo), .empty);
 	errdefer {
 		for (watchers.items) |*w| w.deinit(allocator);
 		watchers.deinit(allocator);
@@ -143,7 +144,7 @@ pub fn discoverWatchers(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(Wa
 /// Get all process cwds via lsof.
 pub fn getActiveCwds(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(LsofEntry) {
 	if (comptime builtin.os.tag == .windows) {
-		return std.ArrayListUnmanaged(LsofEntry){};
+		return @as(std.ArrayListUnmanaged(LsofEntry), .empty);
 	}
 
 	const lsof_output = try runCommand(allocator, &.{ "/usr/sbin/lsof", "-d", "cwd" });	defer allocator.free(lsof_output);
@@ -169,7 +170,7 @@ fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
 	child.stdout_behavior = .Pipe;
 	child.stderr_behavior = .Ignore;
 	_ = try child.spawn();
-	const output = try child.stdout.?.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	const output = try io_singleton.readToEndAlloc(child.stdout.?, allocator, 10 * 1024 * 1024);
 	errdefer allocator.free(output);
 	const term = try child.wait();
 	if (term.Exited != 0) return error.CommandFailed;

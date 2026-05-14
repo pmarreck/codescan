@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const builtin = @import("builtin");
 
 /// OS-native file system watcher. Uses FSEvents on macOS, fanotify on Linux,
@@ -138,7 +139,7 @@ const MacOsBackend = struct {
 			.queue = dispatch_queue_create("com.codescan.fswatcher", null),
 			.semaphore = dispatch_semaphore_create(0),
 			.stream = null,
-			.watch_paths_z = .{},
+			.watch_paths_z = .empty,
 		};
 	}
 
@@ -266,8 +267,8 @@ const LinuxBackend = struct {
 		std.posix.fanotify_mark(self.fan_fd, .{ .FLUSH = true }, .{}, std.posix.AT.FDCWD, null) catch {};
 
 		for (paths) |path| {
-			var dir = try std.fs.cwd().openDir(path, .{});
-			defer dir.close();
+			var dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), path, .{});
+			defer dir.close(io_singleton.getOrInit());
 
 			std.posix.fanotify_mark(self.fan_fd, .{
 				.ADD = true,
@@ -359,7 +360,7 @@ test "FsWatch wait returns timeout when no changes" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try w.setWatchPaths(allocator, &.{dir_path});
@@ -375,7 +376,7 @@ test "FsWatch wait detects file creation" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try w.setWatchPaths(allocator, &.{dir_path});
@@ -384,8 +385,8 @@ test "FsWatch wait detects file creation" {
 	const handle = try std.Thread.spawn(.{}, struct {
 		fn run(dir: std.fs.Dir) void {
 			std.Thread.sleep(50 * std.time.ns_per_ms);
-			const f = dir.createFile("test_trigger.txt", .{}) catch return;
-			f.close();
+			const f = dir.createFile(io_singleton.getOrInit(), "test_trigger.txt", .{}) catch return;
+			f.close(io_singleton.getOrInit());
 		}
 	}.run, .{tmp.dir});
 

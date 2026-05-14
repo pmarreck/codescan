@@ -48,7 +48,7 @@
 
 					src = ./.;
 
-					nativeBuildInputs = [ pkgs.zig_0_15 ];
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
 
 					dontConfigure = true;
 					dontFixup = true;
@@ -80,7 +80,7 @@
 
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
-						zig_0_15
+						zig_0_16
 						jq
 						luajit
 						luajitPackages.cjson

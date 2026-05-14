@@ -26,7 +26,7 @@ pub fn extract(
 	) orelse return error.ParseFailed;
 	defer ts.ts_tree_delete(tree);
 
-	var results = std.ArrayListUnmanaged(model.Symbol){};
+	var results = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (results.items) |*sym| sym.deinit(allocator);
 		results.deinit(allocator);
@@ -168,7 +168,7 @@ fn extractFirstLine(allocator: std.mem.Allocator, source: []const u8, node: ts.T
 	if (start >= source.len) return allocator.dupe(u8, "");
 	const remaining = source[start..];
 	const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
-	return allocator.dupe(u8, std.mem.trimRight(u8, remaining[0..newline_pos], " \t\r{"));
+	return allocator.dupe(u8, std.mem.trimEnd(u8, remaining[0..newline_pos], " \t\r{"));
 }
 
 fn findIdentifierInDeclarator(node: ts.TSNode) ?ts.TSNode {
@@ -205,15 +205,15 @@ fn extractSignature(allocator: std.mem.Allocator, source: []const u8, node: ts.T
 	const body = ts.ts_node_child_by_field_name(node, "body", "body".len);
 	if (ts.ts_node_is_null(body)) {
 		const slice = nodeText(source, node);
-		return allocator.dupe(u8, std.mem.trimRight(u8, slice, " \t\r\n"));
+		return allocator.dupe(u8, std.mem.trimEnd(u8, slice, " \t\r\n"));
 	}
 	const start = @as(usize, @intCast(ts.ts_node_start_byte(node)));
 	const end = @as(usize, @intCast(ts.ts_node_start_byte(body)));
 	if (end <= start or end > source.len) {
 		const slice = nodeText(source, node);
-		return allocator.dupe(u8, std.mem.trimRight(u8, slice, " \t\r\n"));
+		return allocator.dupe(u8, std.mem.trimEnd(u8, slice, " \t\r\n"));
 	}
-	const slice = std.mem.trimRight(u8, source[start..end], " \t\r\n");
+	const slice = std.mem.trimEnd(u8, source[start..end], " \t\r\n");
 	return allocator.dupe(u8, slice);
 }
 
@@ -225,13 +225,13 @@ fn extractDocComment(
 	const start_line = @as(usize, @intCast(ts.ts_node_start_point(node).row));
 	if (start_line == 0 or start_line > lines.len) return null;
 
-	var collected = std.ArrayListUnmanaged([]const u8){};
+	var collected = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer collected.deinit(allocator);
 
 	var idx = start_line;
 	while (idx > 0) : (idx -= 1) {
 		const line = lines[idx - 1];
-		const trimmed = std.mem.trimLeft(u8, line, " \t\r");
+		const trimmed = std.mem.trimStart(u8, line, " \t\r");
 		if (trimmed.len == 0) break;
 		if (std.mem.startsWith(u8, trimmed, "//")) {
 			try collected.append(allocator, cleanLineComment(trimmed));
@@ -246,7 +246,7 @@ fn extractDocComment(
 
 	if (collected.items.len == 0) return null;
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	var i: usize = collected.items.len;
@@ -266,7 +266,7 @@ fn cleanLineComment(line: []const u8) []const u8 {
 	} else if (std.mem.startsWith(u8, trimmed, "//")) {
 		trimmed = trimmed[2..];
 	}
-	return std.mem.trimLeft(u8, trimmed, " \t");
+	return std.mem.trimStart(u8, trimmed, " \t");
 }
 
 fn cleanBlockCommentLine(line: []const u8) []const u8 {
@@ -284,7 +284,7 @@ fn nodeText(source: []const u8, node: ts.TSNode) []const u8 {
 }
 
 fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	errdefer lines.deinit(allocator);
 	var it = std.mem.splitScalar(u8, source, '\n');
 	while (it.next()) |line| {

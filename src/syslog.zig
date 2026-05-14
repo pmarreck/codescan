@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 
 pub const LOG_PID: c_int = 0x01;
 pub const LOG_NDELAY: c_int = 0x08;
@@ -90,7 +91,7 @@ test "logWithRoot truncates messages longer than 1024 bytes with ellipsis" {
 }
 
 test "syslog delivers to OS log (gated: CODESCAN_RUN_SYSLOG_TESTS=1)" {
-    const enable = std.process.getEnvVarOwned(std.testing.allocator, "CODESCAN_RUN_SYSLOG_TESTS") catch |err| switch (err) {
+    const enable = io_singleton.getEnvVarOwned(std.testing.allocator, "CODESCAN_RUN_SYSLOG_TESTS") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => return error.SkipZigTest,
         else => return err,
     };

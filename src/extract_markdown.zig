@@ -10,7 +10,7 @@ pub fn extract(
 	var lines = try util.splitLines(allocator, source);
 	defer lines.deinit(allocator);
 
-	var symbols = std.ArrayListUnmanaged(model.Symbol){};
+	var symbols = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (symbols.items) |*sym| sym.deinit(allocator);
 		symbols.deinit(allocator);
@@ -18,7 +18,7 @@ pub fn extract(
 
 	var section_start: usize = 0;
 	var section_heading: ?[]const u8 = null;
-	var section_lines = std.ArrayListUnmanaged([]const u8){};
+	var section_lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer section_lines.deinit(allocator);
 
 	for (lines.items, 0..) |line, idx| {
@@ -91,7 +91,7 @@ fn headingText(line: []const u8) []const u8 {
 
 fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) !?[]const u8 {
 	if (lines.len == 0) return null;
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	for (lines, 0..) |line, idx| {
 		if (idx > 0) try out.writer.writeAll("\n");

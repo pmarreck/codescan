@@ -59,7 +59,7 @@ pub fn generateUnifiedDiff(allocator: std.mem.Allocator, old: []const u8, new: [
     const hunk_end_new = @min(last_diff_new.? + context, new_lines.len);
 
     // Build output
-    var buf = std.ArrayListUnmanaged(u8){};
+    var buf = @as(std.ArrayListUnmanaged(u8), .empty);
     defer buf.deinit(allocator);
 
     const writer = buf.writer(allocator);
@@ -103,7 +103,7 @@ pub fn generateUnifiedDiff(allocator: std.mem.Allocator, old: []const u8, new: [
 
 /// Split content into lines (slices into the original content, no copying).
 fn splitLines(allocator: std.mem.Allocator, content: []const u8) ![]const []const u8 {
-    var lines = std.ArrayListUnmanaged([]const u8){};
+    var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
     defer lines.deinit(allocator);
 
     var start: usize = 0;

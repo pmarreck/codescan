@@ -121,7 +121,7 @@ fn globToRegexUnanchored(allocator: Allocator, glob: []const u8) CompileError![]
 /// Internal implementation of glob-to-regex conversion.
 /// If `anchored` is true, adds ^ and $ anchors for full-string matching.
 fn globToRegexInner(allocator: Allocator, glob: []const u8, anchored: bool) CompileError![]const u8 {
-    var result: std.ArrayListUnmanaged(u8) = .{};
+    var result: std.ArrayListUnmanaged(u8) = .empty;
     errdefer result.deinit(allocator);
 
     // Add start anchor for full-string matching
@@ -304,7 +304,7 @@ pub const PatternSet = struct {
         }
 
         // Build combined regex: ^(?:regex1|regex2|...|regexN)$
-        var combined: std.ArrayListUnmanaged(u8) = .{};
+        var combined: std.ArrayListUnmanaged(u8) = .empty;
         defer combined.deinit(self.allocator);
 
         combined.appendSlice(self.allocator, "^(?:") catch {

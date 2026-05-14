@@ -7,7 +7,7 @@ pub const DocStyle = struct {
 };
 
 pub fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	errdefer lines.deinit(allocator);
 	var it = std.mem.splitScalar(u8, source, '\n');
 	while (it.next()) |line| {
@@ -24,13 +24,13 @@ pub fn extractDocComment(
 ) !?[]const u8 {
 	if (start_line_idx == 0 or start_line_idx > lines.len) return null;
 
-	var collected = std.ArrayListUnmanaged([]const u8){};
+	var collected = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer collected.deinit(allocator);
 
 	var idx = start_line_idx;
 	while (idx > 0) : (idx -= 1) {
 		const line = lines[idx - 1];
-		const trimmed = std.mem.trimLeft(u8, line, " \t\r");
+		const trimmed = std.mem.trimStart(u8, line, " \t\r");
 		if (trimmed.len == 0) break;
 
 		if (matchLinePrefix(trimmed, style.line_prefixes)) |prefix| {
@@ -51,7 +51,7 @@ pub fn extractDocComment(
 
 	if (collected.items.len == 0) return null;
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	var i: usize = collected.items.len;
@@ -73,7 +73,7 @@ fn matchLinePrefix(line: []const u8, prefixes: []const []const u8) ?[]const u8 {
 
 fn cleanLineComment(line: []const u8, prefix: []const u8) []const u8 {
 	const trimmed = line[prefix.len..];
-	return std.mem.trimLeft(u8, trimmed, " \t");
+	return std.mem.trimStart(u8, trimmed, " \t");
 }
 
 fn cleanBlockCommentLine(line: []const u8, start: []const u8, end: ?[]const u8) []const u8 {

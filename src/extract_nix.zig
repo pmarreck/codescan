@@ -27,7 +27,7 @@ pub fn extract(
 	) orelse return error.ParseFailed;
 	defer ts.ts_tree_delete(tree);
 
-	var results = std.ArrayListUnmanaged(model.Symbol){};
+	var results = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (results.items) |*sym| sym.deinit(allocator);
 		results.deinit(allocator);
@@ -112,7 +112,7 @@ fn extractFirstLineSignature(allocator: std.mem.Allocator, source: []const u8, n
 	if (start >= source.len) return allocator.dupe(u8, "");
 	const remaining = source[start..];
 	const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
-	return allocator.dupe(u8, std.mem.trimRight(u8, remaining[0..newline_pos], " \t\r;"));
+	return allocator.dupe(u8, std.mem.trimEnd(u8, remaining[0..newline_pos], " \t\r;"));
 }
 
 fn isFunctionExpression(node: ts.TSNode) bool {
@@ -127,7 +127,7 @@ fn extractSignature(
 	expr: ts.TSNode,
 ) ![]const u8 {
 	const text = nodeText(source, expr);
-	const trimmed = std.mem.trimRight(u8, text, " \t\r\n");
+	const trimmed = std.mem.trimEnd(u8, text, " \t\r\n");
 	const line_end = std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len;
 	return std.fmt.allocPrint(allocator, "{s} = {s}", .{ name, trimmed[0..line_end] });
 }

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const cli = @import("cli.zig");
 const env_expand = @import("env_expand.zig");
 
@@ -76,7 +77,7 @@ pub const default_template =
 
 pub const IgnoreOverride = struct {
 	language: []const u8,
-	patterns: std.ArrayListUnmanaged([]const u8) = .{},
+	patterns: std.ArrayListUnmanaged([]const u8) = .empty,
 
 	pub fn deinit(self: *IgnoreOverride, allocator: std.mem.Allocator) void {
 		for (self.patterns.items) |pattern| allocator.free(pattern);
@@ -132,10 +133,10 @@ pub const Config = struct {
 	docs_only: ?bool = null,
 	comments_only: ?bool = null,
 	include_node_modules: ?bool = null,
-	ignore_global: std.ArrayListUnmanaged([]const u8) = .{},
-	always_include: std.ArrayListUnmanaged([]const u8) = .{},
-	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .{},
-	lsp_overrides: std.ArrayListUnmanaged(LspOverride) = .{},
+	ignore_global: std.ArrayListUnmanaged([]const u8) = .empty,
+	always_include: std.ArrayListUnmanaged([]const u8) = .empty,
+	ignore_lang: std.ArrayListUnmanaged(IgnoreOverride) = .empty,
+	lsp_overrides: std.ArrayListUnmanaged(LspOverride) = .empty,
 	http_host: ?[]const u8 = null,
 	http_port: ?u16 = null,
 
@@ -469,9 +470,8 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 }
 
 pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Config {
-	const file = try std.fs.cwd().openFile(path, .{});
-	defer file.close();
-	const data = try file.readToEndAlloc(allocator, 1024 * 1024);
+	const io = io_singleton.getOrInit();
+	const data = try std.Io.Dir.cwd().readFileAlloc(io, path, allocator, .limited(1024 * 1024));
 	defer allocator.free(data);
 	return parseText(allocator, data);
 }
@@ -489,7 +489,7 @@ fn appendPatterns(
 	value: []const u8,
 ) !void {
 	// Split on commas, respecting \, as an escaped literal comma
-	var buf = std.ArrayListUnmanaged(u8){};
+	var buf = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer buf.deinit(allocator);
 	var i: usize = 0;
 	while (i < value.len) : (i += 1) {
@@ -523,7 +523,7 @@ fn getOrCreateOverride(
 	}
 	try list.append(allocator, .{
 		.language = try allocator.dupe(u8, lang),
-		.patterns = .{},
+		.patterns = .empty,
 	});
 	return &list.items[list.items.len - 1];
 }
@@ -549,7 +549,7 @@ pub const KV = struct {
 /// Keys not found in the original content are appended at the end.
 /// Returns a new allocated string with the updated content.
 pub fn writeConfigValues(allocator: std.mem.Allocator, content: []const u8, kvs: []const KV) ![]u8 {
-    var output: std.ArrayListUnmanaged(u8) = .{};
+    var output: std.ArrayListUnmanaged(u8) = .empty;
     defer output.deinit(allocator);
 
     // Track which kvs were matched
@@ -567,9 +567,9 @@ pub fn writeConfigValues(allocator: std.mem.Allocator, content: []const u8, kvs:
         var was_matched = false;
         for (kvs, 0..) |kv, idx| {
             // Match "#key=..." or "# key=..." or "key=..."
-            const trimmed = std.mem.trimLeft(u8, line, " \t");
+            const trimmed = std.mem.trimStart(u8, line, " \t");
             const after_hash = if (std.mem.startsWith(u8, trimmed, "#"))
-                std.mem.trimLeft(u8, trimmed[1..], " \t")
+                std.mem.trimStart(u8, trimmed[1..], " \t")
             else
                 trimmed;
 
@@ -736,7 +736,7 @@ test "loadFromPath reads file" {
 	defer tmp.cleanup();
 	try tmp.dir.writeFile(.{ .sub_path = "config", .data = "top=3\n" });
 	const allocator = std.testing.allocator;
-	const path = try tmp.dir.realpathAlloc(allocator, "config");
+	const path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "config", allocator);
 	defer allocator.free(path);
 	var cfg = try loadFromPath(allocator, path);
 	defer cfg.deinit(allocator);

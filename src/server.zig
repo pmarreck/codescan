@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
 const indexer = @import("indexer.zig");
@@ -57,14 +58,14 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });	defer schema_result.deinit(allocator);
 	if (schema_result.did_schema_upgrade) {
 		var sb: [4096]u8 = undefined;
-		var sw = std.fs.File.stderr().writer(&sb);
+		var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 		const se = &sw.interface;
 		_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
 		_ = se.flush() catch {};
 	}
 	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 		var sb: [4096]u8 = undefined;
-		var sw = std.fs.File.stderr().writer(&sb);
+		var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 		const se = &sw.interface;
 		if (schema_result.embedding_model_mismatch) {
 			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};		}
@@ -97,7 +98,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		var in_buf: [16 * 1024]u8 = undefined;
 		var out_buf: [16 * 1024]u8 = undefined;
 		var in_reader = conn.stream.reader(&in_buf);
-		var out_writer = conn.stream.writer(&out_buf);
+		var out_writer = conn.stream.writer(io_singleton.getOrInit(), &out_buf);
 		var http_server = std.http.Server.init(in_reader.interface(), &out_writer.interface);
 
 		while (true) {
@@ -123,7 +124,7 @@ fn ensureModelAvailableOrExit(
 	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
@@ -135,7 +136,7 @@ fn ensureModelAvailableOrExit(
 		error.ModelLoading => {
 			// Model exists but not loaded — embed() will trigger loading
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
@@ -164,7 +165,7 @@ fn handleRequest(
 		return;
 	}
 	if (req.head.method == .GET and std.mem.eql(u8, path, "/status")) {
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runStatus(allocator, settings.db_path, settings.root_path, .json, &out.writer) catch {
 			try req.respond("{\"error\":\"status failed\"}\n", .{ .status = .internal_server_error });
@@ -225,7 +226,7 @@ fn handleRequest(
 		});
 		defer search.freeResults(allocator, sr.results);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		try output.writeResults(allocator, &out.writer, .json, sr.results, .{
 			.show_comments = false,
@@ -273,7 +274,7 @@ fn handleRequest(
 			},
 		);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		try out.writer.print(
 			"{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}",
@@ -290,7 +291,7 @@ fn handleRequest(
 		const body = try readBody(allocator, req, 1024 * 1024);
 		defer allocator.free(body);
 
-		var files = std.ArrayListUnmanaged([]const u8){};
+		var files = @as(std.ArrayListUnmanaged([]const u8), .empty);
 		defer {
 			for (files.items) |f| allocator.free(f);
 			files.deinit(allocator);
@@ -331,7 +332,7 @@ fn handleRequest(
 			}
 		}
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runSymbols(allocator, files.items, pattern_owned, include_body_flag, .json, &out.writer, settings.root_path) catch {
 			try req.respond("{\"error\":\"failed to extract symbols\"}\n", .{ .status = .internal_server_error });
@@ -383,7 +384,7 @@ fn handleRequest(
 		defer allocator.free(new_body);
 		defer if (version_hash) |vh| allocator.free(vh);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runReplaceSymbol(allocator, file_path, pattern, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"replace-symbol failed\"}\n", .{ .status = .internal_server_error });
@@ -435,7 +436,7 @@ fn handleRequest(
 		defer allocator.free(new_body);
 		defer if (version_hash) |vh| allocator.free(vh);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runInsertAfter(allocator, file_path, pattern, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"insert-after failed\"}\n", .{ .status = .internal_server_error });
@@ -487,7 +488,7 @@ fn handleRequest(
 		defer allocator.free(new_body);
 		defer if (version_hash) |vh| allocator.free(vh);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runInsertBefore(allocator, file_path, pattern, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"insert-before failed\"}\n", .{ .status = .internal_server_error });
@@ -549,7 +550,7 @@ fn handleRequest(
 		defer allocator.free(new_body);
 		defer if (version_hash) |vh| allocator.free(vh);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runReplaceLines(allocator, file_path, from_str, to_str, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"replace-lines failed\"}\n", .{ .status = .internal_server_error });
@@ -601,7 +602,7 @@ fn handleRequest(
 		defer allocator.free(new_body);
 		defer if (version_hash) |vh| allocator.free(vh);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runInsertAt(allocator, file_path, ref_str, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"insert-at failed\"}\n", .{ .status = .internal_server_error });
@@ -657,7 +658,7 @@ fn handleRequest(
 		defer allocator.free(new_body);
 		defer if (version_hash) |vh| allocator.free(vh);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runReplaceContent(allocator, file_path, needle, regex_mode, replace_all_flag, new_body, version_hash, &out.writer) catch {
 			try req.respond("{\"error\":\"replace-content failed\"}\n", .{ .status = .internal_server_error });
@@ -708,7 +709,7 @@ fn handleRequest(
 		defer allocator.free(pattern);
 		defer allocator.free(new_name);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runRename(allocator, file_path, pattern, new_name, .json, dry_run, settings.db_path, settings.root_path, plugin.defaultRegistry(), settings.lsp_overrides, settings.embedding_dim, &out.writer) catch {
 			try req.respond("{\"error\":\"rename failed\"}\n", .{ .status = .internal_server_error });
@@ -748,7 +749,7 @@ fn handleRequest(
 		defer allocator.free(file_path);
 		defer allocator.free(pattern);
 
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		main.runReferences(allocator, file_path, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch {
 			try req.respond("{\"error\":\"references request failed\"}\n", .{ .status = .internal_server_error });
@@ -792,7 +793,7 @@ fn stripQuery(target: []const u8) []const u8 {
 
 fn ensureParentDir(path: []const u8) !void {
 	const dir = std.fs.path.dirname(path) orelse return;
-	try std.fs.cwd().makePath(dir);
+	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
 }
 
 fn parseAddress(host: []const u8, port: u16) !std.net.Address {
@@ -974,7 +975,7 @@ fn parseStringOrArray(allocator: std.mem.Allocator, value: std.json.Value) ![]co
 	switch (value) {
 		.string => |str| return allocator.dupe(u8, str),
 		.array => |arr| {
-			var out = std.ArrayListUnmanaged(u8){};
+			var out = @as(std.ArrayListUnmanaged(u8), .empty);
 			errdefer out.deinit(allocator);
 			for (arr.items, 0..) |item, idx| {
 				if (item != .string) return error.InvalidFilterValue;
@@ -988,7 +989,7 @@ fn parseStringOrArray(allocator: std.mem.Allocator, value: std.json.Value) ![]co
 }
 
 fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: usize) ![]u8 {
-	var out = std.ArrayListUnmanaged(u8){};
+	var out = @as(std.ArrayListUnmanaged(u8), .empty);
 	errdefer out.deinit(allocator);
 
 	var buf: [8192]u8 = undefined;
@@ -1206,7 +1207,7 @@ test "handleRequest responds to POST /symbols" {
 
 	const zig_content = "const x = 42;\npub fn foo() void {}\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	// Build HTTP POST request with JSON body
@@ -1248,7 +1249,7 @@ test "handleRequest responds to POST /find-symbol" {
 
 	const zig_content = "const x = 42;\npub fn foo() void {}\npub fn bar() u32 { return 1; }\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	// Search for symbol "foo"
@@ -1290,7 +1291,7 @@ test "handleRequest responds to POST /replace-symbol" {
 
 	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
@@ -1332,7 +1333,7 @@ test "handleRequest responds to POST /insert-after" {
 
 	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
@@ -1373,7 +1374,7 @@ test "handleRequest responds to POST /insert-before" {
 
 	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
@@ -1415,7 +1416,7 @@ test "handleRequest responds to POST /replace-lines" {
 	// Write a file with known lines
 	const content = "line1\nline2\nline3\nline4\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Hashline refs computed for "line1\nline2\nline3\nline4\n": line2=pZK, line3=yO7
@@ -1459,7 +1460,7 @@ test "handleRequest responds to POST /insert-at" {
 
 	const content = "line1\nline2\nline3\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Hashline ref computed for "line1\nline2\nline3\n": line2=pZK
@@ -1501,7 +1502,7 @@ test "handleRequest responds to POST /replace-content" {
 
 	const content = "hello world\ngoodbye world\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Replace "hello" with "howdy" using literal mode
@@ -1545,7 +1546,7 @@ test "handleRequest responds to POST /rename" {
 	// so rename returns error msg without starting an LSP server
 	const zig_content = "pub fn foo() u32 { return 42; }\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"nonexistent_symbol\",\"to\":\"quux\",\"dry_run\":true}}", .{abs_path});
@@ -1582,7 +1583,7 @@ test "handleRequest responds to POST /find-symbol with include_body" {
 
 	const zig_content = "pub fn foo() u32 { return 42; }\n";
 	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"include_body\":true}}", .{abs_path});

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 
 pub const default_template =
 	\\# codescan language-specific search weights
@@ -52,7 +53,7 @@ pub const Table = struct {
 	default_weight_symbol_visibility: ?f32 = null,
 	default_weight_symbol_scope: ?f32 = null,
 	default_weight_symbol_arity: ?f32 = null,
-	per_language: std.ArrayListUnmanaged(LangWeights) = .{},
+	per_language: std.ArrayListUnmanaged(LangWeights) = .empty,
 
 	pub fn deinit(self: *Table, allocator: std.mem.Allocator) void {
 		for (self.per_language.items) |*entry| entry.deinit(allocator);
@@ -255,9 +256,9 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Table {
 }
 
 pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Table {
-	const file = try std.fs.cwd().openFile(path, .{});
-	defer file.close();
-	const data = try file.readToEndAlloc(allocator, 1024 * 1024);
+	const file = try std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
+	defer file.close(io_singleton.getOrInit());
+	const data = try io_singleton.readToEndAlloc(file, allocator, 1024 * 1024);
 	defer allocator.free(data);
 	return parseText(allocator, data);
 }

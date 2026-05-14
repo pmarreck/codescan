@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 
 const c = @cImport({
 	@cDefine("SQLITE_VEC_STATIC", "1");
@@ -85,7 +86,7 @@ fn deleteFileIfExists(path: []const u8) !void {
 		return;
 	}
 
-	std.fs.cwd().deleteFile(path) catch |err| switch (err) {
+	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), path) catch |err| switch (err) {
 		error.FileNotFound => {},
 		else => return err,
 	};
@@ -664,7 +665,7 @@ pub fn primaryLanguage(
 ) !?[]const u8 {
 	if (allowed_langs.len == 0) return null;
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try out.writer.writeAll("SELECT lang, COUNT(DISTINCT file_path) AS files FROM symbols WHERE lang IN (");
@@ -718,7 +719,7 @@ pub fn languageStats(db: Db, allocator: std.mem.Allocator) ![]LangStat {
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 
-	var results: std.ArrayListUnmanaged(LangStat) = .{};
+	var results: std.ArrayListUnmanaged(LangStat) = .empty;
 	errdefer {
 		for (results.items) |item| allocator.free(item.language);
 		results.deinit(allocator);
@@ -770,7 +771,7 @@ fn logSqliteError(db: Db, context: []const u8) void {
 	if (msg != null) {
 		const msg_slice = std.mem.span(msg);
 		var stderr_buf: [4096]u8 = undefined;
-		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 		const stderr = &stderr_writer.interface;
 		_ = stderr.print("sqlite error ({s}): {s}\n", .{ context, msg_slice }) catch {};
 		_ = stderr.flush() catch {};
@@ -790,7 +791,7 @@ fn bindInt(stmt: *c.sqlite3_stmt, index: c_int, value: usize) !void {
 }
 
 fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try out.writer.writeAll("[");
@@ -859,7 +860,7 @@ pub fn getAllIndexedFiles(db: Db, allocator: std.mem.Allocator) ![]IndexedFile {
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 
-	var list: std.ArrayListUnmanaged(IndexedFile) = .{};
+	var list: std.ArrayListUnmanaged(IndexedFile) = .empty;
 	errdefer {
 		for (list.items) |item| allocator.free(item.file_path);
 		list.deinit(allocator);
@@ -1059,15 +1060,15 @@ test "openFileWithVecRecreate replaces existing file" {
 	defer tmp.cleanup();
 
 	try tmp.dir.writeFile(.{ .sub_path = "db.sqlite3", .data = "not a sqlite db" });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "db.sqlite3");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "db.sqlite3", allocator);
 	defer allocator.free(abs_path);
 
 	const db = try openFileWithVecRecreate(allocator, abs_path);
 	defer _ = c.sqlite3_close(db);
 	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
 
-	var file = try std.fs.openFileAbsolute(abs_path, .{});
-	defer file.close();
+	var file = try std.Io.Dir.openFileAbsolute(io_singleton.getOrInit(), abs_path, .{});
+	defer file.close(io_singleton.getOrInit());
 
 	var header: [16]u8 = undefined;
 	const n = try file.readAll(&header);
