@@ -24,8 +24,8 @@
 				};
 				pcre2-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/pcre2.git";
-					rev = "8fb017d8c41587a3eb3ac165b6e743d318c8fcfe";
-					hash = "sha256-ru0tyw/GkB0D89ZHMhy+NsrbRPwZJoF5KwOJu7BW24c=";
+					rev = "873ecf6466a0ddf62facfffbd387213249db20bb";
+					hash = "sha256-a37QL33zCTth7qMBtzwjBkUNjmku6kRa0rrz7oSAOxA=";
 					fetchSubmodules = true;
 				};
 
@@ -37,7 +37,7 @@
 						path = sqlite-vec-src;
 					}
 					{
-						name = "pcre2-10.47.0-S7QTbjnVMgAEncX1a_JtH4G6BgDWzC1tCMvL-KOMrM8b";
+						name = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh";
 						path = pcre2-src;
 					}
 				];
