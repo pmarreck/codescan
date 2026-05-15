@@ -19,13 +19,13 @@
 				# Pre-fetch Zig build.zig.zon dependencies for sandboxed builds
 				sqlite-vec-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/sqlite-vec.git";
-					rev = "742ac1607d5490c71758c9fde80820387391910d";
-					hash = "sha256-CFZAditwPGoWpAK7AG8BaxksfxjEzyGdlMvuZPsJ7CQ=";
+					rev = "c9d3630f56637276829d9ab0c54b1116c6d3e2ef";
+					hash = "sha256-9MBuzlHICNc0U4TIEEPd0gWAftxllXcU8bhilcaAh+k=";
 				};
 				pcre2-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/pcre2.git";
-					rev = "8fb017d8c41587a3eb3ac165b6e743d318c8fcfe";
-					hash = "sha256-ru0tyw/GkB0D89ZHMhy+NsrbRPwZJoF5KwOJu7BW24c=";
+					rev = "873ecf6466a0ddf62facfffbd387213249db20bb";
+					hash = "sha256-a37QL33zCTth7qMBtzwjBkUNjmku6kRa0rrz7oSAOxA=";
 					fetchSubmodules = true;
 				};
 
@@ -33,11 +33,11 @@
 				# so we can pass it via --system to avoid network fetches
 				zigPkgCache = pkgs.linkFarm "zig-pkg-cache" [
 					{
-						name = "sqlite_vec-0.1.7-alpha.2-4Cdt0OvwBACYsEQvfmbSw0sUHuXhcwD5PgjGyslHXU2q";
+						name = "sqlite_vec-0.1.7-alpha.2-4Cdt0CTyBADFzDhhNOTSAUplRsfH1qs-DqwP6FwrZ641";
 						path = sqlite-vec-src;
 					}
 					{
-						name = "pcre2-10.47.0-S7QTbjnVMgAEncX1a_JtH4G6BgDWzC1tCMvL-KOMrM8b";
+						name = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh";
 						path = pcre2-src;
 					}
 				];

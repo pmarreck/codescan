@@ -6,7 +6,6 @@
         "build.zig",
         "build.zig.zon",
         "src",
-        "vendor",
     },
     .dependencies = .{
         .sqlite_vec = .{
@@ -14,7 +13,8 @@
             .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0CTyBADFzDhhNOTSAUplRsfH1qs-DqwP6FwrZ641",
         },
         .pcre2 = .{
-            .path = "vendor/pcre2",
+            .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.16.0.tar.gz",
+            .hash = "pcre2-10.47.0-S7QTbvnVMgDsA1ipkKNj5kVoEda9wcIuZYUpdrTuDaCh",
         },
     },
     .fingerprint = 0x61f89dfe5a676f3c,

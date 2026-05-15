@@ -8,7 +8,3 @@ zig-out/
 result
 inbox
 zig-pkg/
-# Local vendored copies of pcre2/sqlite_vec with build.zig patched for zig 0.16.
-# Not committed: too large, and the proper fix is upstream tags for the deps.
-# See ZIG_0.15_TO_0.16_MIGRATION.md codescan note for details.
-vendor/
