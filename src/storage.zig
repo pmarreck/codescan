@@ -1051,7 +1051,7 @@ test "openFileWithVecRecreate replaces existing file" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "db.sqlite3", .data = "not a sqlite db" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "db.sqlite3", .data = "not a sqlite db" });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "db.sqlite3", allocator);
 	defer allocator.free(abs_path);
 
@@ -1063,7 +1063,7 @@ test "openFileWithVecRecreate replaces existing file" {
 	defer file.close(io_singleton.getOrInit());
 
 	var header: [16]u8 = undefined;
-	const n = try file.readAll(&header);
+	const n = try file.readPositionalAll(io_singleton.getOrInit(), &header, 0);
 	try std.testing.expect(n >= 15);
 	try std.testing.expectEqualStrings("SQLite format 3", header[0..15]);
 }

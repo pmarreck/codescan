@@ -24,8 +24,11 @@ const max_depth: u8 = 10;
 pub fn expand(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
     // Use the env map set in main() at startup. Tests use expandWith with an
     // explicit env map and don't go through this path.
+    // For test code paths that reach expand() transitively without setting
+    // an env map, fall back to a lazy-initialized empty map so test logic
+    // that doesn't depend on env values still works.
     const io_singleton = @import("io_singleton.zig");
-    const env_map = io_singleton.getEnvMap() orelse @panic("env_expand.expand: io_singleton.setEnvMap() not called yet");
+    const env_map = io_singleton.getEnvMapOrInit(allocator);
     return expandWith(allocator, input, env_map);
 }
 

@@ -1284,7 +1284,7 @@ test "indexAll stores symbols and embeddings" {
 		"/// Adds\n" ++
 		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n" ++
 		"fn sub(a: i32, b: i32) i32 { return a - b; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = source });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -1314,7 +1314,7 @@ test "indexAll skips files over max_file_size" {
 	const source =
 		"/// Big\n" ++
 		"pub fn big() void { return; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/big.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/big.zig", .data = source });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -1340,8 +1340,8 @@ test "indexAll filters by extension and kind" {
 	defer tmp.cleanup();
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "pub fn add() void {}" });
-	try tmp.dir.writeFile(.{ .sub_path = "README.md", .data = "# Title\nbody\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "pub fn add() void {}" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "README.md", .data = "# Title\nbody\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -1380,7 +1380,7 @@ test "indexIncremental indexes new files and skips unchanged" {
 	defer tmp.cleanup();
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = "pub fn add(a: i32, b: i32) i32 { return a + b; }\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = "pub fn add(a: i32, b: i32) i32 { return a + b; }\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -1416,8 +1416,8 @@ test "indexIncremental detects deleted files" {
 	defer tmp.cleanup();
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
-	try tmp.dir.writeFile(.{ .sub_path = "src/a.zig", .data = "pub fn a() void {}\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "src/b.zig", .data = "pub fn b() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/a.zig", .data = "pub fn a() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/b.zig", .data = "pub fn b() void {}\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -1525,7 +1525,7 @@ test "indexAll retries flushBatch on HttpConnectionClosing" {
 		"/// Adds\n" ++
 		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n" ++
 		"fn sub(a: i32, b: i32) i32 { return a - b; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = source });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -1553,7 +1553,7 @@ test "indexAll retries flushBatch on WriteFailed" {
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	const source =
 		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = source });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);

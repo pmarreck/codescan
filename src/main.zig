@@ -6459,7 +6459,7 @@ test "chain hash cascade detects stale content after edits" {
 
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.zig", .data = original_content });
+	try tmp_dir.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = original_content });
 
 	// --- Step 1: Compute hashes from original content (simulates indexer) ---
 	var orig_lines = try splitLines(allocator, original_content);
@@ -6478,7 +6478,7 @@ test "chain hash cascade detects stale content after edits" {
 
 	// --- Step 2: Modify the file (simulates user editing between index and search) ---
 	const modified_content = "fn foo() void {\n    return 99;\n}\n";
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.zig", .data = modified_content });
+	try tmp_dir.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = modified_content });
 
 	// --- Step 3: Re-read and compute hashes for current file content ---
 	var mod_lines = try splitLines(allocator, modified_content);
@@ -6603,7 +6603,7 @@ test "runReadFile returns JSON with hashlines and version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "line one\nline two\nline three\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6653,7 +6653,7 @@ test "runReadFile partial read with from/to" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "alpha\nbeta\ngamma\ndelta\nepsilon\n";
-	try tmp.dir.writeFile(.{ .sub_path = "partial.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "partial.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "partial.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6697,7 +6697,7 @@ test "runReplaceContent rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "hello world\ngoodbye world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6705,7 +6705,7 @@ test "runReplaceContent rejects stale version" {
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally (simulates concurrent edit)
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified content\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = "modified content\n" });
 
 	// Try to replace with the old version — should be rejected
 	var out: std.Io.Writer.Allocating = .init(allocator);
@@ -6723,7 +6723,7 @@ test "runReplaceContent succeeds with correct version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "hello world\ngoodbye world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6752,7 +6752,7 @@ test "runReplaceContent errors when no version provided" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "hello world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6765,7 +6765,7 @@ test "runReplaceContent errors when no version provided" {
 	// Should contain error about missing version
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: --version is required") != null);
 	// File should NOT have been modified
-	const after = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.txt", allocator, .limited(8192));
 	defer allocator.free(after);
 	try std.testing.expectEqualStrings(content, after);
 }
@@ -6776,7 +6776,7 @@ test "runReplaceSymbol rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -6784,7 +6784,7 @@ test "runReplaceSymbol rejects stale version" {
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally (simulates concurrent edit)
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
 
 	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
@@ -6801,7 +6801,7 @@ test "runReplaceSymbol succeeds with correct version and emits new version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -6823,7 +6823,7 @@ test "runReplaceSymbol errors when no version provided" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -6836,7 +6836,7 @@ test "runReplaceSymbol errors when no version provided" {
 	// Should contain error about missing version
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: --version is required") != null);
 	// File should NOT have been modified
-	const after = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.zig", allocator, .limited(8192));
 	defer allocator.free(after);
 	try std.testing.expectEqualStrings(content, after);
 }
@@ -6847,7 +6847,7 @@ test "runInsertAt rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "line one\nline two\nline three\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6861,7 +6861,7 @@ test "runInsertAt rejects stale version" {
 	defer allocator.free(ref_str);
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
 
 	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
@@ -6878,7 +6878,7 @@ test "runReplaceLines rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "line one\nline two\nline three\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6893,7 +6893,7 @@ test "runReplaceLines rejects stale version" {
 	defer allocator.free(to_str);
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
 
 	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
@@ -6910,14 +6910,14 @@ test "runInsertAfter rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
 
 	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
@@ -6934,14 +6934,14 @@ test "runInsertBefore rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
 
 	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
@@ -6975,7 +6975,7 @@ test "runCreateFile creates new file with version" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "version:") != null);
 
 	// File should actually exist with correct content
-	const written = try tmp.dir.readFileAlloc(allocator, "newfile.txt", 1024 * 1024);
+	const written = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "newfile.txt", allocator, .limited(1024 * 1024));
 	defer allocator.free(written);
 	try std.testing.expectEqualStrings(body, written);
 }
@@ -6985,7 +6985,7 @@ test "runCreateFile errors on existing file" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "existing.txt", .data = "existing content\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "existing.txt", .data = "existing content\n" });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "existing.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -6999,7 +6999,7 @@ test "runCreateFile errors on existing file" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file already exists") != null);
 
 	// Original file should be unchanged
-	const content = try tmp.dir.readFileAlloc(allocator, "existing.txt", 1024 * 1024);
+	const content = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "existing.txt", allocator, .limited(1024 * 1024));
 	defer allocator.free(content);
 	try std.testing.expectEqualStrings("existing content\n", content);
 }
@@ -7009,7 +7009,7 @@ test "runDestroyFile rejects stale version" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "doomed.zig", .data = "original content\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "doomed.zig", .data = "original content\n" });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "doomed.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -7021,7 +7021,7 @@ test "runDestroyFile rejects stale version" {
 	_ = correct_version;
 
 	// Now modify the file so the version is stale
-	try tmp.dir.writeFile(.{ .sub_path = "doomed.zig", .data = "modified content\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "doomed.zig", .data = "modified content\n" });
 
 	// Try to destroy with the old (now stale) version
 	const stale_version = "000"; // arbitrary wrong version
@@ -7046,7 +7046,7 @@ test "runDestroyFile moves file to trash (file no longer accessible)" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const file_content = "bye bye\n";
-	try tmp.dir.writeFile(.{ .sub_path = "to_delete.txt", .data = file_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "to_delete.txt", .data = file_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "to_delete.txt", allocator);
 	defer allocator.free(abs_path);
 

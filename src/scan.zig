@@ -432,9 +432,9 @@ test "findFiles finds supported extensions" {
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "lib");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "lib/demo.ex", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "README.md", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "lib/demo.ex", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "README.md", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -468,9 +468,9 @@ test "findFiles includes shebang scripts without extension" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "luascript", .data = "#!/usr/bin/env luajit\nprint('ok')\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "pythonscript", .data = "#!/usr/bin/env python3\nprint('no')\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "luascript", .data = "#!/usr/bin/env luajit\nprint('ok')\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "pythonscript", .data = "#!/usr/bin/env python3\nprint('no')\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -507,10 +507,10 @@ test "findFiles respects ignores" {
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "lib");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".zig-cache");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".zig-cache/cache.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "lib/demo.ex", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "lib/skip.ex", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".zig-cache/cache.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "lib/demo.ex", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "lib/skip.ex", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -558,13 +558,13 @@ test "findFiles ignores built-in paths" {
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan-fixtures/fixture");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "deps/lib");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "node_modules/pkg");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".git/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".jj/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".codescan/index.sqlite3", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "deps/lib/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".git/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".jj/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan/index.sqlite3", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "deps/lib/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "node_modules/pkg/ignored.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -590,9 +590,9 @@ test "findFiles respects .gitignore for untracked files" {
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "generated");
-	try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "generated/\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "generated/skip.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".gitignore", .data = "generated/\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "generated/skip.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -630,8 +630,8 @@ test "findFiles still includes tracked files even if matched by .gitignore" {
 	defer tmp.cleanup();
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
-	try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "*.zig\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".gitignore", .data = "*.zig\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -682,8 +682,8 @@ test "findFiles includes node_modules when enabled" {
 
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "node_modules/pkg");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/dep.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "node_modules/pkg/dep.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -706,11 +706,11 @@ test "findFiles matches bash dotfile names" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = ".bashrc", .data = "# bash config\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".bash_profile", .data = "# profile\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".profile", .data = "# profile\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".bash_aliases", .data = "# aliases\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".vimrc", .data = "\" vim config\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bashrc", .data = "# bash config\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bash_profile", .data = "# profile\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".profile", .data = "# profile\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bash_aliases", .data = "# aliases\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".vimrc", .data = "\" vim config\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -744,8 +744,8 @@ test "findFiles follows symlinks to files" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "real.sh", .data = "#!/bin/bash\n" });
-	try std.posix.symlinkat("real.sh", tmp.dir.fd, "link.sh");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "real.sh", .data = "#!/bin/bash\n" });
+	try tmp.dir.symLink(io_singleton.getOrInit(), "real.sh", "link.sh", .{});
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -770,9 +770,9 @@ test "findFiles includes bin/ in bash-heavy projects" {
 	defer tmp.cleanup();
 
 	// Create a bash-heavy project root (has .bashrc)
-	try tmp.dir.writeFile(.{ .sub_path = ".bashrc", .data = "# config\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bashrc", .data = "# config\n" });
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "bin");
-	try tmp.dir.writeFile(.{ .sub_path = "bin/my-script.sh", .data = "#!/bin/bash\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "bin/my-script.sh", .data = "#!/bin/bash\n" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -806,8 +806,8 @@ test "findFiles ignores bin/ in non-bash projects" {
 	// Normal project (no bash dotfiles in root)
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "bin");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "bin/output.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "bin/output.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);

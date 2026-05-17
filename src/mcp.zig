@@ -985,7 +985,7 @@ test "handleToolsCall dispatches symbols" {
 	// Create a temp Zig file
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void {}\n" });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1079,7 +1079,7 @@ test "handleToolsCall dispatches symbols and config" {
 	// Create a temp dir with a test file
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
 	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 
@@ -1128,7 +1128,7 @@ test "handleToolsCall dispatches index gracefully without Ollama" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
 	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 

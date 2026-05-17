@@ -1188,7 +1188,7 @@ test "handleRequest responds to POST /symbols" {
 	defer tmp.cleanup();
 
 	const zig_content = "const x = 42;\npub fn foo() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1230,7 +1230,7 @@ test "handleRequest responds to POST /find-symbol" {
 	defer tmp.cleanup();
 
 	const zig_content = "const x = 42;\npub fn foo() void {}\npub fn bar() u32 { return 1; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1272,7 +1272,7 @@ test "handleRequest responds to POST /replace-symbol" {
 	defer tmp.cleanup();
 
 	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1297,7 +1297,7 @@ test "handleRequest responds to POST /replace-symbol" {
 	const response = std.Io.Writer.buffered(&writer);
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
 	// Verify the file was modified
-	const modified = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	const modified = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.zig", allocator, .limited(8192));
 	defer allocator.free(modified);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "return 99") != null);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "return 42") == null);
@@ -1314,7 +1314,7 @@ test "handleRequest responds to POST /insert-after" {
 	defer tmp.cleanup();
 
 	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1339,7 +1339,7 @@ test "handleRequest responds to POST /insert-after" {
 	const response = std.Io.Writer.buffered(&writer);
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
 	// Verify baz was inserted into the file
-	const modified = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	const modified = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.zig", allocator, .limited(8192));
 	defer allocator.free(modified);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "baz") != null);
 }
@@ -1355,7 +1355,7 @@ test "handleRequest responds to POST /insert-before" {
 	defer tmp.cleanup();
 
 	const zig_content = "pub fn foo() u32 { return 42; }\npub fn bar() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1380,7 +1380,7 @@ test "handleRequest responds to POST /insert-before" {
 	const response = std.Io.Writer.buffered(&writer);
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
 	// Verify baz was inserted into the file
-	const modified = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	const modified = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.zig", allocator, .limited(8192));
 	defer allocator.free(modified);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "baz") != null);
 }
@@ -1397,7 +1397,7 @@ test "handleRequest responds to POST /replace-lines" {
 
 	// Write a file with known lines
 	const content = "line1\nline2\nline3\nline4\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -1424,7 +1424,7 @@ test "handleRequest responds to POST /replace-lines" {
 	const response = std.Io.Writer.buffered(&writer);
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
 	// Verify the file was modified
-	const modified = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	const modified = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.txt", allocator, .limited(8192));
 	defer allocator.free(modified);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "replaced") != null);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "line2") == null);
@@ -1441,7 +1441,7 @@ test "handleRequest responds to POST /insert-at" {
 	defer tmp.cleanup();
 
 	const content = "line1\nline2\nline3\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -1467,7 +1467,7 @@ test "handleRequest responds to POST /insert-at" {
 
 	const response = std.Io.Writer.buffered(&writer);
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
-	const modified = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	const modified = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.txt", allocator, .limited(8192));
 	defer allocator.free(modified);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "inserted") != null);
 }
@@ -1483,7 +1483,7 @@ test "handleRequest responds to POST /replace-content" {
 	defer tmp.cleanup();
 
 	const content = "hello world\ngoodbye world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
@@ -1508,7 +1508,7 @@ test "handleRequest responds to POST /replace-content" {
 
 	const response = std.Io.Writer.buffered(&writer);
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
-	const modified = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	const modified = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.txt", allocator, .limited(8192));
 	defer allocator.free(modified);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "howdy world") != null);
 	try std.testing.expect(std.mem.indexOf(u8, modified, "hello") == null);
@@ -1527,7 +1527,7 @@ test "handleRequest responds to POST /rename" {
 	// Use a pattern that won't match any symbol — locateSymbol returns null,
 	// so rename returns error msg without starting an LSP server
 	const zig_content = "pub fn foo() u32 { return 42; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
@@ -1564,7 +1564,7 @@ test "handleRequest responds to POST /find-symbol with include_body" {
 	defer tmp.cleanup();
 
 	const zig_content = "pub fn foo() u32 { return 42; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = zig_content });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = zig_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 

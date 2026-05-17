@@ -97,7 +97,7 @@ test "writePid creates file with current PID" {
 
 	try writePid(allocator, dir_path);
 
-	const contents = try tmp.dir.readFileAlloc(allocator, "watcher.pid", 64);
+	const contents = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "watcher.pid", allocator, .limited(64));
 	defer allocator.free(contents);
 
 	const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, contents, &std.ascii.whitespace), 10);
