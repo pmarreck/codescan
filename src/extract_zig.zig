@@ -17,7 +17,7 @@ pub fn extract(
 	var line_idx = try LineIndex.build(allocator, source);
 	defer line_idx.deinit(allocator);
 
-	var results = std.ArrayListUnmanaged(model.Symbol){};
+	var results = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (results.items) |*sym| sym.deinit(allocator);
 		results.deinit(allocator);
@@ -71,7 +71,7 @@ fn extractFnSignature(
 	const body_tok = tree.firstToken(body_node);
 	const start_byte = tree.tokenStart(start_tok);
 	const end_byte = tree.tokenStart(body_tok);
-	const slice = std.mem.trimRight(u8, tree.source[start_byte..end_byte], " \t\r\n");
+	const slice = std.mem.trimEnd(u8, tree.source[start_byte..end_byte], " \t\r\n");
 	return allocator.dupe(u8, slice);
 }
 
@@ -104,7 +104,7 @@ fn extractVarDecl(
 	// Get the first line of the decl for the signature
 	const remaining = tree.source[start_byte..];
 	const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n') orelse remaining.len;
-	const first_line = std.mem.trimRight(u8, remaining[0..newline_pos], " \t\r{");
+	const first_line = std.mem.trimEnd(u8, remaining[0..newline_pos], " \t\r{");
 	const signature = try allocator.dupe(u8, first_line);
 
 	const doc_comment = try extractDocComment(allocator, tree, start_tok);
@@ -127,7 +127,7 @@ fn extractDocComment(
 ) !?[]const u8 {
 	if (start_token == 0) return null;
 	var tok: std.zig.Ast.TokenIndex = start_token - 1;
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer lines.deinit(allocator);
 
 	while (true) : (tok -= 1) {
@@ -138,7 +138,7 @@ fn extractDocComment(
 
 	if (lines.items.len == 0) return null;
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	var i: usize = lines.items.len;
@@ -160,7 +160,7 @@ fn cleanDocLine(raw: []const u8) []const u8 {
 	} else if (std.mem.startsWith(u8, line, "//!")) {
 		line = line[3..];
 	}
-	return std.mem.trimLeft(u8, line, " \t");
+	return std.mem.trimStart(u8, line, " \t");
 }
 
 test "extract finds zig enums" {

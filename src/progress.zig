@@ -1,11 +1,15 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 
 /// Manages a progress file as a symlink to TMPDIR for low-wear status reporting.
 /// The .codescan/watcher-progress path is a symlink to $TMPDIR/codescan-progress-<hash>.
 /// codescan status reads this file to show watcher activity.
 
 pub fn setup(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8 {
-    const tmpdir = std.posix.getenv("TMPDIR") orelse std.posix.getenv("TMP") orelse "/tmp";
+    const tmpdir = blk: {
+        const env_map = io_singleton.getEnvMap() orelse break :blk "/tmp";
+        break :blk env_map.get("TMPDIR") orelse env_map.get("TMP") orelse "/tmp";
+    };
 
     // Build unique tmp path based on codescan_dir
     var hasher = std.hash.XxHash64.init(0);
@@ -22,11 +26,11 @@ pub fn setup(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8
     defer allocator.free(link_path);
 
     // Clean up any stale symlink or file
-    std.fs.cwd().deleteFile(link_path) catch {};
-    std.fs.cwd().deleteFile(tmp_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), link_path) catch {};
+    std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), tmp_path) catch {};
 
     // Create symlink: .codescan/watcher-progress -> $TMPDIR/codescan-progress-<hash>
-    std.fs.cwd().symLink(tmp_path, link_path, .{}) catch {
+    std.Io.Dir.cwd().symLink(io_singleton.getOrInit(), tmp_path, link_path, .{}) catch {
         // If symlink fails, just use the tmp_path directly
         return tmp_path;
     };
@@ -36,17 +40,17 @@ pub fn setup(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8
 
 pub fn write(path: ?[]const u8, msg: []const u8) void {
     const p = path orelse return;
-    const file = std.fs.cwd().createFile(p, .{}) catch return;
-    defer file.close();
-    file.writeAll(msg) catch {};
+    const file = std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), p, .{}) catch return;
+    defer file.close(io_singleton.getOrInit());
+    file.writeStreamingAll(io_singleton.getOrInit(), msg) catch {};
 }
 
 pub fn clear(allocator: std.mem.Allocator, path: ?[]const u8, codescan_dir: ?[]const u8) void {
-    if (path) |p| std.fs.cwd().deleteFile(p) catch {};
+    if (path) |p| std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), p) catch {};
     if (codescan_dir) |dir| {
         const link_path = std.fmt.allocPrint(allocator, "{s}/watcher-progress", .{dir}) catch return;
         defer allocator.free(link_path);
-        std.fs.cwd().deleteFile(link_path) catch {};
+        std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), link_path) catch {};
     }
 }
 
@@ -54,5 +58,5 @@ pub fn clear(allocator: std.mem.Allocator, path: ?[]const u8, codescan_dir: ?[]c
 pub fn read(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8 {
     const link_path = std.fmt.allocPrint(allocator, "{s}/watcher-progress", .{codescan_dir}) catch return null;
     defer allocator.free(link_path);
-    return std.fs.cwd().readFileAlloc(allocator, link_path, 256) catch null;
+    return std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), link_path, allocator, .limited(256)) catch null;
 }

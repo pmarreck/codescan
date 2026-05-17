@@ -27,7 +27,7 @@ pub fn extract(
 	) orelse return error.ParseFailed;
 	defer ts.ts_tree_delete(tree);
 
-	var results = std.ArrayListUnmanaged(model.Symbol){};
+	var results = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (results.items) |*sym| sym.deinit(allocator);
 		results.deinit(allocator);
@@ -144,7 +144,7 @@ fn isNameNode(node: ts.TSNode) bool {
 
 fn extractSignature(allocator: std.mem.Allocator, source: []const u8, node: ts.TSNode) ![]const u8 {
 	const text = nodeText(source, node);
-	const trimmed = std.mem.trimRight(u8, text, " \t\r\n");
+	const trimmed = std.mem.trimEnd(u8, text, " \t\r\n");
 	const line_end = std.mem.indexOfScalar(u8, trimmed, '\n') orelse trimmed.len;
 	return allocator.dupe(u8, trimmed[0..line_end]);
 }

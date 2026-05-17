@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 
 /// A 3-character base-62 hash for content-anchored line addressing.
 /// Used by LLMs to precisely reference code lines with staleness detection.
@@ -52,7 +53,7 @@ pub fn computeChainHashes(allocator: std.mem.Allocator, lines: []const []const u
 /// Returns one hash per line. Caller owns the memory.
 pub fn computeSourceHashes(allocator: std.mem.Allocator, source: []const u8) ![]Hash {
 	// Split source into lines
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer lines.deinit(allocator);
 
 	var start: usize = 0;
@@ -83,9 +84,9 @@ pub fn computeFileVersion(allocator: std.mem.Allocator, source: []const u8) !?Ha
 /// Compute the file-level version hash from a file path.
 /// Returns null if the file is empty or cannot be read.
 pub fn computeFileVersionFromPath(allocator: std.mem.Allocator, file_path: []const u8) ?Hash {
-	const file = std.fs.cwd().openFile(file_path, .{}) catch return null;
-	defer file.close();
-	const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch return null;
+	const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), file_path, .{}) catch return null;
+	defer file.close(io_singleton.getOrInit());
+	const source = io_singleton.readToEndAlloc(file, allocator, 10 * 1024 * 1024) catch return null;
 	defer allocator.free(source);
 	return computeFileVersion(allocator, source) catch null;
 }
@@ -222,10 +223,10 @@ test "single line produces valid hash" {
 
 test "formatHashline produces correct format" {
 	var buf: [256]u8 = undefined;
-	var fbs = std.io.fixedBufferStream(&buf);
+	var fbs: std.Io.Writer = .fixed(&buf);
 	const hash = Hash{ 'k', '7', 'm' };
-	try formatHashline(44, hash, "fn init(self: *Self) void {", fbs.writer());
-	const result = fbs.getWritten();
+	try formatHashline(44, hash, "fn init(self: *Self) void {", &fbs);
+	const result = fbs.buffered();
 	try std.testing.expectEqualStrings("44:k7m|fn init(self: *Self) void {", result);
 }
 

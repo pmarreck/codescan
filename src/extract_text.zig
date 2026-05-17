@@ -10,13 +10,13 @@ pub fn extract(
 	var lines = try util.splitLines(allocator, source);
 	defer lines.deinit(allocator);
 
-	var symbols = std.ArrayListUnmanaged(model.Symbol){};
+	var symbols = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (symbols.items) |*sym| sym.deinit(allocator);
 		symbols.deinit(allocator);
 	}
 
-	var paragraph_lines = std.ArrayListUnmanaged([]const u8){};
+	var paragraph_lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer paragraph_lines.deinit(allocator);
 
 	var start_idx: usize = 0;
@@ -145,7 +145,7 @@ fn isBlank(line: []const u8) bool {
 
 fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) !?[]const u8 {
 	if (lines.len == 0) return null;
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	for (lines, 0..) |line, idx| {
 		if (idx > 0) try out.writer.writeAll("\n");

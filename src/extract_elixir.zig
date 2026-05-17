@@ -6,7 +6,7 @@ pub fn extract(
 	file_path: []const u8,
 	source: []const u8,
 ) ![]model.Symbol {
-	var results = std.ArrayListUnmanaged(model.Symbol){};
+	var results = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (results.items) |*sym| sym.deinit(allocator);
 		results.deinit(allocator);
@@ -19,7 +19,7 @@ pub fn extract(
 	var line_no: usize = 0;
 	while (lines.next()) |line| {
 		line_no += 1;
-		const trimmed = std.mem.trimLeft(u8, line, " \t\r");
+		const trimmed = std.mem.trimStart(u8, line, " \t\r");
 		if (trimmed.len == 0) continue;
 
 		if (std.mem.startsWith(u8, trimmed, "@doc")) {
@@ -49,7 +49,7 @@ pub fn extract(
 			doc_comment = null;
 			try results.append(allocator, symbol);
 		} else if (isStructLine(trimmed)) {
-			const signature = try allocator.dupe(u8, std.mem.trimRight(u8, trimmed, " \t\r"));
+			const signature = try allocator.dupe(u8, std.mem.trimEnd(u8, trimmed, " \t\r"));
 			const symbol = model.Symbol{
 				.language = try allocator.dupe(u8, "elixir"),
 				.file_path = try allocator.dupe(u8, file_path),
@@ -101,7 +101,7 @@ fn extractModuleName(line: []const u8) ?[]const u8 {
 	const rest = line["defmodule ".len..];
 	const end_idx = std.mem.indexOfAny(u8, rest, " \t{") orelse rest.len;
 	// Also trim "do" if present
-	const candidate = std.mem.trimRight(u8, rest[0..end_idx], " \t");
+	const candidate = std.mem.trimEnd(u8, rest[0..end_idx], " \t");
 	if (std.mem.eql(u8, candidate, "do")) return null;
 	return if (candidate.len > 0) candidate else null;
 }
@@ -118,9 +118,9 @@ fn extractName(line: []const u8) ?[]const u8 {
 fn extractSignature(line: []const u8) []const u8 {
 	const idx = std.mem.indexOf(u8, line, " do") orelse std.mem.indexOf(u8, line, " do:");
 	if (idx) |pos| {
-		return std.mem.trimRight(u8, line[0..pos], " \t\r");
+		return std.mem.trimEnd(u8, line[0..pos], " \t\r");
 	}
-	return std.mem.trimRight(u8, line, " \t\r");
+	return std.mem.trimEnd(u8, line, " \t\r");
 }
 
 fn findEndLine(
@@ -189,7 +189,7 @@ fn parseDocHeredoc(
 	line_no: *usize,
 ) !?[]const u8 {
 	const start_idx = std.mem.indexOf(u8, line, "\"\"") orelse return null;
-	var content = std.ArrayListUnmanaged([]const u8){};
+	var content = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer content.deinit(allocator);
 
 	const after = line[start_idx + 3 ..];
@@ -214,12 +214,12 @@ fn parseDocHeredoc(
 }
 
 fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]const u8 {
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	for (lines, 0..) |line, idx| {
 		if (idx != 0) try out.writer.writeAll("\n");
-		try out.writer.writeAll(std.mem.trimRight(u8, line, "\r"));
+		try out.writer.writeAll(std.mem.trimEnd(u8, line, "\r"));
 	}
 
 	return out.toOwnedSlice();

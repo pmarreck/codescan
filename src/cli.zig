@@ -203,9 +203,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.type_filter = null,
 		.lang_filter = null,
 		.kind_filter = null,
-		.path_filters = .{},
+		.path_filters = .empty,
 		.file_filter = null,
-		.symbols_files = .{},
+		.symbols_files = .empty,
 		.pattern = null,
 		.include_body = false,
 		.from_ref = null,
@@ -962,7 +962,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 
 		if (parsed.command == .search) {
 			if (!query_parts_inited) {
-				query_parts = .{};
+				query_parts = .empty;
 				query_parts_inited = true;
 			}
 			try query_parts.append(allocator, arg);

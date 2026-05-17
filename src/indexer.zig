@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const plugin = @import("plugin.zig");
 const kind = @import("kind.zig");
 const scan = @import("scan.zig");
@@ -51,10 +52,10 @@ pub fn indexAll(
 		allocator.free(files);
 	}
 
-	var batch_texts: std.ArrayListUnmanaged([]const u8) = .{};
-	var batch_rowids: std.ArrayListUnmanaged(i64) = .{};
-	var comment_texts: std.ArrayListUnmanaged([]const u8) = .{};
-	var comment_rowids: std.ArrayListUnmanaged(i64) = .{};
+	var batch_texts: std.ArrayListUnmanaged([]const u8) = .empty;
+	var batch_rowids: std.ArrayListUnmanaged(i64) = .empty;
+	var comment_texts: std.ArrayListUnmanaged([]const u8) = .empty;
+	var comment_rowids: std.ArrayListUnmanaged(i64) = .empty;
 	defer {
 		for (batch_texts.items) |text| allocator.free(text);
 		batch_texts.deinit(allocator);
@@ -65,7 +66,7 @@ pub fn indexAll(
 	}
 
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	var stats = Stats{ .files = 0, .symbols = 0 };
@@ -93,10 +94,10 @@ pub fn indexAll(
 		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
 		defer allocator.free(full_path);
 
-		const file = try std.fs.cwd().openFile(full_path, .{});
-		defer file.close();
+		const file = try std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), full_path, .{});
+		defer file.close(io_singleton.getOrInit());
 
-		const stat = try file.stat();
+		const stat = try file.stat(io_singleton.getOrInit());
 		const size = stat.size;
 		if (options.max_file_size > 0) {
 			if (show_progress) {
@@ -109,7 +110,7 @@ pub fn indexAll(
 			if (size > options.max_file_size) continue;
 		}
 
-		const source = file.readToEndAlloc(allocator, options.max_file_size) catch |err| {
+		const source = io_singleton.readToEndAlloc(file, allocator, options.max_file_size) catch |err| {
 			if (err == error.FileTooBig) continue;
 			return err;
 		};
@@ -173,7 +174,7 @@ pub fn indexAll(
 		}
 
 		// Track indexed file so indexIncremental knows about it
-		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
 		const current_size: i64 = @intCast(size);
 		try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
 	}
@@ -223,7 +224,7 @@ pub fn indexIncremental(
 	const show_progress = options.show_progress and !debug;
 
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	// 1. Scan filesystem for current files
@@ -276,10 +277,10 @@ pub fn indexIncremental(
 	}
 
 	// 4. Process new and modified files
-	var batch_texts: std.ArrayListUnmanaged([]const u8) = .{};
-	var batch_rowids: std.ArrayListUnmanaged(i64) = .{};
-	var comment_texts: std.ArrayListUnmanaged([]const u8) = .{};
-	var comment_rowids: std.ArrayListUnmanaged(i64) = .{};
+	var batch_texts: std.ArrayListUnmanaged([]const u8) = .empty;
+	var batch_rowids: std.ArrayListUnmanaged(i64) = .empty;
+	var comment_texts: std.ArrayListUnmanaged([]const u8) = .empty;
+	var comment_rowids: std.ArrayListUnmanaged(i64) = .empty;
 	defer {
 		for (batch_texts.items) |text| allocator.free(text);
 		batch_texts.deinit(allocator);
@@ -309,14 +310,14 @@ pub fn indexIncremental(
 		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
 		defer allocator.free(full_path);
 
-		const file = std.fs.cwd().openFile(full_path, .{}) catch continue;
-		defer file.close();
+		const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), full_path, .{}) catch continue;
+		defer file.close(io_singleton.getOrInit());
 
-		const stat = try file.stat();
+		const stat = try file.stat(io_singleton.getOrInit());
 		const size = stat.size;
 		if (options.max_file_size > 0 and size > options.max_file_size) continue;
 
-		const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
 		const current_size: i64 = @intCast(size);
 
 		// Check if file is unchanged (both mtime and size must match to catch same-second edits)
@@ -339,7 +340,7 @@ pub fn indexIncremental(
 		}
 
 		// Read and index the file
-		const source = file.readToEndAlloc(allocator, options.max_file_size) catch |err| {
+		const source = io_singleton.readToEndAlloc(file, allocator, options.max_file_size) catch |err| {
 			if (err == error.FileTooBig) continue;
 			return err;
 		};
@@ -429,11 +430,11 @@ pub fn reindexFile(
 	const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
 	defer allocator.free(full_path);
 
-	const file = try std.fs.cwd().openFile(full_path, .{});
-	defer file.close();
+	const file = try std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), full_path, .{});
+	defer file.close(io_singleton.getOrInit());
 
-	const stat = try file.stat();
-	const source = try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	const stat = try file.stat(io_singleton.getOrInit());
+	const source = try io_singleton.readToEndAlloc(file, allocator, 10 * 1024 * 1024);
 	defer allocator.free(source);
 
 	const symbols = try extractor.extract(allocator, rel_path, source);
@@ -468,7 +469,7 @@ pub fn reindexFile(
 	}
 
 	// Update file metadata
-	const current_mtime: i64 = @intCast(@divFloor(stat.mtime, std.time.ns_per_s));
+	const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
 	const current_size: i64 = @intCast(stat.size);
 	try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
 }
@@ -495,11 +496,11 @@ fn enrichSymbolMetadata(allocator: std.mem.Allocator, symbol: *model.Symbol) !vo
 }
 
 fn inferKindFromSignature(signature: []const u8, language: []const u8) ?[]const u8 {
-	var trimmed = std.mem.trimLeft(u8, signature, " \t");
+	var trimmed = std.mem.trimStart(u8, signature, " \t");
 	// Strip visibility and qualifier prefixes so "pub inline fn" / "pub const X = struct" work
 	inline for ([_][]const u8{ "pub ", "export ", "inline ", "comptime ", "extern " }) |prefix| {
 		if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{prefix})) {
-			trimmed = std.mem.trimLeft(u8, trimmed[prefix.len..], " \t");
+			trimmed = std.mem.trimStart(u8, trimmed[prefix.len..], " \t");
 		}
 	}
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{
@@ -555,7 +556,7 @@ fn containsTypeAssignment(signature: []const u8) ?[]const u8 {
 }
 
 fn inferVisibilityFromSignature(signature: []const u8) ?[]const u8 {
-	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	const trimmed = std.mem.trimStart(u8, signature, " \t");
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{
 		"pub ",
 		"public ",
@@ -568,7 +569,7 @@ fn inferVisibilityFromSignature(signature: []const u8) ?[]const u8 {
 }
 
 fn inferScope(name: []const u8, signature: []const u8, symbol_kind: ?[]const u8) ?[]const u8 {
-	const trimmed = std.mem.trimLeft(u8, signature, " \t");
+	const trimmed = std.mem.trimStart(u8, signature, " \t");
 	if (hasAnyPrefixIgnoreCase(trimmed, &[_][]const u8{ "var ", "let ", "const ", "val ", "mut " })) {
 		return "local";
 	}
@@ -717,7 +718,7 @@ fn extractSourceBody(allocator: std.mem.Allocator, source: []const u8, start_lin
 
 fn computeFileHashes(allocator: std.mem.Allocator, source: []const u8) ![]hashline.Hash {
 	// Split source into lines
-	var lines = std.ArrayListUnmanaged([]const u8){};
+	var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer lines.deinit(allocator);
 
 	var start: usize = 0;
@@ -740,7 +741,7 @@ pub fn buildSymbolText(
 	symbol: model.Symbol,
 	symbol_kind: kind.Kind,
 ) ![]u8 {
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try out.writer.writeAll(symbol.name);
@@ -854,7 +855,7 @@ fn isWhitespace(ch: u8) bool {
 }
 
 fn trimRight(text: []const u8) []const u8 {
-	return std.mem.trimRight(u8, text, " \t\r\n");
+	return std.mem.trimEnd(u8, text, " \t\r\n");
 }
 
 fn isTransientHttpError(err: anyerror) bool {
@@ -892,7 +893,7 @@ fn embedWithRetry(
 				1 => 100 * std.time.ns_per_ms,
 				else => 500 * std.time.ns_per_ms,
 			};
-			std.Thread.sleep(delay_ns);
+			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((delay_ns)), .awake) catch {};
 		}
 	}
 }
@@ -975,7 +976,7 @@ fn warnLargeFile(
 }
 
 fn debugEnabled(allocator: std.mem.Allocator) !bool {
-	const value = std.process.getEnvVarOwned(allocator, "DEBUG") catch |err| switch (err) {
+	const value = io_singleton.getEnvVarOwned(allocator, "DEBUG") catch |err| switch (err) {
 		error.EnvironmentVariableNotFound => return false,
 		else => return err,
 	};
@@ -993,7 +994,7 @@ fn debugEnabledFromValue(value: []const u8) bool {
 }
 
 fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+	const value = io_singleton.getEnvVarOwned(allocator, key) catch |err| switch (err) {
 		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
 		else => return err,
 	};
@@ -1057,7 +1058,7 @@ test "buildSymbolText includes name signature and doc" {
 test "truncateForKind prefers sentence boundary for docs" {
 	const allocator = std.testing.allocator;
 	const sentence = "This is a sentence. ";
-	var out = std.ArrayListUnmanaged(u8){};
+	var out = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer out.deinit(allocator);
 
 	while (out.items.len <= max_embed_bytes_doc + 20) {
@@ -1075,7 +1076,7 @@ test "truncateForKind prefers sentence boundary for docs" {
 
 test "truncateForKind prefers newline boundary for code" {
 	const allocator = std.testing.allocator;
-	var out = std.ArrayListUnmanaged(u8){};
+	var out = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer out.deinit(allocator);
 
 	while (out.items.len <= max_embed_bytes_code + 40) {
@@ -1090,7 +1091,7 @@ test "truncateForKind prefers newline boundary for code" {
 
 	const slice = text[0..max_embed_bytes_code];
 	const last_newline = std.mem.lastIndexOfScalar(u8, slice, '\n') orelse 0;
-	const expected = std.mem.trimRight(u8, text[0..last_newline + 1], " \t\r\n");
+	const expected = std.mem.trimEnd(u8, text[0..last_newline + 1], " \t\r\n");
 	try std.testing.expectEqualStrings(expected, truncated);
 }
 
@@ -1278,15 +1279,15 @@ test "indexAll stores symbols and embeddings" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	const source =
 		"/// Adds\n" ++
 		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n" ++
 		"fn sub(a: i32, b: i32) i32 { return a - b; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = source });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);
@@ -1309,14 +1310,14 @@ test "indexAll skips files over max_file_size" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	const source =
 		"/// Big\n" ++
 		"pub fn big() void { return; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/big.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/big.zig", .data = source });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);
@@ -1338,12 +1339,12 @@ test "indexAll filters by extension and kind" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "pub fn add() void {}" });
-	try tmp.dir.writeFile(.{ .sub_path = "README.md", .data = "# Title\nbody\n" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "pub fn add() void {}" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "README.md", .data = "# Title\nbody\n" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);
@@ -1363,7 +1364,7 @@ test "indexAll filters by extension and kind" {
 
 test "warnLargeFile includes limits" {
 	const allocator = std.testing.allocator;
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	warnLargeFile(&out.writer, "src/big.zig", 600_000, 500_000, 2_000_000, false);
@@ -1378,11 +1379,11 @@ test "indexIncremental indexes new files and skips unchanged" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = "pub fn add(a: i32, b: i32) i32 { return a + b; }\n" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = "pub fn add(a: i32, b: i32) i32 { return a + b; }\n" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);
@@ -1414,12 +1415,12 @@ test "indexIncremental detects deleted files" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.writeFile(.{ .sub_path = "src/a.zig", .data = "pub fn a() void {}\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "src/b.zig", .data = "pub fn b() void {}\n" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/a.zig", .data = "pub fn a() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/b.zig", .data = "pub fn b() void {}\n" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);
@@ -1436,7 +1437,7 @@ test "indexIncremental detects deleted files" {
 	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "symbols"));
 
 	// Delete one file
-	try tmp.dir.deleteFile("src/b.zig");
+	try tmp.dir.deleteFile(io_singleton.getOrInit(), "src/b.zig");
 
 	// Re-index: should detect deletion
 	const stats2 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
@@ -1519,15 +1520,15 @@ test "indexAll retries flushBatch on HttpConnectionClosing" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	const source =
 		"/// Adds\n" ++
 		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n" ++
 		"fn sub(a: i32, b: i32) i32 { return a - b; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = source });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);
@@ -1549,13 +1550,13 @@ test "indexAll retries flushBatch on WriteFailed" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
 	const source =
 		"pub fn add(a: i32, b: i32) i32 { return a + b; }\n";
-	try tmp.dir.writeFile(.{ .sub_path = "src/math.zig", .data = source });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/math.zig", .data = source });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const db = try storage.openMemoryWithVec(allocator);

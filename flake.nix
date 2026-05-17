@@ -19,8 +19,8 @@
 				# Pre-fetch Zig build.zig.zon dependencies for sandboxed builds
 				sqlite-vec-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/sqlite-vec.git";
-					rev = "742ac1607d5490c71758c9fde80820387391910d";
-					hash = "sha256-CFZAditwPGoWpAK7AG8BaxksfxjEzyGdlMvuZPsJ7CQ=";
+					rev = "c9d3630f56637276829d9ab0c54b1116c6d3e2ef";
+					hash = "sha256-9MBuzlHICNc0U4TIEEPd0gWAftxllXcU8bhilcaAh+k=";
 				};
 				pcre2-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/pcre2.git";
@@ -33,7 +33,7 @@
 				# so we can pass it via --system to avoid network fetches
 				zigPkgCache = pkgs.linkFarm "zig-pkg-cache" [
 					{
-						name = "sqlite_vec-0.1.7-alpha.2-4Cdt0OvwBACYsEQvfmbSw0sUHuXhcwD5PgjGyslHXU2q";
+						name = "sqlite_vec-0.1.7-alpha.2-4Cdt0CTyBADFzDhhNOTSAUplRsfH1qs-DqwP6FwrZ641";
 						path = sqlite-vec-src;
 					}
 					{
@@ -48,7 +48,7 @@
 
 					src = ./.;
 
-					nativeBuildInputs = [ pkgs.zig_0_15 ];
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
 
 					dontConfigure = true;
 					dontFixup = true;
@@ -80,7 +80,7 @@
 
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
-						zig_0_15
+						zig_0_16
 						jq
 						luajit
 						luajitPackages.cjson

@@ -7,7 +7,7 @@ pub fn extract(
 	file_path: []const u8,
 	source: []const u8,
 ) ![]model.Symbol {
-	var results = std.ArrayListUnmanaged(model.Symbol){};
+	var results = @as(std.ArrayListUnmanaged(model.Symbol), .empty);
 	errdefer {
 		for (results.items) |*sym| sym.deinit(allocator);
 		results.deinit(allocator);
@@ -25,7 +25,7 @@ pub fn extract(
 	}
 
 	for (lines.items, 0..) |line, idx| {
-		const trimmed = std.mem.trimLeft(u8, line, " \t\r");
+		const trimmed = std.mem.trimStart(u8, line, " \t\r");
 		if (trimmed.len == 0) continue;
 		if (std.mem.startsWith(u8, trimmed, "--")) continue;
 

@@ -554,11 +554,11 @@ fn linkCommon(
 	ts_lib: *std.Build.Step.Compile,
 	lang_libs: []const *std.Build.Step.Compile,
 ) void {
-	compile.linkLibrary(sqlite3_lib);
-	compile.linkLibrary(vec_static_lib);
-	compile.linkLibrary(pcre2_lib);
-	compile.linkLibrary(ts_lib);
-	for (lang_libs) |lib| compile.linkLibrary(lib);
+	compile.root_module.linkLibrary(sqlite3_lib);
+	compile.root_module.linkLibrary(vec_static_lib);
+	compile.root_module.linkLibrary(pcre2_lib);
+	compile.root_module.linkLibrary(ts_lib);
+	for (lang_libs) |lib| compile.root_module.linkLibrary(lib);
 }
 
 fn buildTreeSitter(
@@ -569,6 +569,7 @@ fn buildTreeSitter(
 	const ts_module = b.createModule(.{
 		.target = target,
 		.optimize = optimize,
+		.link_libc = true,
 	});
 	const ts_lib = b.addLibrary(.{
 		.name = "tree_sitter",
@@ -580,7 +581,6 @@ fn buildTreeSitter(
 	});
 	ts_module.addIncludePath(b.path("deps/tree-sitter/lib/src"));
 	ts_module.addIncludePath(b.path("deps/tree-sitter/lib/include"));
-	ts_lib.linkLibC();
 	ts_lib.installHeader(b.path("deps/tree-sitter/lib/include/tree_sitter/api.h"), "tree_sitter/api.h");
 	return ts_lib;
 }
@@ -596,6 +596,7 @@ fn buildTreeSitterGrammar(
 	const module = b.createModule(.{
 		.target = target,
 		.optimize = optimize,
+		.link_libc = true,
 	});
 	const lib = b.addLibrary(.{
 		.name = name,
@@ -613,6 +614,5 @@ fn buildTreeSitterGrammar(
 	module.addIncludePath(b.path(dir));
 	module.addIncludePath(b.path("deps/tree-sitter/lib/include"));
 	module.addIncludePath(b.path("deps/tree-sitter/lib/src"));
-	lib.linkLibC();
 	return lib;
 }

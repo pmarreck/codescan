@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 
 pub const HttpRequest = struct {
 	method: []const u8,
@@ -62,7 +63,7 @@ pub fn embed(
 
 	if (response.status != 200) {
 		var stderr_buf: [256]u8 = undefined;
-		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 		const stderr = &stderr_writer.interface;
 		const preview_len = @min(response.body.len, 500);
 		_ = stderr.print("error: embedding server returned HTTP {d}\n  url: {s}\n  model: {s}\n  body: {s}{s}\n", .{
@@ -117,7 +118,7 @@ pub fn buildEmbedRequest(
 		.openai => null,
 	};
 	const payload = EmbedRequest{ .model = model, .input = inputs, .keep_alive = effective_keep_alive };
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	var stream: std.json.Stringify = .{ .writer = &out.writer, .options = .{ .emit_null_optional_fields = false } };
@@ -306,7 +307,7 @@ pub const StdHttpTransport = struct {
 	client: std.http.Client,
 
 	pub fn init(allocator: std.mem.Allocator) StdHttpTransport {
-		return .{ .client = .{ .allocator = allocator } };
+		return .{ .client = .{ .allocator = allocator, .io = io_singleton.getOrInit() } };
 	}
 
 	pub fn deinit(self: *StdHttpTransport) void {
@@ -587,7 +588,7 @@ test "embed uses live Ollama" {
 }
 
 fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+	const value = io_singleton.getEnvVarOwned(allocator, key) catch |err| switch (err) {
 		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
 		else => return err,
 	};

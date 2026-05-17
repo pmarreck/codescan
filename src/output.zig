@@ -165,7 +165,7 @@ test "writeResults emits json payload" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .json, &[_]search.Result{res}, .{});
@@ -203,7 +203,7 @@ test "writeResults emits human output" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{ .use_color = false });
@@ -235,7 +235,7 @@ test "writeResults hides doc comments by default" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{ .use_color = false });
@@ -266,7 +266,7 @@ test "writeResults includes doc comments when enabled" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{
@@ -341,7 +341,7 @@ test "human output includes hashlines when hashes present" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{ .use_color = false });
@@ -375,7 +375,7 @@ test "json output includes hashlines when hashes present" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .json, &[_]search.Result{res}, .{});
@@ -408,7 +408,7 @@ test "human output shows plain line range when hashes absent" {
 	};
 	defer res.deinit(allocator);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try writeResults(allocator, &out.writer, .human, &[_]search.Result{res}, .{ .use_color = false });

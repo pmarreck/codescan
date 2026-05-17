@@ -93,7 +93,7 @@ pub fn extractZig(allocator: std.mem.Allocator, source: []const u8) !SymbolTree 
 	defer line_idx.deinit(allocator);
 
 	const root_decls = tree.rootDecls();
-	var symbols = std.ArrayListUnmanaged(SymbolNode){};
+	var symbols = @as(std.ArrayListUnmanaged(SymbolNode), .empty);
 	errdefer {
 		for (symbols.items) |*sym| sym.deinit(allocator);
 		symbols.deinit(allocator);
@@ -254,7 +254,7 @@ fn zigContainerKind(tree: *const Ast, container: Ast.full.ContainerDecl) SymbolK
 }
 
 fn extractZigContainerMembers(allocator: std.mem.Allocator, tree: *const Ast, container: Ast.full.ContainerDecl, line_idx: LineIndex) ZigExtractError![]SymbolNode {
-	var children = std.ArrayListUnmanaged(SymbolNode){};
+	var children = @as(std.ArrayListUnmanaged(SymbolNode), .empty);
 	errdefer {
 		for (children.items) |*child| child.deinit(allocator);
 		children.deinit(allocator);
@@ -483,9 +483,9 @@ test "formatTree produces hierarchical output" {
 	defer tree.deinit(allocator);
 
 	var buf: [1024]u8 = undefined;
-	var fbs = std.io.fixedBufferStream(&buf);
-	try formatTree(tree.symbols, fbs.writer());
-	const result = fbs.getWritten();
+	var fbs: std.Io.Writer = .fixed(&buf);
+	try formatTree(tree.symbols, &fbs);
+	const result = fbs.buffered();
 
 	// Should contain the struct and its method indented
 	try std.testing.expect(std.mem.indexOf(u8, result, "struct Foo") != null);

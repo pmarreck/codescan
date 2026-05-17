@@ -2,13 +2,13 @@ const std = @import("std");
 const storage = @import("storage.zig");
 const model = @import("model.zig");
 
-pub fn main() !void {
-	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-	defer _ = gpa.deinit();
-	const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+	const allocator = init.gpa;
 
-	const args = try std.process.argsAlloc(allocator);
-	defer std.process.argsFree(allocator, args);
+	const args_slice = try init.minimal.args.toSlice(init.arena.allocator());
+	const args = try allocator.alloc([]const u8, args_slice.len);
+	defer allocator.free(args);
+	for (args_slice, 0..) |a, i| args[i] = a;
 
 	var db_path: ?[]const u8 = null;
 	var embedding_dim: usize = 1024;

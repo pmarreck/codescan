@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const builtin = @import("builtin");
 
 const is_posix = switch (builtin.os.tag) {
@@ -16,9 +17,9 @@ pub fn writePid(allocator: std.mem.Allocator, codescan_dir: []const u8) !void {
 	var buf: [20]u8 = undefined;
 	const pid_str = std.fmt.bufPrint(&buf, "{d}", .{pid}) catch unreachable;
 
-	const file = try std.fs.cwd().createFile(path, .{});
-	defer file.close();
-	try file.writeAll(pid_str);
+	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), pid_str);
 }
 
 /// Removes the PID file. Safe to call if file doesn't exist.
@@ -26,7 +27,7 @@ pub fn removePid(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
 	if (!is_posix) return;
 	const path = pidPath(allocator, codescan_dir) catch return;
 	defer allocator.free(path);
-	std.fs.cwd().deleteFile(path) catch {};
+	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), path) catch {};
 }
 
 /// Reads the PID from the file and checks if the process is alive.
@@ -36,7 +37,7 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	const path = try pidPath(allocator, codescan_dir);
 	defer allocator.free(path);
 
-	const contents = std.fs.cwd().readFileAlloc(allocator, path, 64) catch return null;
+	const contents = std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), path, allocator, .limited(64)) catch return null;
 	defer allocator.free(contents);
 
 	const trimmed = std.mem.trim(u8, contents, &std.ascii.whitespace);
@@ -45,7 +46,7 @@ pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !
 	if (pid <= 0) return null;
 
 	// kill(pid, 0) checks if process exists without sending a signal
-	const result = std.c.kill(pid, 0);
+	const result = std.c.kill(pid, @enumFromInt(0));
 	if (result == 0) return pid;
 
 	// Check errno: EPERM means process exists but we lack permission (still alive)
@@ -91,12 +92,12 @@ test "writePid creates file with current PID" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try writePid(allocator, dir_path);
 
-	const contents = try tmp.dir.readFileAlloc(allocator, "watcher.pid", 64);
+	const contents = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "watcher.pid", allocator, .limited(64));
 	defer allocator.free(contents);
 
 	const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, contents, &std.ascii.whitespace), 10);
@@ -109,7 +110,7 @@ test "readAndCheckPid returns current PID when alive" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try writePid(allocator, dir_path);
@@ -124,7 +125,7 @@ test "readAndCheckPid returns null for missing file" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	const pid = try readAndCheckPid(allocator, dir_path);
@@ -137,13 +138,13 @@ test "readAndCheckPid returns null for stale PID" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	// Write a PID that almost certainly doesn't exist (max PID range)
-	const file = try tmp.dir.createFile("watcher.pid", .{});
-	defer file.close();
-	try file.writeAll("99999999");
+	const file = try tmp.dir.createFile(io_singleton.getOrInit(), "watcher.pid", .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), "99999999");
 
 	const pid = try readAndCheckPid(allocator, dir_path);
 	try std.testing.expectEqual(null, pid);
@@ -155,18 +156,18 @@ test "removePid cleans up file" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try writePid(allocator, dir_path);
 
 	// Verify file exists
-	_ = try tmp.dir.statFile("watcher.pid");
+	_ = try tmp.dir.statFile(io_singleton.getOrInit(), "watcher.pid", .{});
 
 	removePid(allocator, dir_path);
 
 	// Verify file is gone
-	const result = tmp.dir.statFile("watcher.pid");
+	const result = tmp.dir.statFile(io_singleton.getOrInit(), "watcher.pid", .{});
 	try std.testing.expectError(error.FileNotFound, result);
 }
 
@@ -176,7 +177,7 @@ test "isWatcherRunning returns true for current process" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try writePid(allocator, dir_path);
@@ -188,7 +189,7 @@ test "isWatcherRunning returns false for missing file" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try std.testing.expect(!isWatcherRunning(allocator, dir_path));
@@ -200,7 +201,7 @@ test "tryAcquirePid succeeds when no watcher running" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	try tryAcquirePid(allocator, dir_path);
@@ -217,13 +218,13 @@ test "tryAcquirePid fails when watcher already running" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	// Write PID 1 (init/launchd — always alive, not us)
-	const file = try tmp.dir.createFile("watcher.pid", .{});
-	defer file.close();
-	try file.writeAll("1");
+	const file = try tmp.dir.createFile(io_singleton.getOrInit(), "watcher.pid", .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), "1");
 
 	// Acquire should fail since PID 1 is alive and not our process
 	const result = tryAcquirePid(allocator, dir_path);
@@ -236,13 +237,13 @@ test "tryAcquirePid succeeds when stale PID in file" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	const dir_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const dir_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(dir_path);
 
 	// Write a stale PID (process that doesn't exist)
-	const file = try tmp.dir.createFile("watcher.pid", .{});
-	defer file.close();
-	try file.writeAll("99999999");
+	const file = try tmp.dir.createFile(io_singleton.getOrInit(), "watcher.pid", .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), "99999999");
 
 	// Should succeed since stale PID's process is dead
 	try tryAcquirePid(allocator, dir_path);

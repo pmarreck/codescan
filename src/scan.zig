@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const plugin = @import("plugin.zig");
 const config = @import("config.zig");
 const filter = @import("filter.zig");
@@ -86,8 +87,8 @@ pub fn findFiles(
 	registry: plugin.Registry,
 	ignore_cfg: IgnoreConfig,
 ) ![]const []const u8 {
-	var dir = try std.fs.cwd().openDir(root_path, .{ .iterate = true });
-	defer dir.close();
+	var dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{ .iterate = true });
+	defer dir.close(io_singleton.getOrInit());
 
 	var walker = try dir.walk(allocator);
 	defer walker.deinit();
@@ -99,13 +100,13 @@ pub fn findFiles(
 	var git_allow = try buildGitAllowSet(allocator, root_path);
 	defer if (git_allow) |*set| deinitGitAllowSet(allocator, set);
 
-	var results = std.ArrayListUnmanaged([]const u8){};
+	var results = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	errdefer {
 		for (results.items) |path| allocator.free(path);
 		results.deinit(allocator);
 	}
 
-	while (try walker.next()) |entry| {
+	while (try walker.next(io_singleton.getOrInit())) |entry| {
 		const is_file = entry.kind == .file or
 			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
 		if (!is_file) continue;
@@ -139,18 +140,18 @@ pub fn findFiles(
 fn buildGitAllowSet(allocator: std.mem.Allocator, root_path: []const u8) !?std.StringHashMapUnmanaged(void) {
 	// Delegate .gitignore semantics to Git directly. If unavailable or not a repo,
 	// fall back to existing scanner ignore logic.
-	var root_dir = std.fs.cwd().openDir(root_path, .{}) catch return null;
-	defer root_dir.close();
-	_ = root_dir.statFile(".git") catch return null;
+	var root_dir = std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{}) catch return null;
+	defer root_dir.close(io_singleton.getOrInit());
+	_ = root_dir.statFile(io_singleton.getOrInit(), ".git", .{}) catch return null;
 
-	const root_abs = std.fs.cwd().realpathAlloc(allocator, root_path) catch return null;
+	const root_abs = std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), root_path, allocator) catch return null;
 	defer allocator.free(root_abs);
 	const top_level_raw = gitCaptureStdout(
 		allocator,
 		&[_][]const u8{ "git", "-C", root_path, "rev-parse", "--show-toplevel" },
 	) catch return null;
 	defer allocator.free(top_level_raw);
-	const top_level = std.mem.trimRight(u8, top_level_raw, "\r\n");
+	const top_level = std.mem.trimEnd(u8, top_level_raw, "\r\n");
 	if (!std.mem.eql(u8, top_level, root_abs)) return null;
 
 	const stdout = gitCaptureStdout(
@@ -177,18 +178,19 @@ fn buildGitAllowSet(allocator: std.mem.Allocator, root_path: []const u8) !?std.S
 }
 
 fn gitCaptureStdout(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-	var child = std.process.Child.init(argv, allocator);
-	child.stdin_behavior = .Close;
-	child.stdout_behavior = .Pipe;
-	child.stderr_behavior = .Ignore;
-
-	try child.spawn();
-	const stdout = try child.stdout.?.readToEndAlloc(allocator, 256 * 1024 * 1024);
+	const io = io_singleton.getOrInit();
+	var child = try std.process.spawn(io, .{
+		.argv = argv,
+		.stdin = .close,
+		.stdout = .pipe,
+		.stderr = .ignore,
+	});
+	const stdout = try io_singleton.readToEndAlloc(child.stdout.?, allocator, 256 * 1024 * 1024);
 	errdefer allocator.free(stdout);
 
-	const term = try child.wait();
+	const term = try child.wait(io);
 	switch (term) {
-		.Exited => |code| if (code != 0) return error.ChildProcessFailed,
+		.exited => |code| if (code != 0) return error.ChildProcessFailed,
 		else => return error.ChildProcessFailed,
 	}
 
@@ -203,10 +205,10 @@ fn deinitGitAllowSet(allocator: std.mem.Allocator, set: *std.StringHashMapUnmana
 
 /// Returns true if the project root contains typical bash dotfiles,
 /// indicating bin/ likely contains shell scripts rather than build artifacts.
-fn isBashProject(dir: std.fs.Dir) bool {
+fn isBashProject(dir: std.Io.Dir) bool {
 	const markers = [_][]const u8{ ".bashrc", ".bash_profile", ".profile", ".bash_aliases" };
 	for (&markers) |name| {
-		if (dir.statFile(name)) |_| return true else |_| {}
+		if (dir.statFile(io_singleton.getOrInit(), name, .{})) |_| return true else |_| {}
 	}
 	return false;
 }
@@ -237,17 +239,19 @@ fn globMatch(path: []const u8, pattern: []const u8) bool {
 	return gi == pattern.len;
 }
 
-fn isSymlinkToFile(dir: std.fs.Dir, rel_path: []const u8) bool {
-	const stat = dir.statFile(rel_path) catch return false;
+fn isSymlinkToFile(dir: std.Io.Dir, rel_path: []const u8) bool {
+	const stat = dir.statFile(io_singleton.getOrInit(), rel_path, .{}) catch return false;
 	return stat.kind == .file;
 }
 
-fn detectShebangLanguage(dir: std.fs.Dir, rel_path: []const u8) ?[]const u8 {
-	var file = dir.openFile(rel_path, .{}) catch return null;
-	defer file.close();
+fn detectShebangLanguage(dir: std.Io.Dir, rel_path: []const u8) ?[]const u8 {
+	var file = dir.openFile(io_singleton.getOrInit(), rel_path, .{}) catch return null;
+	defer file.close(io_singleton.getOrInit());
 
 	var buf: [256]u8 = undefined;
-	const n = file.read(&buf) catch return null;
+	const io = io_singleton.getOrInit();
+	var freader = file.reader(io, &buf);
+	const n = freader.interface.readSliceShort(&buf) catch return null;
 	if (n < 2) return null;
 	if (buf[0] != '#' or buf[1] != '!') return null;
 
@@ -259,16 +263,16 @@ fn detectShebangLanguage(dir: std.fs.Dir, rel_path: []const u8) ?[]const u8 {
 fn parseShebang(line: []const u8) ?[]const u8 {
 	if (line.len < 2 or line[0] != '#' or line[1] != '!') return null;
 
-	var rest = std.mem.trimLeft(u8, line[2..], " \t");
+	var rest = std.mem.trimStart(u8, line[2..], " \t");
 	if (rest.len == 0) return null;
 
 	var token = nextToken(rest);
 	if (isEnvToken(token)) {
-		rest = std.mem.trimLeft(u8, rest[token.len..], " \t");
+		rest = std.mem.trimStart(u8, rest[token.len..], " \t");
 		while (rest.len > 0) {
 			token = nextToken(rest);
 			if (token.len == 0) return null;
-			rest = std.mem.trimLeft(u8, rest[token.len..], " \t");
+			rest = std.mem.trimStart(u8, rest[token.len..], " \t");
 			if (!std.mem.startsWith(u8, token, "-")) break;
 		}
 	}
@@ -305,7 +309,7 @@ fn buildIgnoreSets(
 	ignore_cfg: IgnoreConfig,
 	skip_bin_ignore: bool,
 ) ![]IgnoreSet {
-	var sets = std.ArrayListUnmanaged(IgnoreSet){};
+	var sets = @as(std.ArrayListUnmanaged(IgnoreSet), .empty);
 	errdefer {
 		for (sets.items) |*set| {
 			for (set.patterns) |*pat| pat.pattern.deinit();
@@ -315,7 +319,7 @@ fn buildIgnoreSets(
 	}
 
 	for (registry.extractors) |extractor| {
-		var patterns = std.ArrayListUnmanaged(IgnorePattern){};
+		var patterns = @as(std.ArrayListUnmanaged(IgnorePattern), .empty);
 		errdefer {
 			for (patterns.items) |*pat| pat.pattern.deinit();
 			patterns.deinit(allocator);
@@ -426,14 +430,14 @@ test "findFiles finds supported extensions" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath("lib");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "lib/demo.ex", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "README.md", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "lib");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "lib/demo.ex", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "README.md", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -464,12 +468,12 @@ test "findFiles includes shebang scripts without extension" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "luascript", .data = "#!/usr/bin/env luajit\nprint('ok')\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "pythonscript", .data = "#!/usr/bin/env python3\nprint('no')\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "luascript", .data = "#!/usr/bin/env luajit\nprint('ok')\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "pythonscript", .data = "#!/usr/bin/env python3\nprint('no')\n" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -500,19 +504,19 @@ test "findFiles respects ignores" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath("lib");
-	try tmp.dir.makePath(".zig-cache");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".zig-cache/cache.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "lib/demo.ex", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "lib/skip.ex", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "lib");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".zig-cache");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".zig-cache/cache.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "lib/demo.ex", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "lib/skip.ex", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
-	var patterns = std.ArrayListUnmanaged([]const u8){};
+	var patterns = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	try patterns.append(allocator, try allocator.dupe(u8, "lib/skip.ex"));
 	var overrides = [_]config.IgnoreOverride{
 		.{ .language = try allocator.dupe(u8, "elixir"), .patterns = patterns },
@@ -547,23 +551,23 @@ test "findFiles ignores built-in paths" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath(".git");
-	try tmp.dir.makePath(".jj");
-	try tmp.dir.makePath(".codescan");
-	try tmp.dir.makePath(".codescan-fixtures/fixture");
-	try tmp.dir.makePath("deps/lib");
-	try tmp.dir.makePath("node_modules/pkg");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".git/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".jj/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".codescan/index.sqlite3", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "deps/lib/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/ignored.zig", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".git");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".jj");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan-fixtures/fixture");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "deps/lib");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "node_modules/pkg");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".git/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".jj/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan/index.sqlite3", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "deps/lib/ignored.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "node_modules/pkg/ignored.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -584,24 +588,26 @@ test "findFiles respects .gitignore for untracked files" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath("generated");
-	try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "generated/\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "generated/skip.zig", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "generated");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".gitignore", .data = "generated/\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "generated/skip.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
-	var init_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "init", "-q" }, allocator);
-	init_child.stdin_behavior = .Close;
-	init_child.stdout_behavior = .Ignore;
-	init_child.stderr_behavior = .Ignore;
-	init_child.spawn() catch return error.SkipZigTest;
-	const init_term = try init_child.wait();
+	const io_t1 = io_singleton.getOrInit();
+	var init_child = std.process.spawn(io_t1, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const init_term = try init_child.wait(io_t1);
 	switch (init_term) {
-		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		.exited => |code| if (code != 0) return error.SkipZigTest,
 		else => return error.SkipZigTest,
 	}
 
@@ -623,33 +629,36 @@ test "findFiles still includes tracked files even if matched by .gitignore" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.writeFile(.{ .sub_path = ".gitignore", .data = "*.zig\n" });
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".gitignore", .data = "*.zig\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
-	var init_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "init", "-q" }, allocator);
-	init_child.stdin_behavior = .Close;
-	init_child.stdout_behavior = .Ignore;
-	init_child.stderr_behavior = .Ignore;
-	init_child.spawn() catch return error.SkipZigTest;
-	const init_term = try init_child.wait();
+	const io_t2 = io_singleton.getOrInit();
+	var init_child = std.process.spawn(io_t2, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const init_term = try init_child.wait(io_t2);
 	switch (init_term) {
-		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		.exited => |code| if (code != 0) return error.SkipZigTest,
 		else => return error.SkipZigTest,
 	}
 
-	var add_child = std.process.Child.init(&[_][]const u8{ "git", "-C", root, "add", ".gitignore", "src/main.zig" }, allocator);
-	add_child.stdin_behavior = .Close;
-	add_child.stdout_behavior = .Ignore;
-	add_child.stderr_behavior = .Ignore;
-	add_child.spawn() catch return error.SkipZigTest;
-	const add_term = try add_child.wait();
+	var add_child = std.process.spawn(io_t2, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "add", ".gitignore", "src/main.zig" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const add_term = try add_child.wait(io_t2);
 	switch (add_term) {
-		.Exited => |code| if (code != 0) return error.SkipZigTest,
+		.exited => |code| if (code != 0) return error.SkipZigTest,
 		else => return error.SkipZigTest,
 	}
 
@@ -671,13 +680,13 @@ test "findFiles includes node_modules when enabled" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath("node_modules/pkg");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "node_modules/pkg/dep.zig", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "node_modules/pkg");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "node_modules/pkg/dep.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -697,14 +706,14 @@ test "findFiles matches bash dotfile names" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = ".bashrc", .data = "# bash config\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".bash_profile", .data = "# profile\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".profile", .data = "# profile\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".bash_aliases", .data = "# aliases\n" });
-	try tmp.dir.writeFile(.{ .sub_path = ".vimrc", .data = "\" vim config\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bashrc", .data = "# bash config\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bash_profile", .data = "# profile\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".profile", .data = "# profile\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bash_aliases", .data = "# aliases\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".vimrc", .data = "\" vim config\n" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -735,11 +744,11 @@ test "findFiles follows symlinks to files" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(.{ .sub_path = "real.sh", .data = "#!/bin/bash\n" });
-	try std.posix.symlinkat("real.sh", tmp.dir.fd, "link.sh");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "real.sh", .data = "#!/bin/bash\n" });
+	try tmp.dir.symLink(io_singleton.getOrInit(), "real.sh", "link.sh", .{});
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -761,12 +770,12 @@ test "findFiles includes bin/ in bash-heavy projects" {
 	defer tmp.cleanup();
 
 	// Create a bash-heavy project root (has .bashrc)
-	try tmp.dir.writeFile(.{ .sub_path = ".bashrc", .data = "# config\n" });
-	try tmp.dir.makePath("bin");
-	try tmp.dir.writeFile(.{ .sub_path = "bin/my-script.sh", .data = "#!/bin/bash\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".bashrc", .data = "# config\n" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "bin");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "bin/my-script.sh", .data = "#!/bin/bash\n" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -795,13 +804,13 @@ test "findFiles ignores bin/ in non-bash projects" {
 	defer tmp.cleanup();
 
 	// Normal project (no bash dotfiles in root)
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath("bin");
-	try tmp.dir.writeFile(.{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(.{ .sub_path = "bin/output.zig", .data = "" });
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "bin");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "bin/output.zig", .data = "" });
 
 	const allocator = std.testing.allocator;
-	const root = try tmp.dir.realpathAlloc(allocator, ".");
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root);
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{

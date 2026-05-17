@@ -105,19 +105,19 @@ pub const Language = enum {
 		if (source.len < 2 or source[0] != '#' or source[1] != '!') return null;
 
 		const line_end = std.mem.indexOfScalar(u8, source, '\n') orelse source.len;
-		var rest = std.mem.trimLeft(u8, source[2..line_end], " \t");
+		var rest = std.mem.trimStart(u8, source[2..line_end], " \t");
 
 		// Skip /usr/bin/env (or similar) to get the actual interpreter
 		const token = nextShebangToken(rest);
 		const name = shebangBasename(token);
 		const interpreter = if (std.mem.eql(u8, name, "env")) blk: {
 			rest = rest[token.len..];
-			rest = std.mem.trimLeft(u8, rest, " \t");
+			rest = std.mem.trimStart(u8, rest, " \t");
 			// Skip env flags like -S
 			while (rest.len > 0 and rest[0] == '-') {
 				const flag = nextShebangToken(rest);
 				rest = rest[flag.len..];
-				rest = std.mem.trimLeft(u8, rest, " \t");
+				rest = std.mem.trimStart(u8, rest, " \t");
 			}
 			break :blk shebangBasename(nextShebangToken(rest));
 		} else name;
@@ -145,7 +145,7 @@ pub const Language = enum {
 	}
 
 	fn nextShebangToken(text: []const u8) []const u8 {
-		const trimmed = std.mem.trimLeft(u8, text, " \t");
+		const trimmed = std.mem.trimStart(u8, text, " \t");
 		const end = std.mem.indexOfAny(u8, trimmed, " \t") orelse trimmed.len;
 		return trimmed[0..end];
 	}
@@ -372,7 +372,7 @@ pub fn extract(allocator: std.mem.Allocator, source: []const u8, lang: Language)
 	const lang_mappings = lang.mappings();
 
 	// Pass 1: Flat extraction — walk the full tree and collect all matching nodes
-	var flat = std.ArrayListUnmanaged(FlatSymbol){};
+	var flat = @as(std.ArrayListUnmanaged(FlatSymbol), .empty);
 	defer flat.deinit(allocator);
 
 	var cursor = ts.ts_tree_cursor_new(ts.ts_tree_root_node(tree));

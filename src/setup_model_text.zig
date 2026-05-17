@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const Dialect = enum { ollama, openai };
 
-pub fn print(writer: *std.io.Writer, current: Dialect) !void {
+pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 	try writer.print(
 		\\Recommended model: jina-code-embeddings-1.5b
 		\\  1536 dimensions, 32K token context, code-specific training
@@ -59,7 +59,7 @@ pub fn print(writer: *std.io.Writer, current: Dialect) !void {
 test "print shows both Ollama and oMLX options regardless of current dialect" {
 	const allocator = std.testing.allocator;
 	for ([_]Dialect{ .ollama, .openai }) |current| {
-		var out: std.io.Writer.Allocating = .init(allocator);
+		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
 		try print(&out.writer, current);
 		const text = out.written();
@@ -74,13 +74,13 @@ test "print shows both Ollama and oMLX options regardless of current dialect" {
 test "print flags the current dialect" {
 	const allocator = std.testing.allocator;
 
-	var ollama_out: std.io.Writer.Allocating = .init(allocator);
+	var ollama_out: std.Io.Writer.Allocating = .init(allocator);
 	defer ollama_out.deinit();
 	try print(&ollama_out.writer, .ollama);
 	try std.testing.expect(std.mem.indexOf(u8, ollama_out.written(), "currently set for Ollama") != null);
 	try std.testing.expect(std.mem.indexOf(u8, ollama_out.written(), "currently set for oMLX") == null);
 
-	var openai_out: std.io.Writer.Allocating = .init(allocator);
+	var openai_out: std.Io.Writer.Allocating = .init(allocator);
 	defer openai_out.deinit();
 	try print(&openai_out.writer, .openai);
 	try std.testing.expect(std.mem.indexOf(u8, openai_out.written(), "currently set for oMLX") != null);

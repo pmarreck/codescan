@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const main = @import("main.zig");
 const cli = @import("cli.zig");
 const plugin = @import("plugin.zig");
@@ -19,7 +20,7 @@ const weights = @import("weights.zig");
 fn toolError(comptime fmt: []const u8, args: anytype) error{ToolFailed} {
 	if (!@import("builtin").is_test) {
 		var sb: [4096]u8 = undefined;
-		var sw = std.fs.File.stderr().writer(&sb);
+		var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 		const se = &sw.interface;
 		se.print(fmt, args) catch {};
 		se.flush() catch {};
@@ -63,7 +64,7 @@ pub const Settings = struct {
 /// Read a single JSON-RPC message from the reader.
 /// MCP uses newline-delimited JSON (one JSON object per line).
 pub fn readMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
-	var buf = std.ArrayListUnmanaged(u8){};
+	var buf = @as(std.ArrayListUnmanaged(u8), .empty);
 	errdefer buf.deinit(allocator);
 
 	while (true) {
@@ -186,7 +187,7 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 		// Log the actual error to stderr for debugging (skip during tests)
 		if (!@import("builtin").is_test) {
 			var sb: [4096]u8 = undefined;
-			var sw = std.fs.File.stderr().writer(&sb);
+			var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 			const se = &sw.interface;
 			se.print("MCP tool '{s}' failed: {s} (error: {})\n", .{ name, msg, err }) catch {};
 			se.flush() catch {};
@@ -201,7 +202,7 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 
 fn formatToolResult(allocator: std.mem.Allocator, id: ?std.json.Value, text: []const u8) ![]u8 {
 	// Escape the text for JSON string embedding
-	var escaped = std.ArrayListUnmanaged(u8){};
+	var escaped = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer escaped.deinit(allocator);
 	for (text) |c| {
 		switch (c) {
@@ -231,11 +232,11 @@ fn formatToolResult(allocator: std.mem.Allocator, id: ?std.json.Value, text: []c
 
 fn ensureParentDir(path: []const u8) !void {
 	const dir = std.fs.path.dirname(path) orelse return;
-	try std.fs.cwd().makePath(dir);
+	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
 }
 
 fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings, err_detail: *?[]u8) ![]u8 {
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	errdefer out.deinit();
 
 	if (std.mem.eql(u8, name, "symbols")) {
@@ -307,7 +308,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			var schema_result = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch |err|
 				return toolError("MCP replace_content: schema init failed: {}\n", .{err});
 			defer schema_result.deinit(allocator);
-			var path_filters = std.ArrayListUnmanaged([]const u8){};
+			var path_filters = @as(std.ArrayListUnmanaged([]const u8), .empty);
 			defer path_filters.deinit(allocator);
 			if (path_arg) |p| try path_filters.append(allocator, p);
 			main.runReplaceContentMultiFile(allocator, db, needle, regex, all, body_arg, path_filters.items, confirm_arg, settings.root_path, &out.writer) catch |err|
@@ -382,7 +383,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			defer storage.close(db);
 			// Skip initSchema for regex search — read-only, avoids write lock contention with watcher
 
-			var path_filters_mcp = std.ArrayListUnmanaged([]const u8){};
+			var path_filters_mcp = @as(std.ArrayListUnmanaged([]const u8), .empty);
 			defer path_filters_mcp.deinit(allocator);
 			if (path_arg) |p| try path_filters_mcp.append(allocator, p);
 			if (file_arg) |f| try path_filters_mcp.append(allocator, f);
@@ -413,7 +414,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		if (lang_arg) |l| mcp_settings.search_lang = l;
 		if (top_arg) |t| mcp_settings.search_top_n = t;
 
-		var path_filters = std.ArrayListUnmanaged([]const u8){};
+		var path_filters = @as(std.ArrayListUnmanaged([]const u8), .empty);
 		defer path_filters.deinit(allocator);
 		if (path_arg) |p| try path_filters.append(allocator, p);
 		if (file_arg) |f| try path_filters.append(allocator, f);
@@ -427,23 +428,22 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		defer schema_result.deinit(allocator);
 		if (schema_result.did_schema_upgrade) {
 			var sb: [4096]u8 = undefined;
-			var sw = std.fs.File.stderr().writer(&sb);
+			var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 			const se = &sw.interface;
 			_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended.\n", .{}) catch {};
 			_ = se.flush() catch {};
 		}
 		if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 			var msg_buf: [512]u8 = undefined;
-			var msg_writer = std.io.fixedBufferStream(&msg_buf);
-			const mw = msg_writer.writer();
+			var msg_writer: std.Io.Writer = .fixed(&msg_buf);
 			if (schema_result.embedding_model_mismatch) {
-				mw.print("Embedding model mismatch: index built with '{s}', current is '{s}'. ", .{ schema_result.stored_embedding_model orelse "unknown", mcp_settings.embedding_model }) catch {};
+				msg_writer.print("Embedding model mismatch: index built with '{s}', current is '{s}'. ", .{ schema_result.stored_embedding_model orelse "unknown", mcp_settings.embedding_model }) catch {};
 			}
 			if (schema_result.embedding_dim_mismatch) {
-				mw.print("Embedding dim mismatch: index built with {d}, current is {d}. ", .{ schema_result.stored_embedding_dim orelse 0, mcp_settings.embedding_dim }) catch {};
+				msg_writer.print("Embedding dim mismatch: index built with {d}, current is {d}. ", .{ schema_result.stored_embedding_dim orelse 0, mcp_settings.embedding_dim }) catch {};
 			}
-			mw.print("Run 'codescan index' to rebuild.", .{}) catch {};
-			const msg = msg_buf[0..msg_writer.pos];
+			msg_writer.print("Run 'codescan index' to rebuild.", .{}) catch {};
+			const msg = msg_writer.buffered();
 			return toolError("{s}", .{msg});
 		}
 
@@ -578,7 +578,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				error.ModelLoading => {
 					// Model exists but not loaded — embed() will trigger loading. Log and proceed.
 					var sb: [4096]u8 = undefined;
-					var sw = std.fs.File.stderr().writer(&sb);
+					var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 					const se = &sw.interface;
 					_ = se.print("MCP index: model '{s}' is loading into memory. This may take a moment...\n", .{settings.embedding_model}) catch {};
 					_ = se.flush() catch {};
@@ -718,7 +718,7 @@ fn checkRequiredArgs(
 	}
 	if (missing_count == 0) return;
 
-	var msg = std.ArrayListUnmanaged(u8){};
+	var msg = @as(std.ArrayListUnmanaged(u8), .empty);
 	errdefer msg.deinit(allocator);
 	try msg.appendSlice(allocator, tool_name);
 	try msg.appendSlice(allocator, ": missing required argument");
@@ -765,7 +765,7 @@ fn getArgInt(args: ?std.json.ObjectMap, key: []const u8) ?usize {
 
 /// Extract a string-or-array-of-strings arg into an owned ArrayList.
 fn getArgStringArray(allocator: std.mem.Allocator, args: ?std.json.ObjectMap, key: []const u8) !std.ArrayListUnmanaged([]const u8) {
-	var result = std.ArrayListUnmanaged([]const u8){};
+	var result = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	errdefer {
 		for (result.items) |f| allocator.free(f);
 		result.deinit(allocator);
@@ -801,15 +801,15 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	}
 
 	var in_buf: [16 * 1024]u8 = undefined;
-	var stdin_reader = std.fs.File.stdin().reader(&in_buf);
+	var stdin_reader = std.Io.File.stdin().reader(io_singleton.getOrInit(), &in_buf);
 	const reader = &stdin_reader.interface;
 
 	var out_buf: [16 * 1024]u8 = undefined;
-	var stdout_writer = std.fs.File.stdout().writer(&out_buf);
+	var stdout_writer = std.Io.File.stdout().writer(io_singleton.getOrInit(), &out_buf);
 	const writer = &stdout_writer.interface;
 
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	_ = stderr.print("codescan mcp: server started (root: {s})\n", .{settings.root_path}) catch {};
@@ -985,8 +985,8 @@ test "handleToolsCall dispatches symbols" {
 	// Create a temp Zig file
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void {}\n" });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void {}\n" });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	// Build params JSON
@@ -1024,7 +1024,7 @@ test "handleToolsCall returns error for unknown tool" {
 
 test "writeMessage strips embedded newlines" {
 	const allocator = std.testing.allocator;
-	var w: std.io.Writer.Allocating = .init(allocator);
+	var w: std.Io.Writer.Allocating = .init(allocator);
 	defer w.deinit();
 	try writeMessage(&w.writer, "line1\nline2\nline3");
 	const written = w.written();
@@ -1035,7 +1035,7 @@ test "writeMessage strips embedded newlines" {
 test "handleToolsList response is single-line valid JSON" {
 	const allocator = std.testing.allocator;
 	// Write the tools/list response through writeMessage
-	var w: std.io.Writer.Allocating = .init(allocator);
+	var w: std.Io.Writer.Allocating = .init(allocator);
 	defer w.deinit();
 	const response = try handleToolsList(allocator, .{ .integer = 1 });
 	defer allocator.free(response);
@@ -1079,8 +1079,8 @@ test "handleToolsCall dispatches symbols and config" {
 	// Create a temp dir with a test file
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
@@ -1128,8 +1128,8 @@ test "handleToolsCall dispatches index gracefully without Ollama" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
@@ -1177,7 +1177,7 @@ test "MCP protocol compliance: full handshake with string IDs" {
 
 	// Feed through readMessage + parseRequest + handler, collecting responses via writeMessage
 	var reader = std.Io.Reader.fixed(input);
-	var w: std.io.Writer.Allocating = .init(allocator);
+	var w: std.Io.Writer.Allocating = .init(allocator);
 	defer w.deinit();
 
 	var response_count: usize = 0;
@@ -1251,7 +1251,7 @@ test "MCP protocol compliance: integer IDs also work" {
 	const input = "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"test\",\"version\":\"1.0\"}}}\n";
 
 	var reader = std.Io.Reader.fixed(input);
-	var w: std.io.Writer.Allocating = .init(allocator);
+	var w: std.Io.Writer.Allocating = .init(allocator);
 	defer w.deinit();
 
 	const msg = try readMessage(allocator, &reader);
@@ -1294,7 +1294,7 @@ test "MCP protocol compliance: every response line is valid single-line JSON" {
 		defer allocator.free(input);
 
 		var reader = std.Io.Reader.fixed(input);
-		var w: std.io.Writer.Allocating = .init(allocator);
+		var w: std.Io.Writer.Allocating = .init(allocator);
 		defer w.deinit();
 
 		const msg = try readMessage(allocator, &reader);
@@ -1355,8 +1355,8 @@ test "MCP search applies language filters from settings" {
 	// Create a temp dir + pre-populated DB with symbols from two languages
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -1483,8 +1483,8 @@ test "MCP search accepts kind filter without query (browse mode)" {
 	// Create a temp dir + pre-populated DB
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -1534,8 +1534,8 @@ test "MCP search applies top parameter" {
 	// Create a temp dir + pre-populated DB with multiple symbols
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -1597,8 +1597,8 @@ test "MCP search applies lang filter from arguments" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -1715,13 +1715,13 @@ test "MCP search with regex flag uses regex search path" {
 
 	// Create a source file
 	{
-		const f = try tmp.dir.createFile("hello.zig", .{});
-		defer f.close();
-		try f.writeAll("const x = 1;\nfn hello() void {}\nfn world() void {}\n");
+		const f = try tmp.dir.createFile(io_singleton.getOrInit(), "hello.zig", .{});
+		defer f.close(io_singleton.getOrInit());
+		try f.writeStreamingAll(io_singleton.getOrInit(), "const x = 1;\nfn hello() void {}\nfn world() void {}\n");
 	}
 
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -1785,7 +1785,7 @@ test "MCP server handles malformed input without crashing" {
 		"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}\n";
 
 	var reader = std.Io.Reader.fixed(input);
-	var w: std.io.Writer.Allocating = .init(allocator);
+	var w: std.Io.Writer.Allocating = .init(allocator);
 	defer w.deinit();
 
 	var valid_responses: usize = 0;

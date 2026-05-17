@@ -1,7 +1,7 @@
 .{
     .name = .codescan,
     .version = "0.1.0",
-    .minimum_zig_version = "0.15.2",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",
@@ -9,8 +9,8 @@
     },
     .dependencies = .{
         .sqlite_vec = .{
-            .url = "git+https://github.com/pmarreck/sqlite-vec.git#742ac1607d5490c71758c9fde80820387391910d",
-            .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0OvwBACYsEQvfmbSw0sUHuXhcwD5PgjGyslHXU2q",
+            .url = "git+https://github.com/pmarreck/sqlite-vec.git#c9d3630f56637276829d9ab0c54b1116c6d3e2ef",
+            .hash = "sqlite_vec-0.1.7-alpha.2-4Cdt0CTyBADFzDhhNOTSAUplRsfH1qs-DqwP6FwrZ641",
         },
         .pcre2 = .{
             .url = "https://github.com/pmarreck/pcre2/archive/refs/tags/zig-0.16.0.tar.gz",

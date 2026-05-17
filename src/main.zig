@@ -28,6 +28,7 @@ const weights = @import("weights.zig");
 const diagnostics = @import("diagnostics.zig");
 const syslog = @import("syslog.zig");
 const setup_model_text = @import("setup_model_text.zig");
+const io_singleton = @import("io_singleton.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
 var g_stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false);
@@ -98,19 +99,22 @@ const Settings = struct {
 	search_weights: ?*const weights.Table,
 };
 
-pub fn main() !void {
-	var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-	defer _ = gpa.deinit();
-	const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+	const allocator = init.gpa;
+	const io = init.io;
+	io_singleton.set(io);
+	io_singleton.setEnvMap(init.environ_map);
 
-	const args = try std.process.argsAlloc(allocator);
-	defer std.process.argsFree(allocator, args);
+	const args_slice = try init.minimal.args.toSlice(init.arena.allocator());
+	const args = try allocator.alloc([]const u8, args_slice.len);
+	defer allocator.free(args);
+	for (args_slice, 0..) |a, i| args[i] = a;
 
     var built_json_args: ?JsonEnvelopeArgs = null;
     defer if (built_json_args) |*value| value.deinit(allocator);
 
     const parse_args = blk: {
-        if (shouldAttemptJsonEnvelope(args, std.fs.File.stdin().isTty())) {
+        if (shouldAttemptJsonEnvelope(args, std.Io.File.stdin().isTty(io) catch false)) {
             const stdin_text = try readStdin(allocator);
             defer allocator.free(stdin_text);
             const trimmed = std.mem.trim(u8, stdin_text, " \t\r\n");
@@ -123,13 +127,13 @@ pub fn main() !void {
     };
 
 	var stdout_buf: [4096]u8 = undefined;
-	var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+	var stdout_writer = std.Io.File.stdout().writer(io_singleton.getOrInit(), &stdout_buf);
 	const stdout = &stdout_writer.interface;
 
     var parsed = cli.parse(allocator, parse_args) catch |err| {
 		if (isUsageError(err)) {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			if (cli.last_err_context.len > 0) {
 				_ = stderr.print("error: {s} for {s}\n\n", .{ usageErrorMessage(err), cli.last_err_context }) catch {};
@@ -151,7 +155,7 @@ pub fn main() !void {
 
 	if (parsed.assumed_search) {
 		var stderr_buf: [256]u8 = undefined;
-		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 		const stderr = &stderr_writer.interface;
 		_ = stderr.print("note: No verb specified, assuming 'search'.\n", .{}) catch {};
 		_ = stderr.flush() catch {};
@@ -182,7 +186,7 @@ pub fn main() !void {
 
 	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null) {
 		var stderr_buf: [4096]u8 = undefined;
-		var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 		const se = &stderr_writer.interface;
 		_ = se.print("error: embedding_api=openai requires an API key.\n" ++
 			"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var or embedding_api_key in .codescan/config.ini\n", .{}) catch {};
@@ -205,35 +209,36 @@ pub fn main() !void {
 		},
 		.init => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 
 			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 
 			// Check if .codescan/ already exists
 			const dir_exists = blk: {
-				var d = std.fs.cwd().openDir(codescan_dir, .{}) catch break :blk false;
-				d.close();
+				var d = std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), codescan_dir, .{}) catch break :blk false;
+				d.close(io_singleton.getOrInit());
 				break :blk true;
 			};
 
 			if (dir_exists) {
 				if (parsed.force) {
 					// --force: delete and recreate
-					std.fs.cwd().deleteTree(codescan_dir) catch |err| {
+					std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 						_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
 						_ = stderr.flush() catch {};
 						std.process.exit(1);
 					};
-				} else if (std.fs.File.stdin().isTty()) {
+				} else if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
 					// Interactive: prompt user
 					_ = stderr.print("{s}/ already exists. Remove and reinitialize? [y/N] ", .{codescan_dir}) catch {};
 					_ = stderr.flush() catch {};
 					var input_buf: [16]u8 = undefined;
-					const stdin = std.fs.File.stdin();
-					const n = stdin.read(&input_buf) catch 0;
+					const stdin = std.Io.File.stdin();
+					var stdin_reader = stdin.reader(io_singleton.getOrInit(), &input_buf);
+					const n = stdin_reader.interface.readSliceShort(&input_buf) catch 0;
 					if (n > 0 and (input_buf[0] == 'y' or input_buf[0] == 'Y')) {
-						std.fs.cwd().deleteTree(codescan_dir) catch |err| {
+						std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 							_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
 							_ = stderr.flush() catch {};
 							std.process.exit(1);
@@ -356,7 +361,7 @@ pub fn main() !void {
 			else
 				embedding.NullEmbedder.embedder();
 
-			const show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output);
+			const show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output);
 
 			const stats = try performFullIndex(
 				allocator,
@@ -439,7 +444,7 @@ pub fn main() !void {
 						.include_node_modules = settings.include_node_modules,
 						.always_include = settings.always_include,
 					},
-					.show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
+					.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
 				},
 			);
 
@@ -458,7 +463,7 @@ pub fn main() !void {
 				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 				if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
 					var sb: [4096]u8 = undefined;
-					var sw = std.fs.File.stderr().writer(&sb);
+					var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 					const se = &sw.interface;
 					_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
 					_ = se.flush() catch {};
@@ -470,7 +475,7 @@ pub fn main() !void {
 				storage.close(db);
 				{
 					var sb2: [4096]u8 = undefined;
-					var sw2 = std.fs.File.stderr().writer(&sb2);
+					var sw2 = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb2);
 					const se2 = &sw2.interface;
 					_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
 					_ = se2.flush() catch {};
@@ -482,14 +487,14 @@ pub fn main() !void {
 			defer schema_result.deinit(allocator);
 			if (schema_result.did_schema_upgrade) {
 				var sb: [4096]u8 = undefined;
-				var sw = std.fs.File.stderr().writer(&sb);
+				var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 				const se = &sw.interface;
 				_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 				_ = se.flush() catch {};
 			}
 			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 				var sb: [4096]u8 = undefined;
-				var sw = std.fs.File.stderr().writer(&sb);
+				var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 				const se = &sw.interface;
 				if (schema_result.embedding_model_mismatch) {
 					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
@@ -551,7 +556,7 @@ pub fn main() !void {
 						.include_node_modules = settings.include_node_modules,
 						.always_include = settings.always_include,
 					},
-					.show_progress = shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
+					.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
 				},
 			);
 
@@ -577,7 +582,7 @@ pub fn main() !void {
 			// Auto-launch background watcher after update
 			{
 				var update_stderr_buf: [4096]u8 = undefined;
-				var update_stderr_writer = std.fs.File.stderr().writer(&update_stderr_buf);
+				var update_stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &update_stderr_buf);
 				const update_stderr = &update_stderr_writer.interface;
 				maybeStartWatcher(allocator, settings, update_stderr);
 			}
@@ -588,7 +593,7 @@ pub fn main() !void {
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
 
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 
 			// Always run schema init/migration so older DBs get new columns
@@ -624,7 +629,7 @@ pub fn main() !void {
 					_ = stderr.flush() catch {};
 					std.process.exit(1);
 				}
-				var path_filters_regex = std.ArrayListUnmanaged([]const u8){};
+				var path_filters_regex = @as(std.ArrayListUnmanaged([]const u8), .empty);
 				defer path_filters_regex.deinit(allocator);
 				for (parsed.path_filters.items) |p| {
 					try path_filters_regex.append(allocator, p);
@@ -703,7 +708,7 @@ pub fn main() !void {
 					registry,
 					active_embedder,
 					stderr,
-					shouldShowProgress(std.fs.File.stderr().isTty(), settings.output),
+					shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
 				);
 				did_auto_index = true;
 			} else {
@@ -741,7 +746,7 @@ pub fn main() !void {
 			);
 
 			// Build path filters from --path and --file flags
-			var path_filters = std.ArrayListUnmanaged([]const u8){};
+			var path_filters = @as(std.ArrayListUnmanaged([]const u8), .empty);
 			defer path_filters.deinit(allocator);
 			for (parsed.path_filters.items) |p| {
 				try path_filters.append(allocator, p);
@@ -838,7 +843,11 @@ pub fn main() !void {
 				}
 			}
 
-			const use_color = settings.output == .human and !std.process.hasEnvVarConstant("NO_COLOR");
+			const no_color_set = blk: {
+				const env_map = io_singleton.getEnvMap() orelse break :blk false;
+				break :blk env_map.get("NO_COLOR") != null;
+			};
+			const use_color = settings.output == .human and !no_color_set;
 			try output.writeResults(allocator, stdout, settings.output, display_results, .{
 				.show_comments = settings.show_comments,
 				.show_body = parsed.include_body,
@@ -1086,7 +1095,7 @@ pub fn main() !void {
 							_ = std.c.kill(pid_val, std.posix.SIG.TERM);
 							try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
 							// Brief pause for process cleanup
-							std.Thread.sleep(200 * std.time.ns_per_ms);
+							io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
 							pidfile.removePid(allocator, codescan_dir);
 						}
 						maybeStartWatcher(allocator, settings, stdout);
@@ -1122,7 +1131,7 @@ pub fn main() !void {
 						try stdout.flush();
 					} else {
 						// Get active cwds to mark orphans
-						var cwds = watcher_mgmt.getActiveCwds(allocator) catch std.ArrayListUnmanaged(watcher_mgmt.LsofEntry){};
+						var cwds = watcher_mgmt.getActiveCwds(allocator) catch @as(std.ArrayListUnmanaged(watcher_mgmt.LsofEntry), .empty);
 						defer {
 							for (cwds.items) |e| e.deinit(allocator);
 							cwds.deinit(allocator);
@@ -1161,7 +1170,7 @@ pub fn main() !void {
 						watchers.deinit(allocator);
 					}
 
-					var cwds = watcher_mgmt.getActiveCwds(allocator) catch std.ArrayListUnmanaged(watcher_mgmt.LsofEntry){};
+					var cwds = watcher_mgmt.getActiveCwds(allocator) catch @as(std.ArrayListUnmanaged(watcher_mgmt.LsofEntry), .empty);
 					defer {
 						for (cwds.items) |e| e.deinit(allocator);
 						cwds.deinit(allocator);
@@ -1220,7 +1229,7 @@ pub fn main() !void {
 						storage.close(db);
 						{
 							var sb2: [4096]u8 = undefined;
-							var sw2 = std.fs.File.stderr().writer(&sb2);
+							var sw2 = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb2);
 							const se2 = &sw2.interface;
 							_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
 							_ = se2.flush() catch {};
@@ -1232,14 +1241,14 @@ pub fn main() !void {
 					defer schema_result.deinit(allocator);
 					if (schema_result.did_schema_upgrade) {
 						var sb: [4096]u8 = undefined;
-						var sw = std.fs.File.stderr().writer(&sb);
+						var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 						const se = &sw.interface;
 						_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 						_ = se.flush() catch {};
 					}
 					if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 						var sb: [4096]u8 = undefined;
-						var sw = std.fs.File.stderr().writer(&sb);
+						var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
 						const se = &sw.interface;
 						if (schema_result.embedding_model_mismatch) {
 							_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
@@ -1270,7 +1279,7 @@ pub fn main() !void {
 					if (comptime builtin.os.tag != .windows) {
 						const act = std.posix.Sigaction{
 							.handler = .{ .handler = struct {
-								fn handler(_: c_int) callconv(.c) void {
+								fn handler(_: std.c.SIG) callconv(.c) void {
 									g_stop_flag.store(true, .release);
 								}
 							}.handler },
@@ -1358,14 +1367,15 @@ pub fn main() !void {
 
 			// Require confirmation to prevent accidental data loss
 			if (!parsed.confirm) {
-				if (std.fs.File.stdin().isTty()) {
+				if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
 					var stderr_buf: [4096]u8 = undefined;
-					var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+					var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 					const stderr = &stderr_writer.interface;
 					_ = stderr.print("This will stop the watcher and delete {s}/. Continue? [y/N] ", .{codescan_dir}) catch {};
 					_ = stderr.flush() catch {};
 					var input_buf: [16]u8 = undefined;
-					const n = std.fs.File.stdin().read(&input_buf) catch 0;
+					var stdin_reader2 = std.Io.File.stdin().reader(io_singleton.getOrInit(), &input_buf);
+					const n = stdin_reader2.interface.readSliceShort(&input_buf) catch 0;
 					if (n == 0 or (input_buf[0] != 'y' and input_buf[0] != 'Y')) {
 						try stdout.print("Aborted.\n", .{});
 						try stdout.flush();
@@ -1389,7 +1399,7 @@ pub fn main() !void {
 			}
 
 			// Delete .codescan/ directory
-			std.fs.cwd().deleteTree(codescan_dir) catch |err| {
+			std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 				try stdout.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) });
 				try stdout.flush();
 				std.process.exit(1);
@@ -1444,7 +1454,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	};
 
 	var env_model: ?[]u8 = null;
-	if (std.process.getEnvVarOwned(allocator, "OLLAMA_MODEL")) |value| {
+	if (io_singleton.getEnvVarOwned(allocator, "OLLAMA_MODEL")) |value| {
 		env_model = value;
 	} else |err| switch (err) {
 		error.EnvironmentVariableNotFound => {},
@@ -1452,7 +1462,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	}
 
 	var env_api_key: ?[]u8 = null;
-	if (std.process.getEnvVarOwned(allocator, "CODESCAN_EMBEDDING_SERVER_API_KEY")) |value| {
+	if (io_singleton.getEnvVarOwned(allocator, "CODESCAN_EMBEDDING_SERVER_API_KEY")) |value| {
 		env_api_key = value;
 	} else |err| switch (err) {
 		error.EnvironmentVariableNotFound => {},
@@ -1597,7 +1607,7 @@ fn ensureModelAvailableOrExit(
 	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
@@ -1609,7 +1619,7 @@ fn ensureModelAvailableOrExit(
 		error.ModelLoading => {
 			// Model exists but not loaded — the first embed call will trigger loading.
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
@@ -1620,7 +1630,7 @@ fn ensureModelAvailableOrExit(
 		},
 		else => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"error: Cannot connect to embedding server at {s}\n" ++
@@ -1647,7 +1657,7 @@ fn ensureModelAvailableOrPrompt(
 	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"  Ollama model '{s}' not found.\n" ++
@@ -1664,7 +1674,7 @@ fn ensureModelAvailableOrPrompt(
 		},
 		error.ModelLoading => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"  note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
@@ -1674,7 +1684,7 @@ fn ensureModelAvailableOrPrompt(
 		},
 		else => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"  Embedding server unreachable at {s}.\n" ++
@@ -1902,7 +1912,7 @@ fn probeOpenAIModels(
 }
 
 fn buildUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const u8) ![]u8 {
-    const trimmed = std.mem.trimRight(u8, base_url, "/");
+    const trimmed = std.mem.trimEnd(u8, base_url, "/");
     return std.fmt.allocPrint(allocator, "{s}{s}", .{ trimmed, path });
 }
 
@@ -1922,10 +1932,13 @@ fn parseHealthDefaultModel(allocator: std.mem.Allocator, body: []const u8) ?[]co
 
 fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     _ = stderr.flush() catch {};
-    if (!std.fs.File.stdin().isTty()) return non_tty_default;
+    const io = io_singleton.getOrInit();
+    const is_tty = std.Io.File.stdin().isTty(io) catch false;
+    if (!is_tty) return non_tty_default;
     var input_buf: [16]u8 = undefined;
-    const stdin = std.fs.File.stdin();
-    const n = stdin.read(&input_buf) catch return false;
+    const stdin = std.Io.File.stdin();
+    var stdin_reader = stdin.reader(io, &input_buf);
+    const n = stdin_reader.interface.readSliceShort(&input_buf) catch return false;
     if (n == 0) return false;
     return input_buf[0] == 'y' or input_buf[0] == 'Y';
 }
@@ -1933,7 +1946,7 @@ fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
 fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, url: []const u8, dialect: embedding_http.ApiDialect, detected_model: ?[]const u8) !void {
     const cfg_path = try configPath(allocator, config_root);
     defer allocator.free(cfg_path);
-    const content = try std.fs.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const dialect_str = if (dialect == .ollama) "ollama" else "openai";
     var kvs_buf: [3]config.KV = undefined;
@@ -1946,24 +1959,24 @@ fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, ur
     }
     const updated = try config.writeConfigValues(allocator, content, kvs_buf[0..kv_count]);
     defer allocator.free(updated);
-    const file = try std.fs.cwd().createFile(cfg_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(updated);
+    const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), cfg_path, .{ .truncate = true });
+    defer file.close(io_singleton.getOrInit());
+    try file.writeStreamingAll(io_singleton.getOrInit(), updated);
 }
 
 fn writeDetectedConfigLexical(allocator: std.mem.Allocator, config_root: []const u8) !void {
     const cfg_path = try configPath(allocator, config_root);
     defer allocator.free(cfg_path);
-    const content = try std.fs.cwd().readFileAlloc(allocator, cfg_path, 64 * 1024);
+    const content = try std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const kvs = [_]config.KV{
         .{ .key = "search_mode", .value = "lexical" },
     };
     const updated = try config.writeConfigValues(allocator, content, &kvs);
     defer allocator.free(updated);
-    const file = try std.fs.cwd().createFile(cfg_path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(updated);
+    const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), cfg_path, .{ .truncate = true });
+    defer file.close(io_singleton.getOrInit());
+    try file.writeStreamingAll(io_singleton.getOrInit(), updated);
 }
 
 
@@ -2023,8 +2036,11 @@ fn canConnectToEmbeddingServer(allocator: std.mem.Allocator, url: []const u8) bo
 	};
 	const scheme_is_tls = std.mem.eql(u8, uri.scheme, "https");
 	const port: u16 = if (uri.port) |p| p else if (scheme_is_tls) @as(u16, 443) else @as(u16, 80);
-	var stream = std.net.tcpConnectToHost(allocator, host, port) catch return false;
-	stream.close();
+	const io_net = io_singleton.getOrInit();
+	const addr = std.Io.net.IpAddress.resolve(io_net, host, port) catch return false;
+	var stream = addr.connect(io_net, .{ .mode = .stream }) catch return false;
+	stream.close(io_net);
+	_ = allocator;
 	return true;
 }
 
@@ -2075,7 +2091,7 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	}
 
 	// Find our own binary
-	const self_exe = std.fs.selfExePathAlloc(allocator) catch |err| {
+	const self_exe = std.process.executablePathAlloc(io_singleton.getOrInit(), allocator) catch |err| {
 		_ = stderr.print("note: could not find codescan binary to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
 		return;
@@ -2083,15 +2099,13 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	defer allocator.free(self_exe);
 
 	// Spawn: codescan watch --root <path>
-	var child = std.process.Child.init(
-		&.{ self_exe, "watch", "--root", settings.root_path },
-		allocator,
-	);
-	child.stdin_behavior = .Close;
-	child.stdout_behavior = .Close;
-	child.stderr_behavior = .Close;
-
-	child.spawn() catch |err| {
+	const io_spawn = io_singleton.getOrInit();
+	const child = std.process.spawn(io_spawn, .{
+		.argv = &.{ self_exe, "watch", "--root", settings.root_path },
+		.stdin = .close,
+		.stdout = .close,
+		.stderr = .close,
+	}) catch |err| {
 		_ = stderr.print("note: failed to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
 		syslog.init("codescan");
@@ -2106,7 +2120,7 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	if (comptime builtin.os.tag == .windows) {
 		_ = stderr.print("note: Started background watcher\n", .{}) catch {};
 	} else {
-		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id}) catch {};
+		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id orelse 0}) catch {};
 	}
 	_ = stderr.flush() catch {};
 }
@@ -2124,7 +2138,9 @@ pub const RootInfo = struct {
 /// Walk up from `start_path` looking for the nearest `.codescan/` ancestor.
 /// Caller owns `project_root` and `codescan_dir` (each freed independently).
 pub fn findRepoRootInfo(allocator: std.mem.Allocator, start_path: []const u8) !?RootInfo {
-	const start_abs = try std.fs.cwd().realpathAlloc(allocator, start_path);
+	const start_abs_z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), start_path, allocator);
+	defer allocator.free(start_abs_z);
+	const start_abs = try allocator.dupe(u8, start_abs_z);
 	errdefer allocator.free(start_abs);
 
 	var current = start_abs;
@@ -2155,16 +2171,20 @@ fn findRepoRootUntil(
 	start_path: []const u8,
 	stop_at: ?[]const u8,
 ) !?[]u8 {
-	const start_abs = try std.fs.cwd().realpathAlloc(allocator, start_path);
+	const start_abs_z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), start_path, allocator);
+	const start_abs = try allocator.dupe(u8, start_abs_z);
+	allocator.free(start_abs_z);
 	errdefer allocator.free(start_abs);
 
 	var stop_abs: ?[]u8 = null;
 	defer if (stop_abs) |path| allocator.free(path);
 	if (stop_at) |stop_path| {
-		stop_abs = try std.fs.cwd().realpathAlloc(allocator, stop_path);
+		const z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), stop_path, allocator);
+		defer allocator.free(z);
+		stop_abs = try allocator.dupe(u8, z);
 	}
 
-	var current = start_abs;
+	var current: []u8 = start_abs;
 	while (true) {
 		if (try hasCodescanDir(current)) {
 			return current;
@@ -2187,13 +2207,13 @@ fn findRepoRootUntil(
 }
 
 fn hasCodescanDir(path: []const u8) !bool {
-	var dir = try std.fs.openDirAbsolute(path, .{});
-	defer dir.close();
-	var codescan_dir = dir.openDir(".codescan", .{}) catch |err| switch (err) {
+	var dir = try std.Io.Dir.openDirAbsolute(io_singleton.getOrInit(), path, .{});
+	defer dir.close(io_singleton.getOrInit());
+	var codescan_dir = dir.openDir(io_singleton.getOrInit(), ".codescan", .{}) catch |err| switch (err) {
 		error.FileNotFound, error.NotDir => return false,
 		else => return err,
 	};
-	codescan_dir.close();
+	codescan_dir.close(io_singleton.getOrInit());
 	return true;
 }
 
@@ -2222,12 +2242,12 @@ fn loadWeights(allocator: std.mem.Allocator, root_path: []const u8) !weights.Tab
 fn configPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
 	// Prefer config.ini, fall back to legacy config for backwards compatibility
 	const ini_path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "config.ini" });
-	if (std.fs.cwd().statFile(ini_path)) |_| {
+	if (std.Io.Dir.cwd().statFile(io_singleton.getOrInit(), ini_path, .{})) |_| {
 		return ini_path;
 	} else |_| {
 		allocator.free(ini_path);
 		const legacy_path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "config" });
-		if (std.fs.cwd().statFile(legacy_path)) |_| {
+		if (std.Io.Dir.cwd().statFile(io_singleton.getOrInit(), legacy_path, .{})) |_| {
 			return legacy_path;
 		} else |_| {
 			allocator.free(legacy_path);
@@ -2242,7 +2262,7 @@ fn weightsPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
 }
 
 fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Writer) !void {
-	const file = std.fs.cwd().openFile(path, .{}) catch |err| switch (err) {
+	const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{}) catch |err| switch (err) {
 		error.FileNotFound => {
 			try writer.print("No config found at {s}\n", .{path});
 			try writer.writeAll("Use: codescan config edit\n");
@@ -2255,9 +2275,9 @@ fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Wr
 		},
 		else => return err,
 	};
-	defer file.close();
+	defer file.close(io_singleton.getOrInit());
 
-	const data = try file.readToEndAlloc(allocator, 1024 * 1024);
+	const data = try io_singleton.readToEndAlloc(file, allocator, 1024 * 1024);
 	defer allocator.free(data);
 	try writer.writeAll(data);
 	if (data.len == 0 or data[data.len - 1] != '\n') {
@@ -2273,7 +2293,7 @@ fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 	const editor = getEditor(allocator) catch |err| switch (err) {
 		error.MissingEditor => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.writeAll("error: $VISUAL or $EDITOR is not set\n") catch {};
 			_ = stderr.flush() catch {};
@@ -2289,14 +2309,17 @@ fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 	defer allocator.free(cmd);
 
 	const argv = &[_][]const u8{ "sh", "-c", cmd };
-	var child = std.process.Child.init(argv, allocator);
-	child.stdin_behavior = .Inherit;
-	child.stdout_behavior = .Inherit;
-	child.stderr_behavior = .Inherit;
+	const io = io_singleton.getOrInit();
+	var child = try std.process.spawn(io, .{
+		.argv = argv,
+		.stdin = .inherit,
+		.stdout = .inherit,
+		.stderr = .inherit,
+	});
 
-	const term = try child.spawnAndWait();
+	const term = try child.wait(io);
 	switch (term) {
-		.Exited => |code| {
+		.exited => |code| {
 			if (code != 0) return error.EditorFailed;
 		},
 		else => return error.EditorFailed,
@@ -2304,12 +2327,12 @@ fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 }
 
 fn getEditor(allocator: std.mem.Allocator) ![]u8 {
-	const visual = std.process.getEnvVarOwned(allocator, "VISUAL") catch |err| switch (err) {
+	const visual = io_singleton.getEnvVarOwned(allocator, "VISUAL") catch |err| switch (err) {
 		error.EnvironmentVariableNotFound => null,
 		else => return err,
 	};
 	if (visual) |value| return value;
-	const editor = std.process.getEnvVarOwned(allocator, "EDITOR") catch |err| switch (err) {
+	const editor = io_singleton.getEnvVarOwned(allocator, "EDITOR") catch |err| switch (err) {
 		error.EnvironmentVariableNotFound => return error.MissingEditor,
 		else => return err,
 	};
@@ -2317,7 +2340,7 @@ fn getEditor(allocator: std.mem.Allocator) ![]u8 {
 }
 
 fn shellQuote(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try out.writer.writeAll("'");
 	for (value) |ch| {
@@ -2332,55 +2355,55 @@ fn shellQuote(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
 }
 
 fn ensureFileExists(path: []const u8) !void {
-	const result = std.fs.cwd().openFile(path, .{});
+	const result = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
 	if (result) |file| {
-		file.close();
+		file.close(io_singleton.getOrInit());
 		return;
 	} else |err| switch (err) {
 		error.FileNotFound => {
-			const file = try std.fs.cwd().createFile(path, .{ .read = true, .truncate = false });
-			file.close();
+			const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{ .read = true, .truncate = false });
+			file.close(io_singleton.getOrInit());
 		},
 		else => return err,
 	}
 }
 
 fn ensureConfigWithDefaults(path: []const u8) !void {
-	const result = std.fs.cwd().openFile(path, .{});
+	const result = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
 	if (result) |file| {
 		// File exists — check if it's empty
-		const stat = try file.stat();
-		file.close();
+		const stat = try file.stat(io_singleton.getOrInit());
+		file.close(io_singleton.getOrInit());
 		if (stat.size == 0) {
-			const f = try std.fs.cwd().createFile(path, .{ .truncate = true });
-			defer f.close();
-			try f.writeAll(config.default_template);
+			const f = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{ .truncate = true });
+			defer f.close(io_singleton.getOrInit());
+			try f.writeStreamingAll(io_singleton.getOrInit(), config.default_template);
 		}
 	} else |err| switch (err) {
 		error.FileNotFound => {
-			const file = try std.fs.cwd().createFile(path, .{});
-			defer file.close();
-			try file.writeAll(config.default_template);
+			const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{});
+			defer file.close(io_singleton.getOrInit());
+			try file.writeStreamingAll(io_singleton.getOrInit(), config.default_template);
 		},
 		else => return err,
 	}
 }
 
 fn ensureWeightsWithDefaults(path: []const u8) !void {
-	const result = std.fs.cwd().openFile(path, .{});
+	const result = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
 	if (result) |file| {
-		const stat = try file.stat();
-		file.close();
+		const stat = try file.stat(io_singleton.getOrInit());
+		file.close(io_singleton.getOrInit());
 		if (stat.size == 0) {
-			const f = try std.fs.cwd().createFile(path, .{ .truncate = true });
-			defer f.close();
-			try f.writeAll(weights.default_template);
+			const f = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{ .truncate = true });
+			defer f.close(io_singleton.getOrInit());
+			try f.writeStreamingAll(io_singleton.getOrInit(), weights.default_template);
 		}
 	} else |err| switch (err) {
 		error.FileNotFound => {
-			const file = try std.fs.cwd().createFile(path, .{});
-			defer file.close();
-			try file.writeAll(weights.default_template);
+			const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{});
+			defer file.close(io_singleton.getOrInit());
+			try file.writeStreamingAll(io_singleton.getOrInit(), weights.default_template);
 		},
 		else => return err,
 	}
@@ -2392,7 +2415,7 @@ fn ensureWeightsWithDefaults(path: []const u8) !void {
 /// the background watcher will eventually catch up.
 fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: []const u8, file_path: []const u8, registry: plugin.Registry, embedding_dim: usize) void {
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.fs.File.stderr().writer(&stderr_buf);
+	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	const db = storage.openFileWithVec(allocator, db_path) catch |err| {
@@ -2406,19 +2429,22 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 		_ = stderr.flush() catch {};
 		return;
 	};
-	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch |err| {
+	const abs_root = std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), root_path, allocator) catch |err| {
 		_ = stderr.print("warning: reindex skipped (could not resolve root): {}\n", .{err}) catch {};
 		_ = stderr.flush() catch {};
 		return;
 	};
 	defer allocator.free(abs_root);
-	const abs_file = std.fs.cwd().realpathAlloc(allocator, file_path) catch |err| {
+	const abs_file = std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), file_path, allocator) catch |err| {
 		_ = stderr.print("warning: reindex skipped (could not resolve file): {}\n", .{err}) catch {};
 		_ = stderr.flush() catch {};
 		return;
 	};
 	defer allocator.free(abs_file);
-	const rel_path = std.fs.path.relative(allocator, abs_root, abs_file) catch |err| {
+	const rel_path_io = io_singleton.getOrInit();
+	const cwd_buf = std.process.currentPathAlloc(rel_path_io, allocator) catch return;
+	defer allocator.free(cwd_buf);
+	const rel_path = std.fs.path.relative(allocator, cwd_buf, io_singleton.getEnvMap(), abs_root, abs_file) catch |err| {
 		_ = stderr.print("warning: reindex skipped (could not compute relative path): {}\n", .{err}) catch {};
 		_ = stderr.flush() catch {};
 		return;
@@ -2433,7 +2459,7 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 
 fn ensureParentDir(path: []const u8) !void {
 	const dir = std.fs.path.dirname(path) orelse return;
-	try std.fs.cwd().makePath(dir);
+	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
 }
 
 const MIN_TMP_SPACE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
@@ -2481,15 +2507,21 @@ const posix_fs = if (builtin.os.tag == .linux) struct {
 /// journal/WAL writes. Prints an error to stderr and exits if space
 /// is below the threshold. Best-effort: silently succeeds on any
 /// failure to read filesystem stats (e.g. unsupported platform).
+var tmp_path_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+
 fn checkTmpSpace() void {
-	const tmp_path: [*:0]const u8 = if (std.posix.getenv("TMPDIR")) |t|
-		@ptrCast(t.ptr)
-	else
-		"/tmp";
+	const tmp_path: [*:0]const u8 = blk: {
+		const env_map = io_singleton.getEnvMap() orelse break :blk "/tmp";
+		const v = env_map.get("TMPDIR") orelse break :blk "/tmp";
+		if (v.len >= tmp_path_buf.len) break :blk "/tmp";
+		@memcpy(tmp_path_buf[0..v.len], v);
+		tmp_path_buf[v.len] = 0;
+		break :blk @as([*:0]const u8, @ptrCast(&tmp_path_buf[0]));
+	};
 	const avail = posix_fs.avail(tmp_path) orelse return;
 	if (avail >= MIN_TMP_SPACE_BYTES) return;
 	var eb: [512]u8 = undefined;
-	var ew = std.fs.File.stderr().writer(&eb);
+	var ew = std.Io.File.stderr().writer(io_singleton.getOrInit(), &eb);
 	const se = &ew.interface;
 	_ = se.print("error: insufficient disk space on temp directory ({d} MB free, need at least {d} MB)\n", .{
 		avail / (1024 * 1024),
@@ -2513,7 +2545,7 @@ fn computeHashAtLine(allocator: std.mem.Allocator, file_path: []const u8, line_1
 
 fn exitWithError(comptime msg: []const u8) noreturn {
 	var eb: [512]u8 = undefined;
-	var ew = std.fs.File.stderr().writer(&eb);
+	var ew = std.Io.File.stderr().writer(io_singleton.getOrInit(), &eb);
 	const se = &ew.interface;
 	_ = se.writeAll(msg) catch {};
 	_ = se.flush() catch {};
@@ -2521,9 +2553,9 @@ fn exitWithError(comptime msg: []const u8) noreturn {
 }
 
 fn readFileContents(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
-	const file = try std.fs.cwd().openFile(path, .{});
-	defer file.close();
-	return try file.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	const file = try std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
+	defer file.close(io_singleton.getOrInit());
+	return try io_singleton.readToEndAlloc(file, allocator, 10 * 1024 * 1024);
 }
 
 pub fn runSymbols(
@@ -2584,7 +2616,7 @@ pub fn runSymbols(
 		defer tree.deinit(allocator);
 
 		// Compute per-file chain hashes
-		var lines_list: std.ArrayListUnmanaged([]const u8) = .{};
+		var lines_list: std.ArrayListUnmanaged([]const u8) = .empty;
 		defer lines_list.deinit(allocator);
 		{
 			var it = std.mem.splitScalar(u8, source, '\n');
@@ -2846,8 +2878,11 @@ fn parseHashlineRef(s: []const u8) !HashlineRef {
 }
 
 fn readStdin(allocator: std.mem.Allocator) ![]u8 {
-	const stdin = std.fs.File.stdin();
-	return try stdin.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	const io = io_singleton.getOrInit();
+	const stdin = std.Io.File.stdin();
+	var buf: [4096]u8 = undefined;
+	var stdin_reader = stdin.reader(io, &buf);
+	return try stdin_reader.interface.allocRemaining(allocator, .limited(10 * 1024 * 1024));
 }
 
 fn spliceFile(allocator: std.mem.Allocator, file_path: []const u8, start_byte: usize, end_byte: usize, new_content: []const u8) !void {
@@ -2865,9 +2900,9 @@ fn spliceFile(allocator: std.mem.Allocator, file_path: []const u8, start_byte: u
 	@memcpy(result[start_byte .. start_byte + new_content.len], new_content);
 	@memcpy(result[start_byte + new_content.len ..], source[end_byte..]);
 
-	const file = try std.fs.cwd().createFile(file_path, .{});
-	defer file.close();
-	try file.writeAll(result);
+	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), file_path, .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), result);
 }
 
 fn extractFileAndTree(allocator: std.mem.Allocator, file_path: []const u8) !struct { source: []u8, tree: symbol_tree.SymbolTree } {
@@ -2964,7 +2999,7 @@ fn findFirstMatch(
 }
 
 fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
-	var list: std.ArrayListUnmanaged([]const u8) = .{};
+	var list: std.ArrayListUnmanaged([]const u8) = .empty;
 	var it = std.mem.splitScalar(u8, source, '\n');
 	while (it.next()) |line| {
 		try list.append(allocator, line);
@@ -2974,7 +3009,7 @@ fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUn
 
 fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 	// Returns byte offset of the start of each line (0-indexed line numbers)
-	var offsets: std.ArrayListUnmanaged(usize) = .{};
+	var offsets: std.ArrayListUnmanaged(usize) = .empty;
 	defer offsets.deinit(allocator);
 	try offsets.append(allocator, 0);
 	for (source, 0..) |ch, i| {
@@ -3015,7 +3050,7 @@ pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_lin
 	switch (format) {
 		.json => {
 			// Build the hashlined content as a string
-			var content_buf = std.ArrayListUnmanaged(u8){};
+			var content_buf = @as(std.ArrayListUnmanaged(u8), .empty);
 			defer content_buf.deinit(allocator);
 			for (from - 1..to) |idx| {
 				if (content_buf.items.len > 0) {
@@ -3052,20 +3087,20 @@ pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_lin
 
 pub fn runCreateFile(allocator: std.mem.Allocator, file_path: []const u8, body: []const u8, writer: *std.Io.Writer) !void {
 	// Check file doesn't already exist
-	if (std.fs.cwd().access(file_path, .{})) |_| {
+	if (std.Io.Dir.cwd().access(io_singleton.getOrInit(), file_path, .{})) |_| {
 		try writer.print("error: file already exists: {s} (use replace_content to modify)\n", .{file_path});
 		return;
 	} else |_| {}
 
 	// Create parent directories as needed
 	if (std.fs.path.dirname(file_path)) |dir| {
-		std.fs.cwd().makePath(dir) catch {};
+		std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir) catch {};
 	}
 
 	// Write the file
-	const file = try std.fs.cwd().createFile(file_path, .{});
-	defer file.close();
-	try file.writeAll(body);
+	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), file_path, .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), body);
 
 	// Compute version and line count
 	const version = hashline.computeFileVersionFromPath(allocator, file_path);
@@ -3102,35 +3137,35 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 	}
 
 	// Get absolute path for trash commands
-	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
+	const abs_path = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), file_path, allocator);
 	defer allocator.free(abs_path);
 
 	if (comptime builtin.os.tag == .macos) {
 		// macOS: move directly to ~/.Trash/ (avoids needing a Finder/UI session).
 		// Files moved here appear in Trash and support "Put Back".
-		const home = std.posix.getenv("HOME") orelse "/tmp";
+		const home = if (io_singleton.getEnvMap()) |env_map| (env_map.get("HOME") orelse "/tmp") else "/tmp";
 		const trash_dir = try std.fs.path.join(allocator, &.{ home, ".Trash" });
 		defer allocator.free(trash_dir);
-		std.fs.cwd().makePath(trash_dir) catch {};
+		std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), trash_dir) catch {};
 		const basename = std.fs.path.basename(abs_path);
 		const dest = try std.fs.path.join(allocator, &.{ trash_dir, basename });
 		defer allocator.free(dest);
-		std.fs.renameAbsolute(abs_path, dest) catch {
+		std.Io.Dir.renameAbsolute(abs_path, dest, io_singleton.getOrInit()) catch {
 			try writer.print("error: could not move '{s}' to trash\n", .{file_path});
 			return;
 		};
 	} else {
 		// Linux: try gio trash, then trash-put, then manual move
 		// Try gio trash
+		const io_trash = io_singleton.getOrInit();
 		const gio_ok = blk: {
-			var child = std.process.Child.init(
-				&[_][]const u8{ "gio", "trash", abs_path },
-				allocator,
-			);
-			child.stderr_behavior = .Ignore;
-			child.stdout_behavior = .Ignore;
-			if (child.spawnAndWait()) |term| {
-				break :blk term.Exited == 0;
+			var child = std.process.spawn(io_trash, .{
+				.argv = &[_][]const u8{ "gio", "trash", abs_path },
+				.stderr = .ignore,
+				.stdout = .ignore,
+			}) catch break :blk false;
+			if (child.wait(io_trash)) |term| {
+				break :blk term.exited == 0;
 			} else |_| {
 				break :blk false;
 			}
@@ -3138,14 +3173,13 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 
 		// Try trash-put
 		const trash_put_ok = if (!gio_ok) blk: {
-			var child = std.process.Child.init(
-				&[_][]const u8{ "trash-put", abs_path },
-				allocator,
-			);
-			child.stderr_behavior = .Ignore;
-			child.stdout_behavior = .Ignore;
-			if (child.spawnAndWait()) |term| {
-				break :blk term.Exited == 0;
+			var child = std.process.spawn(io_trash, .{
+				.argv = &[_][]const u8{ "trash-put", abs_path },
+				.stderr = .ignore,
+				.stdout = .ignore,
+			}) catch break :blk false;
+			if (child.wait(io_trash)) |term| {
+				break :blk term.exited == 0;
 			} else |_| {
 				break :blk false;
 			}
@@ -3153,14 +3187,14 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 
 		// Fallback: move to ~/.local/share/Trash/files/
 		if (!trash_put_ok) {
-			const home = std.posix.getenv("HOME") orelse "/tmp";
+			const home = if (io_singleton.getEnvMap()) |env_map| (env_map.get("HOME") orelse "/tmp") else "/tmp";
 			const trash_dir = try std.fs.path.join(allocator, &.{ home, ".local/share/Trash/files" });
 			defer allocator.free(trash_dir);
-			std.fs.cwd().makePath(trash_dir) catch {};
+			std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), trash_dir) catch {};
 			const basename = std.fs.path.basename(abs_path);
 			const dest = try std.fs.path.join(allocator, &.{ trash_dir, basename });
 			defer allocator.free(dest);
-			std.fs.renameAbsolute(abs_path, dest) catch {
+			std.Io.Dir.renameAbsolute(abs_path, dest, io_singleton.getOrInit()) catch {
 				try writer.print("error: could not move '{s}' to trash\n", .{file_path});
 				return;
 			};
@@ -3176,21 +3210,23 @@ pub fn runDestroyFile(allocator: std.mem.Allocator, file_path: []const u8, versi
 
 pub fn runDiff(allocator: std.mem.Allocator, staged: bool, root_path: []const u8, format: cli.OutputFormat, writer: *std.Io.Writer) !void {
 	// Run git diff
-	var argv = std.ArrayListUnmanaged([]const u8){};
+	var argv = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer argv.deinit(allocator);
 	try argv.appendSlice(allocator, &.{ "git", "diff", "-U3" });
 	if (staged) try argv.append(allocator, "--staged");
 
-	var child = std.process.Child.init(argv.items, allocator);
-	child.stdout_behavior = .Pipe;
-	child.stderr_behavior = .Ignore;
-	child.cwd = root_path;
-	_ = try child.spawn();
-	const git_output = try child.stdout.?.readToEndAlloc(allocator, 10 * 1024 * 1024);
+	const io_diff = io_singleton.getOrInit();
+	var child = try std.process.spawn(io_diff, .{
+		.argv = argv.items,
+		.stdout = .pipe,
+		.stderr = .ignore,
+		.cwd = .{ .path = root_path },
+	});
+	const git_output = try io_singleton.readToEndAlloc(child.stdout.?, allocator, 10 * 1024 * 1024);
 	defer allocator.free(git_output);
-	const term = try child.wait();
-	if (term.Exited != 0) {
-		try writer.print("error: git diff failed (exit code {d})\n", .{term.Exited});
+	const term = try child.wait(io_diff);
+	if (term.exited != 0) {
+		try writer.print("error: git diff failed (exit code {d})\n", .{term.exited});
 		return;
 	}
 
@@ -3611,7 +3647,7 @@ pub fn runReplaceContentMultiFile(
 		diff_text: []const u8,
 		match_count: usize,
 	};
-	var changes = std.ArrayListUnmanaged(FileChange){};
+	var changes = @as(std.ArrayListUnmanaged(FileChange), .empty);
 	defer {
 		for (changes.items) |c| {
 			allocator.free(c.abs_path);
@@ -3718,7 +3754,7 @@ pub fn runReplaceContentMultiFile(
 			}
 
 			// Build replacement
-			var result_buf = std.ArrayListUnmanaged(u8){};
+			var result_buf = @as(std.ArrayListUnmanaged(u8), .empty);
 			defer result_buf.deinit(allocator);
 			var src_off: usize = 0;
 			var replaced: usize = 0;
@@ -3787,12 +3823,12 @@ pub fn runReplaceContentMultiFile(
 
 		// Apply all changes
 		for (changes.items) |c| {
-			const file = std.fs.cwd().createFile(c.abs_path, .{}) catch {
+			const file = std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), c.abs_path, .{}) catch {
 				try writer.print("error: could not write {s}\n", .{c.rel_path});
 				continue;
 			};
-			defer file.close();
-			file.writeAll(c.modified) catch {
+			defer file.close(io_singleton.getOrInit());
+			file.writeStreamingAll(io_singleton.getOrInit(), c.modified) catch {
 				try writer.print("error: could not write {s}\n", .{c.rel_path});
 				continue;
 			};
@@ -3832,7 +3868,7 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 
 		// Count matches for validation
 		var match_count: usize = 0;
-		var match_positions = std.ArrayListUnmanaged(pcre2.Match){};
+		var match_positions = @as(std.ArrayListUnmanaged(pcre2.Match), .empty);
 		defer match_positions.deinit(allocator);
 		{
 			var offset: usize = 0;
@@ -3863,9 +3899,9 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 		};
 		defer allocator.free(result.output);
 
-		const file = try std.fs.cwd().createFile(file_path, .{});
-		defer file.close();
-		try file.writeAll(result.output);
+		const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), file_path, .{});
+		defer file.close(io_singleton.getOrInit());
+		try file.writeStreamingAll(io_singleton.getOrInit(), result.output);
 
 		// Report affected lines
 		if (match_count == 1) {
@@ -3898,7 +3934,7 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 		try emitNewVersion(allocator, file_path, writer);
 	} else {
 		// Literal mode: use std.mem.indexOf
-		var match_positions = std.ArrayListUnmanaged(usize){};
+		var match_positions = @as(std.ArrayListUnmanaged(usize), .empty);
 		defer match_positions.deinit(allocator);
 		{
 			var offset: usize = 0;
@@ -3940,9 +3976,9 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 		const tail_len = source.len - src_offset;
 		@memcpy(result[dst_offset .. dst_offset + tail_len], source[src_offset..]);
 
-		const file = try std.fs.cwd().createFile(file_path, .{});
-		defer file.close();
-		try file.writeAll(result);
+		const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), file_path, .{});
+		defer file.close(io_singleton.getOrInit());
+		try file.writeStreamingAll(io_singleton.getOrInit(), result);
 
 		// Report affected lines
 		if (positions.len == 1) {
@@ -4070,10 +4106,10 @@ pub fn runReferences(allocator: std.mem.Allocator, file_path: []const u8, patter
 	};
 
 	// Resolve absolute path and root URI (use project root, not file parent)
-	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
+	const abs_path = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), file_path, allocator);
 	defer allocator.free(abs_path);
 
-	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch try allocator.dupe(u8, std.fs.path.dirname(abs_path) orelse "/");
+	const abs_root = std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), root_path, allocator) catch try allocator.dupe(u8, std.fs.path.dirname(abs_path) orelse "/");
 	defer allocator.free(abs_root);
 
 	const root_uri = try lsp.pathToUri(allocator, abs_root);
@@ -4200,10 +4236,10 @@ pub fn runRename(
 	};
 
 	// Resolve absolute path and root URI (use project root, not file parent)
-	const abs_path = try std.fs.cwd().realpathAlloc(allocator, file_path);
+	const abs_path = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), file_path, allocator);
 	defer allocator.free(abs_path);
 
-	const abs_root = std.fs.cwd().realpathAlloc(allocator, root_path) catch try allocator.dupe(u8, std.fs.path.dirname(abs_path) orelse "/");
+	const abs_root = std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), root_path, allocator) catch try allocator.dupe(u8, std.fs.path.dirname(abs_path) orelse "/");
 	defer allocator.free(abs_root);
 
 	const root_uri = try lsp.pathToUri(allocator, abs_root);
@@ -4353,7 +4389,7 @@ fn applyTextEdits(allocator: std.mem.Allocator, file_path: []const u8, edits: []
 	}.lessThan);
 
 	// Apply edits bottom-to-top on an in-memory copy
-	var buf = std.ArrayListUnmanaged(u8){};
+	var buf = @as(std.ArrayListUnmanaged(u8), .empty);
 	defer buf.deinit(allocator);
 	try buf.appendSlice(allocator, source);
 
@@ -4366,9 +4402,9 @@ fn applyTextEdits(allocator: std.mem.Allocator, file_path: []const u8, edits: []
 		buf.replaceRange(allocator, start_byte, end_byte - start_byte, edit.new_text) catch continue;
 	}
 
-	const file = try std.fs.cwd().createFile(file_path, .{});
-	defer file.close();
-	try file.writeAll(buf.items);
+	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), file_path, .{});
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), buf.items);
 }
 
 /// Convert 0-based line:col to byte offset using precomputed line start offsets.
@@ -5093,9 +5129,9 @@ fn parseJsonEnvelopeArgs(
     };
     const action = getJsonString(obj, "action") orelse return error.InvalidJsonEnvelope;
 
-    var args_list = std.ArrayList([]const u8){};
+    var args_list: std.ArrayList([]const u8) = .empty;
     errdefer args_list.deinit(allocator);
-    var owned_list = std.ArrayList([]u8){};
+    var owned_list: std.ArrayList([]u8) = .empty;
     errdefer {
         for (owned_list.items) |item| allocator.free(item);
         owned_list.deinit(allocator);
@@ -5157,7 +5193,7 @@ fn getJsonQuery(allocator: std.mem.Allocator, obj: std.json.ObjectMap) !JsonQuer
     switch (value) {
         .string => |text| return .{ .value = text, .owned = false },
         .array => |arr| {
-            var parts = std.ArrayList([]const u8){};
+            var parts : std.ArrayList([]const u8) = .empty;
             defer parts.deinit(allocator);
             for (arr.items) |item| {
                 switch (item) {
@@ -5223,7 +5259,7 @@ fn appendJsonStringOrArrayFlag(
         },
         .array => |arr| {
             if (arr.items.len == 0) return;
-            var list = std.ArrayList([]const u8){};
+            var list : std.ArrayList([]const u8) = .empty;
             defer list.deinit(allocator);
             for (arr.items) |item| {
                 switch (item) {
@@ -5340,7 +5376,7 @@ pub fn runRoot(
 	format: cli.OutputFormat,
 	writer: *std.Io.Writer,
 ) !void {
-	const cwd_path = try std.fs.cwd().realpathAlloc(allocator, ".");
+	const cwd_path = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(cwd_path);
 
 	const info_opt = findRepoRootInfo(allocator, cwd_path) catch |err| {
@@ -5440,7 +5476,7 @@ pub fn runStatus(
 
 	// DB file size
 	const db_size: u64 = blk: {
-		const stat = std.fs.cwd().statFile(db_path) catch break :blk 0;
+		const stat = std.Io.Dir.cwd().statFile(io_singleton.getOrInit(), db_path, .{}) catch break :blk 0;
 		break :blk stat.size;
 	};
 
@@ -5740,7 +5776,7 @@ pub fn runRegexSearch(
 		body_lines: ?[]ContextLine,
 	};
 
-	var results = std.ArrayListUnmanaged(Result){};
+	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	defer {
 		for (results.items) |r| {
 			allocator.free(r.match_text);
@@ -5788,9 +5824,9 @@ pub fn runRegexSearch(
 		const abs_path = std.fs.path.join(allocator, &.{ root_path, rel_path }) catch continue;
 		defer allocator.free(abs_path);
 
-		const file = std.fs.openFileAbsolute(abs_path, .{}) catch continue;
-		defer file.close();
-		const source = file.readToEndAlloc(allocator, 10 * 1024 * 1024) catch continue;
+		const file = std.Io.Dir.openFileAbsolute(io_singleton.getOrInit(), abs_path, .{}) catch continue;
+		defer file.close(io_singleton.getOrInit());
+		const source = io_singleton.readToEndAlloc(file, allocator, 10 * 1024 * 1024) catch continue;
 		defer allocator.free(source);
 
 		// Compute hashlines
@@ -5798,7 +5834,7 @@ pub fn runRegexSearch(
 		defer allocator.free(hashes);
 
 		// Split source into lines for context
-		var lines_list = std.ArrayListUnmanaged([]const u8){};
+		var lines_list = @as(std.ArrayListUnmanaged([]const u8), .empty);
 		defer lines_list.deinit(allocator);
 		{
 			var start: usize = 0;
@@ -5815,7 +5851,7 @@ pub fn runRegexSearch(
 		const lines = lines_list.items;
 
 		// Build line offset index (byte offset -> line number)
-		var line_offsets = std.ArrayListUnmanaged(usize){};
+		var line_offsets = @as(std.ArrayListUnmanaged(usize), .empty);
 		defer line_offsets.deinit(allocator);
 		{
 			var off: usize = 0;
@@ -5863,7 +5899,7 @@ pub fn runRegexSearch(
 			const ctx_end = @min(line_num + after + 1, lines.len);
 
 			// Build context lines
-			var ctx_list = std.ArrayListUnmanaged(ContextLine){};
+			var ctx_list = @as(std.ArrayListUnmanaged(ContextLine), .empty);
 			errdefer {
 				for (ctx_list.items) |ctx| allocator.free(ctx.content);
 				ctx_list.deinit(allocator);
@@ -5914,7 +5950,7 @@ pub fn runRegexSearch(
 					body_end = @intCast(storage.sqlite.sqlite3_column_int64(stmt.?, 2));
 
 					// Build body_lines from file source (0-indexed: body_start-1 .. body_end)
-					var bl_list = std.ArrayListUnmanaged(ContextLine){};
+					var bl_list = @as(std.ArrayListUnmanaged(ContextLine), .empty);
 					errdefer {
 						for (bl_list.items) |ctx| allocator.free(ctx.content);
 						bl_list.deinit(allocator);
@@ -6145,13 +6181,13 @@ test "findRepoRoot finds nearest .codescan ancestor" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("repo/.codescan");
-	try tmp.dir.makePath("repo/sub/dir");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub/dir");
 
-	const start = try tmp.dir.realpathAlloc(allocator, "repo/sub/dir");
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo/sub/dir", allocator);
 	defer allocator.free(start);
 
-	const expected = try tmp.dir.realpathAlloc(allocator, "repo");
+	const expected = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo", allocator);
 	defer allocator.free(expected);
 
 	const root = try findRepoRoot(allocator, start);
@@ -6166,12 +6202,12 @@ test "findRepoRoot returns null when missing" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("repo/sub/dir");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub/dir");
 
-	const start = try tmp.dir.realpathAlloc(allocator, "repo/sub/dir");
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo/sub/dir", allocator);
 	defer allocator.free(start);
 
-	const stop_at = try tmp.dir.realpathAlloc(allocator, "repo");
+	const stop_at = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo", allocator);
 	defer allocator.free(stop_at);
 
 	const root = try findRepoRootUntil(allocator, start, stop_at);
@@ -6364,10 +6400,10 @@ test "resolveSettings uses discovered repo root for db path" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("repo/.codescan");
-	try tmp.dir.makePath("repo/sub/dir");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub/dir");
 
-	const start = try tmp.dir.realpathAlloc(allocator, "repo/sub/dir");
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo/sub/dir", allocator);
 	defer allocator.free(start);
 
 	const root = try findRepoRoot(allocator, start);
@@ -6423,7 +6459,7 @@ test "chain hash cascade detects stale content after edits" {
 
 	var tmp_dir = std.testing.tmpDir(.{});
 	defer tmp_dir.cleanup();
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.zig", .data = original_content });
+	try tmp_dir.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = original_content });
 
 	// --- Step 1: Compute hashes from original content (simulates indexer) ---
 	var orig_lines = try splitLines(allocator, original_content);
@@ -6442,7 +6478,7 @@ test "chain hash cascade detects stale content after edits" {
 
 	// --- Step 2: Modify the file (simulates user editing between index and search) ---
 	const modified_content = "fn foo() void {\n    return 99;\n}\n";
-	try tmp_dir.dir.writeFile(.{ .sub_path = "test.zig", .data = modified_content });
+	try tmp_dir.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = modified_content });
 
 	// --- Step 3: Re-read and compute hashes for current file content ---
 	var mod_lines = try splitLines(allocator, modified_content);
@@ -6567,12 +6603,12 @@ test "runReadFile returns JSON with hashlines and version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "line one\nline two\nline three\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Capture output using the Allocating writer pattern (same as MCP callTool)
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	// Call runReadFile — full file, JSON format
@@ -6617,11 +6653,11 @@ test "runReadFile partial read with from/to" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "alpha\nbeta\ngamma\ndelta\nepsilon\n";
-	try tmp.dir.writeFile(.{ .sub_path = "partial.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "partial.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "partial.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "partial.txt", allocator);
 	defer allocator.free(abs_path);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	// Read lines 2-4 only
@@ -6661,18 +6697,18 @@ test "runReplaceContent rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "hello world\ngoodbye world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Compute the current version
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally (simulates concurrent edit)
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified content\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = "modified content\n" });
 
 	// Try to replace with the old version — should be rejected
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceContent(allocator, abs_path, "modified", false, false, "replaced", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6687,15 +6723,15 @@ test "runReplaceContent succeeds with correct version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "hello world\ngoodbye world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Compute the current version
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Replace with the correct version — should succeed
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceContent(allocator, abs_path, "hello", false, false, "hi", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6716,11 +6752,11 @@ test "runReplaceContent errors when no version provided" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "hello world\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceContent(allocator, abs_path, "hello", false, false, "hi", null, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6729,7 +6765,7 @@ test "runReplaceContent errors when no version provided" {
 	// Should contain error about missing version
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: --version is required") != null);
 	// File should NOT have been modified
-	const after = try tmp.dir.readFileAlloc(allocator, "test.txt", 8192);
+	const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.txt", allocator, .limited(8192));
 	defer allocator.free(after);
 	try std.testing.expectEqualStrings(content, after);
 }
@@ -6740,17 +6776,17 @@ test "runReplaceSymbol rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	// Compute version from original content
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally (simulates concurrent edit)
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceSymbol(allocator, abs_path, "hello", "pub fn hello() void { @panic(\"new\"); }\n", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6765,13 +6801,13 @@ test "runReplaceSymbol succeeds with correct version and emits new version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceSymbol(allocator, abs_path, "hello", "pub fn hello() void { return; }\n", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6787,11 +6823,11 @@ test "runReplaceSymbol errors when no version provided" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceSymbol(allocator, abs_path, "hello", "pub fn hello() void { return; }\n", null, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6800,7 +6836,7 @@ test "runReplaceSymbol errors when no version provided" {
 	// Should contain error about missing version
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: --version is required") != null);
 	// File should NOT have been modified
-	const after = try tmp.dir.readFileAlloc(allocator, "test.zig", 8192);
+	const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "test.zig", allocator, .limited(8192));
 	defer allocator.free(after);
 	try std.testing.expectEqualStrings(content, after);
 }
@@ -6811,8 +6847,8 @@ test "runInsertAt rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "line one\nline two\nline three\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Compute version and hashline ref for line 2
@@ -6825,9 +6861,9 @@ test "runInsertAt rejects stale version" {
 	defer allocator.free(ref_str);
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runInsertAt(allocator, abs_path, ref_str, "inserted line\n", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6842,8 +6878,8 @@ test "runReplaceLines rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "line one\nline two\nline three\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.txt", allocator);
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
@@ -6857,9 +6893,9 @@ test "runReplaceLines rejects stale version" {
 	defer allocator.free(to_str);
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.txt", .data = "modified\nline two\nline three\n" });
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runReplaceLines(allocator, abs_path, from_str, to_str, "replacement\n", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6874,16 +6910,16 @@ test "runInsertAfter rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runInsertAfter(allocator, abs_path, "hello", "// inserted\n", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6898,16 +6934,16 @@ test "runInsertBefore rejects stale version" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const content = "pub fn hello() void {}\npub fn world() void {}\n";
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "test.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
 
 	// Modify the file externally
-	try tmp.dir.writeFile(.{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = "pub fn hello() void { return; }\npub fn world() void {}\n" });
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runInsertBefore(allocator, abs_path, "hello", "// inserted\n", &current_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6921,13 +6957,13 @@ test "runCreateFile creates new file with version" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	const abs_dir = try tmp.dir.realpathAlloc(allocator, ".");
+	const abs_dir = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(abs_dir);
 	const abs_path = try std.fs.path.join(allocator, &[_][]const u8{ abs_dir, "newfile.txt" });
 	defer allocator.free(abs_path);
 
 	const body = "hello world\nline two\n";
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runCreateFile(allocator, abs_path, body, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6939,7 +6975,7 @@ test "runCreateFile creates new file with version" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "version:") != null);
 
 	// File should actually exist with correct content
-	const written = try tmp.dir.readFileAlloc(allocator, "newfile.txt", 1024 * 1024);
+	const written = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "newfile.txt", allocator, .limited(1024 * 1024));
 	defer allocator.free(written);
 	try std.testing.expectEqualStrings(body, written);
 }
@@ -6949,11 +6985,11 @@ test "runCreateFile errors on existing file" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "existing.txt", .data = "existing content\n" });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "existing.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "existing.txt", .data = "existing content\n" });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "existing.txt", allocator);
 	defer allocator.free(abs_path);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runCreateFile(allocator, abs_path, "new content\n", &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6963,7 +6999,7 @@ test "runCreateFile errors on existing file" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file already exists") != null);
 
 	// Original file should be unchanged
-	const content = try tmp.dir.readFileAlloc(allocator, "existing.txt", 1024 * 1024);
+	const content = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "existing.txt", allocator, .limited(1024 * 1024));
 	defer allocator.free(content);
 	try std.testing.expectEqualStrings("existing content\n", content);
 }
@@ -6973,8 +7009,8 @@ test "runDestroyFile rejects stale version" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	try tmp.dir.writeFile(.{ .sub_path = "doomed.zig", .data = "original content\n" });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "doomed.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "doomed.zig", .data = "original content\n" });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "doomed.zig", allocator);
 	defer allocator.free(abs_path);
 
 	// Compute the correct version of the original file
@@ -6985,11 +7021,11 @@ test "runDestroyFile rejects stale version" {
 	_ = correct_version;
 
 	// Now modify the file so the version is stale
-	try tmp.dir.writeFile(.{ .sub_path = "doomed.zig", .data = "modified content\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "doomed.zig", .data = "modified content\n" });
 
 	// Try to destroy with the old (now stale) version
 	const stale_version = "000"; // arbitrary wrong version
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runDestroyFile(allocator, abs_path, stale_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -6999,7 +7035,7 @@ test "runDestroyFile rejects stale version" {
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
 
 	// File should still exist (not deleted)
-	tmp.dir.access("doomed.zig", .{}) catch {
+	tmp.dir.access(io_singleton.getOrInit(), "doomed.zig", .{}) catch {
 		return error.FileShouldStillExist;
 	};
 }
@@ -7010,14 +7046,14 @@ test "runDestroyFile moves file to trash (file no longer accessible)" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const file_content = "bye bye\n";
-	try tmp.dir.writeFile(.{ .sub_path = "to_delete.txt", .data = file_content });
-	const abs_path = try tmp.dir.realpathAlloc(allocator, "to_delete.txt");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "to_delete.txt", .data = file_content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "to_delete.txt", allocator);
 	defer allocator.free(abs_path);
 
 	// Compute version so --version requirement is satisfied
 	const file_version = (try hashline.computeFileVersion(allocator, file_content)).?;
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runDestroyFile(allocator, abs_path, &file_version, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -7029,7 +7065,7 @@ test "runDestroyFile moves file to trash (file no longer accessible)" {
 		std.mem.indexOf(u8, output_text, "warning:") != null);
 
 	// File should no longer be accessible at the original path
-	const still_exists = if (std.fs.cwd().access(abs_path, .{})) |_| true else |_| false;
+	const still_exists = if (std.Io.Dir.cwd().access(io_singleton.getOrInit(), abs_path, .{})) |_| true else |_| false;
 	try std.testing.expect(!still_exists);
 }
 
@@ -7038,12 +7074,12 @@ test "runDestroyFile errors when file does not exist" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
-	const abs_path = try tmp.dir.realpathAlloc(allocator, ".");
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(abs_path);
 	const nonexistent = try std.fs.path.join(allocator, &.{ abs_path, "ghost.txt" });
 	defer allocator.free(nonexistent);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 	try runDestroyFile(allocator, nonexistent, null, &out.writer);
 	const output_text = try out.toOwnedSlice();
@@ -7059,14 +7095,14 @@ test "runRegexSearch finds matches with correct line numbers" {
 
 	// Create a source file in the tmp dir
 	{
-		const f = try tmp.dir.createFile("hello.zig", .{});
-		defer f.close();
-		try f.writeAll("const std = @import(\"std\");\nfn hello() void {}\nfn world() void {}\n");
+		const f = try tmp.dir.createFile(io_singleton.getOrInit(), "hello.zig", .{});
+		defer f.close(io_singleton.getOrInit());
+		try f.writeStreamingAll(io_singleton.getOrInit(), "const std = @import(\"std\");\nfn hello() void {}\nfn world() void {}\n");
 	}
 
 	// Create DB
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -7076,7 +7112,7 @@ test "runRegexSearch finds matches with correct line numbers" {
 	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 	try storage.upsertIndexedFile(db, "hello.zig", 0, 0);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try runRegexSearch(
@@ -7099,13 +7135,13 @@ test "runRegexSearch context lines shows surrounding lines" {
 	defer tmp.cleanup();
 
 	{
-		const f = try tmp.dir.createFile("ctx.zig", .{});
-		defer f.close();
-		try f.writeAll("line1\nline2\nTARGET\nline4\nline5\n");
+		const f = try tmp.dir.createFile(io_singleton.getOrInit(), "ctx.zig", .{});
+		defer f.close(io_singleton.getOrInit());
+		try f.writeStreamingAll(io_singleton.getOrInit(), "line1\nline2\nTARGET\nline4\nline5\n");
 	}
 
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -7115,7 +7151,7 @@ test "runRegexSearch context lines shows surrounding lines" {
 	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 	try storage.upsertIndexedFile(db, "ctx.zig", 0, 0);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	// context_lines=5 means 2 before + match + 2 after
@@ -7142,22 +7178,22 @@ test "runRegexSearch path filter restricts files" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath("src");
-	try tmp.dir.makePath("lib");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "lib");
 
 	{
-		const f = try tmp.dir.createFile("src/a.zig", .{});
-		defer f.close();
-		try f.writeAll("fn alpha() void {}\n");
+		const f = try tmp.dir.createFile(io_singleton.getOrInit(), "src/a.zig", .{});
+		defer f.close(io_singleton.getOrInit());
+		try f.writeStreamingAll(io_singleton.getOrInit(), "fn alpha() void {}\n");
 	}
 	{
-		const f = try tmp.dir.createFile("lib/b.zig", .{});
-		defer f.close();
-		try f.writeAll("fn beta() void {}\n");
+		const f = try tmp.dir.createFile(io_singleton.getOrInit(), "lib/b.zig", .{});
+		defer f.close(io_singleton.getOrInit());
+		try f.writeStreamingAll(io_singleton.getOrInit(), "fn beta() void {}\n");
 	}
 
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -7168,7 +7204,7 @@ test "runRegexSearch path filter restricts files" {
 	try storage.upsertIndexedFile(db, "src/a.zig", 0, 0);
 	try storage.upsertIndexedFile(db, "lib/b.zig", 0, 0);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	const path_filter: []const u8 = "src/*";
@@ -7190,8 +7226,8 @@ test "runRegexSearch invalid regex returns error message" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -7200,7 +7236,7 @@ test "runRegexSearch invalid regex returns error message" {
 	defer storage.close(db);
 	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	try runRegexSearch(
@@ -7222,13 +7258,13 @@ test "runRegexSearch include_body shows full symbol body" {
 
 	// Create a source file with a clearly-delimited function
 	{
-		const f = try tmp.dir.createFile("body_test.zig", .{});
-		defer f.close();
-		try f.writeAll("// preamble\npub fn myFunc() void {\n    const x = 42;\n    _ = x;\n}\n// epilogue\n");
+		const f = try tmp.dir.createFile(io_singleton.getOrInit(), "body_test.zig", .{});
+		defer f.close(io_singleton.getOrInit());
+		try f.writeStreamingAll(io_singleton.getOrInit(), "// preamble\npub fn myFunc() void {\n    const x = 42;\n    _ = x;\n}\n// epilogue\n");
 	}
 
-	try tmp.dir.makePath(".codescan");
-	const root_path = try tmp.dir.realpathAlloc(allocator, ".");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
@@ -7251,7 +7287,7 @@ test "runRegexSearch include_body shows full symbol body" {
 	defer sym.deinit(allocator);
 	_ = try storage.insertSymbol(db, sym);
 
-	var out: std.io.Writer.Allocating = .init(allocator);
+	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 
 	// Search for something inside the function body with include_body = true

@@ -1,4 +1,5 @@
 const std = @import("std");
+const io_singleton = @import("io_singleton.zig");
 const embedding_http = @import("embedding_http.zig");
 
 pub const Embedder = struct {
@@ -88,7 +89,7 @@ test "NullEmbedder returns empty embeddings and free is safe" {
 
 
 fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-	const value = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+	const value = io_singleton.getEnvVarOwned(allocator, key) catch |err| switch (err) {
 		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
 		else => return err,
 	};
