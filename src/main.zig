@@ -28,6 +28,7 @@ const weights = @import("weights.zig");
 const diagnostics = @import("diagnostics.zig");
 const syslog = @import("syslog.zig");
 const setup_model_text = @import("setup_model_text.zig");
+const preflight = @import("preflight.zig");
 const io_singleton = @import("io_singleton.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
@@ -2058,34 +2059,56 @@ fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *
 	// Clean up stale PID file if it exists (process is dead)
 	pidfile.removePid(allocator, codescan_dir);
 
-	// Preflight: refuse to spawn if the embedding server is unreachable. The
-	// daemon would otherwise die silently — its stderr is closed, and the
-	// failure happens before syslog.init in some paths.
+	// Preflight checks — the daemon would otherwise die silently because its
+	// stdin/stdout/stderr are all .close, so any startup error vanishes.
+	// Run all checks in the parent so we can print actionable messages to the
+	// user's terminal AND log via syslog.
+	const dialect_name: []const u8 = switch (settings.embedding_dialect) {
+		.ollama => "ollama",
+		.openai => "openai (oMLX / OpenAI-compatible)",
+	};
+
+	var failure_opt: ?preflight.PreflightFailure = null;
 	if (!canConnectToEmbeddingServer(allocator, settings.embedding_url)) {
-		const dialect_name: []const u8 = switch (settings.embedding_dialect) {
-			.ollama => "ollama",
-			.openai => "openai (oMLX / OpenAI-compatible)",
-		};
-		_ = stderr.print(
-			"\x1b[31merror: cannot reach embedding server at {s}\x1b[0m\n" ++
-				"  configured dialect: {s}\n" ++
-				"  configured model:   {s}\n" ++
-				"  fix one of:\n" ++
-				"    - start the embedding server\n" ++
-				"    - update embedding_url / embedding_api in .codescan/config\n" ++
-				"    - run 'codescan setup-model' for setup instructions\n" ++
-				"  watcher NOT started.\n",
-			.{ settings.embedding_url, dialect_name, settings.embedding_model },
-		) catch {};
+		failure_opt = preflight.PreflightFailure{ .server_unreachable = .{
+			.url = settings.embedding_url,
+			.dialect = dialect_name,
+		} };
+	} else {
+		failure_opt = preflight.checkIndexConsistency(
+			allocator,
+			settings.db_path,
+			settings.embedding_model,
+			settings.embedding_dim,
+		) catch null;
+	}
+
+	if (failure_opt) |*failure| {
+		defer failure.deinit(allocator);
+		_ = stderr.writeAll("\x1b[31m") catch {};
+		preflight.formatActionable(failure.*, stderr) catch {};
+		_ = stderr.writeAll("\x1b[0m") catch {};
 		_ = stderr.flush() catch {};
 		syslog.init("codescan");
 		defer syslog.deinit();
 		var msg_buf: [512]u8 = undefined;
-		const msg = std.fmt.bufPrint(
-			&msg_buf,
-			"failed to start watcher: cannot reach embedding server at {s} (dialect={s})",
-			.{ settings.embedding_url, dialect_name },
-		) catch "failed to start watcher: cannot reach embedding server";
+		const msg = switch (failure.*) {
+			.server_unreachable => |s| std.fmt.bufPrint(
+				&msg_buf,
+				"failed to start watcher: cannot reach embedding server at {s} (dialect={s})",
+				.{ s.url, s.dialect },
+			) catch "failed to start watcher: cannot reach embedding server",
+			.db_open_failed => |s| std.fmt.bufPrint(
+				&msg_buf,
+				"failed to start watcher: cannot open index db at {s} ({s})",
+				.{ s.path, s.err_name },
+			) catch "failed to start watcher: cannot open index db",
+			.schema_mismatch => |m| std.fmt.bufPrint(
+				&msg_buf,
+				"failed to start watcher: schema mismatch (stored model='{s}' dim={d}, current model='{s}' dim={d}); run 'codescan index'",
+				.{ m.stored_model orelse "unknown", m.stored_dim orelse 0, m.current_model, m.current_dim },
+			) catch "failed to start watcher: schema mismatch; run 'codescan index'",
+		};
 		syslog.logWithRoot(syslog.LOG_ERR, settings.root_path, msg);
 		return;
 	}

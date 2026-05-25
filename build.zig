@@ -151,6 +151,18 @@ pub fn build(b: *std.Build) void {
 	linkCommon(storage_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(storage_tests).step);
 
+	const preflight_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/preflight.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, preflight_tests.root_module);
+	addPcre2Includes(preflight_tests.root_module, pcre2_lib);
+	linkCommon(preflight_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(preflight_tests).step);
+
 	const embedding_http_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/embedding_http.zig"),
