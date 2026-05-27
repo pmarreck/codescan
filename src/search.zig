@@ -178,6 +178,17 @@ pub fn search(
 
 			for (lexical) |res| {
 				if (seen.contains(res.id)) {
+					// Symbol already came back from vector candidates with
+					// bm25=0. Transfer the FTS bm25 onto the existing row so
+					// the scorer can use it; otherwise we throw away the FTS
+					// signal and the merged result scores like a vector-only
+					// hit.
+					for (results.items) |*existing| {
+						if (existing.id == res.id) {
+							existing.bm25 = res.bm25;
+							break;
+						}
+					}
 					var tmp = res;
 					tmp.deinit(allocator);
 				} else {
@@ -455,7 +466,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 	defer sql_buf.deinit(allocator);
 	try sql_buf.appendSlice(allocator,
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
-		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, " ++
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, " ++
 		"0.0 AS distance " ++
 		"FROM symbols"
 	);
@@ -661,7 +672,7 @@ fn vectorCandidates(
 	const sql = try allocPrintZ(
 		allocator,
 		"SELECT symbols.id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
-		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, "
+		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, "
 		++ "knn.distance "
 		++ "FROM {s} AS knn JOIN symbols ON knn.rowid = symbols.id "
 		++ "WHERE knn.embedding MATCH vec_f32(?1) AND k = ?2 "
@@ -741,7 +752,7 @@ fn likeCandidates(
 	// ?1 = %query% (LIKE pattern), ?2 = query (exact), ?3 = query% (prefix), ?4 = limit
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
-		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, "
+		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, "
 		++ "1e999 AS distance "
 		++ "FROM symbols "
 		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
@@ -803,7 +814,7 @@ fn commentCandidates(
 
 	const sql: [:0]const u8 =
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
-		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, "
+		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, "
 		++ "1e999 AS distance "
 		++ "FROM symbols "
 		++ "WHERE doc_comment IS NOT NULL "
@@ -858,7 +869,7 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
-		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, "
+		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, symbols.body, "
 		++ "1e999 AS distance, "
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
@@ -872,7 +883,7 @@ fn ftsCandidates(
 		allocator,
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
-		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, "
+		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, symbols.body, "
 		++ "1e999 AS distance, "
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
@@ -900,7 +911,7 @@ fn ftsCandidates(
 		const rc = sqlite.sqlite3_step(stmt.?);
 		if (rc == sqlite.SQLITE_ROW) {
 			var res = try readResultRow(allocator, stmt.?);
-			res.bm25 = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt.?, 15)));
+			res.bm25 = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt.?, 16)));
 			try results.append(allocator, res);
 		} else if (rc == sqlite.SQLITE_DONE) {
 			break;
@@ -927,7 +938,8 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 	const symbol_visibility = try dupColumnTextOptional(allocator, stmt, 11);
 	const symbol_scope = try dupColumnTextOptional(allocator, stmt, 12);
 	const symbol_arity = readIntColumnOptional(stmt, 13);
-	const distance = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt, 14)));
+	const body = try dupColumnTextOptional(allocator, stmt, 14);
+	const distance = @as(f32, @floatCast(sqlite.sqlite3_column_double(stmt, 15)));
 
 	return .{
 		.id = id,
@@ -941,6 +953,7 @@ fn readResultRow(allocator: std.mem.Allocator, stmt: *sqlite.sqlite3_stmt) !Resu
 			.symbol_visibility = symbol_visibility,
 			.symbol_scope = symbol_scope,
 			.symbol_arity = symbol_arity,
+			.body = body,
 			.start_line = start_line,
 			.end_line = end_line,
 			.start_hash = start_hash,
@@ -1016,7 +1029,8 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 		const in_name = simd.indexOfIgnoreCase(symbol.name, tok) != null;
 		const in_sig = simd.indexOfIgnoreCase(symbol.signature, tok) != null;
 		const in_doc = if (symbol.doc_comment) |doc| simd.indexOfIgnoreCase(doc, tok) != null else false;
-		if (in_name or in_sig or in_doc) matched += 1;
+		const in_body = if (symbol.body) |b| simd.indexOfIgnoreCase(b, tok) != null else false;
+		if (in_name or in_sig or in_doc or in_body) matched += 1;
 	}
 	if (significant == 0) return 1.0;
 	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
@@ -1425,6 +1439,7 @@ fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, 
 	//   name match    → 1.0  (this symbol IS the thing)
 	//   doc comment   → 0.5  (described in docs)
 	//   signature only → 0.3 (just referenced/called in body)
+	//   body         → 0.4  (referenced inside the implementation)
 	for (query_tokens) |tok| {
 		const in_doc = if (symbol.doc_comment) |doc| simd.indexOfIgnoreCase(doc, tok) != null else false;
 		if (comments_only) {
@@ -1432,10 +1447,13 @@ fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, 
 		} else {
 			const in_name = simd.indexOfIgnoreCase(symbol.name, tok) != null;
 			const in_sig = simd.indexOfIgnoreCase(symbol.signature, tok) != null;
+			const in_body = if (symbol.body) |b| simd.indexOfIgnoreCase(b, tok) != null else false;
 			if (in_name) {
 				weighted_score += 1.0;
 			} else if (in_doc) {
 				weighted_score += 0.5;
+			} else if (in_body) {
+				weighted_score += 0.4;
 			} else if (in_sig) {
 				weighted_score += 0.3;
 			} else {
@@ -1685,6 +1703,31 @@ test "lexicalScore comments_only ignores name and signature" {
 
 	const score = try testLexicalScore(allocator, "checksum", symbol, true);
 	try std.testing.expectApproxEqAbs(@as(f32, 0.0), score, 0.0001);
+}
+
+test "lexicalScore counts tokens that appear only in body" {
+	// Regression: a function whose body references the query terms but whose
+	// name/sig/doc don't should still score non-trivially. Otherwise FTS
+	// finds the candidate via body-column index but the post-FTS scorer
+	// kills its rank.
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "bash"),
+		.file_path = try allocator.dupe(u8, "bin/setup.sh"),
+		.name = try allocator.dupe(u8, "setup_env"),
+		.signature = try allocator.dupe(u8, "setup_env()"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "setup_env() { [ -n \"$BASH_VERSION\" ]; }"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+
+	// "bash" and "version" both appear in body (BASH_VERSION); neither in
+	// name/sig/doc. Score should be ~0.4 (body weight, 2/2 tokens matched).
+	// Stronger requirement: non-trivial, at least 0.2 to outrank pure floor.
+	const score = try testLexicalScore(allocator, "bash version", symbol, false);
+	try std.testing.expect(score >= 0.2);
 }
 
 test "search vector mode returns nearest symbol" {
@@ -2009,6 +2052,180 @@ test "search lexical uses fts when available" {
 		try std.testing.expectEqualStrings("crc32", results[0].symbol.name);
 	} else {
 		try std.testing.expectEqual(@as(usize, 0), results.len);
+	}
+}
+
+test "tokenCoverage counts matches in body, not just name/sig/doc" {
+	// Regression: a function whose body references BASH_VERSION should count
+	// as covering "bash" and "version", even when the name/signature/doc
+	// don't mention either word. Without body coverage, FTS-matched results
+	// get hit with a 0.1 coverage floor and rank poorly.
+	const allocator = std.testing.allocator;
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "bash"),
+		.file_path = try allocator.dupe(u8, "bin/setup.sh"),
+		.name = try allocator.dupe(u8, "setup_env"),
+		.signature = try allocator.dupe(u8, "setup_env()"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "setup_env() { [ -n \"$BASH_VERSION\" ] && export FOO=1; }"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+
+	const tokens = [_][]const u8{ "bash", "version" };
+	const cov = tokenCoverage(&tokens, sym);
+	// Both tokens are present (in body via BASH_VERSION); expect full coverage.
+	try std.testing.expectApproxEqAbs(@as(f32, 1.0), cov, 0.0001);
+}
+
+test "tokenCoverage returns 0 when neither token appears anywhere" {
+	const allocator = std.testing.allocator;
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "unrelated"),
+		.signature = try allocator.dupe(u8, "fn unrelated() void"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "fn unrelated() void { return; }"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym.deinit(allocator);
+
+	const tokens = [_][]const u8{ "bash", "version" };
+	const cov = tokenCoverage(&tokens, sym);
+	try std.testing.expectApproxEqAbs(@as(f32, 0.0), cov, 0.0001);
+}
+
+test "hybrid merge preserves bm25 when symbol is in both vector and FTS candidates" {
+	// Regression: in hybrid mode, when a symbol shows up in BOTH the vector
+	// candidate list and the FTS candidate list, the dedup logic dropped the
+	// FTS row entirely — losing its bm25 score. The result kept its
+	// vector-only bm25=0, so scoring fell back to the body-weight-only
+	// lexicalScore path and lex topped out at ~0.4 for body matches, instead
+	// of the ~1.0 that bm25_norm * coverage would have given it.
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var sym = model.Symbol{
+		.language = try allocator.dupe(u8, "bash"),
+		.file_path = try allocator.dupe(u8, ".profile"),
+		.name = try allocator.dupe(u8, "in_bash"),
+		.signature = try allocator.dupe(u8, "in_bash()"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "in_bash() { [ -n \"${BASH_VERSION+set}\" ]; }"),
+		.start_line = 1,
+		.end_line = 3,
+	};
+	defer sym.deinit(allocator);
+
+	const id = try storage.insertSymbol(db, sym);
+	// Symbol embedding matches the FakeEmbedder query embedding → vector
+	// will return this row as candidate #1.
+	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 1.0, 0.0 });
+
+	const has_fts = try ftsAvailable(db);
+	if (!has_fts) return error.SkipZigTest;
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 1.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "BASH_VERSION", .{
+		.top_n = 5,
+		.mode = .hybrid,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expect(results.len == 1);
+	try std.testing.expectEqualStrings("in_bash", results[0].symbol.name);
+
+	// The FTS bm25 must survive the merge — otherwise lex stays at the
+	// lexicalScore body-weight (0.4) and the user sees lex=0.400 instead of
+	// the ~1.0 they'd expect for a literal BASH_VERSION hit.
+	try std.testing.expect(results[0].bm25 != 0);
+	try std.testing.expect(results[0].lexical > 0.5);
+}
+
+test "search surfaces body-only multi-token match (BASH_VERSION regression)" {
+	// User's original complaint: searching "bash version" failed to surface
+	// symbols whose body literally references BASH_VERSION. The bug was that
+	// body wasn't loaded into Result rows AND the post-FTS scorer ignored body
+	// for both coverage and per-token weighting, so body-only matches were
+	// cratered to ~0.1 (coverage floor) regardless of bm25.
+	//
+	// Minimum regression bar: the BASH_VERSION-using symbol must appear in
+	// results with a non-trivial lexical score, AND must outrank a symbol
+	// that only covers ONE of the two tokens via body (no name competitor —
+	// bm25's symbol_name weight of 10x makes name-match comparisons noisy).
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	// Symbol A: both query tokens covered via body (BASH_VERSION).
+	var sym_a = model.Symbol{
+		.language = try allocator.dupe(u8, "bash"),
+		.file_path = try allocator.dupe(u8, "bin/setup.sh"),
+		.name = try allocator.dupe(u8, "setup_env"),
+		.signature = try allocator.dupe(u8, "setup_env()"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "setup_env() { [ -n \"$BASH_VERSION\" ] && export FOO=1; }"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_a.deinit(allocator);
+
+	// Symbol B: only "bash" appears (in body, no name competitor).
+	var sym_b = model.Symbol{
+		.language = try allocator.dupe(u8, "bash"),
+		.file_path = try allocator.dupe(u8, "bin/b.sh"),
+		.name = try allocator.dupe(u8, "do_thing"),
+		.signature = try allocator.dupe(u8, "do_thing()"),
+		.doc_comment = null,
+		.body = try allocator.dupe(u8, "do_thing() { echo 'running bash'; }"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer sym_b.deinit(allocator);
+
+	const id_a = try storage.insertSymbol(db, sym_a);
+	const id_b = try storage.insertSymbol(db, sym_b);
+	try storage.insertEmbedding(db, allocator, id_a, &[_]f32{ 0.0, 0.0 });
+	try storage.insertEmbedding(db, allocator, id_b, &[_]f32{ 0.0, 0.0 });
+
+	const has_fts = try ftsAvailable(db);
+	if (!has_fts) return error.SkipZigTest;
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const results = (try search(allocator, db, fake.embedder(), "bash version", .{
+		.top_n = 10,
+		.mode = .lexical,
+	})).results;
+	defer freeResults(allocator, results);
+
+	try std.testing.expect(results.len >= 1);
+
+	var setup_env_lex: ?f32 = null;
+	var do_thing_lex: ?f32 = null;
+	for (results) |res| {
+		if (std.mem.eql(u8, res.symbol.name, "setup_env")) setup_env_lex = res.lexical;
+		if (std.mem.eql(u8, res.symbol.name, "do_thing")) do_thing_lex = res.lexical;
+	}
+
+	// Full-coverage body match must be present with a non-trivial score
+	// (regression: previously stuck at 0.1 coverage floor because body wasn't
+	// scored).
+	try std.testing.expect(setup_env_lex != null);
+	try std.testing.expect(setup_env_lex.? > 0.2);
+
+	// Full coverage (both tokens via body) must outrank partial coverage
+	// (one token via body). Without name-match noise this is the cleanest
+	// signal that body scoring works.
+	if (do_thing_lex) |dt| {
+		try std.testing.expect(setup_env_lex.? > dt);
 	}
 }
 
