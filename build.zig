@@ -163,6 +163,18 @@ pub fn build(b: *std.Build) void {
 	linkCommon(preflight_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(preflight_tests).step);
 
+	const io_singleton_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/io_singleton.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	addTreeSitterIncludes(b, io_singleton_tests.root_module);
+	addPcre2Includes(io_singleton_tests.root_module, pcre2_lib);
+	linkCommon(io_singleton_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
+	test_step.dependOn(&b.addRunArtifact(io_singleton_tests).step);
+
 	const embedding_http_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/embedding_http.zig"),

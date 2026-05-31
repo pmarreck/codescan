@@ -37,6 +37,7 @@ const _pcre2 = @import("pcre2.zig");
 const _pidfile = @import("pidfile.zig");
 const _plugin = @import("plugin.zig");
 const _preflight = @import("preflight.zig");
+const _io_singleton = @import("io_singleton.zig");
 const _scan = @import("scan.zig");
 const _search = @import("search.zig");
 const _simd = @import("simd.zig");
@@ -90,6 +91,7 @@ test {
 	_ = _pidfile;
 	_ = _plugin;
 	_ = _preflight;
+	_ = _io_singleton;
 	_ = _scan;
 	_ = _search;
 	_ = _simd;

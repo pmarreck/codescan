@@ -1,13 +1,17 @@
 //! Global Io singleton for the codescan CLI.
 //!
-//! 0.16 made Io explicit and threaded through every I/O-touching function.
-//! For codescan's CLI (single entry point, all calls within main's lifetime),
-//! we capture init.io at main() entry and expose it process-wide. This is a
-//! pragmatic shortcut the migration doc warns against but is acceptable for
-//! a CLI binary where all I/O is during main's lifetime.
+//! Zig 0.16 made Io explicit and threaded through every I/O-touching function.
+//! Codescan currently exposes init.io process-wide via this module; the proper
+//! long-term fix is to thread `std.Io` through callers explicitly (PLAN.md
+//! Phase 5, flagged 2026-05-31). Until that refactor lands, code paths that
+//! run outside main's lifetime (daemon, watcher, background tasks) must call
+//! `io_singleton.set(init.io)` early enough or risk the `get()` panic.
 //!
-//! Tests use `setForTesting(io)` (typically with a fresh `Io.Threaded`) before
-//! exercising any code path that calls `get()`.
+//! Tests call `set(io)` with a fresh `Io.Threaded` if they need real
+//! concurrency. Tests that don't `set()` fall back to `getOrInit()`, which
+//! returns a single-threaded Io — concurrent ops on it return
+//! `error.ConcurrencyUnavailable`. See the divergence-lock test at the
+//! bottom of this file.
 
 const std = @import("std");
 
@@ -59,8 +63,26 @@ pub fn get() std.Io {
 }
 
 /// Lazy default: returns the set io, or sets up and returns a single-threaded
-/// blocking Io on first call. Useful inside tests that don't want to manually
-/// init.
+/// blocking Io on first call.
+///
+/// TEST/PROD DIVERGENCE (flagged 2026-05-31, see PLAN.md Phase 5):
+/// This fallback uses `init_single_threaded`, which ships with
+/// `allocator=.failing` and `concurrent_limit=.nothing`. Any test path that
+/// reaches concurrency code through this fallback gets
+/// `error.ConcurrencyUnavailable` (often surfacing as OOM mapped to that),
+/// while production uses a full `Io.Threaded.init` that races address
+/// candidates in parallel (functional Happy Eyeballs).
+///
+/// Naively swapping in `Io.Threaded.init(page_alloc, .{})` here breaks the
+/// test suite: it spawns worker threads + installs SIGIO/SIGPIPE handlers
+/// process-wide, and the process-singleton lifecycle has no clean tear-down
+/// across the ~500 call sites that go through this fallback. Worker threads
+/// race with later test bodies and panic on `busy_count` underflow.
+///
+/// Fixing this properly requires the explicit `std.Io` threading refactor
+/// PLAN.md Phase 5 calls for. Until then, the regression test below LOCKS
+/// the current divergent behavior — if someone "fixes" this fallback without
+/// also doing the refactor, the test fails loudly.
 var _fallback_threaded: ?std.Io.Threaded = null;
 pub fn getOrInit() std.Io {
     if (current_io) |io| return io;
@@ -90,4 +112,44 @@ pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) GetEnvVarE
     const env_map = getEnvMapOrInit(allocator);
     const v = env_map.get(name) orelse return error.EnvironmentVariableNotFound;
     return try allocator.dupe(u8, v);
+}
+
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+/// Resets module-private state so an isolated test can re-exercise the lazy
+/// fallback path. Tests only.
+pub fn resetForTesting() void {
+	current_io = null;
+	_fallback_threaded = null;
+}
+
+test "getOrInit fallback is currently single-threaded (locks known test/prod divergence)" {
+	// THIS TEST DOCUMENTS A LIMITATION, NOT A WIN.
+	//
+	// Production runs `init.io` (real `Io.Threaded.init` from `start.zig`)
+	// which gives parallel `connectMany` — functional Happy Eyeballs. The
+	// test fallback below uses `init_single_threaded`, so any code path
+	// reaching this fallback returns `error.ConcurrencyUnavailable` from
+	// concurrent ops. This is a test/prod divergence flagged 2026-05-31
+	// (PLAN.md Phase 5).
+	//
+	// Fixing the divergence requires explicit `std.Io` threading instead of
+	// the process-singleton — a multi-session refactor across ~500 call
+	// sites. Until then, this test LOCKS the current behavior. If it starts
+	// failing because someone made `getOrInit()` return a real threaded Io
+	// without doing the broader refactor, expect the broader test suite to
+	// crash in worker threads (busy_count underflow on process tear-down).
+	resetForTesting();
+	defer resetForTesting();
+
+	const io = getOrInit();
+	var group: std.Io.Group = .init;
+	const Runner = struct {
+		fn noop() std.Io.Cancelable!void { return; }
+	};
+	const err = group.concurrent(io, Runner.noop, .{});
+	try std.testing.expectError(error.ConcurrencyUnavailable, err);
 }
