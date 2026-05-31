@@ -91,8 +91,19 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	_ = address;
 	_ = embedder_adapter;
 	// TODO(zig-0.16): migrate std.http.Server + std.net.Address.listen to the new
-	// std.Io.net.IpAddress.listen + std.http.Server v2 (io-aware) API. This is a
-	// large refactor that we are deferring until the rest of codescan is green.
+	// std.Io.net.IpAddress.listen + std.http.Server v2 (io-aware) API. The
+	// refactor was deferred during the 0.15→0.16 port and has not landed.
+	// Surface a clear user-facing message instead of an opaque error code.
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	const stderr = &stderr_writer.interface;
+	_ = stderr.writeAll(
+		"error: `codescan serve` is temporarily unavailable.\n" ++
+		"  The HTTP server is mid-migration to std.Io.net + std.http.Server v2 (Zig 0.16).\n" ++
+		"  Use `codescan search` for queries or `codescan mcp-serve` for the MCP/JSON-RPC stdio server.\n" ++
+		"  Track progress in PLAN.md (\"HTTP server\" — currently unchecked).\n",
+	) catch {};
+	_ = stderr.flush() catch {};
 	return error.HttpServerNotMigrated;
 }
 

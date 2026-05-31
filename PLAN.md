@@ -32,7 +32,7 @@
 - [x] Define plugin interface + registry
 - [x] Implement Zig extractor (function spans + comments)
 - [x] Implement Elixir extractor (function spans + comments)
-- [x] Add HTTP server + endpoints (index/update/search/health)
+- [ ] Restore HTTP server + endpoints (index/update/search/health) — code exists in `src/server.zig` but `serve()` returns `error.HttpServerNotMigrated` after the Zig 0.16 port; needs migration to `std.Io.net.IpAddress.listen` + `std.http.Server` v2. CLI surface advertises the command and now prints a clear redirect to `codescan search` / `codescan mcp-serve` until this lands. (Was checked in error — code shipped but never re-implemented after 0.16 port.)
 - [x] Add JSON output + human output formatting
 - [x] Wire main CLI (config merge, commands, .codescan setup)
 - [x] Add hybrid weight knobs (CLI/config/HTTP) + tests

@@ -2394,9 +2394,10 @@ fn ensureFileExists(path: []const u8) !void {
 fn ensureConfigWithDefaults(path: []const u8) !void {
 	const result = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
 	if (result) |file| {
-		// File exists — check if it's empty
+		// File exists — check if it's empty. `defer` so a `stat` failure
+		// (revoked perms, IO error mid-syscall) doesn't leak the descriptor.
+		defer file.close(io_singleton.getOrInit());
 		const stat = try file.stat(io_singleton.getOrInit());
-		file.close(io_singleton.getOrInit());
 		if (stat.size == 0) {
 			const f = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{ .truncate = true });
 			defer f.close(io_singleton.getOrInit());
@@ -2415,8 +2416,8 @@ fn ensureConfigWithDefaults(path: []const u8) !void {
 fn ensureWeightsWithDefaults(path: []const u8) !void {
 	const result = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
 	if (result) |file| {
+		defer file.close(io_singleton.getOrInit());
 		const stat = try file.stat(io_singleton.getOrInit());
-		file.close(io_singleton.getOrInit());
 		if (stat.size == 0) {
 			const f = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{ .truncate = true });
 			defer f.close(io_singleton.getOrInit());
