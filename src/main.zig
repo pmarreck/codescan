@@ -211,413 +211,8 @@ pub fn main(init: std.process.Init) !void {
 		},
 		.init => try runInit(allocator, settings, config_root, registry, parsed.force, stdout),
 		.index => try runIndex(allocator, settings, registry, parsed.lexical_only, stdout),
-		.update => {
-			checkTmpSpace();
-			try io_singleton.ensureParentDir(settings.db_path);
-			// Warn if watcher is already running (concurrent indexing causes constraint errors)
-			{
-				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-				if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
-					var sb: [4096]u8 = undefined;
-					var sw = io_singleton.stderrWriter(&sb);
-					const se = &sw.interface;
-					_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
-					_ = se.flush() catch {};
-					return;
-				}
-			}
-			var db = try storage.openFileWithVec(allocator, settings.db_path);
-			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
-				storage.close(db);
-				{
-					var sb2: [4096]u8 = undefined;
-					var sw2 = io_singleton.stderrWriter(&sb2);
-					const se2 = &sw2.interface;
-					_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-					_ = se2.flush() catch {};
-				}
-				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-			};
-			defer storage.close(db);
-			defer schema_result.deinit(allocator);
-			if (schema_result.did_schema_upgrade) {
-				var sb: [4096]u8 = undefined;
-				var sw = io_singleton.stderrWriter(&sb);
-				const se = &sw.interface;
-				_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
-				_ = se.flush() catch {};
-			}
-			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
-				var sb: [4096]u8 = undefined;
-				var sw = io_singleton.stderrWriter(&sb);
-				const se = &sw.interface;
-				if (schema_result.embedding_model_mismatch) {
-					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
-				}
-				if (schema_result.embedding_dim_mismatch) {
-					_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
-				}
-				_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
-				_ = se.flush() catch {};
-				std.process.exit(1);
-			}
-
-			var http_client = embedding_http.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
-			var use_null_embedder = false;
-			if (parsed.lexical_only) {
-				use_null_embedder = true;
-			} else {
-				ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
-					std.process.exit(1);
-				};
-			}
-			var embedder_adapter = embedding.HttpEmbedder{
-				.transport = http_client.transport(),
-				.base_url = settings.embedding_url,
-				.model = settings.embedding_model,
-				.dialect = settings.embedding_dialect,
-				.auth_header = settings.embedding_auth_header,
-			};
-			const active_embedder = if (use_null_embedder)
-				embedding.NullEmbedder.embedder()
-			else
-				embedder_adapter.embedder();
-
-			// Auto-detect embedding dimension if using a real embedder
-			const effective_dim = if (!use_null_embedder)
-				probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
-			else
-				settings.embedding_dim;
-
-			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-			defer index_filters.deinit(allocator);
-
-			const stats = try indexer.indexIncremental(
-				allocator,
-				db,
-				settings.root_path,
-				registry,
-				active_embedder,				.{
-					.embedding_dim = effective_dim,
-					.embedding_model = settings.embedding_model,
-					.batch_size = settings.batch_size,
-					.max_file_size = settings.max_file_size,
-					.allowed_exts = index_filters.exts.items,
-					.allowed_kinds = index_filters.kinds.items,
-					.ignore = .{
-						.global = settings.ignore_global,
-						.per_language = settings.ignore_lang,
-						.include_node_modules = settings.include_node_modules,
-						.always_include = settings.always_include,
-					},
-					.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
-				},
-			);
-
-			if (settings.output == .json) {
-				try stdout.print("{{\"status\":\"ok\",\"new\":{d},\"modified\":{d},\"deleted\":{d},\"unchanged\":{d},\"symbols\":{d}}}\n", .{
-					stats.new_files,
-					stats.modified_files,
-					stats.deleted_files,
-					stats.unchanged_files,
-					stats.symbols,
-				});
-			} else {
-				try stdout.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged ({d} symbols re-embedded)\n", .{
-					stats.new_files,
-					stats.modified_files,
-					stats.deleted_files,
-					stats.unchanged_files,
-					stats.symbols,
-				});
-			}
-			try stdout.flush();
-
-			// Auto-launch background watcher after update
-			{
-				var update_stderr_buf: [4096]u8 = undefined;
-				var update_stderr_writer = io_singleton.stderrWriter(&update_stderr_buf);
-				const update_stderr = &update_stderr_writer.interface;
-				maybeStartWatcher(allocator, settings, update_stderr);
-			}
-		},
-		.search => {
-			const query = parsed.query orelse "";
-			try io_singleton.ensureParentDir(settings.db_path);
-			var db = try storage.openFileWithVec(allocator, settings.db_path);
-
-			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
-			const stderr = &stderr_writer.interface;
-
-			// Always run schema init/migration so older DBs get new columns
-			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
-				storage.close(db);
-				_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-				_ = stderr.flush() catch {};
-				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-			};
-			defer storage.close(db);
-			defer schema_result.deinit(allocator);
-			if (schema_result.did_schema_upgrade) {
-				_ = stderr.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
-				_ = stderr.flush() catch {};
-			}
-			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
-				if (schema_result.embedding_model_mismatch) {
-					_ = stderr.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
-				}
-				if (schema_result.embedding_dim_mismatch) {
-					_ = stderr.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
-				}
-				_ = stderr.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
-				_ = stderr.flush() catch {};
-				std.process.exit(1);
-			}
-
-			// Regex search: skip vector/FTS entirely
-			if (parsed.regex_search) {
-				if (query.len == 0) {
-					_ = stderr.print("error: --regex requires a search query\n", .{}) catch {};
-					_ = stderr.flush() catch {};
-					std.process.exit(1);
-				}
-				var path_filters_regex = @as(std.ArrayListUnmanaged([]const u8), .empty);
-				defer path_filters_regex.deinit(allocator);
-				for (parsed.path_filters.items) |p| {
-					try path_filters_regex.append(allocator, p);
-				}
-				if (parsed.file_filter) |f| {
-					try path_filters_regex.append(allocator, f);
-				}
-				try runRegexSearch(
-					allocator,
-					db,
-					query,
-					parsed.context_lines,
-					settings.top_n,
-					path_filters_regex.items,
-					settings.search_lang,
-					parsed.ignore_case,
-					registry,
-					settings.root_path,
-					settings.output,
-					stdout,
-					parsed.include_body,
-				);
-				try stdout.flush();
-				return;
-			}
-
-			var http_client = embedding_http.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
-
-			// Track whether we should use lexical-only (Ollama unavailable)
-			var effective_search_mode = settings.search_mode;
-			var did_auto_index = false;
-
-			// Auto-index if DB is empty
-			if (!storage.isIndexPopulated(db)) {
-				_ = stderr.print("note: No index found. Setting up codescan for this project...\n", .{}) catch {};
-				_ = stderr.flush() catch {};
-
-				// Auto-detect embedding server; use NullEmbedder if unavailable
-				const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
-				const use_embeddings = detected != null and detected.?.model_available;
-
-				if (!use_embeddings) {
-					effective_search_mode = .lexical;
-					if (detected) |d| {
-						if (!d.model_available) {
-							_ = stderr.print("  note: Embedding server found at {s} but model '{s}' not installed.\n" ++
-								"  Run 'codescan setup-model' then 'codescan update' for semantic search.\n", .{ d.url, settings.embedding_model }) catch {};
-						}
-					} else {
-						_ = stderr.print("  note: No embedding server found. Using lexical-only search.\n" ++
-							"  Run 'codescan setup-model' for semantic search.\n", .{}) catch {};
-					}
-					_ = stderr.flush() catch {};
-				}
-
-				const emb_url = if (detected) |d| d.url else settings.embedding_url;
-				const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
-				const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
-				var embedder_adapter = embedding.HttpEmbedder{
-					.transport = http_client.transport(),
-					.base_url = emb_url,
-					.model = emb_model,
-					.dialect = emb_dialect,
-					.auth_header = settings.embedding_auth_header,
-				};
-				const active_embedder = if (use_embeddings)
-					embedder_adapter.embedder()
-				else
-					embedding.NullEmbedder.embedder();
-
-				_ = try performFullIndex(
-					allocator,
-					db,
-					settings,
-					registry,
-					active_embedder,
-					stderr,
-					shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
-				);
-				did_auto_index = true;
-			} else {
-				// Normal path: ensure Ollama if needed
-				if (effective_search_mode != .lexical) {
-					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
-				}
-			}
-
-			var embedder_adapter = embedding.HttpEmbedder{
-				.transport = http_client.transport(),
-				.base_url = settings.embedding_url,
-				.model = settings.embedding_model,
-				.dialect = settings.embedding_dialect,
-				.auth_header = settings.embedding_auth_header,
-			};
-
-			var search_filters = try filters.buildSearchFilters(allocator, registry, db, .{
-				.search_ext = settings.search_ext,
-				.search_type = settings.search_type,
-				.search_lang = settings.search_lang,
-				.search_symbol_kind = settings.search_symbol_kind,
-				.primary_lang = settings.primary_lang,
-				.include_docs = settings.include_docs,
-				.docs_only = settings.docs_only,
-			});
-			defer search_filters.deinit(allocator);
-
-			const effective_weights = weights.resolveSearchWeights(
-				settings.search_weights,
-				search_filters.langs.items,
-				settings.weight_vector,
-				settings.weight_lexical,
-				parsed.seen.weight_vector or parsed.seen.weight_lexical,
-			);
-
-			// Build path filters from --path and --file flags
-			var path_filters = @as(std.ArrayListUnmanaged([]const u8), .empty);
-			defer path_filters.deinit(allocator);
-			for (parsed.path_filters.items) |p| {
-				try path_filters.append(allocator, p);
-			}
-			if (parsed.file_filter) |f| {
-				try path_filters.append(allocator, f);
-			}
-
-			const search_opts = search.Options{
-				.top_n = settings.top_n,
-				.mode = effective_search_mode,
-				.fusion = settings.fusion,
-				.rrf_k = settings.rrf_k,
-				.fts_mode = settings.fts_mode,
-				.weight_vector = effective_weights.weight_vector,
-				.weight_lexical = effective_weights.weight_lexical,
-				.weight_symbol_kind = effective_weights.weight_symbol_kind,
-				.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
-				.weight_symbol_scope = effective_weights.weight_symbol_scope,
-				.weight_symbol_arity = effective_weights.weight_symbol_arity,
-				.min_score = settings.min_score,
-				.allowed_langs = search_filters.langs.items,
-				.allowed_exts = search_filters.exts.items,
-				.allowed_symbol_kinds = search_filters.symbol_kinds.items,
-				.allowed_paths = path_filters.items,
-				.comments_only = settings.comments_only,
-			};
-			const sr = try search.search(
-				allocator,
-				db,
-				embedder_adapter.embedder(),
-				query,
-				search_opts,
-			);
-			defer search.freeResults(allocator, sr.results);
-
-			if (sr.results.len == 0) {
-				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-				// Show per-filter diagnostic counts when 2+ filter dimensions were active
-				const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, search_opts) catch null;
-				const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
-				if (has_diag) {
-					const d = diag.?;
-					// Build a short description of active filters for the note header
-					const kind_str = if (search_opts.allowed_symbol_kinds.len > 0) search_opts.allowed_symbol_kinds[0] else "";
-					const lang_str = if (search_opts.allowed_langs.len > 0) search_opts.allowed_langs[0] else "";
-					if (kind_str.len > 0 and lang_str.len > 0) {
-						_ = stderr.print("note: no results for query \"{s}\" with kind={s} lang={s}\n", .{ query, kind_str, lang_str }) catch {};
-					} else if (kind_str.len > 0) {
-						_ = stderr.print("note: no results for query \"{s}\" with kind={s}\n", .{ query, kind_str }) catch {};
-					} else if (lang_str.len > 0) {
-						_ = stderr.print("note: no results for query \"{s}\" with lang={s}\n", .{ query, lang_str }) catch {};
-					} else {
-						_ = stderr.print("note: no results for query \"{s}\" with active filters\n", .{query}) catch {};
-					}
-					if (d.query_only) |n| {
-						_ = stderr.print("  -> query alone: {d} result(s)\n", .{n}) catch {};
-					}
-					if (d.kind_only) |n| {
-						_ = stderr.print("  -> kind filter alone: {d} result(s)\n", .{n}) catch {};
-					}
-					if (d.lang_only) |n| {
-						_ = stderr.print("  -> lang filter alone: {d} result(s)\n", .{n}) catch {};
-					}
-				} else if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
-					_ = stderr.print(
-						"note: no results found (watcher is running and index is up to date).\n",
-						.{},
-					) catch {};
-				} else {
-					_ = stderr.print(
-						"note: no results found; consider re-indexing with `codescan update` or starting the watcher with `codescan watch start`.\n",
-						.{},
-					) catch {};
-				}
-				_ = stderr.flush() catch {};
-			}
-
-			// When --include-body is set, cap results at 3 unless user explicitly set --top
-			var display_results = sr.results;
-			const body_limit: usize = 3;
-			if (parsed.include_body and !parsed.seen.top_n and sr.results.len > body_limit) {
-				display_results = sr.results[0..body_limit];
-				_ = stderr.print("note: --include-body limits output to {d} results to avoid overfilling context (use --top N to override).\n", .{body_limit}) catch {};
-				_ = stderr.flush() catch {};
-			}
-
-			// Fetch body text for each result when --include-body is set
-			if (parsed.include_body) {
-				for (display_results) |*res| {
-					if (res.symbol.body == null) {
-						res.symbol.body = storage.getSymbolBody(allocator, db, res.id) catch null;
-					}
-				}
-			}
-
-			const no_color_set = blk: {
-				const env_map = io_singleton.getEnvMap() orelse break :blk false;
-				break :blk env_map.get("NO_COLOR") != null;
-			};
-			const use_color = settings.output == .human and !no_color_set;
-			try output.writeResults(allocator, stdout, settings.output, display_results, .{
-				.show_comments = settings.show_comments,
-				.show_body = parsed.include_body,
-				.use_color = use_color,
-				.total_relevant = sr.total_relevant,
-				.top_n = settings.top_n,
-			});
-			try stdout.flush();
-
-			// Auto-launch background watcher after first auto-index
-			if (did_auto_index) {
-				maybeStartWatcher(allocator, settings, stderr);
-			}
-		},
+		.update => try runUpdate(allocator, settings, registry, parsed.lexical_only, stdout),
+		.search => try runSearch(allocator, settings, registry, parsed, stdout),
 		.serve => {
 			try server.serve(allocator, .{
 				.root_path = settings.root_path,
@@ -2603,6 +2198,432 @@ fn runIndex(
 		try stdout.print("Indexed {d} files, {d} symbols\n", .{ stats.files, stats.symbols });
 	}
 	try stdout.flush();
+}
+
+/// Run an incremental index — scan for new/modified/deleted files and update.
+/// Extracted from the `.update` switch arm of `pub fn main` (2026-06-01).
+fn runUpdate(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	registry: plugin.Registry,
+	lexical_only: bool,
+	stdout: *std.Io.Writer,
+) !void {
+	checkTmpSpace();
+	try io_singleton.ensureParentDir(settings.db_path);
+	// Warn if watcher is already running (concurrent indexing causes constraint errors)
+	{
+		const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+		if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+			var sb: [4096]u8 = undefined;
+			var sw = io_singleton.stderrWriter(&sb);
+			const se = &sw.interface;
+			_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
+			_ = se.flush() catch {};
+			return;
+		}
+	}
+	var db = try storage.openFileWithVec(allocator, settings.db_path);
+	var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
+		storage.close(db);
+		{
+			var sb2: [4096]u8 = undefined;
+			var sw2 = io_singleton.stderrWriter(&sb2);
+			const se2 = &sw2.interface;
+			_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+			_ = se2.flush() catch {};
+		}
+		db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+		break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
+	};
+	defer storage.close(db);
+	defer schema_result.deinit(allocator);
+	if (schema_result.did_schema_upgrade) {
+		var sb: [4096]u8 = undefined;
+		var sw = io_singleton.stderrWriter(&sb);
+		const se = &sw.interface;
+		_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
+		_ = se.flush() catch {};
+	}
+	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+		var sb: [4096]u8 = undefined;
+		var sw = io_singleton.stderrWriter(&sb);
+		const se = &sw.interface;
+		if (schema_result.embedding_model_mismatch) {
+			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
+		}
+		if (schema_result.embedding_dim_mismatch) {
+			_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+		}
+		_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+		_ = se.flush() catch {};
+		std.process.exit(1);
+	}
+
+	var http_client = embedding_http.StdHttpTransport.init(allocator);
+	defer http_client.deinit();
+	var use_null_embedder = false;
+	if (lexical_only) {
+		use_null_embedder = true;
+	} else {
+		ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
+			std.process.exit(1);
+		};
+	}
+	var embedder_adapter = embedding.HttpEmbedder{
+		.transport = http_client.transport(),
+		.base_url = settings.embedding_url,
+		.model = settings.embedding_model,
+		.dialect = settings.embedding_dialect,
+		.auth_header = settings.embedding_auth_header,
+	};
+	const active_embedder = if (use_null_embedder)
+		embedding.NullEmbedder.embedder()
+	else
+		embedder_adapter.embedder();
+
+	// Auto-detect embedding dimension if using a real embedder
+	const effective_dim = if (!use_null_embedder)
+		probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
+	else
+		settings.embedding_dim;
+
+	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+	defer index_filters.deinit(allocator);
+
+	const stats = try indexer.indexIncremental(
+		allocator,
+		db,
+		settings.root_path,
+		registry,
+		active_embedder,				.{
+			.embedding_dim = effective_dim,
+			.embedding_model = settings.embedding_model,
+			.batch_size = settings.batch_size,
+			.max_file_size = settings.max_file_size,
+			.allowed_exts = index_filters.exts.items,
+			.allowed_kinds = index_filters.kinds.items,
+			.ignore = .{
+				.global = settings.ignore_global,
+				.per_language = settings.ignore_lang,
+				.include_node_modules = settings.include_node_modules,
+				.always_include = settings.always_include,
+			},
+			.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
+		},
+	);
+
+	if (settings.output == .json) {
+		try stdout.print("{{\"status\":\"ok\",\"new\":{d},\"modified\":{d},\"deleted\":{d},\"unchanged\":{d},\"symbols\":{d}}}\n", .{
+			stats.new_files,
+			stats.modified_files,
+			stats.deleted_files,
+			stats.unchanged_files,
+			stats.symbols,
+		});
+	} else {
+		try stdout.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged ({d} symbols re-embedded)\n", .{
+			stats.new_files,
+			stats.modified_files,
+			stats.deleted_files,
+			stats.unchanged_files,
+			stats.symbols,
+		});
+	}
+	try stdout.flush();
+
+	// Auto-launch background watcher after update
+	{
+		var update_stderr_buf: [4096]u8 = undefined;
+		var update_stderr_writer = io_singleton.stderrWriter(&update_stderr_buf);
+		const update_stderr = &update_stderr_writer.interface;
+		maybeStartWatcher(allocator, settings, update_stderr);
+	}
+}
+
+/// Run a search query against the index — vector, lexical (FTS5),
+/// regex, or hybrid mode depending on settings. Extracted from the
+/// `.search` switch arm of `pub fn main` (2026-06-01).
+fn runSearch(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	registry: plugin.Registry,
+	parsed: cli.Parsed,
+	stdout: *std.Io.Writer,
+) !void {
+	const query = parsed.query orelse "";
+	try io_singleton.ensureParentDir(settings.db_path);
+	var db = try storage.openFileWithVec(allocator, settings.db_path);
+
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
+	const stderr = &stderr_writer.interface;
+
+	// Always run schema init/migration so older DBs get new columns
+	var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
+		storage.close(db);
+		_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+		db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+		break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
+	};
+	defer storage.close(db);
+	defer schema_result.deinit(allocator);
+	if (schema_result.did_schema_upgrade) {
+		_ = stderr.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+	}
+	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+		if (schema_result.embedding_model_mismatch) {
+			_ = stderr.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
+		}
+		if (schema_result.embedding_dim_mismatch) {
+			_ = stderr.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+		}
+		_ = stderr.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+		std.process.exit(1);
+	}
+
+	// Regex search: skip vector/FTS entirely
+	if (parsed.regex_search) {
+		if (query.len == 0) {
+			_ = stderr.print("error: --regex requires a search query\n", .{}) catch {};
+			_ = stderr.flush() catch {};
+			std.process.exit(1);
+		}
+		var path_filters_regex = @as(std.ArrayListUnmanaged([]const u8), .empty);
+		defer path_filters_regex.deinit(allocator);
+		for (parsed.path_filters.items) |p| {
+			try path_filters_regex.append(allocator, p);
+		}
+		if (parsed.file_filter) |f| {
+			try path_filters_regex.append(allocator, f);
+		}
+		try runRegexSearch(
+			allocator,
+			db,
+			query,
+			parsed.context_lines,
+			settings.top_n,
+			path_filters_regex.items,
+			settings.search_lang,
+			parsed.ignore_case,
+			registry,
+			settings.root_path,
+			settings.output,
+			stdout,
+			parsed.include_body,
+		);
+		try stdout.flush();
+		return;
+	}
+
+	var http_client = embedding_http.StdHttpTransport.init(allocator);
+	defer http_client.deinit();
+
+	// Track whether we should use lexical-only (Ollama unavailable)
+	var effective_search_mode = settings.search_mode;
+	var did_auto_index = false;
+
+	// Auto-index if DB is empty
+	if (!storage.isIndexPopulated(db)) {
+		_ = stderr.print("note: No index found. Setting up codescan for this project...\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+
+		// Auto-detect embedding server; use NullEmbedder if unavailable
+		const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
+		const use_embeddings = detected != null and detected.?.model_available;
+
+		if (!use_embeddings) {
+			effective_search_mode = .lexical;
+			if (detected) |d| {
+				if (!d.model_available) {
+					_ = stderr.print("  note: Embedding server found at {s} but model '{s}' not installed.\n" ++
+						"  Run 'codescan setup-model' then 'codescan update' for semantic search.\n", .{ d.url, settings.embedding_model }) catch {};
+				}
+			} else {
+				_ = stderr.print("  note: No embedding server found. Using lexical-only search.\n" ++
+					"  Run 'codescan setup-model' for semantic search.\n", .{}) catch {};
+			}
+			_ = stderr.flush() catch {};
+		}
+
+		const emb_url = if (detected) |d| d.url else settings.embedding_url;
+		const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
+		const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
+		var embedder_adapter = embedding.HttpEmbedder{
+			.transport = http_client.transport(),
+			.base_url = emb_url,
+			.model = emb_model,
+			.dialect = emb_dialect,
+			.auth_header = settings.embedding_auth_header,
+		};
+		const active_embedder = if (use_embeddings)
+			embedder_adapter.embedder()
+		else
+			embedding.NullEmbedder.embedder();
+
+		_ = try performFullIndex(
+			allocator,
+			db,
+			settings,
+			registry,
+			active_embedder,
+			stderr,
+			shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
+		);
+		did_auto_index = true;
+	} else {
+		// Normal path: ensure Ollama if needed
+		if (effective_search_mode != .lexical) {
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+		}
+	}
+
+	var embedder_adapter = embedding.HttpEmbedder{
+		.transport = http_client.transport(),
+		.base_url = settings.embedding_url,
+		.model = settings.embedding_model,
+		.dialect = settings.embedding_dialect,
+		.auth_header = settings.embedding_auth_header,
+	};
+
+	var search_filters = try filters.buildSearchFilters(allocator, registry, db, .{
+		.search_ext = settings.search_ext,
+		.search_type = settings.search_type,
+		.search_lang = settings.search_lang,
+		.search_symbol_kind = settings.search_symbol_kind,
+		.primary_lang = settings.primary_lang,
+		.include_docs = settings.include_docs,
+		.docs_only = settings.docs_only,
+	});
+	defer search_filters.deinit(allocator);
+
+	const effective_weights = weights.resolveSearchWeights(
+		settings.search_weights,
+		search_filters.langs.items,
+		settings.weight_vector,
+		settings.weight_lexical,
+		parsed.seen.weight_vector or parsed.seen.weight_lexical,
+	);
+
+	// Build path filters from --path and --file flags
+	var path_filters = @as(std.ArrayListUnmanaged([]const u8), .empty);
+	defer path_filters.deinit(allocator);
+	for (parsed.path_filters.items) |p| {
+		try path_filters.append(allocator, p);
+	}
+	if (parsed.file_filter) |f| {
+		try path_filters.append(allocator, f);
+	}
+
+	const search_opts = search.Options{
+		.top_n = settings.top_n,
+		.mode = effective_search_mode,
+		.fusion = settings.fusion,
+		.rrf_k = settings.rrf_k,
+		.fts_mode = settings.fts_mode,
+		.weight_vector = effective_weights.weight_vector,
+		.weight_lexical = effective_weights.weight_lexical,
+		.weight_symbol_kind = effective_weights.weight_symbol_kind,
+		.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
+		.weight_symbol_scope = effective_weights.weight_symbol_scope,
+		.weight_symbol_arity = effective_weights.weight_symbol_arity,
+		.min_score = settings.min_score,
+		.allowed_langs = search_filters.langs.items,
+		.allowed_exts = search_filters.exts.items,
+		.allowed_symbol_kinds = search_filters.symbol_kinds.items,
+		.allowed_paths = path_filters.items,
+		.comments_only = settings.comments_only,
+	};
+	const sr = try search.search(
+		allocator,
+		db,
+		embedder_adapter.embedder(),
+		query,
+		search_opts,
+	);
+	defer search.freeResults(allocator, sr.results);
+
+	if (sr.results.len == 0) {
+		const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+		// Show per-filter diagnostic counts when 2+ filter dimensions were active
+		const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, search_opts) catch null;
+		const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
+		if (has_diag) {
+			const d = diag.?;
+			// Build a short description of active filters for the note header
+			const kind_str = if (search_opts.allowed_symbol_kinds.len > 0) search_opts.allowed_symbol_kinds[0] else "";
+			const lang_str = if (search_opts.allowed_langs.len > 0) search_opts.allowed_langs[0] else "";
+			if (kind_str.len > 0 and lang_str.len > 0) {
+				_ = stderr.print("note: no results for query \"{s}\" with kind={s} lang={s}\n", .{ query, kind_str, lang_str }) catch {};
+			} else if (kind_str.len > 0) {
+				_ = stderr.print("note: no results for query \"{s}\" with kind={s}\n", .{ query, kind_str }) catch {};
+			} else if (lang_str.len > 0) {
+				_ = stderr.print("note: no results for query \"{s}\" with lang={s}\n", .{ query, lang_str }) catch {};
+			} else {
+				_ = stderr.print("note: no results for query \"{s}\" with active filters\n", .{query}) catch {};
+			}
+			if (d.query_only) |n| {
+				_ = stderr.print("  -> query alone: {d} result(s)\n", .{n}) catch {};
+			}
+			if (d.kind_only) |n| {
+				_ = stderr.print("  -> kind filter alone: {d} result(s)\n", .{n}) catch {};
+			}
+			if (d.lang_only) |n| {
+				_ = stderr.print("  -> lang filter alone: {d} result(s)\n", .{n}) catch {};
+			}
+		} else if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+			_ = stderr.print(
+				"note: no results found (watcher is running and index is up to date).\n",
+				.{},
+			) catch {};
+		} else {
+			_ = stderr.print(
+				"note: no results found; consider re-indexing with `codescan update` or starting the watcher with `codescan watch start`.\n",
+				.{},
+			) catch {};
+		}
+		_ = stderr.flush() catch {};
+	}
+
+	// When --include-body is set, cap results at 3 unless user explicitly set --top
+	var display_results = sr.results;
+	const body_limit: usize = 3;
+	if (parsed.include_body and !parsed.seen.top_n and sr.results.len > body_limit) {
+		display_results = sr.results[0..body_limit];
+		_ = stderr.print("note: --include-body limits output to {d} results to avoid overfilling context (use --top N to override).\n", .{body_limit}) catch {};
+		_ = stderr.flush() catch {};
+	}
+
+	// Fetch body text for each result when --include-body is set
+	if (parsed.include_body) {
+		for (display_results) |*res| {
+			if (res.symbol.body == null) {
+				res.symbol.body = storage.getSymbolBody(allocator, db, res.id) catch null;
+			}
+		}
+	}
+
+	const no_color_set = blk: {
+		const env_map = io_singleton.getEnvMap() orelse break :blk false;
+		break :blk env_map.get("NO_COLOR") != null;
+	};
+	const use_color = settings.output == .human and !no_color_set;
+	try output.writeResults(allocator, stdout, settings.output, display_results, .{
+		.show_comments = settings.show_comments,
+		.show_body = parsed.include_body,
+		.use_color = use_color,
+		.total_relevant = sr.total_relevant,
+		.top_n = settings.top_n,
+	});
+	try stdout.flush();
+
+	// Auto-launch background watcher after first auto-index
+	if (did_auto_index) {
+		maybeStartWatcher(allocator, settings, stderr);
+	}
 }
 
 pub fn runSymbols(
