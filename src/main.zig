@@ -404,276 +404,7 @@ pub fn main(init: std.process.Init) !void {
 				.search_weights = settings.search_weights,
 			});
 		},
-		.watch => {
-			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-
-			switch (parsed.watch_action) {
-				.stop => {
-					if (comptime builtin.os.tag == .windows) {
-						try stdout.print("error: watch stop is not supported on Windows\n", .{});
-						try stdout.flush();
-					} else {
-						if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-							_ = std.c.kill(pid_val, std.posix.SIG.TERM);
-							try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
-							try stdout.flush();
-							pidfile.removePid(allocator, codescan_dir);
-						} else {
-							try stdout.print("No watcher running\n", .{});
-							try stdout.flush();
-						}
-					}
-				},
-				.start => {
-					if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
-						if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |existing_pid| {
-							try stdout.print("Watcher already running (PID {d})\n", .{existing_pid});
-						} else {
-							try stdout.print("Watcher already running\n", .{});
-						}
-						try stdout.flush();
-					} else {
-						maybeStartWatcher(allocator, settings, stdout);
-					}
-				},
-				.restart => {
-					if (comptime builtin.os.tag == .windows) {
-						try stdout.print("error: watch restart is not supported on Windows\n", .{});
-						try stdout.flush();
-					} else {
-						// Stop if running
-						if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-							_ = std.c.kill(pid_val, std.posix.SIG.TERM);
-							try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
-							// Brief pause for process cleanup
-							io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
-							pidfile.removePid(allocator, codescan_dir);
-						}
-						maybeStartWatcher(allocator, settings, stdout);
-					}
-				},
-				.status => {
-					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-						try stdout.print("Watcher running (PID {d})\n", .{pid_val});
-					} else {
-						try stdout.print("No watcher running\n", .{});
-					}
-					try stdout.flush();
-				},
-				.pid => {
-					if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-						try stdout.print("{d}\n", .{pid_val});
-					}
-					try stdout.flush();
-				},
-				.list => {
-					var watchers = watcher_mgmt.discoverWatchers(allocator) catch |err| {
-						try stdout.print("error: failed to discover watchers: {}\n", .{err});
-						try stdout.flush();
-						std.process.exit(1);
-					};
-					defer {
-						for (watchers.items) |*w| w.deinit(allocator);
-						watchers.deinit(allocator);
-					}
-
-					if (watchers.items.len == 0) {
-						try stdout.print("No codescan watchers running.\n", .{});
-						try stdout.flush();
-					} else {
-						// Get active cwds to mark orphans
-						var cwds = watcher_mgmt.getActiveCwds(allocator) catch @as(std.ArrayListUnmanaged(watcher_mgmt.LsofEntry), .empty);
-						defer {
-							for (cwds.items) |e| e.deinit(allocator);
-							cwds.deinit(allocator);
-						}
-						watcher_mgmt.markActiveWatchers(watchers.items, cwds.items);
-
-						try stdout.print("{s:<8}{s:<7}{s:<14}{s:<6}{s}\n", .{ "PID", "CPU%", "UPTIME", "USED", "ROOT" });
-						for (watchers.items) |w| {
-							try stdout.print("{:<8}{s:<7}{s:<14}{s:<6}{s}\n", .{
-								@as(u32, @intCast(w.pid)),
-								w.cpu_pct,
-								w.elapsed,
-								if (w.active) "yes" else "no",
-								w.root,
-							});						}
-						var orphan_count: usize = 0;
-						for (watchers.items) |w| {
-							if (!w.active) orphan_count += 1;
-						}
-						try stdout.print("\n{d} watcher{s}, {d} orphaned\n", .{
-							watchers.items.len,
-							if (watchers.items.len != 1) "s" else "",
-							orphan_count,
-						});
-						try stdout.flush();
-					}
-				},
-				.prune => {
-					var watchers = watcher_mgmt.discoverWatchers(allocator) catch |err| {
-						try stdout.print("error: failed to discover watchers: {}\n", .{err});
-						try stdout.flush();
-						std.process.exit(1);
-					};
-					defer {
-						for (watchers.items) |*w| w.deinit(allocator);
-						watchers.deinit(allocator);
-					}
-
-					var cwds = watcher_mgmt.getActiveCwds(allocator) catch @as(std.ArrayListUnmanaged(watcher_mgmt.LsofEntry), .empty);
-					defer {
-						for (cwds.items) |e| e.deinit(allocator);
-						cwds.deinit(allocator);
-					}
-					watcher_mgmt.markActiveWatchers(watchers.items, cwds.items);
-
-					var orphan_count: usize = 0;
-					for (watchers.items) |w| {
-						if (!w.active) orphan_count += 1;
-					}
-
-					if (orphan_count == 0) {
-						try stdout.print("No orphaned watchers found.\n", .{});
-						try stdout.flush();
-					} else if (!parsed.confirm) {
-						try stdout.print("Orphaned watchers (no active sessions):\n", .{});
-						for (watchers.items) |w| {
-							if (!w.active) {
-								try stdout.print("  PID {d}  {s}\n", .{ w.pid, w.root });
-							}
-						}
-						try stdout.print("\nRun with --confirm to stop {d} orphaned watcher{s}.\n", .{
-							orphan_count,
-							if (orphan_count != 1) "s" else "",
-						});
-						try stdout.flush();
-					} else {
-						var stopped: usize = 0;
-						for (watchers.items) |w| {
-							if (!w.active) {
-								if (watcher_mgmt.stopWatcher(w.pid)) {
-									try stdout.print("Stopped watcher for {s} (PID {d})\n", .{ w.root, w.pid });
-									stopped += 1;
-								} else {
-									try stdout.print("Failed to stop watcher for {s} (PID {d})\n", .{ w.root, w.pid });
-								}
-							}
-						}
-						const remaining = watchers.items.len - stopped;
-						try stdout.print("\nStopped {d} orphaned watcher{s}. {d} active watcher{s} remain.\n", .{
-							stopped,
-							if (stopped != 1) "s" else "",
-							remaining,
-							if (remaining != 1) "s" else "",
-						});
-						try stdout.flush();
-					}
-				},
-			.run => {
-				syslog.init("codescan");
-				defer syslog.deinit();
-				try io_singleton.ensureParentDir(settings.db_path);
-					// Open existing DB or create new one (don't destroy existing index)
-					var db = try storage.openFileWithVec(allocator, settings.db_path);
-					var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
-						storage.close(db);
-						{
-							var sb2: [4096]u8 = undefined;
-							var sw2 = io_singleton.stderrWriter(&sb2);
-							const se2 = &sw2.interface;
-							_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-							_ = se2.flush() catch {};
-						}
-						db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-						break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-					};
-					defer storage.close(db);
-					defer schema_result.deinit(allocator);
-					if (schema_result.did_schema_upgrade) {
-						var sb: [4096]u8 = undefined;
-						var sw = io_singleton.stderrWriter(&sb);
-						const se = &sw.interface;
-						_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
-						_ = se.flush() catch {};
-					}
-					if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
-						var sb: [4096]u8 = undefined;
-						var sw = io_singleton.stderrWriter(&sb);
-						const se = &sw.interface;
-						if (schema_result.embedding_model_mismatch) {
-							_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
-						}
-						if (schema_result.embedding_dim_mismatch) {
-							_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
-						}
-						_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
-						_ = se.flush() catch {};
-						std.process.exit(1);
-					}
-
-					var http_client = embedding_http.StdHttpTransport.init(allocator);
-					defer http_client.deinit();
-					try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
-					var embedder_adapter = embedding.HttpEmbedder{
-						.transport = http_client.transport(),
-						.base_url = settings.embedding_url,
-						.model = settings.embedding_model,
-						.dialect = settings.embedding_dialect,
-						.auth_header = settings.embedding_auth_header,
-					};
-
-					var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-					defer index_filters.deinit(allocator);
-
-					g_stop_flag.store(false, .release);
-					if (comptime builtin.os.tag != .windows) {
-						const act = std.posix.Sigaction{
-							.handler = .{ .handler = struct {
-								fn handler(_: std.c.SIG) callconv(.c) void {
-									g_stop_flag.store(true, .release);
-								}
-							}.handler },
-							.mask = std.posix.sigemptyset(),
-							.flags = 0,
-						};
-						std.posix.sigaction(std.posix.SIG.INT, &act, null);
-						std.posix.sigaction(std.posix.SIG.TERM, &act, null);
-					}
-
-					watcher.watchLoop(
-						allocator,
-						db,
-						settings.root_path,
-						registry,
-						embedder_adapter.embedder(),
-						.{
-							.interval_ms = parsed.watch_interval,
-							.codescan_dir = codescan_dir,
-							.index_options = .{
-								.embedding_dim = settings.embedding_dim,
-								.embedding_model = settings.embedding_model,
-								.batch_size = settings.batch_size,
-								.max_file_size = settings.max_file_size,
-								.allowed_exts = index_filters.exts.items,
-								.allowed_kinds = index_filters.kinds.items,
-								.ignore = .{
-									.global = settings.ignore_global,
-									.per_language = settings.ignore_lang,
-									.include_node_modules = settings.include_node_modules,
-									.always_include = settings.always_include,
-								},
-								.show_progress = false,
-							},
-						},
-						&g_stop_flag,
-					) catch |err| switch (err) {
-						error.WatcherAlreadyRunning => return, // message already printed
-						else => return err,
-					};
-				},
-			}
-		},
+		.watch => try runWatch(allocator, settings, registry, parsed, stdout),
 		.status => {
 			try runStatus(allocator, settings.db_path, settings.root_path, parsed.output, stdout);
 			try stdout.flush();
@@ -2623,6 +2354,285 @@ fn runSearch(
 	// Auto-launch background watcher after first auto-index
 	if (did_auto_index) {
 		maybeStartWatcher(allocator, settings, stderr);
+	}
+}
+
+/// Manage the background watcher (start/stop/status/list/prune).
+/// Extracted from the `.watch` switch arm of `pub fn main` (2026-06-01).
+fn runWatch(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	registry: plugin.Registry,
+	parsed: cli.Parsed,
+	stdout: *std.Io.Writer,
+) !void {
+	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+
+	switch (parsed.watch_action) {
+		.stop => {
+			if (comptime builtin.os.tag == .windows) {
+				try stdout.print("error: watch stop is not supported on Windows\n", .{});
+				try stdout.flush();
+			} else {
+				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+					_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+					try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+					try stdout.flush();
+					pidfile.removePid(allocator, codescan_dir);
+				} else {
+					try stdout.print("No watcher running\n", .{});
+					try stdout.flush();
+				}
+			}
+		},
+		.start => {
+			if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
+				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |existing_pid| {
+					try stdout.print("Watcher already running (PID {d})\n", .{existing_pid});
+				} else {
+					try stdout.print("Watcher already running\n", .{});
+				}
+				try stdout.flush();
+			} else {
+				maybeStartWatcher(allocator, settings, stdout);
+			}
+		},
+		.restart => {
+			if (comptime builtin.os.tag == .windows) {
+				try stdout.print("error: watch restart is not supported on Windows\n", .{});
+				try stdout.flush();
+			} else {
+				// Stop if running
+				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+					_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+					try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+					// Brief pause for process cleanup
+					io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
+					pidfile.removePid(allocator, codescan_dir);
+				}
+				maybeStartWatcher(allocator, settings, stdout);
+			}
+		},
+		.status => {
+			if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+				try stdout.print("Watcher running (PID {d})\n", .{pid_val});
+			} else {
+				try stdout.print("No watcher running\n", .{});
+			}
+			try stdout.flush();
+		},
+		.pid => {
+			if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
+				try stdout.print("{d}\n", .{pid_val});
+			}
+			try stdout.flush();
+		},
+		.list => {
+			var watchers = watcher_mgmt.discoverWatchers(allocator) catch |err| {
+				try stdout.print("error: failed to discover watchers: {}\n", .{err});
+				try stdout.flush();
+				std.process.exit(1);
+			};
+			defer {
+				for (watchers.items) |*w| w.deinit(allocator);
+				watchers.deinit(allocator);
+			}
+
+			if (watchers.items.len == 0) {
+				try stdout.print("No codescan watchers running.\n", .{});
+				try stdout.flush();
+			} else {
+				// Get active cwds to mark orphans
+				var cwds = watcher_mgmt.getActiveCwds(allocator) catch @as(std.ArrayListUnmanaged(watcher_mgmt.LsofEntry), .empty);
+				defer {
+					for (cwds.items) |e| e.deinit(allocator);
+					cwds.deinit(allocator);
+				}
+				watcher_mgmt.markActiveWatchers(watchers.items, cwds.items);
+
+				try stdout.print("{s:<8}{s:<7}{s:<14}{s:<6}{s}\n", .{ "PID", "CPU%", "UPTIME", "USED", "ROOT" });
+				for (watchers.items) |w| {
+					try stdout.print("{:<8}{s:<7}{s:<14}{s:<6}{s}\n", .{
+						@as(u32, @intCast(w.pid)),
+						w.cpu_pct,
+						w.elapsed,
+						if (w.active) "yes" else "no",
+						w.root,
+					});						}
+				var orphan_count: usize = 0;
+				for (watchers.items) |w| {
+					if (!w.active) orphan_count += 1;
+				}
+				try stdout.print("\n{d} watcher{s}, {d} orphaned\n", .{
+					watchers.items.len,
+					if (watchers.items.len != 1) "s" else "",
+					orphan_count,
+				});
+				try stdout.flush();
+			}
+		},
+		.prune => {
+			var watchers = watcher_mgmt.discoverWatchers(allocator) catch |err| {
+				try stdout.print("error: failed to discover watchers: {}\n", .{err});
+				try stdout.flush();
+				std.process.exit(1);
+			};
+			defer {
+				for (watchers.items) |*w| w.deinit(allocator);
+				watchers.deinit(allocator);
+			}
+
+			var cwds = watcher_mgmt.getActiveCwds(allocator) catch @as(std.ArrayListUnmanaged(watcher_mgmt.LsofEntry), .empty);
+			defer {
+				for (cwds.items) |e| e.deinit(allocator);
+				cwds.deinit(allocator);
+			}
+			watcher_mgmt.markActiveWatchers(watchers.items, cwds.items);
+
+			var orphan_count: usize = 0;
+			for (watchers.items) |w| {
+				if (!w.active) orphan_count += 1;
+			}
+
+			if (orphan_count == 0) {
+				try stdout.print("No orphaned watchers found.\n", .{});
+				try stdout.flush();
+			} else if (!parsed.confirm) {
+				try stdout.print("Orphaned watchers (no active sessions):\n", .{});
+				for (watchers.items) |w| {
+					if (!w.active) {
+						try stdout.print("  PID {d}  {s}\n", .{ w.pid, w.root });
+					}
+				}
+				try stdout.print("\nRun with --confirm to stop {d} orphaned watcher{s}.\n", .{
+					orphan_count,
+					if (orphan_count != 1) "s" else "",
+				});
+				try stdout.flush();
+			} else {
+				var stopped: usize = 0;
+				for (watchers.items) |w| {
+					if (!w.active) {
+						if (watcher_mgmt.stopWatcher(w.pid)) {
+							try stdout.print("Stopped watcher for {s} (PID {d})\n", .{ w.root, w.pid });
+							stopped += 1;
+						} else {
+							try stdout.print("Failed to stop watcher for {s} (PID {d})\n", .{ w.root, w.pid });
+						}
+					}
+				}
+				const remaining = watchers.items.len - stopped;
+				try stdout.print("\nStopped {d} orphaned watcher{s}. {d} active watcher{s} remain.\n", .{
+					stopped,
+					if (stopped != 1) "s" else "",
+					remaining,
+					if (remaining != 1) "s" else "",
+				});
+				try stdout.flush();
+			}
+		},
+	.run => {
+		syslog.init("codescan");
+		defer syslog.deinit();
+		try io_singleton.ensureParentDir(settings.db_path);
+			// Open existing DB or create new one (don't destroy existing index)
+			var db = try storage.openFileWithVec(allocator, settings.db_path);
+			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
+				storage.close(db);
+				{
+					var sb2: [4096]u8 = undefined;
+					var sw2 = io_singleton.stderrWriter(&sb2);
+					const se2 = &sw2.interface;
+					_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+					_ = se2.flush() catch {};
+				}
+				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
+			};
+			defer storage.close(db);
+			defer schema_result.deinit(allocator);
+			if (schema_result.did_schema_upgrade) {
+				var sb: [4096]u8 = undefined;
+				var sw = io_singleton.stderrWriter(&sb);
+				const se = &sw.interface;
+				_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
+				_ = se.flush() catch {};
+			}
+			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+				var sb: [4096]u8 = undefined;
+				var sw = io_singleton.stderrWriter(&sb);
+				const se = &sw.interface;
+				if (schema_result.embedding_model_mismatch) {
+					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
+				}
+				if (schema_result.embedding_dim_mismatch) {
+					_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
+				}
+				_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
+				_ = se.flush() catch {};
+				std.process.exit(1);
+			}
+
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
+			defer http_client.deinit();
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			var embedder_adapter = embedding.HttpEmbedder{
+				.transport = http_client.transport(),
+				.base_url = settings.embedding_url,
+				.model = settings.embedding_model,
+				.dialect = settings.embedding_dialect,
+				.auth_header = settings.embedding_auth_header,
+			};
+
+			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+			defer index_filters.deinit(allocator);
+
+			g_stop_flag.store(false, .release);
+			if (comptime builtin.os.tag != .windows) {
+				const act = std.posix.Sigaction{
+					.handler = .{ .handler = struct {
+						fn handler(_: std.c.SIG) callconv(.c) void {
+							g_stop_flag.store(true, .release);
+						}
+					}.handler },
+					.mask = std.posix.sigemptyset(),
+					.flags = 0,
+				};
+				std.posix.sigaction(std.posix.SIG.INT, &act, null);
+				std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+			}
+
+			watcher.watchLoop(
+				allocator,
+				db,
+				settings.root_path,
+				registry,
+				embedder_adapter.embedder(),
+				.{
+					.interval_ms = parsed.watch_interval,
+					.codescan_dir = codescan_dir,
+					.index_options = .{
+						.embedding_dim = settings.embedding_dim,
+						.embedding_model = settings.embedding_model,
+						.batch_size = settings.batch_size,
+						.max_file_size = settings.max_file_size,
+						.allowed_exts = index_filters.exts.items,
+						.allowed_kinds = index_filters.kinds.items,
+						.ignore = .{
+							.global = settings.ignore_global,
+							.per_language = settings.ignore_lang,
+							.include_node_modules = settings.include_node_modules,
+							.always_include = settings.always_include,
+						},
+						.show_progress = false,
+					},
+				},
+				&g_stop_flag,
+			) catch |err| switch (err) {
+				error.WatcherAlreadyRunning => return, // message already printed
+				else => return err,
+			};
+		},
 	}
 }
 
