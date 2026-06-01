@@ -110,6 +110,19 @@ pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) GetEnvVarE
 }
 
 
+/// Default buffer size for stderr writers across codescan. Callers that
+/// need a different size can pass any `[]u8` to `stderrWriter`.
+pub const STDERR_BUF_SIZE: usize = 4096;
+
+/// Returns a `std.Io.File.Writer` for stderr backed by `buf`. The buffer
+/// must outlive the returned writer. Use:
+///   var buf: [io_singleton.STDERR_BUF_SIZE]u8 = undefined;
+///   var w = io_singleton.stderrWriter(&buf);
+///   const stderr = &w.interface;
+pub fn stderrWriter(buf: []u8) std.Io.File.Writer {
+    return std.Io.File.stderr().writer(getOrInit(), buf);
+}
+
 /// Create the parent directory of `path` if it doesn't exist.
 /// No-op when `path` has no directory component.
 pub fn ensureParentDir(path: []const u8) !void {

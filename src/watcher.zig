@@ -28,7 +28,7 @@ pub fn watchLoop(
 	stop: *const std.atomic.Value(bool),
 ) !void {
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	// Acquire PID file — reject if another watcher is already running

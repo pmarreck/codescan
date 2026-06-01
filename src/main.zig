@@ -135,7 +135,7 @@ pub fn main(init: std.process.Init) !void {
     var parsed = cli.parse(allocator, parse_args) catch |err| {
 		if (isUsageError(err)) {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			if (cli.last_err_context.len > 0) {
 				_ = stderr.print("error: {s} for {s}\n\n", .{ usageErrorMessage(err), cli.last_err_context }) catch {};
@@ -157,7 +157,7 @@ pub fn main(init: std.process.Init) !void {
 
 	if (parsed.assumed_search) {
 		var stderr_buf: [256]u8 = undefined;
-		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+		var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 		const stderr = &stderr_writer.interface;
 		_ = stderr.print("note: No verb specified, assuming 'search'.\n", .{}) catch {};
 		_ = stderr.flush() catch {};
@@ -188,7 +188,7 @@ pub fn main(init: std.process.Init) !void {
 
 	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null) {
 		var stderr_buf: [4096]u8 = undefined;
-		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+		var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 		const se = &stderr_writer.interface;
 		_ = se.print("error: embedding_api=openai requires an API key.\n" ++
 			"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var or embedding_api_key in .codescan/config.ini\n", .{}) catch {};
@@ -209,254 +209,8 @@ pub fn main(init: std.process.Init) !void {
 				try editConfig(allocator, cfg_path);
 			}
 		},
-		.init => {
-			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
-			const stderr = &stderr_writer.interface;
-
-			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-
-			// Check if .codescan/ already exists
-			const dir_exists = blk: {
-				var d = std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), codescan_dir, .{}) catch break :blk false;
-				d.close(io_singleton.getOrInit());
-				break :blk true;
-			};
-
-			if (dir_exists) {
-				if (parsed.force) {
-					// --force: delete and recreate
-					std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
-						_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
-						_ = stderr.flush() catch {};
-						std.process.exit(1);
-					};
-				} else if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
-					// Interactive: prompt user
-					_ = stderr.print("{s}/ already exists. Remove and reinitialize? [y/N] ", .{codescan_dir}) catch {};
-					_ = stderr.flush() catch {};
-					var input_buf: [16]u8 = undefined;
-					const stdin = std.Io.File.stdin();
-					var stdin_reader = stdin.reader(io_singleton.getOrInit(), &input_buf);
-					const n = stdin_reader.interface.readSliceShort(&input_buf) catch 0;
-					if (n > 0 and (input_buf[0] == 'y' or input_buf[0] == 'Y')) {
-						std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
-							_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
-							_ = stderr.flush() catch {};
-							std.process.exit(1);
-						};
-					} else {
-						try stdout.print("Using existing index.\n", .{});
-						try stdout.flush();
-						return;
-					}
-				} else {
-					// Non-interactive: bail
-					try stdout.print("Already initialized. Use --force to reinitialize.\n", .{});
-					try stdout.flush();
-					return;
-				}
-			}
-
-			// Create .codescan/ directory and write default config
-			try io_singleton.ensureParentDir(settings.db_path);
-			{
-				const cfg_path = try configPath(allocator, config_root);
-				defer allocator.free(cfg_path);
-				try ensureConfigWithDefaults(cfg_path);
-			}
-			{
-				const weights_cfg_path = try weightsPath(allocator, config_root);
-				defer allocator.free(weights_cfg_path);
-				try ensureWeightsWithDefaults(weights_cfg_path);
-			}
-
-			// Open DB and init schema; if the DB is corrupt, recreate it
-			var db = try storage.openFileWithVec(allocator, settings.db_path);
-			_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch {
-				storage.close(db);
-				_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-				_ = stderr.flush() catch {};
-				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-			};
-			defer storage.close(db);
-
-			// Auto-detect embedding server
-			var http_client = embedding_http.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
-
-			const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
-			var use_embeddings = false;
-
-			if (detected) |d| {
-				if (d.model_available) {
-					// Server found with model — write config and proceed with embeddings
-					const model_name = d.default_model orelse settings.embedding_model;
-					_ = stderr.print("  Detected {s} on {s} with model '{s}'. Saved to .codescan/config.ini.\n", .{
-						if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, model_name,
-					}) catch {};
-					_ = stderr.flush() catch {};
-					use_embeddings = true;
-				} else {
-					// Server found but model/auth not verified
-					if (d.dialect == .ollama) {
-						_ = stderr.print("  Found Ollama on {s} but model '{s}' not installed.\n" ++
-							"  Run 'ollama pull {s}' then 'codescan index' for semantic search.\n", .{
-							d.url, settings.embedding_model, settings.embedding_model,
-						}) catch {};
-					} else {
-						if (d.default_model) |dm| {
-							_ = stderr.print("  Found oMLX on {s} with model '{s}'.\n" ++
-								"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
-								"  then run 'codescan index'.\n", .{ d.url, dm }) catch {};
-						} else {
-							_ = stderr.print("  Found oMLX on {s}.\n" ++
-								"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
-								"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
-						}
-					}
-					_ = stderr.flush() catch {};
-					_ = stderr.print("  Index in lexical-only mode? [Y/n] ", .{}) catch {};
-					if (!promptYesNo(stderr, true)) {
-						try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
-						try stdout.flush();
-						return;
-					}
-				}
-				// Write detected server config (including model name if discovered)
-				writeDetectedConfig(allocator, config_root, d.url, d.dialect, d.default_model) catch |err| {
-					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
-					_ = stderr.flush() catch {};
-				};
-			} else {
-				// No server found
-				_ = stderr.print("  No embedding server detected.\n" ++
-					"  Index in lexical-only mode? (Semantic search available later via 'codescan setup-model'). [Y/n] ", .{}) catch {};
-				if (!promptYesNo(stderr, true)) {
-					try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
-					try stdout.flush();
-					return;
-				}
-			}
-
-			if (!use_embeddings) {
-				// Write search_mode=lexical to config
-				writeDetectedConfigLexical(allocator, config_root) catch |err| {
-					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
-					_ = stderr.flush() catch {};
-				};
-			}
-
-			const emb_url = if (detected) |d| d.url else settings.embedding_url;
-			const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
-			const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
-			var embedder_adapter = embedding.HttpEmbedder{
-				.transport = http_client.transport(),
-				.base_url = emb_url,
-				.model = emb_model,
-				.dialect = emb_dialect,
-				.auth_header = settings.embedding_auth_header,
-			};
-			const active_embedder = if (use_embeddings)
-				embedder_adapter.embedder()
-			else
-				embedding.NullEmbedder.embedder();
-
-			const show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output);
-
-			const stats = try performFullIndex(
-				allocator,
-				db,
-				settings,
-				registry,
-				active_embedder,
-				stderr,
-				show_progress,
-			);
-
-			// Print summary
-			if (settings.output == .json) {
-				try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d},\"semantic\":{s}}}\n", .{
-					stats.files, stats.symbols, if (use_embeddings) "true" else "false",
-				});
-			} else {
-				try stdout.print("Initialized codescan: {d} files, {d} symbols indexed", .{ stats.files, stats.symbols });
-				if (!use_embeddings) {
-					try stdout.print(" (lexical only)", .{});
-				}
-				try stdout.print("\n", .{});
-			}
-			try stdout.flush();
-			// Start background watcher
-			maybeStartWatcher(allocator, settings, stderr);
-		},
-		.index => {
-			checkTmpSpace();
-			try io_singleton.ensureParentDir(settings.db_path);
-			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-			defer storage.close(db);
-
-			var http_client = embedding_http.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
-			var use_null_embedder = false;
-			if (parsed.lexical_only) {
-				use_null_embedder = true;
-			} else {
-				ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
-					std.process.exit(1);
-				};
-			}
-			var embedder_adapter = embedding.HttpEmbedder{
-				.transport = http_client.transport(),
-				.base_url = settings.embedding_url,
-				.model = settings.embedding_model,
-				.dialect = settings.embedding_dialect,
-				.auth_header = settings.embedding_auth_header,
-			};
-			const active_embedder = if (use_null_embedder)
-				embedding.NullEmbedder.embedder()
-			else
-				embedder_adapter.embedder();
-
-			// Auto-detect embedding dimension if using a real embedder
-			const effective_dim = if (!use_null_embedder)
-				probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
-			else
-				settings.embedding_dim;
-
-			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-			defer index_filters.deinit(allocator);
-
-			const stats = try indexer.indexAll(
-				allocator,
-				db,
-				settings.root_path,
-				registry,
-				active_embedder,				.{
-					.embedding_dim = effective_dim,
-					.embedding_model = settings.embedding_model,
-					.batch_size = settings.batch_size,
-					.max_file_size = settings.max_file_size,
-					.allowed_exts = index_filters.exts.items,
-					.allowed_kinds = index_filters.kinds.items,
-					.ignore = .{
-						.global = settings.ignore_global,
-						.per_language = settings.ignore_lang,
-						.include_node_modules = settings.include_node_modules,
-						.always_include = settings.always_include,
-					},
-					.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
-				},
-			);
-
-			if (settings.output == .json) {
-				try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}\n", .{ stats.files, stats.symbols });
-			} else {
-				try stdout.print("Indexed {d} files, {d} symbols\n", .{ stats.files, stats.symbols });
-			}
-			try stdout.flush();
-		},
+		.init => try runInit(allocator, settings, config_root, registry, parsed.force, stdout),
+		.index => try runIndex(allocator, settings, registry, parsed.lexical_only, stdout),
 		.update => {
 			checkTmpSpace();
 			try io_singleton.ensureParentDir(settings.db_path);
@@ -465,7 +219,7 @@ pub fn main(init: std.process.Init) !void {
 				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 				if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
 					var sb: [4096]u8 = undefined;
-					var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+					var sw = io_singleton.stderrWriter(&sb);
 					const se = &sw.interface;
 					_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
 					_ = se.flush() catch {};
@@ -477,7 +231,7 @@ pub fn main(init: std.process.Init) !void {
 				storage.close(db);
 				{
 					var sb2: [4096]u8 = undefined;
-					var sw2 = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb2);
+					var sw2 = io_singleton.stderrWriter(&sb2);
 					const se2 = &sw2.interface;
 					_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
 					_ = se2.flush() catch {};
@@ -489,14 +243,14 @@ pub fn main(init: std.process.Init) !void {
 			defer schema_result.deinit(allocator);
 			if (schema_result.did_schema_upgrade) {
 				var sb: [4096]u8 = undefined;
-				var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+				var sw = io_singleton.stderrWriter(&sb);
 				const se = &sw.interface;
 				_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 				_ = se.flush() catch {};
 			}
 			if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 				var sb: [4096]u8 = undefined;
-				var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+				var sw = io_singleton.stderrWriter(&sb);
 				const se = &sw.interface;
 				if (schema_result.embedding_model_mismatch) {
 					_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
@@ -584,7 +338,7 @@ pub fn main(init: std.process.Init) !void {
 			// Auto-launch background watcher after update
 			{
 				var update_stderr_buf: [4096]u8 = undefined;
-				var update_stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &update_stderr_buf);
+				var update_stderr_writer = io_singleton.stderrWriter(&update_stderr_buf);
 				const update_stderr = &update_stderr_writer.interface;
 				maybeStartWatcher(allocator, settings, update_stderr);
 			}
@@ -595,7 +349,7 @@ pub fn main(init: std.process.Init) !void {
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
 
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 
 			// Always run schema init/migration so older DBs get new columns
@@ -1231,7 +985,7 @@ pub fn main(init: std.process.Init) !void {
 						storage.close(db);
 						{
 							var sb2: [4096]u8 = undefined;
-							var sw2 = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb2);
+							var sw2 = io_singleton.stderrWriter(&sb2);
 							const se2 = &sw2.interface;
 							_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
 							_ = se2.flush() catch {};
@@ -1243,14 +997,14 @@ pub fn main(init: std.process.Init) !void {
 					defer schema_result.deinit(allocator);
 					if (schema_result.did_schema_upgrade) {
 						var sb: [4096]u8 = undefined;
-						var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+						var sw = io_singleton.stderrWriter(&sb);
 						const se = &sw.interface;
 						_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 						_ = se.flush() catch {};
 					}
 					if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 						var sb: [4096]u8 = undefined;
-						var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+						var sw = io_singleton.stderrWriter(&sb);
 						const se = &sw.interface;
 						if (schema_result.embedding_model_mismatch) {
 							_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
@@ -1371,7 +1125,7 @@ pub fn main(init: std.process.Init) !void {
 			if (!parsed.confirm) {
 				if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
 					var stderr_buf: [4096]u8 = undefined;
-					var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+					var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 					const stderr = &stderr_writer.interface;
 					_ = stderr.print("This will stop the watcher and delete {s}/. Continue? [y/N] ", .{codescan_dir}) catch {};
 					_ = stderr.flush() catch {};
@@ -1609,7 +1363,7 @@ fn ensureModelAvailableOrExit(
 	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
@@ -1621,7 +1375,7 @@ fn ensureModelAvailableOrExit(
 		error.ModelLoading => {
 			// Model exists but not loaded — the first embed call will trigger loading.
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
@@ -1632,7 +1386,7 @@ fn ensureModelAvailableOrExit(
 		},
 		else => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"error: Cannot connect to embedding server at {s}\n" ++
@@ -1659,7 +1413,7 @@ fn ensureModelAvailableOrPrompt(
 	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"  Ollama model '{s}' not found.\n" ++
@@ -1676,7 +1430,7 @@ fn ensureModelAvailableOrPrompt(
 		},
 		error.ModelLoading => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"  note: Ollama model '{s}' is loading into memory. This may take a moment...\n",
@@ -1686,7 +1440,7 @@ fn ensureModelAvailableOrPrompt(
 		},
 		else => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"  Embedding server unreachable at {s}.\n" ++
@@ -2317,7 +2071,7 @@ fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 	const editor = getEditor(allocator) catch |err| switch (err) {
 		error.MissingEditor => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.writeAll("error: $VISUAL or $EDITOR is not set\n") catch {};
 			_ = stderr.flush() catch {};
@@ -2440,7 +2194,7 @@ fn ensureWeightsWithDefaults(path: []const u8) !void {
 /// the background watcher will eventually catch up.
 fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: []const u8, file_path: []const u8, registry: plugin.Registry, embedding_dim: usize) void {
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	const db = storage.openFileWithVec(allocator, db_path) catch |err| {
@@ -2542,7 +2296,7 @@ fn checkTmpSpace() void {
 	const avail = posix_fs.avail(tmp_path) orelse return;
 	if (avail >= MIN_TMP_SPACE_BYTES) return;
 	var eb: [512]u8 = undefined;
-	var ew = std.Io.File.stderr().writer(io_singleton.getOrInit(), &eb);
+	var ew = io_singleton.stderrWriter(&eb);
 	const se = &ew.interface;
 	_ = se.print("error: insufficient disk space on temp directory ({d} MB free, need at least {d} MB)\n", .{
 		avail / (1024 * 1024),
@@ -2566,7 +2320,7 @@ fn computeHashAtLine(allocator: std.mem.Allocator, file_path: []const u8, line_1
 
 fn exitWithError(comptime msg: []const u8) noreturn {
 	var eb: [512]u8 = undefined;
-	var ew = std.Io.File.stderr().writer(io_singleton.getOrInit(), &eb);
+	var ew = io_singleton.stderrWriter(&eb);
 	const se = &ew.interface;
 	_ = se.writeAll(msg) catch {};
 	_ = se.flush() catch {};
@@ -2577,6 +2331,278 @@ fn readFileContents(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 	const file = try std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{});
 	defer file.close(io_singleton.getOrInit());
 	return try io_singleton.readToEndAlloc(file, allocator, 10 * 1024 * 1024);
+}
+
+/// Initialize a new codescan index in the current directory.
+///
+/// Creates `.codescan/`, default config + weights, opens (or recreates) the
+/// SQLite DB, auto-detects an Ollama/oMLX embedding server, asks the user
+/// to confirm lexical-only mode when no model is available, runs the
+/// initial full index, and starts the background watcher. Extracted from
+/// the `.init` switch arm of `pub fn main` (2026-06-01).
+fn runInit(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	config_root: []const u8,
+	registry: plugin.Registry,
+	force: bool,
+	stdout: *std.Io.Writer,
+) !void {
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
+	const stderr = &stderr_writer.interface;
+
+	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+
+	// Check if .codescan/ already exists
+	const dir_exists = blk: {
+		var d = std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), codescan_dir, .{}) catch break :blk false;
+		d.close(io_singleton.getOrInit());
+		break :blk true;
+	};
+
+	if (dir_exists) {
+		if (force) {
+			// --force: delete and recreate
+			std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
+				_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
+				_ = stderr.flush() catch {};
+				std.process.exit(1);
+			};
+		} else if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
+			// Interactive: prompt user
+			_ = stderr.print("{s}/ already exists. Remove and reinitialize? [y/N] ", .{codescan_dir}) catch {};
+			_ = stderr.flush() catch {};
+			var input_buf: [16]u8 = undefined;
+			const stdin = std.Io.File.stdin();
+			var stdin_reader = stdin.reader(io_singleton.getOrInit(), &input_buf);
+			const n = stdin_reader.interface.readSliceShort(&input_buf) catch 0;
+			if (n > 0 and (input_buf[0] == 'y' or input_buf[0] == 'Y')) {
+				std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
+					_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
+					_ = stderr.flush() catch {};
+					std.process.exit(1);
+				};
+			} else {
+				try stdout.print("Using existing index.\n", .{});
+				try stdout.flush();
+				return;
+			}
+		} else {
+			// Non-interactive: bail
+			try stdout.print("Already initialized. Use --force to reinitialize.\n", .{});
+			try stdout.flush();
+			return;
+		}
+	}
+
+	// Create .codescan/ directory and write default config
+	try io_singleton.ensureParentDir(settings.db_path);
+	{
+		const cfg_path = try configPath(allocator, config_root);
+		defer allocator.free(cfg_path);
+		try ensureConfigWithDefaults(cfg_path);
+	}
+	{
+		const weights_cfg_path = try weightsPath(allocator, config_root);
+		defer allocator.free(weights_cfg_path);
+		try ensureWeightsWithDefaults(weights_cfg_path);
+	}
+
+	// Open DB and init schema; if the DB is corrupt, recreate it
+	var db = try storage.openFileWithVec(allocator, settings.db_path);
+	_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch {
+		storage.close(db);
+		_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+		db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
+	};
+	defer storage.close(db);
+
+	// Auto-detect embedding server
+	var http_client = embedding_http.StdHttpTransport.init(allocator);
+	defer http_client.deinit();
+
+	const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
+	var use_embeddings = false;
+
+	if (detected) |d| {
+		if (d.model_available) {
+			// Server found with model — write config and proceed with embeddings
+			const model_name = d.default_model orelse settings.embedding_model;
+			_ = stderr.print("  Detected {s} on {s} with model '{s}'. Saved to .codescan/config.ini.\n", .{
+				if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, model_name,
+			}) catch {};
+			_ = stderr.flush() catch {};
+			use_embeddings = true;
+		} else {
+			// Server found but model/auth not verified
+			if (d.dialect == .ollama) {
+				_ = stderr.print("  Found Ollama on {s} but model '{s}' not installed.\n" ++
+					"  Run 'ollama pull {s}' then 'codescan index' for semantic search.\n", .{
+					d.url, settings.embedding_model, settings.embedding_model,
+				}) catch {};
+			} else {
+				if (d.default_model) |dm| {
+					_ = stderr.print("  Found oMLX on {s} with model '{s}'.\n" ++
+						"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
+						"  then run 'codescan index'.\n", .{ d.url, dm }) catch {};
+				} else {
+					_ = stderr.print("  Found oMLX on {s}.\n" ++
+						"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
+						"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
+				}
+			}
+			_ = stderr.flush() catch {};
+			_ = stderr.print("  Index in lexical-only mode? [Y/n] ", .{}) catch {};
+			if (!promptYesNo(stderr, true)) {
+				try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
+				try stdout.flush();
+				return;
+			}
+		}
+		// Write detected server config (including model name if discovered)
+		writeDetectedConfig(allocator, config_root, d.url, d.dialect, d.default_model) catch |err| {
+			_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
+			_ = stderr.flush() catch {};
+		};
+	} else {
+		// No server found
+		_ = stderr.print("  No embedding server detected.\n" ++
+			"  Index in lexical-only mode? (Semantic search available later via 'codescan setup-model'). [Y/n] ", .{}) catch {};
+		if (!promptYesNo(stderr, true)) {
+			try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
+			try stdout.flush();
+			return;
+		}
+	}
+
+	if (!use_embeddings) {
+		// Write search_mode=lexical to config
+		writeDetectedConfigLexical(allocator, config_root) catch |err| {
+			_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
+			_ = stderr.flush() catch {};
+		};
+	}
+
+	const emb_url = if (detected) |d| d.url else settings.embedding_url;
+	const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
+	const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
+	var embedder_adapter = embedding.HttpEmbedder{
+		.transport = http_client.transport(),
+		.base_url = emb_url,
+		.model = emb_model,
+		.dialect = emb_dialect,
+		.auth_header = settings.embedding_auth_header,
+	};
+	const active_embedder = if (use_embeddings)
+		embedder_adapter.embedder()
+	else
+		embedding.NullEmbedder.embedder();
+
+	const show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output);
+
+	const stats = try performFullIndex(
+		allocator,
+		db,
+		settings,
+		registry,
+		active_embedder,
+		stderr,
+		show_progress,
+	);
+
+	// Print summary
+	if (settings.output == .json) {
+		try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d},\"semantic\":{s}}}\n", .{
+			stats.files, stats.symbols, if (use_embeddings) "true" else "false",
+		});
+	} else {
+		try stdout.print("Initialized codescan: {d} files, {d} symbols indexed", .{ stats.files, stats.symbols });
+		if (!use_embeddings) {
+			try stdout.print(" (lexical only)", .{});
+		}
+		try stdout.print("\n", .{});
+	}
+	try stdout.flush();
+	// Start background watcher
+	maybeStartWatcher(allocator, settings, stderr);
+}
+
+/// Run a full index of the repository: scan, extract, embed, and store.
+/// Extracted from the `.index` switch arm of `pub fn main` (2026-06-01).
+fn runIndex(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	registry: plugin.Registry,
+	lexical_only: bool,
+	stdout: *std.Io.Writer,
+) !void {
+	checkTmpSpace();
+	try io_singleton.ensureParentDir(settings.db_path);
+	const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+	defer storage.close(db);
+
+	var http_client = embedding_http.StdHttpTransport.init(allocator);
+	defer http_client.deinit();
+	var use_null_embedder = false;
+	if (lexical_only) {
+		use_null_embedder = true;
+	} else {
+		ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
+			std.process.exit(1);
+		};
+	}
+	var embedder_adapter = embedding.HttpEmbedder{
+		.transport = http_client.transport(),
+		.base_url = settings.embedding_url,
+		.model = settings.embedding_model,
+		.dialect = settings.embedding_dialect,
+		.auth_header = settings.embedding_auth_header,
+	};
+	const active_embedder = if (use_null_embedder)
+		embedding.NullEmbedder.embedder()
+	else
+		embedder_adapter.embedder();
+
+	// Auto-detect embedding dimension if using a real embedder
+	const effective_dim = if (!use_null_embedder)
+		probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
+	else
+		settings.embedding_dim;
+
+	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
+	defer index_filters.deinit(allocator);
+
+	const stats = try indexer.indexAll(
+		allocator,
+		db,
+		settings.root_path,
+		registry,
+		active_embedder,				.{
+			.embedding_dim = effective_dim,
+			.embedding_model = settings.embedding_model,
+			.batch_size = settings.batch_size,
+			.max_file_size = settings.max_file_size,
+			.allowed_exts = index_filters.exts.items,
+			.allowed_kinds = index_filters.kinds.items,
+			.ignore = .{
+				.global = settings.ignore_global,
+				.per_language = settings.ignore_lang,
+				.include_node_modules = settings.include_node_modules,
+				.always_include = settings.always_include,
+			},
+			.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
+		},
+	);
+
+	if (settings.output == .json) {
+		try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}\n", .{ stats.files, stats.symbols });
+	} else {
+		try stdout.print("Indexed {d} files, {d} symbols\n", .{ stats.files, stats.symbols });
+	}
+	try stdout.flush();
 }
 
 pub fn runSymbols(

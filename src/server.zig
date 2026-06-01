@@ -58,14 +58,14 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });	defer schema_result.deinit(allocator);
 	if (schema_result.did_schema_upgrade) {
 		var sb: [4096]u8 = undefined;
-		var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+		var sw = io_singleton.stderrWriter(&sb);
 		const se = &sw.interface;
 		_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\n", .{}) catch {};
 		_ = se.flush() catch {};
 	}
 	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
 		var sb: [4096]u8 = undefined;
-		var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+		var sw = io_singleton.stderrWriter(&sb);
 		const se = &sw.interface;
 		if (schema_result.embedding_model_mismatch) {
 			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};		}
@@ -95,7 +95,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	// refactor was deferred during the 0.15→0.16 port and has not landed.
 	// Surface a clear user-facing message instead of an opaque error code.
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 	_ = stderr.writeAll(
 		"error: `codescan serve` is temporarily unavailable.\n" ++
@@ -117,7 +117,7 @@ fn ensureModelAvailableOrExit(
 	embedding_http.ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| switch (err) {
 		error.ModelNotFound => {
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"error: Ollama model '{s}' not found. Run: ollama pull {s}\n",
@@ -129,7 +129,7 @@ fn ensureModelAvailableOrExit(
 		error.ModelLoading => {
 			// Model exists but not loaded — embed() will trigger loading
 			var stderr_buf: [4096]u8 = undefined;
-			var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 			const stderr = &stderr_writer.interface;
 			_ = stderr.print(
 				"note: Ollama model '{s}' is loading into memory. This may take a moment...\n",

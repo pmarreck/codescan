@@ -66,7 +66,7 @@ pub fn indexAll(
 	}
 
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	var stats = Stats{ .files = 0, .symbols = 0 };
@@ -224,7 +224,7 @@ pub fn indexIncremental(
 	const show_progress = options.show_progress and !debug;
 
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	// 1. Scan filesystem for current files

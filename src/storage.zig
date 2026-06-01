@@ -763,7 +763,7 @@ fn logSqliteError(db: Db, context: []const u8) void {
 	if (msg != null) {
 		const msg_slice = std.mem.span(msg);
 		var stderr_buf: [4096]u8 = undefined;
-		var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+		var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 		const stderr = &stderr_writer.interface;
 		_ = stderr.print("sqlite error ({s}): {s}\n", .{ context, msg_slice }) catch {};
 		_ = stderr.flush() catch {};

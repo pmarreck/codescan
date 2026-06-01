@@ -20,7 +20,7 @@ const weights = @import("weights.zig");
 fn toolError(comptime fmt: []const u8, args: anytype) error{ToolFailed} {
 	if (!@import("builtin").is_test) {
 		var sb: [4096]u8 = undefined;
-		var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+		var sw = io_singleton.stderrWriter(&sb);
 		const se = &sw.interface;
 		se.print(fmt, args) catch {};
 		se.flush() catch {};
@@ -187,7 +187,7 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 		// Log the actual error to stderr for debugging (skip during tests)
 		if (!@import("builtin").is_test) {
 			var sb: [4096]u8 = undefined;
-			var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+			var sw = io_singleton.stderrWriter(&sb);
 			const se = &sw.interface;
 			se.print("MCP tool '{s}' failed: {s} (error: {})\n", .{ name, msg, err }) catch {};
 			se.flush() catch {};
@@ -424,7 +424,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		defer schema_result.deinit(allocator);
 		if (schema_result.did_schema_upgrade) {
 			var sb: [4096]u8 = undefined;
-			var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+			var sw = io_singleton.stderrWriter(&sb);
 			const se = &sw.interface;
 			_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended.\n", .{}) catch {};
 			_ = se.flush() catch {};
@@ -574,7 +574,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				error.ModelLoading => {
 					// Model exists but not loaded — embed() will trigger loading. Log and proceed.
 					var sb: [4096]u8 = undefined;
-					var sw = std.Io.File.stderr().writer(io_singleton.getOrInit(), &sb);
+					var sw = io_singleton.stderrWriter(&sb);
 					const se = &sw.interface;
 					_ = se.print("MCP index: model '{s}' is loading into memory. This may take a moment...\n", .{settings.embedding_model}) catch {};
 					_ = se.flush() catch {};
@@ -805,7 +805,7 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	const writer = &stdout_writer.interface;
 
 	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf);
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
 	_ = stderr.print("codescan mcp: server started (root: {s})\n", .{settings.root_path}) catch {};
