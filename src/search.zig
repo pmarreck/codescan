@@ -161,11 +161,16 @@ pub fn search(
 		allocator.free(vector_results);
 
 		if (options.mode == .hybrid) {
-			// Build seen-set from vector results for O(1) dedup lookups.
-			var seen = std.AutoHashMap(i64, void).init(allocator);
-			defer seen.deinit();
-			for (results.items) |res| {
-				try seen.put(res.id, {});
+			// Map result.id -> index into results.items, so the FTS-bm25
+			// merge below can find the existing row in O(1) instead of a
+			// linear scan over `results.items` per lexical hit. Matters when
+			// callers crank --top-n / --candidate-multiplier high enough
+			// that the lexical and vector candidate sets both hit the
+			// thousands.
+			var id_to_index = std.AutoHashMap(i64, usize).init(allocator);
+			defer id_to_index.deinit();
+			for (results.items, 0..) |res, idx| {
+				try id_to_index.put(res.id, idx);
 			}
 
 			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only, options.fts_mode);
@@ -177,22 +182,17 @@ pub fn search(
 			}
 
 			for (lexical) |res| {
-				if (seen.contains(res.id)) {
+				if (id_to_index.get(res.id)) |existing_idx| {
 					// Symbol already came back from vector candidates with
 					// bm25=0. Transfer the FTS bm25 onto the existing row so
 					// the scorer can use it; otherwise we throw away the FTS
 					// signal and the merged result scores like a vector-only
 					// hit.
-					for (results.items) |*existing| {
-						if (existing.id == res.id) {
-							existing.bm25 = res.bm25;
-							break;
-						}
-					}
+					results.items[existing_idx].bm25 = res.bm25;
 					var tmp = res;
 					tmp.deinit(allocator);
 				} else {
-					try seen.put(res.id, {});
+					try id_to_index.put(res.id, results.items.len);
 					try results.append(allocator, res);
 				}
 			}
