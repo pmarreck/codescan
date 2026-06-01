@@ -87,24 +87,75 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		.dialect = settings.embedding_dialect,
 		.auth_header = settings.embedding_auth_header,
 	};
+	// `embedder_adapter` must be `var` because `.embedder()` takes a mutable
+	// pointer — and the value must outlive the listen loop.
+	var embedder_adapter_mut = embedder_adapter;
+	const embedder = embedder_adapter_mut.embedder();
+
 	const address = try parseAddress(settings.http_host, settings.http_port);
-	_ = address;
-	_ = embedder_adapter;
-	// TODO(zig-0.16): migrate std.http.Server + std.net.Address.listen to the new
-	// std.Io.net.IpAddress.listen + std.http.Server v2 (io-aware) API. The
-	// refactor was deferred during the 0.15→0.16 port and has not landed.
-	// Surface a clear user-facing message instead of an opaque error code.
-	var stderr_buf: [4096]u8 = undefined;
-	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
-	const stderr = &stderr_writer.interface;
-	_ = stderr.writeAll(
-		"error: `codescan serve` is temporarily unavailable.\n" ++
-		"  The HTTP server is mid-migration to std.Io.net + std.http.Server v2 (Zig 0.16).\n" ++
-		"  Use `codescan search` for queries or `codescan mcp-serve` for the MCP/JSON-RPC stdio server.\n" ++
-		"  Track progress in PLAN.md (\"HTTP server\" — currently unchecked).\n",
-	) catch {};
-	_ = stderr.flush() catch {};
-	return error.HttpServerNotMigrated;
+	const io = io_singleton.getOrInit();
+
+	var net_server = address.listen(io, .{ .reuse_address = true }) catch |err| {
+		var sb: [4096]u8 = undefined;
+		var sw = io_singleton.stderrWriter(&sb);
+		const stderr = &sw.interface;
+		_ = stderr.print("error: could not listen on {s}:{d}: {s}\n", .{ settings.http_host, settings.http_port, @errorName(err) }) catch {};
+		_ = stderr.flush() catch {};
+		return err;
+	};
+	defer net_server.socket.close(io);
+
+	{
+		var sb: [4096]u8 = undefined;
+		var sw = io_singleton.stderrWriter(&sb);
+		const stderr = &sw.interface;
+		_ = stderr.print("codescan serve: listening on http://{s}:{d}/\n", .{ settings.http_host, settings.http_port }) catch {};
+		_ = stderr.flush() catch {};
+	}
+
+	// Per-connection buffers. The header buffer must be large enough to hold
+	// any single client's entire request head — `std.http.Server.receiveHead`
+	// returns `error.HttpHeadersOversize` if a client sends a bigger one.
+	var read_buf: [16 * 1024]u8 = undefined;
+	var write_buf: [16 * 1024]u8 = undefined;
+
+	while (true) {
+		var stream = net_server.accept(io) catch |err| {
+			var sb: [4096]u8 = undefined;
+			var sw = io_singleton.stderrWriter(&sb);
+			const stderr = &sw.interface;
+			_ = stderr.print("codescan serve: accept error: {s}\n", .{@errorName(err)}) catch {};
+			_ = stderr.flush() catch {};
+			continue;
+		};
+		defer stream.close(io);
+
+		var stream_reader = stream.reader(io, &read_buf);
+		var stream_writer = stream.writer(io, &write_buf);
+		var http_server = std.http.Server.init(&stream_reader.interface, &stream_writer.interface);
+
+		var request = http_server.receiveHead() catch |err| switch (err) {
+			error.HttpConnectionClosing => continue,
+			else => {
+				var sb: [4096]u8 = undefined;
+				var sw = io_singleton.stderrWriter(&sb);
+				const stderr = &sw.interface;
+				_ = stderr.print("codescan serve: receiveHead error: {s}\n", .{@errorName(err)}) catch {};
+				_ = stderr.flush() catch {};
+				continue;
+			},
+		};
+
+		handleRequest(allocator, &request, db, embedder, settings) catch |err| {
+			var sb: [4096]u8 = undefined;
+			var sw = io_singleton.stderrWriter(&sb);
+			const stderr = &sw.interface;
+			_ = stderr.print("codescan serve: handler error for {s}: {s}\n", .{ request.head.target, @errorName(err) }) catch {};
+			_ = stderr.flush() catch {};
+			// Best-effort 500 if nothing was sent yet.
+			request.respond("internal server error\n", .{ .status = .internal_server_error }) catch {};
+		};
+	}
 }
 
 fn ensureModelAvailableOrExit(

@@ -32,7 +32,7 @@
 - [x] Define plugin interface + registry
 - [x] Implement Zig extractor (function spans + comments)
 - [x] Implement Elixir extractor (function spans + comments)
-- [ ] Restore HTTP server + endpoints (index/update/search/health) — code exists in `src/server.zig` but `serve()` returns `error.HttpServerNotMigrated` after the Zig 0.16 port; needs migration to `std.Io.net.IpAddress.listen` + `std.http.Server` v2. CLI surface advertises the command and now prints a clear redirect to `codescan search` / `codescan mcp-serve` until this lands. (Was checked in error — code shipped but never re-implemented after 0.16 port.)
+- [x] Restore HTTP server + endpoints (index/update/search/health) — DONE 2026-06-01. `server.serve()` now uses `std.Io.net.IpAddress.listen` + `std.http.Server` v2 (io-aware) per Zig 0.16. Accept-loop dispatches each connection through `handleRequest`, with per-connection 16 KB header/write buffers. Smoke-tested: `GET /health`, `GET /status`, `GET /help`, `POST /search` all return 200 with correct JSON/text from the codescan repo's own index.
 - [x] Add JSON output + human output formatting
 - [x] Wire main CLI (config merge, commands, .codescan setup)
 - [x] Add hybrid weight knobs (CLI/config/HTTP) + tests
@@ -140,7 +140,7 @@ Captured from the 9 dimension review notes in `inbox/`. Items that landed in thi
 - [ ] Decompose `fn search` (`src/search.zig` lines 94-406, 312 lines) — extract `runLexicalOnly`, `runVectorOnly`, `runHybrid` private fns; public `search` becomes ~30-line dispatcher. Each phase becomes independently testable. Reviewer: `disorganized` (WARN).
 - [ ] Extract stderr-writer boilerplate helper — pattern `var stderr_buf: [4096]u8 = undefined; var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf); const stderr = &stderr_writer.interface;` appears in main.zig at lines 137, 159, 189, 212 and dozens elsewhere. Define `pub const STDERR_BUF_SIZE = 4096;` once and a `withStderr(comptime cb)` or `stderrWriter()` helper. Reviewer: `disorganized` (WARN).
 - [ ] Windows watcher-mgmt: surface "not supported on Windows" instead of empty-list/false silent return in `discoverWatchers`, `getActiveCwds`, `stopWatcher` (`src/watcher_mgmt.zig:121,146,164`). Either log a one-line warning before short-circuiting OR gate the commands at the CLI level with a clearer message. Reviewer: `incomplete-undefined` (WARN).
-- [ ] Restore HTTP server functionality — placeholder commit landed graceful error; the migration to `std.Io.net.IpAddress.listen` + `std.http.Server` v2 (io-aware API) still needs to happen. (Same item as PLAN.md:35 above.) Reviewer: `incomplete-undefined` (CRITICAL).
+- [x] Restore HTTP server functionality — DONE 2026-06-01. Migrated `serve()` to `std.Io.net.IpAddress.listen` + `std.http.Server` v2; smoke-tested end-to-end with curl. Reviewer: `incomplete-undefined` (CRITICAL).
 - [ ] Test coverage gaps for language extractors — `extract_lua.zig`, `extract_idris.zig`, `extract_nix.zig`, `extract_nim.zig`, `extract_haskell.zig`, `extract_lean.zig`, `extract_bash.zig`, `extract_text.zig`, `extract_log.zig` each have a single happy-path test. Establish a 6-test smoke matrix per extractor (function/method/no-doc/multi-doc/empty-file/UTF-8 identifier). Reviewer: `inadequate-tests` (WARN).
 - [ ] Enum-value stability test for `src/kind.zig` `Kind` enum — values persist to SQLite so reordering would silently break old indices. Add a snapshot assertion. Reviewer: `inadequate-tests` (WARN).
 - [ ] Strengthen 4 weak-assertion tests:
