@@ -664,7 +664,7 @@ fn vectorCandidates(
 ) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
-	const json = try vectorToJson(allocator, vector);
+	const json = try storage.vectorToJson(allocator, vector);
 	defer allocator.free(json);
 
 	const table = if (comments_only) "embeddings_comment" else "embeddings";
@@ -1000,18 +1000,6 @@ fn dupColumnTextOptional(
 	return @as(?[]const u8, try allocator.dupe(u8, slice));
 }
 
-fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
-	var out: std.Io.Writer.Allocating = .init(allocator);
-	defer out.deinit();
-
-	try out.writer.writeAll("[");
-	for (vector, 0..) |value, idx| {
-		if (idx != 0) try out.writer.writeAll(",");
-		try out.writer.print("{d}", .{value});
-	}
-	try out.writer.writeAll("]");
-	return out.toOwnedSlice();
-}
 
 const NameRelevance = enum { exact, substring, none };
 

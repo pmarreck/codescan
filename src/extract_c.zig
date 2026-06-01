@@ -1,5 +1,6 @@
 const std = @import("std");
 const model = @import("model.zig");
+const util = @import("extract_util.zig");
 
 const ts = @cImport({
 	@cInclude("tree_sitter/api.h");
@@ -32,7 +33,7 @@ pub fn extract(
 		results.deinit(allocator);
 	}
 
-	var lines = try splitLines(allocator, source);
+	var lines = try util.splitLines(allocator, source);
 	defer lines.deinit(allocator);
 
 	var cursor = ts.ts_tree_cursor_new(ts.ts_tree_root_node(tree));
@@ -283,15 +284,6 @@ fn nodeText(source: []const u8, node: ts.TSNode) []const u8 {
 	return source[start..end];
 }
 
-fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
-	var lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
-	errdefer lines.deinit(allocator);
-	var it = std.mem.splitScalar(u8, source, '\n');
-	while (it.next()) |line| {
-		try lines.append(allocator, line);
-	}
-	return lines;
-}
 
 test "extract finds C struct declarations" {
 	const allocator = std.testing.allocator;

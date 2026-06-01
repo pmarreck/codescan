@@ -47,7 +47,7 @@ fn emitParagraph(
 	lines: []const []const u8,
 	out: *std.ArrayListUnmanaged(model.Symbol),
 ) !void {
-	const paragraph = try joinLines(allocator, lines);
+	const paragraph = try util.joinLines(allocator, lines);
 	const preview = firstNonEmptyLine(lines) orelse lines[0];
 
 	const symbol = model.Symbol{
@@ -143,17 +143,6 @@ fn isBlank(line: []const u8) bool {
 	return std.mem.trim(u8, line, " \t\r").len == 0;
 }
 
-fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) !?[]const u8 {
-	if (lines.len == 0) return null;
-	var out: std.Io.Writer.Allocating = .init(allocator);
-	defer out.deinit();
-	for (lines, 0..) |line, idx| {
-		if (idx > 0) try out.writer.writeAll("\n");
-		try out.writer.writeAll(line);
-	}
-	const owned = try out.toOwnedSlice();
-	return @as(?[]const u8, owned);
-}
 
 fn firstNonEmptyLine(lines: []const []const u8) ?[]const u8 {
 	for (lines) |line| {

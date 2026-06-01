@@ -55,9 +55,9 @@ test "HttpEmbedder uses live Ollama" {
 	var transport = embedding_http.StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
-	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
 	defer allocator.free(url);
-	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
+	const model = try io_singleton.envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
 	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model, .ollama) catch |err| switch (err) {
@@ -88,10 +88,3 @@ test "NullEmbedder returns empty embeddings and free is safe" {
 }
 
 
-fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-	const value = io_singleton.getEnvVarOwned(allocator, key) catch |err| switch (err) {
-		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
-		else => return err,
-	};
-	return value;
-}

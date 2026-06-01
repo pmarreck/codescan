@@ -110,6 +110,23 @@ pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) GetEnvVarE
 }
 
 
+/// Create the parent directory of `path` if it doesn't exist.
+/// No-op when `path` has no directory component.
+pub fn ensureParentDir(path: []const u8) !void {
+    const dir = std.fs.path.dirname(path) orelse return;
+    try std.Io.Dir.cwd().createDirPath(getOrInit(), dir);
+}
+
+/// Look up env var `key`; return its owned value, or an owned copy of
+/// `fallback` if the variable is unset. Caller owns the returned slice.
+pub fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
+    return getEnvVarOwned(allocator, key) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
+        else => return err,
+    };
+}
+
+
 // ============================================================================
 // Tests
 // ============================================================================

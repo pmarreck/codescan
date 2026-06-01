@@ -782,7 +782,7 @@ fn bindInt(stmt: *c.sqlite3_stmt, index: c_int, value: usize) !void {
 	}
 }
 
-fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
+pub fn vectorToJson(allocator: std.mem.Allocator, vector: []const f32) ![]u8 {
 	var out: std.Io.Writer.Allocating = .init(allocator);
 	defer out.deinit();
 

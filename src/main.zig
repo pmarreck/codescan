@@ -3,6 +3,7 @@ const builtin = @import("builtin");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const storage = @import("storage.zig");
+const extract_util = @import("extract_util.zig");
 const embedding = @import("embedding.zig");
 const embedding_http = @import("embedding_http.zig");
 const indexer = @import("indexer.zig");
@@ -258,7 +259,7 @@ pub fn main(init: std.process.Init) !void {
 			}
 
 			// Create .codescan/ directory and write default config
-			try ensureParentDir(settings.db_path);
+			try io_singleton.ensureParentDir(settings.db_path);
 			{
 				const cfg_path = try configPath(allocator, config_root);
 				defer allocator.free(cfg_path);
@@ -392,7 +393,7 @@ pub fn main(init: std.process.Init) !void {
 		},
 		.index => {
 			checkTmpSpace();
-			try ensureParentDir(settings.db_path);
+			try io_singleton.ensureParentDir(settings.db_path);
 			const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
 			defer storage.close(db);
 
@@ -458,7 +459,7 @@ pub fn main(init: std.process.Init) !void {
 		},
 		.update => {
 			checkTmpSpace();
-			try ensureParentDir(settings.db_path);
+			try io_singleton.ensureParentDir(settings.db_path);
 			// Warn if watcher is already running (concurrent indexing causes constraint errors)
 			{
 				const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
@@ -590,7 +591,7 @@ pub fn main(init: std.process.Init) !void {
 		},
 		.search => {
 			const query = parsed.query orelse "";
-			try ensureParentDir(settings.db_path);
+			try io_singleton.ensureParentDir(settings.db_path);
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
 
 			var stderr_buf: [4096]u8 = undefined;
@@ -1223,7 +1224,7 @@ pub fn main(init: std.process.Init) !void {
 			.run => {
 				syslog.init("codescan");
 				defer syslog.deinit();
-				try ensureParentDir(settings.db_path);
+				try io_singleton.ensureParentDir(settings.db_path);
 					// Open existing DB or create new one (don't destroy existing index)
 					var db = try storage.openFileWithVec(allocator, settings.db_path);
 					var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
@@ -2310,7 +2311,7 @@ fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Wr
 }
 
 fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
-	try ensureParentDir(path);
+	try io_singleton.ensureParentDir(path);
 	try ensureConfigWithDefaults(path);
 
 	const editor = getEditor(allocator) catch |err| switch (err) {
@@ -2481,10 +2482,6 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 	};
 }
 
-fn ensureParentDir(path: []const u8) !void {
-	const dir = std.fs.path.dirname(path) orelse return;
-	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
-}
 
 const MIN_TMP_SPACE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
@@ -3022,14 +3019,6 @@ fn findFirstMatch(
 	return null;
 }
 
-fn splitLines(allocator: std.mem.Allocator, source: []const u8) !std.ArrayListUnmanaged([]const u8) {
-	var list: std.ArrayListUnmanaged([]const u8) = .empty;
-	var it = std.mem.splitScalar(u8, source, '\n');
-	while (it.next()) |line| {
-		try list.append(allocator, line);
-	}
-	return list;
-}
 
 fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 	// Returns byte offset of the start of each line (0-indexed line numbers)
@@ -3051,7 +3040,7 @@ pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_lin
 	defer allocator.free(source);
 
 	// Split into lines and compute chain hashes
-	var lines_list = try splitLines(allocator, source);
+	var lines_list = try extract_util.splitLines(allocator, source);
 	defer lines_list.deinit(allocator);
 	const lines = lines_list.items;
 	const total_lines = lines.len;
@@ -3504,7 +3493,7 @@ pub fn runReplaceLines(allocator: std.mem.Allocator, file_path: []const u8, from
 	if (!try checkFileVersion(allocator, source, version, writer)) return;
 
 	// Split into lines and compute hashes
-	var lines_list = try splitLines(allocator, source);
+	var lines_list = try extract_util.splitLines(allocator, source);
 	defer lines_list.deinit(allocator);
 	const lines = lines_list.items;
 
@@ -3570,7 +3559,7 @@ pub fn runInsertAt(allocator: std.mem.Allocator, file_path: []const u8, ref_str:
 	// Version check for optimistic concurrency
 	if (!try checkFileVersion(allocator, source, version, writer)) return;
 
-	var lines_list = try splitLines(allocator, source);
+	var lines_list = try extract_util.splitLines(allocator, source);
 	defer lines_list.deinit(allocator);
 	const lines = lines_list.items;
 
@@ -6486,7 +6475,7 @@ test "chain hash cascade detects stale content after edits" {
 	try tmp_dir.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = original_content });
 
 	// --- Step 1: Compute hashes from original content (simulates indexer) ---
-	var orig_lines = try splitLines(allocator, original_content);
+	var orig_lines = try extract_util.splitLines(allocator, original_content);
 	defer orig_lines.deinit(allocator);
 
 	const orig_hashes = try hashline.computeChainHashes(allocator, orig_lines.items);
@@ -6505,7 +6494,7 @@ test "chain hash cascade detects stale content after edits" {
 	try tmp_dir.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "test.zig", .data = modified_content });
 
 	// --- Step 3: Re-read and compute hashes for current file content ---
-	var mod_lines = try splitLines(allocator, modified_content);
+	var mod_lines = try extract_util.splitLines(allocator, modified_content);
 	defer mod_lines.deinit(allocator);
 
 	const new_hashes = try hashline.computeChainHashes(allocator, mod_lines.items);
@@ -6526,7 +6515,7 @@ test "parseHashlineRef round-trips with computed hashes" {
 	const allocator = std.testing.allocator;
 
 	const source = "line one\nline two\nline three\n";
-	var lines = try splitLines(allocator, source);
+	var lines = try extract_util.splitLines(allocator, source);
 	defer lines.deinit(allocator);
 
 	const hashes = try hashline.computeChainHashes(allocator, lines.items);
@@ -6877,7 +6866,7 @@ test "runInsertAt rejects stale version" {
 
 	// Compute version and hashline ref for line 2
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
-	var lines_list = try splitLines(allocator, content);
+	var lines_list = try extract_util.splitLines(allocator, content);
 	defer lines_list.deinit(allocator);
 	const all_hashes = try hashline.computeChainHashes(allocator, lines_list.items);
 	defer allocator.free(all_hashes);
@@ -6907,7 +6896,7 @@ test "runReplaceLines rejects stale version" {
 	defer allocator.free(abs_path);
 
 	const current_version = (try hashline.computeFileVersion(allocator, content)).?;
-	var lines_list = try splitLines(allocator, content);
+	var lines_list = try extract_util.splitLines(allocator, content);
 	defer lines_list.deinit(allocator);
 	const all_hashes = try hashline.computeChainHashes(allocator, lines_list.items);
 	defer allocator.free(all_hashes);

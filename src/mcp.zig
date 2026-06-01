@@ -230,10 +230,6 @@ fn formatToolResult(allocator: std.mem.Allocator, id: ?std.json.Value, text: []c
 	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}}}", .{ id_str, escaped_text });
 }
 
-fn ensureParentDir(path: []const u8) !void {
-	const dir = std.fs.path.dirname(path) orelse return;
-	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
-}
 
 fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings, err_detail: *?[]u8) ![]u8 {
 	var out: std.Io.Writer.Allocating = .init(allocator);
@@ -301,7 +297,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		const confirm_arg = getArg(args, "confirm");
 		if (path_arg != null) {
 			// Multi-file mode
-			try ensureParentDir(settings.db_path);
+			try io_singleton.ensureParentDir(settings.db_path);
 			const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
 				return toolError("MCP replace_content: failed to open DB: {}\n", .{err});
 			defer storage.close(db);
@@ -377,7 +373,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			if (query.len == 0) {
 				return toolError("MCP search: --regex requires a search query\n", .{});
 			}
-			try ensureParentDir(settings.db_path);
+			try io_singleton.ensureParentDir(settings.db_path);
 			const db = storage.openFileWithVec(allocator, settings.db_path) catch |err|
 				return toolError("MCP search: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 			defer storage.close(db);
@@ -419,7 +415,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		if (path_arg) |p| try path_filters.append(allocator, p);
 		if (file_arg) |f| try path_filters.append(allocator, f);
 
-		try ensureParentDir(mcp_settings.db_path);
+		try io_singleton.ensureParentDir(mcp_settings.db_path);
 		const db = storage.openFileWithVec(allocator, mcp_settings.db_path) catch |err|
 			return toolError("MCP search: failed to open DB '{s}': {}\n", .{ mcp_settings.db_path, err });
 		defer storage.close(db);
@@ -566,7 +562,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			}
 		}
 	} else if (std.mem.eql(u8, name, "index")) {
-		try ensureParentDir(settings.db_path);
+		try io_singleton.ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch |err|
 			return toolError("MCP index: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 		defer storage.close(db);

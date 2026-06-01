@@ -554,7 +554,7 @@ test "ensureModelAvailable reports missing model" {
 	var transport = StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
-	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
 	defer allocator.free(url);
 
 	try std.testing.expectError(
@@ -570,9 +570,9 @@ test "embed uses live Ollama" {
 	var transport = StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
-	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
 	defer allocator.free(url);
-	const model = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
+	const model = try io_singleton.envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model);
 
 	ensureModelAvailable(allocator, transport.transport(), url, model, .ollama) catch |err| switch (err) {
@@ -587,13 +587,6 @@ test "embed uses live Ollama" {
 	try std.testing.expect(embeddings[0].len > 0);
 }
 
-fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-	const value = io_singleton.getEnvVarOwned(allocator, key) catch |err| switch (err) {
-		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
-		else => return err,
-	};
-	return value;
-}
 
 test "isModelLoaded returns true when model is in ps" {
 	const allocator = std.testing.allocator;
@@ -703,7 +696,7 @@ test "buildPsUrl handles trailing slash" {
 
 /// Skip test if Ollama is not reachable (for CI environments without Ollama).
 pub fn skipIfNoOllama(allocator: std.mem.Allocator) !void {
-	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
 	defer allocator.free(url);
 
 	var transport = StdHttpTransport.init(allocator);

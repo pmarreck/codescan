@@ -476,7 +476,7 @@ pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Config {
 	return parseText(allocator, data);
 }
 
-fn stripQuotes(value: []const u8) []const u8 {
+pub fn stripQuotes(value: []const u8) []const u8 {
 	if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
 		return value[1 .. value.len - 1];
 	}

@@ -1,5 +1,6 @@
 const std = @import("std");
 const io_singleton = @import("io_singleton.zig");
+const config = @import("config.zig");
 
 pub const default_template =
 	\\# codescan language-specific search weights
@@ -185,7 +186,7 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Table {
 				else => {},
 			}
 			const section_value = std.mem.trim(u8, trimmed[1 .. trimmed.len - 1], " \t");
-			const section_name = stripQuotes(section_value);
+			const section_name = config.stripQuotes(section_value);
 			if (section_name.len == 0) return error.InvalidSection;
 			if (std.ascii.eqlIgnoreCase(section_name, "default")) {
 				section = .default;
@@ -202,7 +203,7 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Table {
 
 		const key = std.mem.trim(u8, key_raw, " \t");
 		const value_untrimmed = std.mem.trim(u8, value_raw, " \t");
-		const value = stripQuotes(value_untrimmed);
+		const value = config.stripQuotes(value_untrimmed);
 		const parsed = std.fmt.parseFloat(f32, value) catch return error.InvalidValue;
 
 		const is_known =
@@ -263,12 +264,6 @@ pub fn loadFromPath(allocator: std.mem.Allocator, path: []const u8) !Table {
 	return parseText(allocator, data);
 }
 
-fn stripQuotes(value: []const u8) []const u8 {
-	if (value.len >= 2 and value[0] == '"' and value[value.len - 1] == '"') {
-		return value[1 .. value.len - 1];
-	}
-	return value;
-}
 
 fn normalizeLower(allocator: std.mem.Allocator, value: []const u8) ![]const u8 {
 	const buf = try allocator.alloc(u8, value.len);

@@ -993,13 +993,6 @@ fn debugEnabledFromValue(value: []const u8) bool {
 	return true;
 }
 
-fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-	const value = io_singleton.getEnvVarOwned(allocator, key) catch |err| switch (err) {
-		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
-		else => return err,
-	};
-	return value;
-}
 
 fn debugLog(writer: *std.Io.Writer, comptime fmt: []const u8, args: anytype) void {
 	_ = writer.print(fmt, args) catch {};
@@ -1156,9 +1149,9 @@ test "doc truncation avoids Ollama context length errors" {
 	var transport = embedding_http.StdHttpTransport.init(allocator);
 	defer transport.deinit();
 
-	const url = try envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
+	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
 	defer allocator.free(url);
-	const model_name = try envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
+	const model_name = try io_singleton.envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
 	defer allocator.free(model_name);
 
 	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model_name, .ollama) catch |err| switch (err) {

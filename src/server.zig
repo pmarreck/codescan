@@ -52,7 +52,7 @@ pub const Settings = struct {
 };
 
 pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
-	try ensureParentDir(settings.db_path);
+	try io_singleton.ensureParentDir(settings.db_path);
 	const db = try storage.openFileWithVec(allocator, settings.db_path);
 	defer storage.close(db);
 	var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });	defer schema_result.deinit(allocator);
@@ -784,10 +784,6 @@ fn stripQuery(target: []const u8) []const u8 {
 	return target;
 }
 
-fn ensureParentDir(path: []const u8) !void {
-	const dir = std.fs.path.dirname(path) orelse return;
-	try std.Io.Dir.cwd().createDirPath(io_singleton.getOrInit(), dir);
-}
 
 fn parseAddress(host: []const u8, port: u16) !std.Io.net.IpAddress {
 	if (std.mem.eql(u8, host, "localhost")) {

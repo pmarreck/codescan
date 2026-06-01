@@ -123,3 +123,18 @@ test "extractDocComment handles block comment" {
 	try std.testing.expect(doc != null);
 	try std.testing.expectEqualStrings("doc", doc.?);
 }
+
+/// Join `lines` with `\n` separators and return owned slice, or `null` when
+/// `lines` is empty. The optional return distinguishes "no input" from "empty
+/// joined result" for callers that want to skip null bodies.
+pub fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) !?[]const u8 {
+	if (lines.len == 0) return null;
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	for (lines, 0..) |line, idx| {
+		if (idx > 0) try out.writer.writeAll("\n");
+		try out.writer.writeAll(line);
+	}
+	const owned = try out.toOwnedSlice();
+	return @as(?[]const u8, owned);
+}

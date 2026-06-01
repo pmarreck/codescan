@@ -57,7 +57,7 @@ fn emitSection(
 	else
 		try allocator.dupe(u8, std.fs.path.basename(file_path));
 
-	const full = try joinLines(allocator, trimmed_lines);
+	const full = try util.joinLines(allocator, trimmed_lines);
 	const preview = firstNonEmptyContentLine(trimmed_lines) orelse trimmed_lines[0];
 	const signature = try allocator.dupe(u8, std.mem.trim(u8, preview, " \t\r"));
 
@@ -89,17 +89,6 @@ fn headingText(line: []const u8) []const u8 {
 	return std.mem.trim(u8, line[idx..], " \t\r");
 }
 
-fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) !?[]const u8 {
-	if (lines.len == 0) return null;
-	var out: std.Io.Writer.Allocating = .init(allocator);
-	defer out.deinit();
-	for (lines, 0..) |line, idx| {
-		if (idx > 0) try out.writer.writeAll("\n");
-		try out.writer.writeAll(line);
-	}
-	const owned = try out.toOwnedSlice();
-	return @as(?[]const u8, owned);
-}
 
 fn firstNonEmptyLine(lines: []const []const u8) ?[]const u8 {
 	for (lines) |line| {
