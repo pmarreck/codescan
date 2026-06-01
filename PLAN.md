@@ -123,6 +123,34 @@
 - [x] `codescan rename` applies edits by default (`--dry-run` for preview-only)
 - [x] Hashlines in `codescan references` output for stale-edit protection
 - [x] Auto-detect embedding server (Ollama/oMLX) on init, graceful lexical-only fallback when unavailable, `--lexical-only` flag (completed 2026-04-11 EST)
+### Phase 5b: Code Review Followups (fleet review 2026-06-01)
+
+Captured from the 9 dimension review notes in `inbox/`. Items that landed in this batch are checked; deferred items keep their context for the next session.
+
+**Landed (commits on yolo, 2026-06-01):**
+- [x] fd-leak in `ensureConfigWithDefaults` / `ensureWeightsWithDefaults` — moved close to `defer` so a `stat` failure can't leak the descriptor. (`src/main.zig`)
+- [x] `codescan serve` user-facing message — prints redirect to `codescan search` / `codescan mcp-serve` on stderr before returning `error.HttpServerNotMigrated`. (`src/server.zig`)
+- [x] Consolidate 6 byte-identical helpers — `ensureParentDir`, `envOrDefault` → `io_singleton.zig`; `vectorToJson` → `storage.zig`; `stripQuotes` → `config.zig`; `splitLines` + `joinLines` → `extract_util.zig`. Removed 9 local fn copies, switched ~30 call sites.
+- [x] Hybrid search merge O(N²) → O(1) per dedup hit — `seen` map switched from `AutoHashMap(i64, void)` to `AutoHashMap(i64, usize)` storing the index into `results.items`; bm25 write-back is now a single map lookup + array index. (`src/search.zig:163-206`)
+- [x] Arena allocator for `findAndPrintMatchCheck` recursion — replaces `std.heap.page_allocator` (which 4 KB-rounds every `namePath` allocation) with an `ArenaAllocator` created at the caller. (`src/main.zig`)
+- [x] Document `bindText` lifetime contract — Zig 0.16 rejects the SQLITE_TRANSIENT sentinel construction, so the existing null-destructor (SQLITE_STATIC) approach stays. Added explicit `LIFETIME CONTRACT` docblock so the caller-owns-buffer invariant is loud at the API surface. (`src/storage.zig`)
+
+**Deferred (multi-session or judgment-call):**
+- [ ] Split `src/main.zig` (7331 lines, fn main spans 1311 lines) — extract subcommands into `cmd/<name>.zig` modules; main.zig becomes argparse dispatch + shared bootstrap helpers (resolveSettings, findRepoRoot, embedding-server detection). Each `cmd/*.zig` would be 100-500 lines and individually testable. Reviewer: `unclear-files` + `disorganized` (CRITICAL).
+- [ ] Decompose `fn search` (`src/search.zig` lines 94-406, 312 lines) — extract `runLexicalOnly`, `runVectorOnly`, `runHybrid` private fns; public `search` becomes ~30-line dispatcher. Each phase becomes independently testable. Reviewer: `disorganized` (WARN).
+- [ ] Extract stderr-writer boilerplate helper — pattern `var stderr_buf: [4096]u8 = undefined; var stderr_writer = std.Io.File.stderr().writer(io_singleton.getOrInit(), &stderr_buf); const stderr = &stderr_writer.interface;` appears in main.zig at lines 137, 159, 189, 212 and dozens elsewhere. Define `pub const STDERR_BUF_SIZE = 4096;` once and a `withStderr(comptime cb)` or `stderrWriter()` helper. Reviewer: `disorganized` (WARN).
+- [ ] Windows watcher-mgmt: surface "not supported on Windows" instead of empty-list/false silent return in `discoverWatchers`, `getActiveCwds`, `stopWatcher` (`src/watcher_mgmt.zig:121,146,164`). Either log a one-line warning before short-circuiting OR gate the commands at the CLI level with a clearer message. Reviewer: `incomplete-undefined` (WARN).
+- [ ] Restore HTTP server functionality — placeholder commit landed graceful error; the migration to `std.Io.net.IpAddress.listen` + `std.http.Server` v2 (io-aware API) still needs to happen. (Same item as PLAN.md:35 above.) Reviewer: `incomplete-undefined` (CRITICAL).
+- [ ] Test coverage gaps for language extractors — `extract_lua.zig`, `extract_idris.zig`, `extract_nix.zig`, `extract_nim.zig`, `extract_haskell.zig`, `extract_lean.zig`, `extract_bash.zig`, `extract_text.zig`, `extract_log.zig` each have a single happy-path test. Establish a 6-test smoke matrix per extractor (function/method/no-doc/multi-doc/empty-file/UTF-8 identifier). Reviewer: `inadequate-tests` (WARN).
+- [ ] Enum-value stability test for `src/kind.zig` `Kind` enum — values persist to SQLite so reordering would silently break old indices. Add a snapshot assertion. Reviewer: `inadequate-tests` (WARN).
+- [ ] Strengthen 4 weak-assertion tests:
+  - `fs_watch.zig:344` — exception-swallows `error.{OpenFrameworkFailed,MissingSymbol,FanotifyInitFailed}`; split into "init succeeds on supported platform" (hard fail) + "init returns sentinel error on unsupported platform" (`expectError`).
+  - `embedding_http.zig:650` — `ensureModelAvailable` only asserts no-error; extend `MockTransportCtx` with request counters, assert `/api/tags` AND `/api/ps` were both called.
+  - `syslog.zig:75` — "no-op and does not crash" only proves non-crash; rename to "does not crash" OR capture syslog output via a hook to prove the no-op claim.
+  - `pidfile.zig:234` — `tryAcquirePid` succeeds-on-stale-PID test only asserts no-error; also assert the pidfile contents after acquisition contain the current process's PID (not the stale `99999999`). Reviewer: `futile-tests` (INFO).
+- [ ] CLI dispatch table refactor — `src/cli.zig:251-401` is a long `else if (mem.eql(...))` chain (~150 lines, 93 `eql` call sites). A `Command` enum + `std.meta.stringToEnum(Command, cmd)` + `switch` would be more compact, exhaustive at compile time. A comptime `{name, .command_tag, .help_topic}` table + `inline for` could collapse the repeated 3-line blocks. Reviewer: `language-features` (INFO).
+- [ ] Replace migration-scaffold `@panic` in `src/io_singleton.zig:61` with `unreachable` (release-stripped) or a typed error — once daemon `set()` ordering is audited (preceding item), the @panic guard is no longer load-bearing. Reviewer: `incomplete-undefined` (INFO).
+
 ### Phase 6: New Language Grammars
 - [x] Add Clojure tree-sitter grammar + symbol mappings (`.clj`, `.cljs`, `.cljc`, `.edn`) — custom list_lit extraction for defn/def/ns/etc.
 - [x] Add Assembly tree-sitter grammar + symbol mappings (`.s`, `.S`, `.asm`) — labels + constants via RubixDev/tree-sitter-asm
