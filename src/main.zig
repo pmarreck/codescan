@@ -2667,8 +2667,11 @@ pub fn runSymbols(
 				if (multi and tree.symbols.len > 0) {
 					// Check if any matches exist before printing header
 					var file_found = false;
+					var check_arena = std.heap.ArenaAllocator.init(allocator);
+					defer check_arena.deinit();
+					const arena_alloc = check_arena.allocator();
 					for (tree.symbols) |*sym| {
-						try findAndPrintMatchCheck(sym, pat, null, &file_found);
+						try findAndPrintMatchCheck(arena_alloc, sym, pat, null, &file_found);
 					}
 					if (file_found) {
 						try writer.print("\n==> {s} <==\n", .{file_path});
@@ -2859,15 +2862,20 @@ fn findAndPrintMatchMulti(
 }
 
 /// Check if any symbols match without printing (for deciding whether to show file header).
+///
+/// `arena` is an arena allocator used for the `namePath` string allocated at
+/// each node. The caller owns the arena and resets/deinits it after the walk;
+/// avoids `page_allocator`'s 4 KB-rounding-per-call (a 500-node tree
+/// transiently holds ~2 MB of pages otherwise).
 fn findAndPrintMatchCheck(
+	arena: std.mem.Allocator,
 	sym: *const symbol_tree.SymbolNode,
 	pattern: []const u8,
 	parent_path: ?[]const u8,
 	found: *bool,
 ) !void {
 	if (found.*) return; // short-circuit once found
-	const name_path = try sym.namePath(std.heap.page_allocator, parent_path);
-	defer std.heap.page_allocator.free(name_path);
+	const name_path = try sym.namePath(arena, parent_path);
 
 	if (matchesNamePath(pattern, name_path, sym.name)) {
 		found.* = true;
@@ -2875,7 +2883,7 @@ fn findAndPrintMatchCheck(
 	}
 
 	for (sym.children) |*child| {
-		try findAndPrintMatchCheck(child, pattern, name_path, found);
+		try findAndPrintMatchCheck(arena, child, pattern, name_path, found);
 		if (found.*) return;
 	}
 }
