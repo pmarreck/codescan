@@ -770,6 +770,20 @@ fn logSqliteError(db: Db, context: []const u8) void {
 	}
 }
 
+/// Bind `text` to parameter `index` of `stmt`.
+///
+/// LIFETIME CONTRACT: passes `null` as the destructor, which SQLite treats as
+/// `SQLITE_STATIC` — SQLite does NOT copy `text`. The caller must keep `text`
+/// alive until the statement has been stepped to `SQLITE_DONE` and finalized.
+/// Every call site in this module satisfies this by stepping+finalizing
+/// before the caller frees the buffer (the caller's `defer free` runs after
+/// the function's `defer sqlite3_finalize` in scope-unwind order).
+///
+/// The defensive alternative is `SQLITE_TRANSIENT`, which forces SQLite to
+/// copy the buffer on bind. Zig 0.16's function-pointer alignment check
+/// rejects every reasonable construction of the `(void*)-1` sentinel
+/// (`@ptrFromInt(-1)` is misaligned; `@alignCast` would panic), so we hold
+/// the lifetime invariant by code review rather than at the API level.
 fn bindText(stmt: *c.sqlite3_stmt, index: c_int, text: []const u8) !void {
 	if (c.sqlite3_bind_text(stmt, index, text.ptr, @intCast(text.len), null) != c.SQLITE_OK) {
 		return error.SqlBindFailed;
