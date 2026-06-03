@@ -56,11 +56,6 @@ pub fn getEnvMapOrInit(_: std.mem.Allocator) *std.process.Environ.Map {
     return current_env_map.?;
 }
 
-/// Returns the global io. Panics if unset (programmer error).
-pub fn get() std.Io {
-    return current_io orelse @panic("io_singleton.get() before set(); this is a codescan migration scaffold — call io_singleton.set(init.io) in main, or set up an Io.Threaded in your test");
-}
-
 /// Lazy default: returns the set io, or constructs a real `Io.Threaded`
 /// (allocator=page_allocator, full concurrency) on first call.
 ///
