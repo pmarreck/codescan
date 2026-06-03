@@ -104,6 +104,11 @@ const Settings = struct {
 pub fn main(init: std.process.Init) !void {
 	const allocator = init.gpa;
 	const io = init.io;
+	// CONTRACT: `io_singleton.set(io)` MUST be the first call before any
+	// code path can reach `io_singleton.getOrInit()`. The watcher daemon is
+	// spawned via `std.process.spawn(...self_exe..."watch"...)`, which
+	// re-enters `pub fn main` in a fresh process — set() still runs here
+	// before any watcher code. Audited 2026-06-02 (PLAN.md Phase 5b).
 	io_singleton.set(io);
 	io_singleton.setEnvMap(init.environ_map);
 
