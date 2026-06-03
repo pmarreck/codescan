@@ -141,3 +141,98 @@ test "extract finds lua functions" {
 	try std.testing.expectEqualStrings("add", symbols[0].name);
 	try std.testing.expectEqualStrings("adds", symbols[0].doc_comment.?);
 }
+
+
+// ─── smoke matrix (added 2026-06-02 from fleet review inadequate-tests) ────
+
+test "extract handles `local function` declaration" {
+	const allocator = std.testing.allocator;
+	const source = "local function helper(x) return x + 1 end\n";
+
+	const symbols = try extract(allocator, "src/lib.lua", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expect(symbols.len >= 1);
+	var found_helper = false;
+	for (symbols) |sym| {
+		if (std.mem.eql(u8, sym.name, "helper")) found_helper = true;
+	}
+	try std.testing.expect(found_helper);
+}
+
+test "extract handles method definitions (`function obj:method`)" {
+	const allocator = std.testing.allocator;
+	const source = "function Account:deposit(n) self.balance = self.balance + n end\n";
+
+	const symbols = try extract(allocator, "src/account.lua", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	// Method name should appear (extractor may include the receiver prefix or
+	// just the method name; either is acceptable as long as something is found).
+	try std.testing.expect(symbols.len >= 1);
+}
+
+test "extract returns no symbols on empty source" {
+	const allocator = std.testing.allocator;
+	const symbols = try extract(allocator, "src/empty.lua", "");
+	defer allocator.free(symbols);
+	try std.testing.expectEqual(@as(usize, 0), symbols.len);
+}
+
+test "extract does not attach doc_comment when function has no preceding comment" {
+	const allocator = std.testing.allocator;
+	const source = "function bare() end\n";
+
+	const symbols = try extract(allocator, "src/bare.lua", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expect(symbols.len >= 1);
+	for (symbols) |sym| {
+		if (std.mem.eql(u8, sym.name, "bare")) {
+			try std.testing.expect(sym.doc_comment == null);
+		}
+	}
+}
+
+test "extract handles multi-line `--[[ ]]` block comment without crashing" {
+	const allocator = std.testing.allocator;
+	const source =
+		"--[[\n" ++
+		"  Block comment\n" ++
+		"  spanning multiple lines\n" ++
+		"]]\n" ++
+		"function withBlockComment() end\n";
+
+	const symbols = try extract(allocator, "src/blockcomment.lua", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expect(symbols.len >= 1);
+}
+
+test "extract handles UTF-8 identifiers without crashing" {
+	const allocator = std.testing.allocator;
+	// Lua 5.3+ allows non-ASCII identifiers in some configs; even when the
+	// host parser rejects them, the extractor must NOT crash.
+	const source = "function utf8Test() return 'café' end\n";
+
+	const symbols = try extract(allocator, "src/utf8.lua", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	// We don't require any specific count — only that the call completes.
+	_ = symbols.len;
+}

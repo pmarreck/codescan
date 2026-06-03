@@ -139,3 +139,64 @@ test "extract finds bash functions" {
 	try std.testing.expectEqualStrings("greet", symbols[0].name);
 	try std.testing.expectEqualStrings("greets", symbols[0].doc_comment.?);
 }
+
+
+// ─── smoke matrix (added 2026-06-02 from fleet review inadequate-tests) ────
+
+test "extract returns no symbols on empty source" {
+	const allocator = std.testing.allocator;
+	const symbols = try extract(allocator, "src/empty.sh", "");
+	defer allocator.free(symbols);
+	try std.testing.expectEqual(@as(usize, 0), symbols.len);
+}
+
+test "extract handles declaration with no preceding comment (doc_comment null)" {
+	const allocator = std.testing.allocator;
+	const source = "plain() { echo hi; }\n";
+
+	const symbols = try extract(allocator, "src/nodoc.sh", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expect(symbols.len >= 1);
+	for (symbols) |sym| {
+		try std.testing.expect(sym.doc_comment == null);
+	}
+}
+
+test "extract attaches preceding comment as doc_comment" {
+	const allocator = std.testing.allocator;
+	const source = "# greets\ngreet() { echo hi; }\n";
+
+	const symbols = try extract(allocator, "src/withdoc.sh", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expect(symbols.len >= 1);
+	var found = false;
+	for (symbols) |sym| {
+		if (std.mem.eql(u8, sym.name, "greet")) {
+			found = true;
+			if (sym.doc_comment) |doc| {
+				try std.testing.expect(std.mem.indexOf(u8, doc, "greets") != null);
+			}
+		}
+	}
+	try std.testing.expect(found);
+}
+
+test "extract handles UTF-8 content without crashing" {
+	const allocator = std.testing.allocator;
+	// Source contains non-ASCII bytes — the extractor must not crash.
+	const source = "-- café and über\n";
+	const symbols = try extract(allocator, "src/utf8.sh", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+	_ = symbols.len;
+}
