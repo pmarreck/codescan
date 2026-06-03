@@ -255,176 +255,109 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
             parsed.help_topic = args[i];
         }
 		return parsed;
-	} else if (std.mem.eql(u8, cmd, "config")) {
-		parsed.command = .config;
-        help_topic_default = "config";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "init")) {
-		parsed.command = .init;
-        help_topic_default = "init";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "index")) {
-		parsed.command = .index;
-        help_topic_default = "index";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "update")) {
-		parsed.command = .update;
-        help_topic_default = "update";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "search") or std.mem.eql(u8, cmd, "query")) {
-		parsed.command = .search;
-        help_topic_default = "search";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "serve")) {
-		parsed.command = .serve;
-        help_topic_default = "serve";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "symbols") or std.mem.eql(u8, cmd, "find-symbol")) {
-		parsed.command = .symbols;
-        help_topic_default = "symbols";
-		i += 1;
-		// Next non-flag arg is the pattern (optional)
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
-			i += 1;
+} else {
+		const CommandEntry = struct {
+			names: []const []const u8,
+			tag: CommandTag,
+			help_topic: []const u8,
+			positional: enum { none, pattern, hashline_ref } = .none,
+		};
+		// LOCKED: order doesn't matter — first-match wins via inner-loop. Aliases
+		// live in `names`. `help` and `watch` are kept as special cases above /
+		// below this block (help returns early; watch has a sub-action parser).
+		const COMMANDS = [_]CommandEntry{
+			.{ .names = &.{ "config" }, .tag = .config, .help_topic = "config" },
+			.{ .names = &.{ "init" }, .tag = .init, .help_topic = "init" },
+			.{ .names = &.{ "index" }, .tag = .index, .help_topic = "index" },
+			.{ .names = &.{ "update" }, .tag = .update, .help_topic = "update" },
+			.{ .names = &.{ "search", "query" }, .tag = .search, .help_topic = "search" },
+			.{ .names = &.{ "serve" }, .tag = .serve, .help_topic = "serve" },
+			.{ .names = &.{ "symbols", "find-symbol" }, .tag = .symbols, .help_topic = "symbols", .positional = .pattern },
+			.{ .names = &.{ "replace-symbol" }, .tag = .replace_symbol, .help_topic = "replace-symbol", .positional = .pattern },
+			.{ .names = &.{ "insert-after" }, .tag = .insert_after, .help_topic = "insert-after", .positional = .pattern },
+			.{ .names = &.{ "insert-before" }, .tag = .insert_before, .help_topic = "insert-before", .positional = .pattern },
+			.{ .names = &.{ "replace-lines" }, .tag = .replace_lines, .help_topic = "replace-lines" },
+			.{ .names = &.{ "insert-at" }, .tag = .insert_at, .help_topic = "insert-at", .positional = .hashline_ref },
+			.{ .names = &.{ "replace-content" }, .tag = .replace_content, .help_topic = "replace-content", .positional = .pattern },
+			.{ .names = &.{ "create-file" }, .tag = .create_file, .help_topic = "create-file" },
+			.{ .names = &.{ "read-file" }, .tag = .read_file, .help_topic = "read-file", .positional = .pattern },
+			.{ .names = &.{ "destroy-file" }, .tag = .destroy_file, .help_topic = "destroy-file" },
+			.{ .names = &.{ "diff" }, .tag = .diff, .help_topic = "diff" },
+			.{ .names = &.{ "references" }, .tag = .references, .help_topic = "references", .positional = .pattern },
+			.{ .names = &.{ "rename" }, .tag = .rename, .help_topic = "rename", .positional = .pattern },
+			.{ .names = &.{ "mcp-serve" }, .tag = .mcp_serve, .help_topic = "mcp-serve" },
+			.{ .names = &.{ "status" }, .tag = .status, .help_topic = "status" },
+			.{ .names = &.{ "setup-model" }, .tag = .setup_model, .help_topic = "setup-model" },
+			.{ .names = &.{ "log" }, .tag = .log, .help_topic = "log" },
+			.{ .names = &.{ "root" }, .tag = .root, .help_topic = "root" },
+			.{ .names = &.{ "clean", "clear" }, .tag = .clean, .help_topic = "clean" },
+		};
+
+		var matched_entry: ?*const CommandEntry = null;
+		for (&COMMANDS) |*entry| {
+			for (entry.names) |name| {
+				if (std.mem.eql(u8, cmd, name)) {
+					matched_entry = entry;
+					break;
+				}
+			}
+			if (matched_entry != null) break;
 		}
-	} else if (std.mem.eql(u8, cmd, "replace-symbol")) {
-		parsed.command = .replace_symbol;
-        help_topic_default = "replace-symbol";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
+
+		if (matched_entry) |entry| {
+			parsed.command = entry.tag;
+			help_topic_default = entry.help_topic;
 			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "insert-after")) {
-		parsed.command = .insert_after;
-        help_topic_default = "insert-after";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
+			switch (entry.positional) {
+				.none => {},
+				.pattern => {
+					if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+						parsed.pattern = args[i];
+						i += 1;
+					}
+				},
+				.hashline_ref => {
+					if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+						parsed.hashline_ref = args[i];
+						i += 1;
+					}
+				},
+			}
+		} else if (std.mem.eql(u8, cmd, "watch") or std.mem.eql(u8, cmd, "watcher")) {
+			parsed.command = .watch;
+			help_topic_default = "watch";
 			i += 1;
+			// Parse optional watch subcommand
+			if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
+				const sub = args[i];
+				if (std.mem.eql(u8, sub, "stop")) {
+					parsed.watch_action = .stop;
+					i += 1;
+				} else if (std.mem.eql(u8, sub, "start")) {
+					parsed.watch_action = .start;
+					i += 1;
+				} else if (std.mem.eql(u8, sub, "restart")) {
+					parsed.watch_action = .restart;
+					i += 1;
+				} else if (std.mem.eql(u8, sub, "status")) {
+					parsed.watch_action = .status;
+					i += 1;
+				} else if (std.mem.eql(u8, sub, "pid")) {
+					parsed.watch_action = .pid;
+					i += 1;
+				} else if (std.mem.eql(u8, sub, "list")) {
+					parsed.watch_action = .list;
+					i += 1;
+				} else if (std.mem.eql(u8, sub, "prune")) {
+					parsed.watch_action = .prune;
+					i += 1;
+				}
+			}
+		} else {
+			parsed.command = .search;
+			parsed.assumed_search = true;
+			help_topic_default = "search";
 		}
-	} else if (std.mem.eql(u8, cmd, "insert-before")) {
-		parsed.command = .insert_before;
-        help_topic_default = "insert-before";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "replace-lines")) {
-		parsed.command = .replace_lines;
-        help_topic_default = "replace-lines";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "insert-at")) {
-		parsed.command = .insert_at;
-        help_topic_default = "insert-at";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.hashline_ref = args[i];
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "replace-content")) {
-		parsed.command = .replace_content;
-        help_topic_default = "replace-content";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "create-file")) {
-		parsed.command = .create_file;
-        help_topic_default = "create-file";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "read-file")) {
-		parsed.command = .read_file;
-        help_topic_default = "read-file";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i]; // reuse pattern for file path
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "destroy-file")) {
-		parsed.command = .destroy_file;
-        help_topic_default = "destroy-file";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "diff")) {
-		parsed.command = .diff;
-        help_topic_default = "diff";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "references")) {
-		parsed.command = .references;
-        help_topic_default = "references";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "rename")) {
-		parsed.command = .rename;
-        help_topic_default = "rename";
-		i += 1;
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			parsed.pattern = args[i];
-			i += 1;
-		}
-	} else if (std.mem.eql(u8, cmd, "mcp-serve")) {
-		parsed.command = .mcp_serve;
-        help_topic_default = "mcp-serve";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "watch") or std.mem.eql(u8, cmd, "watcher")) {
-		parsed.command = .watch;
-        help_topic_default = "watch";
-		i += 1;
-		// Parse optional watch subcommand
-		if (i < args.len and !std.mem.startsWith(u8, args[i], "-")) {
-			const sub = args[i];
-			if (std.mem.eql(u8, sub, "stop")) {
-				parsed.watch_action = .stop;
-				i += 1;
-			} else if (std.mem.eql(u8, sub, "start")) {
-				parsed.watch_action = .start;
-				i += 1;
-			} else if (std.mem.eql(u8, sub, "restart")) {
-				parsed.watch_action = .restart;
-				i += 1;
-			} else if (std.mem.eql(u8, sub, "status")) {
-				parsed.watch_action = .status;
-				i += 1;
-			} else if (std.mem.eql(u8, sub, "pid")) {
-				parsed.watch_action = .pid;
-				i += 1;
-			} else if (std.mem.eql(u8, sub, "list")) {
-				parsed.watch_action = .list;
-				i += 1;
-			} else if (std.mem.eql(u8, sub, "prune")) {
-				parsed.watch_action = .prune;
-				i += 1;
-			}		}
-	} else if (std.mem.eql(u8, cmd, "status")) {
-		parsed.command = .status;
-        help_topic_default = "status";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "setup-model")) {
-        parsed.command = .setup_model;
-        help_topic_default = "setup-model";
-        i += 1;
-	} else if (std.mem.eql(u8, cmd, "log")) {
-		parsed.command = .log;
-		help_topic_default = "log";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "root")) {
-		parsed.command = .root;
-		help_topic_default = "root";
-		i += 1;
-	} else if (std.mem.eql(u8, cmd, "clean") or std.mem.eql(u8, cmd, "clear")) {
-		parsed.command = .clean;
-        help_topic_default = "clean";
-		i += 1;
-	} else {
-		parsed.command = .search;
-		parsed.assumed_search = true;
-        help_topic_default = "search";
 	}
 
 	while (i < args.len) {
