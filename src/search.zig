@@ -91,6 +91,142 @@ pub const SearchResult = struct {
 	total_relevant: usize,
 };
 
+/// Apply post-gather filtering to the candidate set:
+///   - comments_only:    keep only symbols whose doc_comment is non-null
+///   - allowed_langs:    keep only matching languages
+///   - allowed_exts:     keep only matching file extensions
+///   - allowed_kinds:    keep only matching symbol kinds (fn/struct/etc.)
+///
+/// In-place: mutates `results` by deinit'ing dropped entries and replacing
+/// the list with the filtered subset. Extracted from `pub fn search` (2026-06-02).
+fn filterCandidates(
+	allocator: std.mem.Allocator,
+	options: Options,
+	results: *std.ArrayListUnmanaged(Result),
+) !void {
+	if (options.comments_only) {
+		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
+		errdefer {
+			for (filtered.items) |*res| res.deinit(allocator);
+			filtered.deinit(allocator);
+		}
+		for (results.items) |res| {
+			if (res.symbol.doc_comment != null) {
+				try filtered.append(allocator, res);
+			} else {
+				var tmp = res;
+				tmp.deinit(allocator);
+			}
+		}
+		results.deinit(allocator);
+		results.* = filtered;
+	}
+
+	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0 or options.allowed_symbol_kinds.len > 0) {
+		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
+		errdefer {
+			for (filtered.items) |*res| res.deinit(allocator);
+			filtered.deinit(allocator);
+		}
+		for (results.items) |res| {
+			if (matchesFilters(res.symbol, options)) {
+				try filtered.append(allocator, res);
+			} else {
+				var tmp = res;
+				tmp.deinit(allocator);
+			}
+		}
+		results.deinit(allocator);
+		results.* = filtered;
+	}
+}
+
+/// Gather the initial candidate set for `search`. Dispatches on
+/// `options.mode`:
+///   .lexical → only FTS5 candidates
+///   .vector  → only vector candidates (populates `vector_ranks` for RRF)
+///   .hybrid  → vector candidates first; then merge FTS candidates,
+///              transferring FTS bm25 onto pre-existing vector rows in O(1)
+///              via an id→index map (see hybrid-merge regression test).
+///
+/// Extracted from `pub fn search`'s 70-line candidate switch (2026-06-02).
+fn gatherCandidates(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	embedder: embedding.Embedder,
+	query: []const u8,
+	options: Options,
+	results: *std.ArrayListUnmanaged(Result),
+	vector_ranks: *std.AutoHashMap(i64, usize),
+	lexical_ranks: *std.AutoHashMap(i64, usize),
+) !void {
+	if (options.mode == .lexical) {
+		const lexical = try lexicalCandidates(
+			allocator,
+			db,
+			query,
+			options.top_n * options.candidate_multiplier,
+			options.comments_only,
+			options.fts_mode,
+		);
+		for (lexical) |res| try results.append(allocator, res);
+		allocator.free(lexical);
+		return;
+	}
+
+	const inputs = [_][]const u8{ query };
+	const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
+	defer embedder.free(embedder.ctx, allocator, embeddings);
+	if (embeddings.len != 1) return error.InvalidEmbeddingCount;
+
+	const limit = options.top_n * options.candidate_multiplier;
+	const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only);
+
+	// Build vector rank map (candidates are ordered by distance, best first).
+	for (vector_results, 0..) |res, i| {
+		try vector_ranks.put(res.id, i + 1); // 1-based rank
+	}
+
+	for (vector_results) |res| try results.append(allocator, res);
+	allocator.free(vector_results);
+
+	if (options.mode != .hybrid) return;
+
+	// Map result.id -> index into results.items, so the FTS-bm25 merge below
+	// can find the existing row in O(1) instead of a linear scan over
+	// `results.items` per lexical hit. Matters when callers crank --top-n /
+	// --candidate-multiplier high enough that the lexical and vector
+	// candidate sets both hit the thousands.
+	var id_to_index = std.AutoHashMap(i64, usize).init(allocator);
+	defer id_to_index.deinit();
+	for (results.items, 0..) |res, idx| {
+		try id_to_index.put(res.id, idx);
+	}
+
+	const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only, options.fts_mode);
+	defer allocator.free(lexical);
+
+	// Build lexical rank map (candidates are ordered by relevance, best first).
+	for (lexical, 0..) |res, i| {
+		try lexical_ranks.put(res.id, i + 1); // 1-based rank
+	}
+
+	for (lexical) |res| {
+		if (id_to_index.get(res.id)) |existing_idx| {
+			// Symbol already came back from vector candidates with bm25=0.
+			// Transfer the FTS bm25 onto the existing row so the scorer can
+			// use it; otherwise we throw away the FTS signal and the merged
+			// result scores like a vector-only hit.
+			results.items[existing_idx].bm25 = res.bm25;
+			var tmp = res;
+			tmp.deinit(allocator);
+		} else {
+			try id_to_index.put(res.id, results.items.len);
+			try results.append(allocator, res);
+		}
+	}
+}
+
 pub fn search(
 	allocator: std.mem.Allocator,
 	db: storage.Db,
@@ -132,108 +268,9 @@ pub fn search(
 	var lexical_ranks = std.AutoHashMap(i64, usize).init(allocator);
 	defer lexical_ranks.deinit();
 
-	if (options.mode == .lexical) {
-		const lexical = try lexicalCandidates(
-			allocator,
-			db,
-			query,
-			options.top_n * options.candidate_multiplier,
-			options.comments_only,
-			options.fts_mode,
-		);
-		for (lexical) |res| try results.append(allocator, res);
-		allocator.free(lexical);
-	} else {
-		const inputs = [_][]const u8{ query };
-		const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
-		defer embedder.free(embedder.ctx, allocator, embeddings);
-		if (embeddings.len != 1) return error.InvalidEmbeddingCount;
+	try gatherCandidates(allocator, db, embedder, query, options, &results, &vector_ranks, &lexical_ranks);
 
-		const limit = options.top_n * options.candidate_multiplier;
-		const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only);
-
-		// Build vector rank map (candidates are ordered by distance, best first).
-		for (vector_results, 0..) |res, i| {
-			try vector_ranks.put(res.id, i + 1); // 1-based rank
-		}
-
-		for (vector_results) |res| try results.append(allocator, res);
-		allocator.free(vector_results);
-
-		if (options.mode == .hybrid) {
-			// Map result.id -> index into results.items, so the FTS-bm25
-			// merge below can find the existing row in O(1) instead of a
-			// linear scan over `results.items` per lexical hit. Matters when
-			// callers crank --top-n / --candidate-multiplier high enough
-			// that the lexical and vector candidate sets both hit the
-			// thousands.
-			var id_to_index = std.AutoHashMap(i64, usize).init(allocator);
-			defer id_to_index.deinit();
-			for (results.items, 0..) |res, idx| {
-				try id_to_index.put(res.id, idx);
-			}
-
-			const lexical = try lexicalCandidates(allocator, db, query, limit, options.comments_only, options.fts_mode);
-			defer allocator.free(lexical);
-
-			// Build lexical rank map (candidates are ordered by relevance, best first).
-			for (lexical, 0..) |res, i| {
-				try lexical_ranks.put(res.id, i + 1); // 1-based rank
-			}
-
-			for (lexical) |res| {
-				if (id_to_index.get(res.id)) |existing_idx| {
-					// Symbol already came back from vector candidates with
-					// bm25=0. Transfer the FTS bm25 onto the existing row so
-					// the scorer can use it; otherwise we throw away the FTS
-					// signal and the merged result scores like a vector-only
-					// hit.
-					results.items[existing_idx].bm25 = res.bm25;
-					var tmp = res;
-					tmp.deinit(allocator);
-				} else {
-					try id_to_index.put(res.id, results.items.len);
-					try results.append(allocator, res);
-				}
-			}
-		}
-	}
-
-	if (options.comments_only) {
-		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
-		errdefer {
-			for (filtered.items) |*res| res.deinit(allocator);
-			filtered.deinit(allocator);
-		}
-		for (results.items) |res| {
-			if (res.symbol.doc_comment != null) {
-				try filtered.append(allocator, res);
-			} else {
-				var tmp = res;
-				tmp.deinit(allocator);
-			}
-		}
-		results.deinit(allocator);
-		results = filtered;
-	}
-
-	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0 or options.allowed_symbol_kinds.len > 0) {
-		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
-		errdefer {
-			for (filtered.items) |*res| res.deinit(allocator);
-			filtered.deinit(allocator);
-		}
-		for (results.items) |res| {
-			if (matchesFilters(res.symbol, options)) {
-				try filtered.append(allocator, res);
-			} else {
-				var tmp = res;
-				tmp.deinit(allocator);
-			}
-		}
-		results.deinit(allocator);
-		results = filtered;
-	}
+	try filterCandidates(allocator, options, &results);
 
 	const query_trimmed = std.mem.trim(u8, query, " \t\r\n");
 
