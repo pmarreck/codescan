@@ -341,21 +341,21 @@ const PollingBackend = struct {
 
 // Tests
 
-test "FsWatch init and deinit" {
+test "FsWatch init and deinit (must succeed on every supported platform)" {
+	// LIBRARY-QUALITY CONTRACT: FsWatch.init MUST succeed on macOS (FSEvents),
+	// Linux (fanotify or polling fallback), and any other OS (polling). The
+	// old test caught and swallowed `error.OpenFrameworkFailed`,
+	// `error.MissingSymbol`, and `error.FanotifyInitFailed` — masking any
+	// regression that broke init on the supported platforms. Now we `try`
+	// unconditionally so a real init failure surfaces in CI.
 	const allocator = std.testing.allocator;
-	var w = FsWatch.init(allocator) catch |err| {
-		// On CI or unsupported platforms, init may fail — that's OK
-		switch (err) {
-			error.OpenFrameworkFailed, error.MissingSymbol, error.FanotifyInitFailed => return,
-			else => return err,
-		}
-	};
+	var w = try FsWatch.init(allocator);
 	defer w.deinit(allocator);
 }
 
 test "FsWatch wait returns timeout when no changes" {
 	const allocator = std.testing.allocator;
-	var w = FsWatch.init(allocator) catch return; // skip if unsupported
+	var w = try FsWatch.init(allocator);
 	defer w.deinit(allocator);
 
 	var tmp = std.testing.tmpDir(.{});

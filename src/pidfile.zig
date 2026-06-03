@@ -231,7 +231,7 @@ test "tryAcquirePid fails when watcher already running" {
 	try std.testing.expectError(error.WatcherAlreadyRunning, result);
 }
 
-test "tryAcquirePid succeeds when stale PID in file" {
+test "tryAcquirePid succeeds when stale PID in file and overwrites with current PID" {
 	if (!is_posix) return;
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
@@ -241,10 +241,23 @@ test "tryAcquirePid succeeds when stale PID in file" {
 	defer allocator.free(dir_path);
 
 	// Write a stale PID (process that doesn't exist)
-	const file = try tmp.dir.createFile(io_singleton.getOrInit(), "watcher.pid", .{});
-	defer file.close(io_singleton.getOrInit());
-	try file.writeStreamingAll(io_singleton.getOrInit(), "99999999");
+	{
+		const file = try tmp.dir.createFile(io_singleton.getOrInit(), "watcher.pid", .{});
+		defer file.close(io_singleton.getOrInit());
+		try file.writeStreamingAll(io_singleton.getOrInit(), "99999999");
+	}
 
 	// Should succeed since stale PID's process is dead
 	try tryAcquirePid(allocator, dir_path);
+
+	// STRONGER ASSERTION (2026-06-02): after acquisition, the pidfile must
+	// contain THIS process's PID, not the stale 99999999. A regression where
+	// `tryAcquirePid` early-returned success without writing would pass the
+	// bare `try` above but fail this check.
+	const stored = (try readAndCheckPid(allocator, dir_path)) orelse {
+		std.debug.print("expected stored PID, got null\n", .{});
+		return error.TestFailed;
+	};
+	try std.testing.expectEqual(@as(PidType, std.c.getpid()), stored);
+	try std.testing.expect(stored != 99999999);
 }

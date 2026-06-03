@@ -72,10 +72,20 @@ pub fn logWithRoot(priority: c_int, root: []const u8, message: []const u8) void 
     syslog(priority, "%s", @as([*:0]const u8, @ptrCast(&buf)));
 }
 
-test "log before init is a no-op and does not crash" {
-    // Do NOT call init(). Any of these must return without panicking.
+test "log before init does not crash" {
+    // CONTRACT: calling log()/logWithRoot() before init() must NOT crash;
+    // they should silently drop the message. We can't easily prove "silently
+    // dropped" without intercepting libc's syslog(3) call (which is OS-
+    // specific), so the test name was renamed (2026-06-02) to match the
+    // assertion: non-crash only. A user-visible regression would surface in
+    // the gated `syslog delivers to OS log` test below.
     log(LOG_NOTICE, "should be dropped");
     logWithRoot(LOG_ERR, "/tmp/fake-root", "should also be dropped");
+
+    // Internal invariant: log/logWithRoot must return cleanly with `inited`
+    // still false. If a future change accidentally initializes syslog inside
+    // log(), this catches it.
+    try std.testing.expect(!initialized);
 }
 
 test "logWithRoot truncates messages longer than 1024 bytes with ellipsis" {

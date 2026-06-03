@@ -362,6 +362,9 @@ pub const MockTransportCtx = struct {	tags_body: []const u8,
 	status_override: ?u16 = null,
 	auth_header_sent: bool = false,
 	connection_close_sent: bool = false,
+	tags_count: usize = 0,
+	ps_count: usize = 0,
+	embed_count: usize = 0,
 
 	pub fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
 		for (req.headers) |h| {
@@ -372,12 +375,15 @@ pub const MockTransportCtx = struct {	tags_body: []const u8,
 			}
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/tags")) {
+			self.tags_count += 1;
 			return .{ .status = 200, .body = try allocator.dupe(u8, self.tags_body) };
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/ps")) {
+			self.ps_count += 1;
 			return .{ .status = 200, .body = try allocator.dupe(u8, self.ps_body) };
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/embed")) {
+			self.embed_count += 1;
 			if (self.embed_should_fail) return error.ConnectionRefused;
 			if (self.status_override) |status| {
 				return .{ .status = status, .body = try allocator.dupe(u8, "{\"error\":\"unauthorized\"}") };
@@ -651,6 +657,11 @@ test "ensureModelAvailable succeeds when model is loaded in ps" {
 		,
 	};
 	try ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama);
+	// Stronger assertion: prove the lookup actually consulted both endpoints.
+	// A regression that always-returned-success without probing would pass
+	// the bare `try` but fail these.
+	try std.testing.expect(mock.tags_count >= 1);
+	try std.testing.expect(mock.ps_count >= 1);
 }
 
 test "ensureModelAvailable returns ModelLoading when in tags but not ps and embed fails" {
