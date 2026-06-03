@@ -175,6 +175,15 @@ pub fn build(b: *std.Build) void {
 	linkCommon(io_singleton_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(io_singleton_tests).step);
 
+	const kind_tests = b.addTest(.{
+		.root_module = b.createModule(.{
+			.root_source_file = b.path("src/kind.zig"),
+			.target = target,
+			.optimize = optimize,
+		}),
+	});
+	test_step.dependOn(&b.addRunArtifact(kind_tests).step);
+
 	const embedding_http_tests = b.addTest(.{
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/embedding_http.zig"),
