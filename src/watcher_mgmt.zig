@@ -116,8 +116,16 @@ pub fn hasActiveSessions(watcher_pid: std.posix.pid_t, watcher_root: []const u8,
 	return false;
 }
 
+/// Errors that the Windows-unsupported watcher-management functions can
+/// surface to callers. Declared explicitly so the type signature still names
+/// `WatcherNotSupportedOnPlatform` when compiling for a non-Windows target —
+/// Zig's inferred error sets prune the comptime-eliminated branch otherwise,
+/// breaking switch-on-err blocks in callers (CI ReleaseFast caught this).
+pub const PlatformError = error{WatcherNotSupportedOnPlatform};
+pub const StopError = error{ WatcherNotSupportedOnPlatform, SignalFailed };
+
 /// Run /bin/ps and discover all running codescan watchers.
-pub fn discoverWatchers(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(WatcherInfo) {
+pub fn discoverWatchers(allocator: std.mem.Allocator) (PlatformError || anyerror)!std.ArrayListUnmanaged(WatcherInfo) {
 	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
 
 	const ps_output = try runCommand(allocator, &.{ "/bin/ps", "-eo", "pid,pcpu,etime,args" });
@@ -140,7 +148,7 @@ pub fn discoverWatchers(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(Wa
 }
 
 /// Get all process cwds via lsof.
-pub fn getActiveCwds(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(LsofEntry) {
+pub fn getActiveCwds(allocator: std.mem.Allocator) (PlatformError || anyerror)!std.ArrayListUnmanaged(LsofEntry) {
 	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
 
 	const lsof_output = try runCommand(allocator, &.{ "/usr/sbin/lsof", "-d", "cwd" });	defer allocator.free(lsof_output);
@@ -157,7 +165,7 @@ pub fn markActiveWatchers(watchers: []WatcherInfo, cwds: []const LsofEntry) void
 
 /// Stop a watcher by sending SIGTERM. Returns `error.WatcherNotSupportedOnPlatform`
 /// on Windows and `error.SignalFailed` if `kill(2)` returned nonzero.
-pub fn stopWatcher(pid: std.posix.pid_t) !void {
+pub fn stopWatcher(pid: std.posix.pid_t) StopError!void {
 	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
 	if (std.c.kill(pid, std.posix.SIG.TERM) != 0) return error.SignalFailed;
 }
