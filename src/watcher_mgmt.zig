@@ -118,9 +118,7 @@ pub fn hasActiveSessions(watcher_pid: std.posix.pid_t, watcher_root: []const u8,
 
 /// Run /bin/ps and discover all running codescan watchers.
 pub fn discoverWatchers(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(WatcherInfo) {
-	if (comptime builtin.os.tag == .windows) {
-		return @as(std.ArrayListUnmanaged(WatcherInfo), .empty);
-	}
+	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
 
 	const ps_output = try runCommand(allocator, &.{ "/bin/ps", "-eo", "pid,pcpu,etime,args" });
 	defer allocator.free(ps_output);
@@ -143,9 +141,7 @@ pub fn discoverWatchers(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(Wa
 
 /// Get all process cwds via lsof.
 pub fn getActiveCwds(allocator: std.mem.Allocator) !std.ArrayListUnmanaged(LsofEntry) {
-	if (comptime builtin.os.tag == .windows) {
-		return @as(std.ArrayListUnmanaged(LsofEntry), .empty);
-	}
+	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
 
 	const lsof_output = try runCommand(allocator, &.{ "/usr/sbin/lsof", "-d", "cwd" });	defer allocator.free(lsof_output);
 
@@ -159,10 +155,11 @@ pub fn markActiveWatchers(watchers: []WatcherInfo, cwds: []const LsofEntry) void
 	}
 }
 
-/// Stop a watcher by sending SIGTERM.
-pub fn stopWatcher(pid: std.posix.pid_t) bool {
-	if (comptime builtin.os.tag == .windows) return false;
-	return std.c.kill(pid, std.posix.SIG.TERM) == 0;
+/// Stop a watcher by sending SIGTERM. Returns `error.WatcherNotSupportedOnPlatform`
+/// on Windows and `error.SignalFailed` if `kill(2)` returned nonzero.
+pub fn stopWatcher(pid: std.posix.pid_t) !void {
+	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
+	if (std.c.kill(pid, std.posix.SIG.TERM) != 0) return error.SignalFailed;
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {

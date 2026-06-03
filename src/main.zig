@@ -2513,11 +2513,18 @@ fn runWatch(
 				var stopped: usize = 0;
 				for (watchers.items) |w| {
 					if (!w.active) {
-						if (watcher_mgmt.stopWatcher(w.pid)) {
+						if (watcher_mgmt.stopWatcher(w.pid)) |_| {
 							try stdout.print("Stopped watcher for {s} (PID {d})\n", .{ w.root, w.pid });
 							stopped += 1;
-						} else {
-							try stdout.print("Failed to stop watcher for {s} (PID {d})\n", .{ w.root, w.pid });
+						} else |err| switch (err) {
+							error.WatcherNotSupportedOnPlatform => {
+								try stdout.print("error: watch prune is not supported on Windows.\n", .{});
+								try stdout.flush();
+								std.process.exit(1);
+							},
+							error.SignalFailed => {
+								try stdout.print("Failed to stop watcher for {s} (PID {d}): kill(2) returned nonzero\n", .{ w.root, w.pid });
+							},
 						}
 					}
 				}
