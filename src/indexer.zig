@@ -1112,7 +1112,6 @@ test "buildSymbolText truncates long inputs" {
 
 test "doc truncation avoids Ollama context length errors" {
 	const allocator = std.testing.allocator;
-	try embedding_http.skipIfNoOllama(allocator);
 	const doc =
 		"## Images\n\n" ++
 		"| Format | Extensions | Basic Validation | Deep Validation | Max Depth | GT |\n" ++
@@ -1146,26 +1145,20 @@ test "doc truncation avoids Ollama context length errors" {
 	const text = try buildSymbolText(allocator, symbol, .doc);
 	defer allocator.free(text);
 
-	var transport = embedding_http.StdHttpTransport.init(allocator);
-	defer transport.deinit();
+	// The hermetic guarantee against Ollama context-length errors is the truncation
+	// bound itself — buildSymbolText must keep the doc within the embed byte budget.
+	try std.testing.expect(text.len <= max_embed_bytes_doc);
 
-	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
-	defer allocator.free(url);
-	const model_name = try io_singleton.envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
-	defer allocator.free(model_name);
-
-	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model_name, .ollama) catch |err| switch (err) {
-		error.ModelLoading => {}, // Model exists, embed will trigger loading
-		else => return err,
-	};
-
+	// Exercise the embed path with a mock transport (no network).
+	var mock = embedding_http.MockTransportCtx{ .tags_body = "{}", .ps_body = "{}" };
 	var adapter = embedding.HttpEmbedder{
-		.transport = transport.transport(),
-		.base_url = url,
-		.model = model_name,
+		.transport = mock.transport(),
+		.base_url = "http://localhost:11434",
+		.model = "bge-large",
 		.dialect = .ollama,
 		.auth_header = null,
-	};	const embedder = adapter.embedder();
+	};
+	const embedder = adapter.embedder();
 
 	const inputs = [_][]const u8{ text };
 	const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
@@ -1173,6 +1166,7 @@ test "doc truncation avoids Ollama context length errors" {
 
 	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
 	try std.testing.expect(embeddings[0].len > 0);
+	try std.testing.expect(mock.embed_count >= 1);
 }
 
 test "debugEnabledFromValue recognizes truthy values" {

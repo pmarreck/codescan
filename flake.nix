@@ -78,6 +78,33 @@
 					};
 				};
 
+				# The check Garnix was missing: packages.default only COMPILES. This runs
+				# the (now hermetic — no live Ollama/OpenAI) test suite AND smoke-execs the
+				# binary, so a passing build can no longer hide broken or non-running code.
+				checks.test = pkgs.stdenv.mkDerivation {
+					pname = "codescan-test";
+					version = "0.1.0";
+					src = ./.;
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
+					dontConfigure = true;
+					dontFixup = true;
+					buildPhase = ''
+						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
+						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+						mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
+						# 1) actually RUN the suite (the part never wired into CI)
+						zig build test --system ${zigPkgCache} --color off
+						# 2) smoke-EXECUTE the built binary (catches runtime/loader regressions)
+						zig build --system ${zigPkgCache} -Doptimize=ReleaseFast --color off
+						./zig-out/bin/codescan --help >/dev/null
+					'';
+					installPhase = ''
+						mkdir -p $out
+						echo "tests passed and binary executes" > $out/result
+					'';
+				};
+
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
 						zig_0_16

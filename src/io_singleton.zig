@@ -22,7 +22,7 @@ pub fn set(io: std.Io) void {
     current_io = io;
 }
 
-pub fn setEnvMap(env_map: *std.process.Environ.Map) void {
+pub fn setEnvMap(env_map: ?*std.process.Environ.Map) void {
     current_env_map = env_map;
 }
 

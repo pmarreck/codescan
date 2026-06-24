@@ -7135,6 +7135,21 @@ test "runDestroyFile moves file to trash (file no longer accessible)" {
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
+
+	// Inject a writable temp HOME so the trash fallback ($HOME/.Trash on macOS,
+	// $HOME/.local/share/Trash/files on Linux) lands INSIDE this test's tmp dir —
+	// same filesystem as the file (so the rename can't fail with EXDEV) and writable
+	// regardless of ambient HOME (/homeless-shelter under nix build) or test ordering.
+	// (getEnvMapOrInit leaks the real process env into the global, so we must override.)
+	const tmp_home = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(tmp_home);
+	var env_map = std.process.Environ.Map.init(allocator);
+	defer env_map.deinit();
+	try env_map.put("HOME", tmp_home);
+	const prev_env = io_singleton.getEnvMap();
+	io_singleton.setEnvMap(&env_map);
+	defer io_singleton.setEnvMap(prev_env);
+
 	const file_content = "bye bye\n";
 	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "to_delete.txt", .data = file_content });
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "to_delete.txt", allocator);

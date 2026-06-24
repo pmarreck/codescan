@@ -62,18 +62,23 @@ pub fn embed(
 	defer allocator.free(response.body);
 
 	if (response.status != 200) {
-		var stderr_buf: [256]u8 = undefined;
-		var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
-		const stderr = &stderr_writer.interface;
-		const preview_len = @min(response.body.len, 500);
-		_ = stderr.print("error: embedding server returned HTTP {d}\n  url: {s}\n  model: {s}\n  body: {s}{s}\n", .{
-			response.status,
-			url,
-			model,
-			response.body[0..preview_len],
-			if (response.body.len > preview_len) "..." else "",
-		}) catch {};
-		_ = stderr.flush() catch {};
+		// Don't spew to stderr during test builds — the error-path tests assert on the
+		// RETURNED error (Unauthorized/HttpStatus); a visible message just pollutes the
+		// suite output. Production still logs it.
+		if (!@import("builtin").is_test) {
+			var stderr_buf: [256]u8 = undefined;
+			var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
+			const stderr = &stderr_writer.interface;
+			const preview_len = @min(response.body.len, 500);
+			_ = stderr.print("error: embedding server returned HTTP {d}\n  url: {s}\n  model: {s}\n  body: {s}{s}\n", .{
+				response.status,
+				url,
+				model,
+				response.body[0..preview_len],
+				if (response.body.len > preview_len) "..." else "",
+			}) catch {};
+			_ = stderr.flush() catch {};
+		}
 		if (response.status == 401) return error.Unauthorized;
 		return error.HttpStatus;
 	}
@@ -553,44 +558,21 @@ test "embed sends Connection: close to force fresh TCP connections" {
 	try std.testing.expect(mock.connection_close_sent);
 }
 
-test "ensureModelAvailable reports missing model" {
+// Hermetic mock replaces two former live-Ollama tests (a test suite must never hit
+// a real server/API). The model-not-found path is already covered by
+// "ensureModelAvailable returns ModelNotFound when not in tags" below; here we cover
+// the ollama embed path with the mock transport (canned /api/embed response).
+test "embed with ollama dialect returns embeddings (mocked)" {
 	const allocator = std.testing.allocator;
-	try skipIfNoOllama(allocator);
-
-	var transport = StdHttpTransport.init(allocator);
-	defer transport.deinit();
-
-	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
-	defer allocator.free(url);
-
-	try std.testing.expectError(
-		error.ModelNotFound,
-		ensureModelAvailable(allocator, transport.transport(), url, "codescan-does-not-exist", .ollama),
-	);
-}
-
-test "embed uses live Ollama" {
-	const allocator = std.testing.allocator;
-	try skipIfNoOllama(allocator);
-
-	var transport = StdHttpTransport.init(allocator);
-	defer transport.deinit();
-
-	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
-	defer allocator.free(url);
-	const model = try io_singleton.envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
-	defer allocator.free(model);
-
-	ensureModelAvailable(allocator, transport.transport(), url, model, .ollama) catch |err| switch (err) {
-		error.ModelLoading => {}, // Model exists, embed will trigger loading
-		else => return err,
-	};
+	var mock = MockTransportCtx{ .tags_body = "{}", .ps_body = "{}" };
 
 	const inputs = [_][]const u8{ "hash functions" };
-	const embeddings = try embed(allocator, transport.transport(), url, model, &inputs, null, .ollama, null);
+	const embeddings = try embed(allocator, mock.transport(), "http://localhost:11434", "bge-large", &inputs, null, .ollama, null);
 	defer freeEmbeddings(allocator, embeddings);
 	try std.testing.expect(embeddings.len == 1);
 	try std.testing.expect(embeddings[0].len > 0);
+	// prove the mock embed endpoint was actually consulted (not a vacuous pass)
+	try std.testing.expect(mock.embed_count >= 1);
 }
 
 
@@ -705,21 +687,6 @@ test "buildPsUrl handles trailing slash" {
 	try std.testing.expectEqualStrings("http://localhost:11434/api/ps", url);
 }
 
-/// Skip test if Ollama is not reachable (for CI environments without Ollama).
-pub fn skipIfNoOllama(allocator: std.mem.Allocator) !void {
-	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
-	defer allocator.free(url);
-
-	var transport = StdHttpTransport.init(allocator);
-	defer transport.deinit();
-
-	// Try a lightweight request via the Transport interface — if connection refused, skip.
-	const t = transport.transport();
-	const resp = t.send(t.ctx, allocator, .{
-		.method = "GET",
-		.url = url,
-		.headers = &.{},
-		.body = "",
-	}) catch return error.SkipZigTest;
-	allocator.free(resp.body);
-}
+// (Removed skipIfNoOllama: a test helper that PROBED the network to decide whether
+// to skip — an invisible environmental dependency. Live integration belongs outside
+// the hermetic suite; the logic is fully covered by the mock-transport tests above.)

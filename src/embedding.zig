@@ -47,28 +47,19 @@ pub const NullEmbedder = struct {
 		allocator.free(embeddings);
 	}
 };
-test "HttpEmbedder uses live Ollama" {
+test "HttpEmbedder embeds via the transport (mocked)" {
 	const allocator = std.testing.allocator;
-	try embedding_http.skipIfNoOllama(allocator);
 	const inputs = [_][]const u8{ "hash functions" };
 
-	var transport = embedding_http.StdHttpTransport.init(allocator);
-	defer transport.deinit();
-
-	const url = try io_singleton.envOrDefault(allocator, "OLLAMA_URL", "http://localhost:11434");
-	defer allocator.free(url);
-	const model = try io_singleton.envOrDefault(allocator, "OLLAMA_MODEL", "bge-large");
-	defer allocator.free(model);
-
-	embedding_http.ensureModelAvailable(allocator, transport.transport(), url, model, .ollama) catch |err| switch (err) {
-		error.ModelLoading => {}, // Model exists, embed will trigger loading
-		else => return err,
-	};
+	// Hermetic: a mock transport returns a canned ollama /api/embed response — no
+	// network. (HttpEmbedder.embed delegates straight to embedding_http.embed.)
+	var mock = embedding_http.MockTransportCtx{ .tags_body = "{}", .ps_body = "{}" };
 
 	var adapter = HttpEmbedder{
-		.transport = transport.transport(),
-		.base_url = url,
-		.model = model,
+		.transport = mock.transport(),
+		.base_url = "http://localhost:11434",
+		.model = "bge-large",
+		.dialect = .ollama,
 	};
 	const embedder = adapter.embedder();
 	const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
@@ -76,6 +67,7 @@ test "HttpEmbedder uses live Ollama" {
 
 	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
 	try std.testing.expect(embeddings[0].len > 0);
+	try std.testing.expect(mock.embed_count >= 1);
 }
 
 test "NullEmbedder returns empty embeddings and free is safe" {
