@@ -1,1 +1,1 @@
-/Users/pmarreck/dotfiles/docs/jj_reference/jj_cheatsheet.md
+../../dotfiles/docs/jj_reference/jj_cheatsheet.md
