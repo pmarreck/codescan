@@ -389,6 +389,109 @@ therefore classified as completion-only and `/api/embed` rejects it. See
 last-token-pooling import and acceptance check. Until the CLI help moves into the
 i18n string registry, this README caveat supersedes its raw-pull instruction.
 
+### Set up Jina locally through Ollama
+
+This procedure keeps the multi-gigabyte conversion in RAM, verifies the official
+Jina artifact, adds the required last-token pooling metadata without changing the
+model tensors, and imports the result under the stable local name
+`jina-code-embeddings:1.5b`.
+
+The temporary Python invocation uses llama.cpp's official GGUF writer because
+neither Ollama's Modelfile nor its compiled utilities can currently add missing
+pooling metadata. It does not add Python to codescan or the host environment.
+
+1. Confirm `/dev/shm` has at least 4 GB free, then download the official Q8 model
+   into a RAM-backed workspace:
+
+```sh
+df -h /dev/shm
+jina_work="$(mktemp -d /dev/shm/jina-ollama.XXXXXX)"
+
+curl --fail --location --output "$jina_work/jina-q8.gguf" \
+  'https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF/resolve/main/jina-code-embeddings-1.5b-Q8_0.gguf'
+
+printf '%s  %s\n' \
+  '3a09a8817b852b5a4faaa6ebb1a5590322746d2b570b578d0b7e3b6e849062aa' \
+  "$jina_work/jina-q8.gguf" | sha256sum -c -
+```
+
+2. Copy the GGUF while adding `qwen2.pooling_type=3` (`LAST`, Jina's required
+   EOS pooling strategy):
+
+```sh
+nix shell --impure \
+  --expr 'let pkgs = import <nixpkgs> {}; in pkgs.python3.withPackages (ps: [ps.gguf])' \
+  -c python3 - \
+  "$jina_work/jina-q8.gguf" \
+  "$jina_work/jina-q8-last-pooling.gguf" <<'PY'
+import sys
+import gguf
+from gguf.scripts.gguf_new_metadata import (
+    MetadataDetails,
+    copy_with_new_metadata,
+    get_field_data,
+)
+
+source, target = sys.argv[1:]
+reader = gguf.GGUFReader(source, "r")
+arch = get_field_data(reader, gguf.Keys.General.ARCHITECTURE)
+key = gguf.Keys.LLM.POOLING_TYPE.format(arch=arch)
+if reader.get_field(key) is not None:
+    raise SystemExit(f"refusing to replace existing {key}")
+
+writer = gguf.GGUFWriter(target, arch=arch, endianess=reader.endianess)
+alignment = get_field_data(reader, gguf.Keys.General.ALIGNMENT)
+if alignment is not None:
+    writer.data_alignment = alignment
+
+metadata = {
+    key: MetadataDetails(gguf.GGUFValueType.UINT32, 3, "= last"),
+}
+copy_with_new_metadata(reader, writer, metadata, [])
+PY
+
+nix shell --impure \
+  --expr 'let pkgs = import <nixpkgs> {}; in pkgs.python3.withPackages (ps: [ps.gguf])' \
+  -c gguf-dump "$jina_work/jina-q8-last-pooling.gguf" --no-tensors \
+  | rg 'qwen2\.pooling_type = 3'
+```
+
+3. Import the patched model and prove Ollama returns 1536-dimensional vectors:
+
+```sh
+printf '%s\n' \
+  "FROM $jina_work/jina-q8-last-pooling.gguf" \
+  'PARAMETER num_ctx 8192' > "$jina_work/Modelfile"
+
+ollama create jina-code-embeddings:1.5b -f "$jina_work/Modelfile"
+./test_jina
+```
+
+4. Configure each project and rebuild its old-model index:
+
+```ini
+embedding_api=ollama
+embedding_url=http://127.0.0.1:11434
+embedding_model=jina-code-embeddings:1.5b
+embedding_dim=1536
+```
+
+```sh
+codescan index --root /path/to/project
+```
+
+5. Release the RAM-backed conversion files after the model is safely imported:
+
+```sh
+truncate -s 0 \
+  "$jina_work/jina-q8.gguf" \
+  "$jina_work/jina-q8-last-pooling.gguf"
+rm-safe -r "$jina_work"
+```
+
+Do not use this host's `/tmp` for the rewrite: it resides on the spinning ZFS
+mirror. Do not edit Ollama's content-addressed model blobs in place.
+
 ### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
 
 Set `embedding_api=openai` in `.codescan/config` along with `embedding_url` and `embedding_api_key`. See `codescan setup-model` for details.

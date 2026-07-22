@@ -54,6 +54,10 @@ The patching workspace used `/dev/shm`, which is RAM-backed on this host.
 `TMPDIR=/tmp` is on the spinning ZFS mirror here and must not be used for this
 multi-gigabyte rewrite.
 
+The complete reproducible download, metadata-copy, import, validation, and
+RAM-safe cleanup commands live in the README under
+“Set up Jina locally through Ollama.”
+
 Authoritative upstream references:
 
 - [Jina GGUF model card](https://huggingface.co/jinaai/jina-code-embeddings-1.5b-GGUF)

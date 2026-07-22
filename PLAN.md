@@ -8,6 +8,8 @@
   Curiosity poke: preserve the prior oMLX configuration as a recoverable fallback rather than overwriting it.
 - [x] Re-index a real bounded project with the local Ollama model and prove relevant semantic retrieval. (completed 2026-07-22 17:00 EDT)
   Curiosity poke: avoid disk-heavy fixture rebuilds; one real index plus model/dimension/count assertions is sufficient.
+- [x] Document the complete RAM-backed, hash-verified local Ollama import procedure in README. (completed 2026-07-22 17:54 EDT)
+  Curiosity poke: the runbook must verify pooling metadata and avoid both in-place Ollama blob edits and `/tmp` on spinning storage.
 - [ ] Correct `codescan setup-model` through the i18n prepare-phase string registry; its stock GGUF pull currently omits Ollama's required pooling metadata.
   Curiosity poke: do not fix misleading help by adding another hardcoded English-only branch.
 
