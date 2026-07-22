@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -u
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+root="$(mktemp -d /dev/shm/codescan-reindex-test.XXXXXX)"
+fake_bin="$root/bin"
+log="$root/indexed-projects"
+failed=0
+
+cleanup() {
+	rm-safe -r "$root"
+}
+trap cleanup EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failed=1
+}
+
+mkdir -p \
+	"$fake_bin" \
+	"$root/projects/aedicule/.git" \
+	"$root/projects/alpha/.git" \
+	"$root/projects/not-a-repo" \
+	"$root/projects/project with space/.git" \
+	"$root/projects/project with space/.codescan" \
+	"$root/projects/validate/.git" \
+	"$root/projects/worktree"
+printf 'gitdir: elsewhere\n' > "$root/projects/worktree/.git"
+printf '%s\n' \
+	'embedding_api=ollama' \
+	'embedding_url=http://127.0.0.1:11434' \
+	'embedding_model=jina-code-embeddings:1.5b' \
+	'embedding_dim=1536' \
+	> "$root/projects/project with space/.codescan/config.ini"
+existing_config_before=$(sha256sum "$root/projects/project with space/.codescan/config.ini")
+
+cat > "$fake_bin/codescan" <<'FAKE'
+#!/usr/bin/env bash
+set -u
+printf '%s\n' "$PWD" >> "$CODESCAN_TEST_LOG"
+expected='index --ollama-url http://127.0.0.1:11434 --ollama-model jina-code-embeddings:1.5b --embedding-dim 1536'
+if [ "$*" != "$expected" ]; then
+	printf 'unexpected command: %s\n' "$*" >&2
+	exit 64
+fi
+if [ "${PWD##*/}" = "${CODESCAN_FAIL_PROJECT:-}" ]; then
+	exit 9
+fi
+FAKE
+chmod +x "$fake_bin/codescan"
+
+out=
+err=
+rc=
+capture env \
+	CODESCAN_CODE_ROOT="$root/projects" \
+	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_TEST_LOG="$log" \
+	./reindex_all
+
+if [ "$rc" -ne 0 ]; then
+	fail "runner exited $rc: $err"
+fi
+
+expected_paths=$(printf '%s\n' \
+	"$root/projects/alpha" \
+	"$root/projects/project with space" \
+	"$root/projects/worktree")
+actual_paths=$(cat "$log")
+if [ "$actual_paths" != "$expected_paths" ]; then
+	fail "candidate set/order mismatch; got: $actual_paths"
+fi
+
+for progress in \
+	'[0/3 — 0%]' \
+	'[1/3 — 33%]' \
+	'[2/3 — 66%]' \
+	'[3/3 — 100%]'
+do
+	case "$out" in
+		*"$progress"*) ;;
+		*) fail "missing progress marker $progress" ;;
+	esac
+done
+
+if printf '%s' "$actual_paths" | rg -q '/(aedicule|validate)$'; then
+	fail 'excluded project was indexed'
+fi
+if printf '%s' "$actual_paths" | rg -q '/not-a-repo$'; then
+	fail 'directory without .git metadata was indexed'
+fi
+
+for created_config in \
+	"$root/projects/alpha/.codescan/config.ini" \
+	"$root/projects/worktree/.codescan/config.ini"
+do
+	for setting in \
+		'embedding_api=ollama' \
+		'embedding_url=http://127.0.0.1:11434' \
+		'embedding_model=jina-code-embeddings:1.5b' \
+		'embedding_dim=1536'
+	do
+		if ! rg -Fxq "$setting" "$created_config"; then
+			fail "missing $setting in created config $created_config"
+		fi
+	done
+done
+
+existing_config_after=$(sha256sum "$root/projects/project with space/.codescan/config.ini")
+if [ "$existing_config_after" != "$existing_config_before" ]; then
+	fail 'runner modified an existing project config'
+fi
+
+printf '' > "$log"
+out=
+err=
+rc=
+capture env \
+	CODESCAN_CODE_ROOT="$root/projects" \
+	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_TEST_LOG="$log" \
+	CODESCAN_FAIL_PROJECT='project with space' \
+	./reindex_all
+
+if [ "$rc" -ne 1 ]; then
+	fail "failure run exited $rc instead of 1"
+fi
+if [ "$(wc -l < "$log")" -ne 3 ]; then
+	fail 'runner did not continue after an indexing failure'
+fi
+case "$out" in
+	*'[3/3 — 100%]'*) ;;
+	*) fail 'failure run did not finish its candidate set' ;;
+esac
+case "$err" in
+	*'project with space'*) ;;
+	*) fail 'failure summary omitted the failed project' ;;
+esac
+
+mkdir -p "$root/empty-projects"
+out=
+err=
+rc=
+capture env \
+	CODESCAN_CODE_ROOT="$root/empty-projects" \
+	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_TEST_LOG="$log" \
+	./reindex_all
+
+if [ "$rc" -ne 0 ]; then
+	fail "empty candidate set exited $rc"
+fi
+case "$out" in
+	*'[0/0 — 100%]'*) ;;
+	*) fail 'empty candidate set omitted complete progress' ;;
+esac
+
+exit "$failed"

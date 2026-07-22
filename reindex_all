@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -u
+
+code_root="${CODESCAN_CODE_ROOT:-$HOME/Code}"
+codescan_bin="${CODESCAN_BIN:-codescan}"
+jina_url='http://127.0.0.1:11434'
+jina_model='jina-code-embeddings:1.5b'
+jina_dim=1536
+projects=()
+failures=()
+
+# Persist the same local model used for indexing without rewriting existing policy.
+ensure_local_jina_config() {
+	local project="$1"
+	local codescan_dir="$project/.codescan"
+
+	if [ -e "$codescan_dir/config.ini" ] || [ -e "$codescan_dir/config" ]; then
+		return 0
+	fi
+
+	mkdir -p "$codescan_dir" || return
+	printf '%s\n' \
+		'embedding_api=ollama' \
+		"embedding_url=$jina_url" \
+		"embedding_model=$jina_model" \
+		"embedding_dim=$jina_dim" \
+		> "$codescan_dir/config.ini"
+}
+
+if [ ! -d "$code_root" ]; then
+	printf 'Project root is not a directory: %s\n' "$code_root" >&2
+	exit 2
+fi
+
+if ! command -v "$codescan_bin" >/dev/null 2>&1; then
+	printf 'codescan executable not found: %s\n' "$codescan_bin" >&2
+	exit 127
+fi
+
+# Discover first so every progress percentage uses one stable candidate set.
+while IFS= read -r -d '' project; do
+	[ -d "$project" ] || continue
+	[ -e "$project/.git" ] || continue
+
+	name="${project##*/}"
+	case "$name" in
+		aedicule|validate) continue ;;
+	esac
+
+	projects+=("$project")
+done < <(
+	find -H "$code_root" -mindepth 1 -maxdepth 1 \
+		\( -type d -o -type l \) -print0 \
+		| LC_ALL=C sort -z
+)
+
+total="${#projects[@]}"
+if [ "$total" -eq 0 ]; then
+	printf '[0/0 — 100%%] No eligible Git projects found in %s\n' "$code_root"
+	exit 0
+fi
+
+printf '[0/%d — 0%%] Ready to index projects in %s\n' "$total" "$code_root"
+
+completed=0
+for project in "${projects[@]}"; do
+	name="${project##*/}"
+	printf '\nIndexing %s\n' "$project"
+
+	status=passed
+	if ! ensure_local_jina_config "$project"; then
+		status='CONFIG FAILED'
+		failures+=("$project")
+	elif ! (
+		cd "$project" &&
+		"$codescan_bin" index \
+			--ollama-url "$jina_url" \
+			--ollama-model "$jina_model" \
+			--embedding-dim "$jina_dim"
+	); then
+		status=FAILED
+		failures+=("$project")
+	fi
+
+	completed=$((completed + 1))
+	percent=$((completed * 100 / total))
+	printf '\n[%d/%d — %d%%] %s: %s\n' \
+		"$completed" "$total" "$percent" "$status" "$name"
+done
+
+if [ "${#failures[@]}" -gt 0 ]; then
+	printf '\n%d project(s) failed to index:\n' "${#failures[@]}" >&2
+	printf '  %s\n' "${failures[@]}" >&2
+	exit 1
+fi
+
+printf '\nAll %d projects indexed successfully.\n' "$total"
