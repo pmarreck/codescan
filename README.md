@@ -382,6 +382,13 @@ codescan defaults to `bge-large` via Ollama — no extra setup needed beyond `ol
 
 For better code search quality, run `codescan setup-model` to see instructions for upgrading to `jina-code-embeddings-1.5b` (1536-dim, 32K context, code-specific training).
 
+**Ollama caveat:** the upstream Jina GGUF currently lacks the `qwen2.pooling_type`
+metadata Ollama uses to recognize embedding-only models. A raw `ollama pull` is
+therefore classified as completion-only and `/api/embed` rejects it. See
+[local Jina through Ollama](docs/jina-code-embeddings-ollama.md) for the verified
+last-token-pooling import and acceptance check. Until the CLI help moves into the
+i18n string registry, this README caveat supersedes its raw-pull instruction.
+
 ### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
 
 Set `embedding_api=openai` in `.codescan/config` along with `embedding_url` and `embedding_api_key`. See `codescan setup-model` for details.

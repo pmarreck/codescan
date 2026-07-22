@@ -3,16 +3,12 @@ set -u
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
-readonly host="${CODESCAN_JINA_HOST:-peters-macbook-pro-m4-max}"
-readonly ssh_host="${CODESCAN_JINA_SSH_HOST:-$host}"
-readonly model="${CODESCAN_JINA_MODEL:-jina-code-embeddings-1.5b-mlx}"
+readonly ollama_url="${OLLAMA_URL:-http://127.0.0.1:11434}"
+readonly model="${CODESCAN_JINA_MODEL:-jina-code-embeddings:1.5b}"
 readonly expected_dim="${CODESCAN_JINA_DIM:-1536}"
-readonly expected_qwen2_sha="e00a15fa04d870b5fd7a9aba04c238014ffcb2fc7f22bef8abc0cdef0c142c97"
-readonly discovery_path='/Applications/oMLX.app/Contents/Resources/omlx/model_discovery.py'
-readonly qwen2_path='/Applications/oMLX.app/Contents/Resources/Python/framework-mlx-base/lib/python3.11/site-packages/mlx_embeddings/models/qwen2.py'
 
 fail() {
-	printf 'FAIL Jina live acceptance: %s\n' "$1" >&2
+	printf 'FAIL local Ollama Jina acceptance: %s\n' "$1" >&2
 	exit 1
 }
 
@@ -20,70 +16,35 @@ require_tool() {
 	command -v "$1" >/dev/null 2>&1 || fail "required tool is unavailable: $1"
 }
 
-omlx_request() {
-	local endpoint="$1"
-	shift
-	curl -fsS \
-		--config <(printf 'header = "Authorization: Bearer %s"\n' "$CODESCAN_EMBEDDING_SERVER_API_KEY") \
-		"http://${host}:8000${endpoint}" "$@"
-}
-
 require_tool curl
 require_tool jq
-require_tool ssh
-
-if [ -z "${CODESCAN_EMBEDDING_SERVER_API_KEY:-}" ]; then
-	fail 'CODESCAN_EMBEDDING_SERVER_API_KEY is not set'
-fi
 
 out=
 err=
 rc=
-capture ssh -o BatchMode=yes "$ssh_host" \
-	"shasum -a 256 '$qwen2_path'"
-if [ "$rc" -ne 0 ]; then
-	fail "could not inspect the persisted Qwen2 implementation (ssh exit $rc)"
-fi
-
-case "$out" in
-	"$expected_qwen2_sha"*) ;;
-	*) fail 'the installed Qwen2 implementation is not the reviewed known-good file' ;;
-esac
-
-capture ssh -o BatchMode=yes "$ssh_host" \
-	"sed -n '/^CAUSAL_LM_EMBEDDING_ARCHITECTURES = {/,/^}/p' '$discovery_path'"
-if [ "$rc" -ne 0 ]; then
-	fail "could not inspect persisted oMLX model discovery (ssh exit $rc)"
-fi
-printf '%s\n' "$out" | rg -F '"Qwen2ForCausalLM"' >/dev/null || \
-	fail 'Qwen2ForCausalLM is absent from persisted oMLX discovery state'
-
-capture ssh -o BatchMode=yes "$ssh_host" \
-	"sed -n '/\"architectures\"/,/]/p' \"\$HOME/.omlx/models/$model/config.json\""
-if [ "$rc" -ne 0 ]; then
-	fail "could not inspect the persisted Jina model config (ssh exit $rc)"
-fi
-printf '%s\n' "$out" | rg -F '"Qwen2ForCausalLM"' >/dev/null || \
-	fail 'Qwen2ForCausalLM is absent from the persisted Jina model config'
-
-capture omlx_request '/v1/models'
-if [ "$rc" -ne 0 ]; then
-	fail "the authenticated oMLX model endpoint is unavailable (curl exit $rc)"
-fi
-printf '%s' "$out" | jq -e --arg model "$model" \
-	'.data | any(.id == $model)' >/dev/null || fail 'the Jina model is not advertised by oMLX'
-
-readonly payload="$(jq -cn --arg model "$model" '{model: $model, input: ["semantic code search acceptance probe"]}')"
-capture omlx_request '/v1/embeddings' \
+readonly show_payload="$(jq -cn --arg model "$model" '{model: $model}')"
+capture curl -fsS \
 	-H 'Content-Type: application/json' \
-	-d "$payload"
+	-d "$show_payload" \
+	"$ollama_url/api/show"
 if [ "$rc" -ne 0 ]; then
-	fail "the authenticated Jina embedding request failed (curl exit $rc)"
+	fail "Ollama does not advertise local model '$model'"
+fi
+printf '%s' "$out" | jq -e '.capabilities | index("embedding") != null' >/dev/null || \
+	fail "Ollama classifies '$model' as non-embedding"
+
+readonly embed_payload="$(jq -cn --arg model "$model" '{model: $model, input: ["local semantic code embedding probe"]}')"
+capture curl -fsS \
+	-H 'Content-Type: application/json' \
+	-d "$embed_payload" \
+	"$ollama_url/api/embed"
+if [ "$rc" -ne 0 ]; then
+	fail "Ollama rejected a local embedding request for '$model'"
 fi
 
 actual_model="$(printf '%s' "$out" | jq -r '.model // empty')"
-actual_dim="$(printf '%s' "$out" | jq -r '.data[0].embedding | length')"
-[ "$actual_model" = "$model" ] || fail "oMLX returned model '$actual_model', expected '$model'"
-[ "$actual_dim" = "$expected_dim" ] || fail "oMLX returned $actual_dim dimensions, expected $expected_dim"
+actual_dim="$(printf '%s' "$out" | jq -r '.embeddings[0] | length')"
+[ "$actual_model" = "$model" ] || fail "Ollama returned model '$actual_model', expected '$model'"
+[ "$actual_dim" = "$expected_dim" ] || fail "Ollama returned $actual_dim dimensions, expected $expected_dim"
 
-printf 'PASS Jina live acceptance: %s returned %s-dimensional embeddings\n' "$model" "$actual_dim"
+printf 'PASS local Ollama Jina acceptance: %s returned %s-dimensional embeddings\n' "$model" "$actual_dim"
