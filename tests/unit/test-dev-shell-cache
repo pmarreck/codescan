@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -u
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+assert_develop_paths() {
+	local description="$1"
+	local expected_global="$2"
+	local expected_local="$3"
+	shift 3
+	local expected
+	expected=$(printf '%s\n%s' "$expected_global" "$expected_local")
+
+	out=
+	err=
+	rc=
+	capture "$@" nix develop -c sh -c 'printf "%s\n%s" "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"'
+
+	if [ "$rc" -ne 0 ]; then
+		printf 'nix develop failed with exit code %s (%s)\n' "$rc" "$description" >&2
+		printf '%s' "$err" >&2
+		exit 1
+	fi
+
+	if [ "$out" != "$expected" ]; then
+		printf 'unexpected Zig cache paths (%s)\n' "$description" >&2
+		printf 'expected:\n%s\nactual:\n%s\n' "$expected" "$out" >&2
+		exit 1
+	fi
+}
+
+inherited_global="${TMPDIR:?}/codescan-inherited-global-cache"
+inherited_local="${TMPDIR:?}/codescan-inherited-local-cache"
+assert_develop_paths \
+	"nonempty inherited values" \
+	"$inherited_global" \
+	"$inherited_local" \
+	env ZIG_GLOBAL_CACHE_DIR="$inherited_global" ZIG_LOCAL_CACHE_DIR="$inherited_local"
+
+assert_develop_paths \
+	"empty values use defaults" \
+	"$HOME/.cache/zig" \
+	"$PWD/zig-cache" \
+	env ZIG_GLOBAL_CACHE_DIR= ZIG_LOCAL_CACHE_DIR=
+
+printf 'PASS Zig cache path inheritance and defaults\n'

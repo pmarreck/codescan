@@ -197,6 +197,7 @@ pub fn main(init: std.process.Init) !void {
 		const se = &stderr_writer.interface;
 		_ = se.print("error: embedding_api=openai requires an API key.\n" ++
 			"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var or embedding_api_key in .codescan/config.ini\n", .{}) catch {};
+		_ = se.flush() catch {};
 		std.process.exit(1);
 	}
 
@@ -1239,30 +1240,54 @@ fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
 }
 
 pub const RootInfo = struct {
-	project_root: []const u8, // absolute path of the dir containing .codescan/
-	codescan_dir: []const u8, // absolute path of the .codescan/ dir itself
+	project_root: []u8, // absolute path of the dir containing .codescan/
+	codescan_dir: []u8, // absolute path of the .codescan/ dir itself
 	walk_up_steps: usize,     // number of dir levels traversed from start_path
 };
 
-/// Walk up from `start_path` looking for the nearest `.codescan/` ancestor.
-/// Caller owns `project_root` and `codescan_dir` (each freed independently).
+/// Resolves implicit project state only when `.codescan` is adjacent to the
+/// nearest Git/Jujutsu marker, preventing state leakage across repository roots.
 pub fn findRepoRootInfo(allocator: std.mem.Allocator, start_path: []const u8) !?RootInfo {
+	return findRepoRootInfoUntil(allocator, start_path, null);
+}
+
+fn findRepoRootInfoUntil(
+	allocator: std.mem.Allocator,
+	start_path: []const u8,
+	stop_at: ?[]const u8,
+) !?RootInfo {
 	const start_abs_z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), start_path, allocator);
 	defer allocator.free(start_abs_z);
 	const start_abs = try allocator.dupe(u8, start_abs_z);
-	errdefer allocator.free(start_abs);
-
 	var current = start_abs;
+	errdefer allocator.free(current);
+
+	var stop_abs: ?[]u8 = null;
+	defer if (stop_abs) |path| allocator.free(path);
+	if (stop_at) |stop_path| {
+		const z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), stop_path, allocator);
+		defer allocator.free(z);
+		stop_abs = try allocator.dupe(u8, z);
+	}
+
 	var steps: usize = 0;
 	while (true) {
-		if (try hasCodescanDir(current)) {
-			const codescan_dir = try std.fs.path.join(allocator, &.{ current, ".codescan" });
-			return RootInfo{
-				.project_root = current,
-				.codescan_dir = codescan_dir,
-				.walk_up_steps = steps,
-			};
+		if (try hasVcsMarker(current)) {
+			if (try hasCodescanDir(current)) {
+				const codescan_dir = try std.fs.path.join(allocator, &.{ current, ".codescan" });
+				return RootInfo{
+					.project_root = current,
+					.codescan_dir = codescan_dir,
+					.walk_up_steps = steps,
+				};
+			}
+			break;
 		}
+
+		if (stop_abs) |stop_path| {
+			if (std.mem.eql(u8, current, stop_path)) break;
+		}
+
 		const parent = std.fs.path.dirname(current) orelse break;
 		if (std.mem.eql(u8, parent, current)) break;
 		const next = try allocator.dupe(u8, parent);
@@ -1280,39 +1305,29 @@ fn findRepoRootUntil(
 	start_path: []const u8,
 	stop_at: ?[]const u8,
 ) !?[]u8 {
-	const start_abs_z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), start_path, allocator);
-	const start_abs = try allocator.dupe(u8, start_abs_z);
-	allocator.free(start_abs_z);
-	errdefer allocator.free(start_abs);
-
-	var stop_abs: ?[]u8 = null;
-	defer if (stop_abs) |path| allocator.free(path);
-	if (stop_at) |stop_path| {
-		const z = try std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), stop_path, allocator);
-		defer allocator.free(z);
-		stop_abs = try allocator.dupe(u8, z);
+	const info = try findRepoRootInfoUntil(allocator, start_path, stop_at);
+	if (info) |found| {
+		allocator.free(found.codescan_dir);
+		return found.project_root;
 	}
-
-	var current: []u8 = start_abs;
-	while (true) {
-		if (try hasCodescanDir(current)) {
-			return current;
-		}
-
-		if (stop_abs) |stop_path| {
-			if (std.mem.eql(u8, current, stop_path)) break;
-		}
-
-		const parent = std.fs.path.dirname(current) orelse break;
-		if (std.mem.eql(u8, parent, current)) break;
-
-		const next = try allocator.dupe(u8, parent);
-		allocator.free(current);
-		current = next;
-	}
-
-	allocator.free(current);
 	return null;
+}
+
+/// Detects the first repository boundary; `statFile` intentionally accepts
+/// both a `.git` directory and the `.git` file used by linked worktrees.
+fn hasVcsMarker(path: []const u8) !bool {
+	var dir = try std.Io.Dir.openDirAbsolute(io_singleton.getOrInit(), path, .{});
+	defer dir.close(io_singleton.getOrInit());
+
+	const markers = [_][]const u8{ ".git", ".jj" };
+	for (&markers) |marker| {
+		_ = dir.statFile(io_singleton.getOrInit(), marker, .{}) catch |err| switch (err) {
+			error.FileNotFound, error.NotDir => continue,
+			else => return err,
+		};
+		return true;
+	}
+	return false;
 }
 
 fn hasCodescanDir(path: []const u8) !bool {
@@ -2310,6 +2325,10 @@ fn runSearch(
 			if (d.lang_only) |n| {
 				_ = stderr.print("  -> lang filter alone: {d} result(s)\n", .{n}) catch {};
 			}
+			_ = stderr.print(
+				"  -> broaden the filters or consider re-indexing with `codescan update`.\n",
+				.{},
+			) catch {};
 		} else if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
 			_ = stderr.print(
 				"note: no results found (watcher is running and index is up to date).\n",
@@ -5484,6 +5503,7 @@ pub fn runRoot(
 		} else {
 			try writer.print("error: no .codescan/ directory found walking up from {s}\n", .{cwd_path});
 		}
+		try writer.flush();
 		std.process.exit(1);
 	};
 	defer {
@@ -6271,6 +6291,7 @@ test "findRepoRoot finds nearest .codescan ancestor" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.git");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.codescan");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub/dir");
 
@@ -6285,6 +6306,90 @@ test "findRepoRoot finds nearest .codescan ancestor" {
 
 	try std.testing.expect(root != null);
 	try std.testing.expectEqualStrings(expected, root.?);
+}
+
+test "findRepoRoot does not cross nearest git repository boundary" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "workspace/.codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "workspace/repo/.git");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "workspace/repo/sub/dir");
+
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "workspace/repo/sub/dir", allocator);
+	defer allocator.free(start);
+
+	const root = try findRepoRoot(allocator, start);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root == null);
+
+	const info = try findRepoRootInfo(allocator, start);
+	if (info) |found| {
+		allocator.free(found.project_root);
+		allocator.free(found.codescan_dir);
+	}
+	try std.testing.expect(info == null);
+}
+
+test "findRepoRoot accepts a linked-worktree git file" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub");
+	const git_file = try tmp.dir.createFile(io_singleton.getOrInit(), "repo/.git", .{});
+	git_file.close(io_singleton.getOrInit());
+
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo/sub", allocator);
+	defer allocator.free(start);
+	const expected = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo", allocator);
+	defer allocator.free(expected);
+
+	const root = try findRepoRoot(allocator, start);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root != null);
+	try std.testing.expectEqualStrings(expected, root.?);
+}
+
+test "findRepoRoot accepts a jj repository marker" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.jj");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub");
+
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "repo/sub", allocator);
+	defer allocator.free(start);
+
+	const root = try findRepoRoot(allocator, start);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root != null);
+}
+
+test "findRepoRootUntil ignores codescan state without an adjacent VCS marker" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "workspace/.codescan");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "workspace/sub");
+
+	const start = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "workspace/sub", allocator);
+	defer allocator.free(start);
+	const stop_at = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "workspace", allocator);
+	defer allocator.free(stop_at);
+
+	const root = try findRepoRootUntil(allocator, start, stop_at);
+	defer if (root) |path| allocator.free(path);
+
+	try std.testing.expect(root == null);
 }
 
 test "findRepoRoot returns null when missing" {
@@ -6490,6 +6595,7 @@ test "resolveSettings uses discovered repo root for db path" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.git");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/.codescan");
 	try tmp.dir.createDirPath(io_singleton.getOrInit(), "repo/sub/dir");
 

@@ -110,7 +110,8 @@ test "syslog delivers to OS log (gated: CODESCAN_RUN_SYSLOG_TESTS=1)" {
 
     // Use a millisecond-timestamp tag so parallel runs don't collide.
     var tag_buf: [64]u8 = undefined;
-    const tag_slice = try std.fmt.bufPrintZ(&tag_buf, "codescan-test-{d}", .{std.time.milliTimestamp()});
+	const now_ms = std.Io.Clock.real.now(std.testing.io).toMilliseconds();
+	const tag_slice = try std.fmt.bufPrintZ(&tag_buf, "codescan-test-{d}", .{now_ms});
     const tag: [*:0]const u8 = tag_slice.ptr;
 
     init(tag);

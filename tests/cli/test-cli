@@ -103,6 +103,29 @@ main() {
 	fi
 	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "search --help did not print focused usage"
 
+	auth_root="$DB_DIR/openai-without-key"
+	mkdir -p "$auth_root/.codescan"
+	printf '%s\n' \
+		'embedding_api=openai' \
+		'embedding_url=http://127.0.0.1:8000' \
+		'embedding_model=test-model' \
+		'embedding_dim=3' > "$auth_root/.codescan/config.ini"
+	capture env -u CODESCAN_EMBEDDING_SERVER_API_KEY \
+		"$BIN" status --root "$auth_root" --json
+	[ "$rc" -ne 0 ] || fail "OpenAI-compatible provider accepted a missing API key"
+	printf '%s' "$err" | rg -q 'CODESCAN_EMBEDDING_SERVER_API_KEY' || \
+		fail "missing API key error did not explain the environment-variable remedy"
+
+	boundary_root="$DB_DIR/root-boundary"
+	mkdir -p "$boundary_root/workspace/.codescan"
+	mkdir -p "$boundary_root/workspace/repo/.git"
+	mkdir -p "$boundary_root/workspace/repo/sub"
+	capture bash -c 'cd "$1" && "$2" root --json' _ \
+		"$boundary_root/workspace/repo/sub" "$BIN"
+	[ "$rc" -ne 0 ] || fail "root discovery crossed a nested Git boundary"
+	printf '%s' "$out" | jq -e '.root == null' >/dev/null || \
+		fail "root boundary failure did not emit its JSON diagnostic"
+
 	# status --json: verify ISO8601 month matches epoch (regression: off-by-one)
 	# Insert a known timestamp: 2026-02-15 10:30:00 UTC = epoch 1771148200
 	# (February, not March)

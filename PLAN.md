@@ -1,5 +1,24 @@
 # Plan
 
+## 2026-07-21 — indexing environment and repository-boundary hardening
+
+- [x] Preserve nonempty inherited Zig global/local cache paths through `nix develop -c`. (completed 2026-07-22 14:05 EDT)
+  Curiosity poke: empty variables should still receive safe local defaults.
+- [x] Enforce the selected bold root contract: implicit `.codescan` must be adjacent to the nearest `.git`/`.jj` marker. (completed 2026-07-22 14:05 EDT)
+  Curiosity poke: `.git` files, nested repositories, and `.jj` roots must behave deliberately.
+- [x] Remove the committed oMLX credential example and block tracked literal oMLX keys. (completed 2026-07-22 14:05 EDT)
+  Curiosity poke: tests must report locations without echoing matched secrets.
+- [x] Configure Thelio for the Mac Jina embedding service without persisting its API key. (completed 2026-07-22 14:05 EDT)
+  Curiosity poke: a missing key fails clearly; an unavailable Mac still needs a tested local fallback.
+- [x] Index one explicitly bounded repository to nonzero vectors and prove a semantic query. (completed 2026-07-22 14:05 EDT)
+  Curiosity poke: symbol counts alone must not be mistaken for successful vector indexing.
+- [x] Verify Mac Jina survives a clean app/server restart with persisted discovery/config/model checks. (completed 2026-07-22 14:05 EDT)
+  Curiosity poke: upstream oMLX support and local patched state may diverge after restart.
+- [ ] Document/test the `bge-m3` failover path without weakening the code-relevance oracle.
+  Curiosity poke: provider failover must not silently accept materially worse semantic retrieval.
+- [ ] Move integration fixture clones and generated indexes under RAM-backed `TMPDIR` before another full integration run.
+  Curiosity poke: preserve reusable source fixtures without directing SQLite rebuild traffic to spinning storage.
+
 - [x] Add command-specific CLI help topics (`codescan help <command>`, `<command> --help`) with focused usage text for search/index/update/config (completed 2026-02-21 EST)
 - [x] Simplify main `--help` to 25-line overview; add 18 per-command help topics (symbols, replace-symbol, insert-*, replace-lines, insert-at, replace-content, references, rename, watch, serve, mcp-serve, status, clean, init) plus concept topics (hashlines, name-paths, languages, lsp) (completed 2026-02-22 EST)
 - [x] Add unified search scope flag (`--scope code|docs|comments|all`) while preserving existing docs/comments flags and CLI precedence rules (completed 2026-02-21 EST)

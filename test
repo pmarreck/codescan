@@ -22,6 +22,8 @@ run_case() {
 	fi
 }
 
+run_case "dev-shell cache preservation" ./tests/unit/test-dev-shell-cache
+run_case "no committed oMLX keys" ./tests/unit/test-no-committed-secrets
 run_case "unit" nix develop -c ./tests/unit/test-unit
 run_case "cli" nix develop -c ./tests/cli/test-cli
 run_case "http" nix develop -c ./tests/http/test-http

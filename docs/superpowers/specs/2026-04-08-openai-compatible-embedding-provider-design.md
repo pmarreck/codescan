@@ -61,8 +61,10 @@ Gains a `dialect` parameter. For `.openai`, returns immediately (no-op) — Open
 embedding_api=openai
 embedding_url=http://localhost:8000
 embedding_model=mlx-community/bge-m3-mlx-fp16
-embedding_api_key=oMLX_WkXuX8FM7pjpfZUZ
+embedding_api_key=${CODESCAN_EMBEDDING_SERVER_API_KEY}
 ```
+
+Never commit a literal provider credential. Resolve it from the environment at runtime.
 
 ### Embedder Layer
 

@@ -5,3 +5,9 @@ close=[
 	src/plugins
 	zig-cache
 ]
+
+annotate=[
+	test_jina = Live, credential-safe restart-persistence and 1536-dimensional Jina embedding acceptance gate
+	tests/unit/test-dev-shell-cache = Regression proving nix develop preserves inherited nonempty Zig cache paths
+	tests/unit/test-no-committed-secrets = Security regression rejecting tracked literal oMLX embedding API keys without echoing secrets
+]

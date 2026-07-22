@@ -109,13 +109,14 @@
 					packages = with pkgs; [
 						zig_0_16
 						jq
+						sqlite
 						luajit
 						luajitPackages.cjson
 					];
 					shellHook = ''
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
-						export ZIG_GLOBAL_CACHE_DIR="$HOME/.cache/zig"
-						export ZIG_LOCAL_CACHE_DIR="$PWD/zig-cache"
+						export ZIG_GLOBAL_CACHE_DIR="''${ZIG_GLOBAL_CACHE_DIR:-$HOME/.cache/zig}"
+						export ZIG_LOCAL_CACHE_DIR="''${ZIG_LOCAL_CACHE_DIR:-$PWD/zig-cache}"
 						export NIX_CFLAGS_COMPILE=""
 					'';
 				};
