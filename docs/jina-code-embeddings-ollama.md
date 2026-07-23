@@ -73,7 +73,8 @@ embedding_model=jina-code-embeddings:1.5b
 embedding_dim=1536
 ```
 
-After changing from another model name or dimension, rebuild the project index.
+After changing from another model name or dimension, run `codescan update`; it
+detects the mismatch and regenerates the project index.
 On the codescan repository the verified local rebuild produced 7,161 code
 embeddings and 825 comment embeddings; a pure-vector repository-boundary query
 returned `findRepoRootInfoUntil` first.

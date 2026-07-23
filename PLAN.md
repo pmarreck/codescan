@@ -2,6 +2,8 @@
 
 ## 2026-07-23 — script discovery and language expansion
 
+- [x] Make interactive `codescan init` choose an Ollama embedding model when the configured model is unavailable, recommend locally patched Jina, validate a real non-empty embedding through Ollama or authenticated oMLX, and persist only the validated selection and returned dimension. (completed 2026-07-23 17:36 EDT)
+  Curiosity poke: an installed completion-only model, a missing custom name, bad oMLX credentials, EOF/cancellation, or a failed probe must never leave an active model/dimension setting, schema, or watcher branded with unvalidated metadata.
 - [x] Classify extensionless scripts consistently in discovery, full index, update, and watcher reindex paths using regular-text-file, executable-bit, and recognized-shebang evidence. (completed 2026-07-23 12:55 EDT)
   Curiosity poke: extension-bearing source remains governed by its plugin, while non-executable files and NUL-containing binary impostors must never enter through shebang fallback.
 - [x] Preserve top-level Bash commands, assignments, and control flow as a searchable file-level module alongside extracted functions. (completed 2026-07-23 13:00 EDT)
@@ -53,8 +55,8 @@
   Curiosity poke: avoid disk-heavy fixture rebuilds; one real index plus model/dimension/count assertions is sufficient.
 - [x] Document the complete RAM-backed, hash-verified local Ollama import procedure in README. (completed 2026-07-22 17:54 EDT)
   Curiosity poke: the runbook must verify pooling metadata and avoid both in-place Ollama blob edits and `/tmp` on spinning storage.
-- [ ] Correct `codescan setup-model` through the i18n prepare-phase string registry; its stock GGUF pull currently omits Ollama's required pooling metadata.
-  Curiosity poke: do not fix misleading help by adding another hardcoded English-only branch.
+- [x] Correct `codescan setup-model` so its Ollama path uses the verified pooling-metadata guide, and make its recommendation the single code-level source consumed by interactive init. (completed 2026-07-23 17:36 EDT)
+  Curiosity poke: changing the recommendation must update both CLI surfaces without reviving a raw GGUF pull that Ollama classifies as completion-only.
 
 ## 2026-07-21 — indexing environment and repository-boundary hardening
 

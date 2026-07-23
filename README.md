@@ -6,7 +6,8 @@
 Semantic code search for local repositories.
 
 - Zig CLI + HTTP API + MCP server
-- Embedding providers: Ollama and OpenAI-compatible (oMLX, LiteLLM, vLLM) — default model: `bge-large`
+- Embedding providers: Ollama and OpenAI-compatible (oMLX, LiteLLM, vLLM);
+  interactive setup recommends `jina-code-embeddings:1.5b`
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
 - Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash,
@@ -515,9 +516,10 @@ search_ext=zig
 search_type=code
 search_lang=zig
 
-# Embedding model (default: jina-code-embeddings-1.5b)
+# Model selected and validated by `codescan init`
 # Use ollama_model as alias, or OLLAMA_MODEL env var
-embedding_model=bge-large
+embedding_model=jina-code-embeddings:1.5b
+embedding_dim=1536
 
 # For OpenAI-compatible providers (oMLX, LiteLLM, vLLM):
 #embedding_api=openai
@@ -556,9 +558,16 @@ Metadata weights apply when the query includes metadata cues such as `function`,
 
 ## Model Setup
 
-codescan defaults to `bge-large` via Ollama — no extra setup needed beyond `ollama pull bge-large`.
+`codescan init` detects Ollama and recommends `jina-code-embeddings:1.5b`
+(1536 dimensions, 32K context, code-specific training). If it is installed,
+press Enter to select it. Otherwise, init links to the pooling-metadata setup
+below and accepts the name of another installed embedding model.
 
-For better code search quality, run `codescan setup-model` to see instructions for upgrading to `jina-code-embeddings-1.5b` (1536-dim, 32K context, code-specific training).
+Codescan sends a real embedding request before it writes the selected model or
+dimension to `.codescan/config.ini`. A language or completion model that cannot
+produce embeddings is rejected and the prompt continues. The old `bge-large`
+value remains only as a backward-compatible fallback before interactive setup
+has selected a model.
 
 **Ollama caveat:** the upstream Jina GGUF currently lacks the `qwen2.pooling_type`
 metadata Ollama uses to recognize embedding-only models. A raw `ollama pull` is
@@ -672,7 +681,10 @@ mirror. Do not edit Ollama's content-addressed model blobs in place.
 
 ### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
 
-Set `embedding_api=openai` in `.codescan/config` along with `embedding_url` and `embedding_api_key`. See `codescan setup-model` for details.
+Set `embedding_api=openai` in `.codescan/config.ini` along with `embedding_url` and
+`embedding_api_key`. During init, a detected oMLX server is accepted only after
+an authenticated OpenAI-compatible embedding request succeeds; the returned
+dimension is then saved. See `codescan setup-model` for details.
 
 For oMLX users wanting the jina model specifically, see [jina-code-embeddings on oMLX](docs/jina-code-embeddings-omlx.md) (requires interim patches until oMLX adds native Qwen2 embedding support).
 

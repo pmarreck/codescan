@@ -2,9 +2,15 @@ const std = @import("std");
 
 pub const Dialect = enum { ollama, openai };
 
+pub const recommendation = .{
+	.name = "jina-code-embeddings:1.5b",
+	.rationale = "code-specific training, 1536 dimensions, and strong local search quality",
+	.setup_guide = "docs/jina-code-embeddings-ollama.md",
+};
+
 pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 	try writer.print(
-		\\Recommended model: jina-code-embeddings-1.5b
+		\\Recommended model: {s}
 		\\  1536 dimensions, 32K token context, code-specific training
 		\\  License: CC-BY-NC-4.0 (non-commercial)
 		\\
@@ -12,19 +18,22 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 		\\
 		\\Option A: Ollama
 		\\
-		\\  ollama pull hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0
+		\\  The upstream GGUF needs pooling metadata before Ollama recognizes it
+		\\  as an embedding model. Follow {s}; it imports the model as:
 		\\
-		\\  Then in .codescan/config:
+		\\    {s}
+		\\
+		\\  Then in .codescan/config.ini:
 		\\
 		\\    embedding_api=ollama
 		\\    embedding_url=http://localhost:11434
-		\\    embedding_model=hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0
+		\\    embedding_model={s}
 		\\
 		\\Option B: oMLX Server (OpenAI-compatible)
 		\\
 		\\  huggingface-cli download jinaai/jina-code-embeddings-1.5b-mlx
 		\\
-		\\  Then configure your oMLX Server to serve it and set in .codescan/config:
+		\\  Then configure your oMLX Server to serve it and set in .codescan/config.ini:
 		\\
 		\\    embedding_api=openai
 		\\    embedding_url=http://localhost:8000
@@ -32,7 +41,12 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 		\\    embedding_api_key=<your-omlx-key>
 		\\
 		\\
-	, .{});
+	, .{
+		recommendation.name,
+		recommendation.setup_guide,
+		recommendation.name,
+		recommendation.name,
+	});
 
 	switch (current) {
 		.ollama => try writer.print(
@@ -46,12 +60,12 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 	}
 
 	try writer.print(
-		\\Then reindex your project:
+		\\Then update your project index:
 		\\
-		\\  codescan index --force
+		\\  codescan update
 		\\
-		\\Note: If you use a different model, update embedding_model and embedding_dim
-		\\in .codescan/config to match. Mismatched dimensions will cause search errors.
+		\\codescan init validates a real embedding before saving a selected model and
+		\\records its returned dimension. A changed model is regenerated on update.
 		\\
 	, .{});
 }
@@ -64,10 +78,11 @@ test "print shows both Ollama and oMLX options regardless of current dialect" {
 		try print(&out.writer, current);
 		const text = out.written();
 
-		try std.testing.expect(std.mem.indexOf(u8, text, "ollama pull hf.co/jinaai/jina-code-embeddings-1.5b-GGUF:Q8_0") != null);
+		try std.testing.expect(std.mem.indexOf(u8, text, recommendation.name) != null);
+		try std.testing.expect(std.mem.indexOf(u8, text, recommendation.setup_guide) != null);
+		try std.testing.expect(std.mem.indexOf(u8, text, "pooling metadata") != null);
 		try std.testing.expect(std.mem.indexOf(u8, text, "huggingface-cli download jinaai/jina-code-embeddings-1.5b-mlx") != null);
-		try std.testing.expect(std.mem.indexOf(u8, text, "Recommended model: jina-code-embeddings-1.5b") != null);
-		try std.testing.expect(std.mem.indexOf(u8, text, "codescan index --force") != null);
+		try std.testing.expect(std.mem.indexOf(u8, text, "codescan update") != null);
 	}
 }
 

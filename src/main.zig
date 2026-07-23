@@ -694,6 +694,250 @@ fn probeEmbeddingDim(allocator: std.mem.Allocator, embedder: embedding.Embedder)
     return embeddings[0].len;
 }
 
+const embedding_model_recommendation = setup_model_text.recommendation;
+
+const ModelChoice = union(enum) {
+	retry,
+	cancel,
+	model: []const u8,
+};
+
+fn parseEmbeddingModelChoice(
+	input: []const u8,
+	recommended_model: []const u8,
+	recommended_installed: bool,
+) ModelChoice {
+	const trimmed = std.mem.trim(u8, input, " \t\r\n");
+	if (trimmed.len == 0) {
+		return if (recommended_installed)
+			.{ .model = recommended_model }
+		else
+			.retry;
+	}
+	if (std.ascii.eqlIgnoreCase(trimmed, "q") or std.ascii.eqlIgnoreCase(trimmed, "quit")) {
+		return .cancel;
+	}
+	return .{ .model = trimmed };
+}
+
+/// Verifies that a provider serves one non-empty embedding; Ollama additionally
+/// checks local installation before probing the shared embedding endpoint.
+fn validateEmbeddingModel(
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+	dialect: embedding_http.ApiDialect,
+	auth_header: ?[]const u8,
+) !usize {
+	if (dialect == .ollama) {
+		embedding_http.ensureModelAvailable(
+			allocator,
+			transport,
+			base_url,
+			model_name,
+			dialect,
+		) catch |err| switch (err) {
+			error.ModelLoading => {},
+			else => return err,
+		};
+	}
+
+	const inputs = [_][]const u8{"codescan embedding compatibility probe"};
+	const embeddings = embedding_http.embed(
+		allocator,
+		transport,
+		base_url,
+		model_name,
+		&inputs,
+		null,
+		dialect,
+		auth_header,
+	) catch |err| switch (err) {
+		error.HttpStatus,
+		error.InvalidResponse,
+		error.MissingEmbeddings,
+		error.InvalidEmbeddings,
+		=> return error.IncompatibleEmbeddingModel,
+		else => return err,
+	};
+	defer embedding_http.freeEmbeddings(allocator, embeddings);
+
+	if (embeddings.len != 1 or embeddings[0].len == 0) {
+		return error.IncompatibleEmbeddingModel;
+	}
+	return embeddings[0].len;
+}
+
+/// Persists provider/model metadata only after the compatibility probe succeeds.
+fn configureEmbeddingModel(
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	base_url: []const u8,
+	config_root: []const u8,
+	model_name: []const u8,
+	dialect: embedding_http.ApiDialect,
+	auth_header: ?[]const u8,
+) !usize {
+	const dimension = try validateEmbeddingModel(
+		allocator,
+		transport,
+		base_url,
+		model_name,
+		dialect,
+		auth_header,
+	);
+	try writeDetectedConfig(
+		allocator,
+		config_root,
+		base_url,
+		dialect,
+		model_name,
+		dimension,
+	);
+	return dimension;
+}
+
+fn ollamaModelInstalled(
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+) bool {
+	embedding_http.ensureModelAvailable(
+		allocator,
+		transport,
+		base_url,
+		model_name,
+		.ollama,
+	) catch |err| switch (err) {
+		error.ModelLoading => return true,
+		else => return false,
+	};
+	return true;
+}
+
+fn renderOllamaModelChoicePrompt(
+	allocator: std.mem.Allocator,
+	recommended_installed: bool,
+) ![]u8 {
+	return if (recommended_installed)
+		std.fmt.allocPrint(
+			allocator,
+			"  Recommended: {s} (installed)\n" ++
+				"  Why: {s}.\n" ++
+				"  Model [{s}] (or 'q' to abort): ",
+			.{
+				embedding_model_recommendation.name,
+				embedding_model_recommendation.rationale,
+				embedding_model_recommendation.name,
+			},
+		)
+	else
+		std.fmt.allocPrint(
+			allocator,
+			"  Recommended: {s} (not installed)\n" ++
+				"  Why: {s}.\n" ++
+				"  Jina currently needs its GGUF pooling metadata adjusted for Ollama.\n" ++
+				"  See README.md, \"Set up Jina locally through Ollama\", or {s}.\n" ++
+				"  Enter another installed Ollama embedding model (or 'q' to abort): ",
+			.{
+				embedding_model_recommendation.name,
+				embedding_model_recommendation.rationale,
+				embedding_model_recommendation.setup_guide,
+			},
+		);
+}
+
+const ValidatedEmbeddingModel = struct {
+	name: []u8,
+	dimension: usize,
+
+	fn deinit(self: ValidatedEmbeddingModel, allocator: std.mem.Allocator) void {
+		allocator.free(self.name);
+	}
+};
+
+fn promptForOllamaEmbeddingModel(
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	base_url: []const u8,
+	config_root: []const u8,
+	stderr: *std.Io.Writer,
+) !?ValidatedEmbeddingModel {
+	const io = io_singleton.getOrInit();
+	if (!(std.Io.File.stdin().isTty(io) catch false)) return null;
+
+	const recommended_installed = ollamaModelInstalled(
+		allocator,
+		transport,
+		base_url,
+		embedding_model_recommendation.name,
+	);
+	const prompt = try renderOllamaModelChoicePrompt(allocator, recommended_installed);
+	defer allocator.free(prompt);
+
+	while (true) {
+		try stderr.writeAll(prompt);
+		try stderr.flush();
+
+		var input_buf: [512]u8 = undefined;
+		var stdin_reader = std.Io.File.stdin().reader(io, &input_buf);
+		const input_len = stdin_reader.interface.readSliceShort(&input_buf) catch return null;
+		if (input_len == 0) return null;
+		if (input_len == input_buf.len and input_buf[input_len - 1] != '\n') {
+			return error.ModelNameTooLong;
+		}
+
+		switch (parseEmbeddingModelChoice(
+			input_buf[0..input_len],
+			embedding_model_recommendation.name,
+			recommended_installed,
+		)) {
+			.retry => {
+				try stderr.writeAll("  Enter an installed model name, or 'q' to abort.\n");
+				continue;
+			},
+			.cancel => return null,
+			.model => |model_name| {
+				const owned_name = try allocator.dupe(u8, model_name);
+				errdefer allocator.free(owned_name);
+				const dimension = configureEmbeddingModel(
+					allocator,
+					transport,
+					base_url,
+					config_root,
+					owned_name,
+					.ollama,
+					null,
+				) catch |err| switch (err) {
+					error.ModelNotFound => {
+						try stderr.print(
+							"  Model '{s}' is not installed in Ollama; choose another model.\n",
+							.{owned_name},
+						);
+						allocator.free(owned_name);
+						continue;
+					},
+					error.IncompatibleEmbeddingModel => {
+						try stderr.print(
+							"  Model '{s}' did not return a usable embedding; choose an embedding model.\n",
+							.{owned_name},
+						);
+						allocator.free(owned_name);
+						continue;
+					},
+					else => return err,
+				};
+				return .{
+					.name = owned_name,
+					.dimension = dimension,
+				};
+			},
+		}
+	}
+}
+
 fn ensureModelAvailableOrExit(
 	allocator: std.mem.Allocator,
 	transport: embedding_http.Transport,
@@ -1040,19 +1284,32 @@ fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     return input_buf[0] == 'y' or input_buf[0] == 'Y';
 }
 
-fn writeDetectedConfig(allocator: std.mem.Allocator, config_root: []const u8, url: []const u8, dialect: embedding_http.ApiDialect, detected_model: ?[]const u8) !void {
+fn writeDetectedConfig(
+	allocator: std.mem.Allocator,
+	config_root: []const u8,
+	url: []const u8,
+	dialect: embedding_http.ApiDialect,
+	detected_model: ?[]const u8,
+	detected_dimension: ?usize,
+) !void {
     const cfg_path = try configPath(allocator, config_root);
     defer allocator.free(cfg_path);
     const content = try std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024));
     defer allocator.free(content);
     const dialect_str = if (dialect == .ollama) "ollama" else "openai";
-    var kvs_buf: [3]config.KV = undefined;
+    var kvs_buf: [4]config.KV = undefined;
     kvs_buf[0] = .{ .key = "embedding_url", .value = url };
     kvs_buf[1] = .{ .key = "embedding_api", .value = dialect_str };
     var kv_count: usize = 2;
     if (detected_model) |m| {
-        kvs_buf[2] = .{ .key = "embedding_model", .value = m };
-        kv_count = 3;
+		kvs_buf[kv_count] = .{ .key = "embedding_model", .value = m };
+		kv_count += 1;
+    }
+	var dimension_buf: [32]u8 = undefined;
+    if (detected_dimension) |dimension| {
+		const value = try std.fmt.bufPrint(&dimension_buf, "{d}", .{dimension});
+		kvs_buf[kv_count] = .{ .key = "embedding_dim", .value = value };
+		kv_count += 1;
     }
     const updated = try config.writeConfigValues(allocator, content, kvs_buf[0..kv_count]);
     defer allocator.free(updated);
@@ -1766,64 +2023,156 @@ fn runInit(
 		try ensureWeightsWithDefaults(weights_cfg_path);
 	}
 
-	// Open DB and init schema; if the DB is corrupt, recreate it
-	var db = try storage.openFileWithVec(allocator, settings.db_path);
-	_ = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch {
-		storage.close(db);
-		_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-		_ = stderr.flush() catch {};
-		db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-	};
-	defer storage.close(db);
-
 	// Auto-detect embedding server
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
 	const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
+	defer if (detected) |d| {
+		if (d.dialect == .openai) {
+			if (d.default_model) |model_name| allocator.free(model_name);
+		}
+	};
+	var resolved_settings = settings;
+	var selected_model: ?ValidatedEmbeddingModel = null;
+	defer if (selected_model) |validated_model| validated_model.deinit(allocator);
 	var use_embeddings = false;
 
 	if (detected) |d| {
-		if (d.model_available) {
-			// Server found with model — write config and proceed with embeddings
-			const model_name = d.default_model orelse settings.embedding_model;
-			_ = stderr.print("  Detected {s} on {s} with model '{s}'. Saved to .codescan/config.ini.\n", .{
-				if (d.dialect == .ollama) "Ollama" else "oMLX", d.url, model_name,
-			}) catch {};
-			_ = stderr.flush() catch {};
-			use_embeddings = true;
-		} else {
-			// Server found but model/auth not verified
-			if (d.dialect == .ollama) {
-				_ = stderr.print("  Found Ollama on {s} but model '{s}' not installed.\n" ++
-					"  Run 'ollama pull {s}' then 'codescan index' for semantic search.\n", .{
-					d.url, settings.embedding_model, settings.embedding_model,
-				}) catch {};
-			} else {
-				if (d.default_model) |dm| {
-					_ = stderr.print("  Found oMLX on {s} with model '{s}'.\n" ++
-						"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
-						"  then run 'codescan index'.\n", .{ d.url, dm }) catch {};
+		resolved_settings.embedding_url = d.url;
+		resolved_settings.embedding_dialect = d.dialect;
+		if (d.dialect == .ollama) {
+			const configured_dimension: ?usize = if (d.model_available)
+				configureEmbeddingModel(
+					allocator,
+					http_client.transport(),
+					d.url,
+					config_root,
+					settings.embedding_model,
+					.ollama,
+					null,
+				) catch |err| switch (err) {
+					error.ModelNotFound, error.IncompatibleEmbeddingModel => null,
+					else => return err,
+				}
+			else
+				null;
+
+			if (configured_dimension) |dimension| {
+				resolved_settings.embedding_model = settings.embedding_model;
+				resolved_settings.embedding_dim = dimension;
+				use_embeddings = true;
+				try stderr.print(
+					"  Detected Ollama on {s}; model '{s}' returned {d}-dimensional embeddings.\n" ++
+						"  Saved the validated model to .codescan/config.ini.\n",
+					.{ d.url, settings.embedding_model, dimension },
+				);
+			} else if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
+				if (d.model_available) {
+					try stderr.print(
+						"  Ollama model '{s}' is installed but did not return a usable embedding.\n" ++
+							"  Choose a compatible embeddings model instead.\n",
+						.{settings.embedding_model},
+					);
 				} else {
-					_ = stderr.print("  Found oMLX on {s}.\n" ++
-						"  Set CODESCAN_EMBEDDING_SERVER_API_KEY env var (or embedding_api_key in config)\n" ++
-						"  then run 'codescan index' for semantic search.\n", .{d.url}) catch {};
+					try stderr.print(
+						"  Found Ollama on {s} but configured model '{s}' is not installed.\n" ++
+							"  Choose which embeddings model Codescan should use.\n",
+						.{ d.url, settings.embedding_model },
+					);
+				}
+				selected_model = try promptForOllamaEmbeddingModel(
+					allocator,
+					http_client.transport(),
+					d.url,
+					config_root,
+					stderr,
+				);
+				if (selected_model) |validated_model| {
+					resolved_settings.embedding_model = validated_model.name;
+					resolved_settings.embedding_dim = validated_model.dimension;
+					use_embeddings = true;
+					try stderr.print(
+						"  Model '{s}' returned {d}-dimensional embeddings and was saved.\n",
+						.{ validated_model.name, validated_model.dimension },
+					);
+				} else {
+					try stdout.writeAll("Aborted without changing embedding settings.\n");
+					try stdout.flush();
+					return;
+				}
+			} else {
+				writeDetectedConfig(
+					allocator,
+					config_root,
+					d.url,
+					d.dialect,
+					null,
+					null,
+				) catch |err| {
+					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
+					_ = stderr.flush() catch {};
+				};
+			}
+		} else {
+			const model_name = d.default_model orelse settings.embedding_model;
+			const configured_dimension: ?usize = if (settings.embedding_auth_header) |auth_header|
+				configureEmbeddingModel(
+					allocator,
+					http_client.transport(),
+					d.url,
+					config_root,
+					model_name,
+					.openai,
+					auth_header,
+				) catch |err| switch (err) {
+					error.Unauthorized, error.IncompatibleEmbeddingModel => null,
+					else => return err,
+				}
+			else
+				null;
+
+			if (configured_dimension) |dimension| {
+				resolved_settings.embedding_model = model_name;
+				resolved_settings.embedding_dim = dimension;
+				use_embeddings = true;
+				try stderr.print(
+					"  Detected oMLX on {s}; model '{s}' returned {d}-dimensional embeddings.\n" ++
+						"  Saved the validated model to .codescan/config.ini.\n",
+					.{ d.url, model_name, dimension },
+				);
+			} else {
+				if (d.default_model) |default_model| {
+					try stderr.print(
+						"  Found oMLX on {s} with unverified model '{s}'.\n",
+						.{ d.url, default_model },
+					);
+				} else {
+					try stderr.print("  Found oMLX on {s}.\n", .{d.url});
+				}
+				try stderr.writeAll(
+					"  Set CODESCAN_EMBEDDING_SERVER_API_KEY (or embedding_api_key) and\n" ++
+						"  select a model before semantic indexing.\n",
+				);
+				writeDetectedConfig(
+					allocator,
+					config_root,
+					d.url,
+					d.dialect,
+					null,
+					null,
+				) catch |err| {
+					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
+					_ = stderr.flush() catch {};
+				};
+				try stderr.writeAll("  Index in lexical-only mode? [Y/n] ");
+				if (!promptYesNo(stderr, true)) {
+					try stdout.writeAll("Aborted. Run 'codescan setup-model' for setup instructions.\n");
+					try stdout.flush();
+					return;
 				}
 			}
-			_ = stderr.flush() catch {};
-			_ = stderr.print("  Index in lexical-only mode? [Y/n] ", .{}) catch {};
-			if (!promptYesNo(stderr, true)) {
-				try stdout.print("Aborted. Run 'codescan setup-model' for setup instructions.\n", .{});
-				try stdout.flush();
-				return;
-			}
 		}
-		// Write detected server config (including model name if discovered)
-		writeDetectedConfig(allocator, config_root, d.url, d.dialect, d.default_model) catch |err| {
-			_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
-			_ = stderr.flush() catch {};
-		};
 	} else {
 		// No server found
 		_ = stderr.print("  No embedding server detected.\n" ++
@@ -1843,15 +2192,30 @@ fn runInit(
 		};
 	}
 
-	const emb_url = if (detected) |d| d.url else settings.embedding_url;
-	const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
-	const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
+	// The schema is branded only after model compatibility and dimension have
+	// been established, preventing a cancelled choice from creating false state.
+	var db = try storage.openFileWithVec(allocator, resolved_settings.db_path);
+	_ = storage.initSchema(allocator, db, .{
+		.embedding_dim = resolved_settings.embedding_dim,
+		.embedding_model = resolved_settings.embedding_model,
+	}) catch {
+		storage.close(db);
+		_ = stderr.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
+		_ = stderr.flush() catch {};
+		db = try storage.openFileWithVecRecreate(allocator, resolved_settings.db_path);
+		_ = try storage.initSchema(allocator, db, .{
+			.embedding_dim = resolved_settings.embedding_dim,
+			.embedding_model = resolved_settings.embedding_model,
+		});
+	};
+	defer storage.close(db);
+
 	var embedder_adapter = embedding.HttpEmbedder{
 		.transport = http_client.transport(),
-		.base_url = emb_url,
-		.model = emb_model,
-		.dialect = emb_dialect,
-		.auth_header = settings.embedding_auth_header,
+		.base_url = resolved_settings.embedding_url,
+		.model = resolved_settings.embedding_model,
+		.dialect = resolved_settings.embedding_dialect,
+		.auth_header = resolved_settings.embedding_auth_header,
 	};
 	const active_embedder = if (use_embeddings)
 		embedder_adapter.embedder()
@@ -1860,14 +2224,14 @@ fn runInit(
 
     const show_progress = shouldShowProgress(
         std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
-        settings.output,
-        settings.no_progress,
+        resolved_settings.output,
+        resolved_settings.no_progress,
     );
 
 	const stats = try performFullIndex(
 		allocator,
 		db,
-		settings,
+		resolved_settings,
 		registry,
 		active_embedder,
 		stderr,
@@ -1875,7 +2239,7 @@ fn runInit(
 	);
 
 	// Print summary
-	if (settings.output == .json) {
+	if (resolved_settings.output == .json) {
 		try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d},\"semantic\":{s}}}\n", .{
 			stats.files, stats.symbols, if (use_embeddings) "true" else "false",
 		});
@@ -1888,7 +2252,7 @@ fn runInit(
 	}
 	try stdout.flush();
 	// Start background watcher
-	maybeStartWatcher(allocator, settings, stderr, .index_completed);
+	maybeStartWatcher(allocator, resolved_settings, stderr, .index_completed);
 }
 
 /// Run a full index of the repository: scan, extract, embed, and store.
@@ -5467,6 +5831,9 @@ const usage_init =
     \\Usage: codescan init [options]
     \\
     \\Initialize codescan for this project (creates .codescan/).
+    \\Detects Ollama or oMLX, validates a real embedding, and saves the
+    \\working model and returned dimension. If Ollama's configured model is
+    \\unavailable, interactively recommends Jina or accepts another model.
     \\
     \\Options:
     \\  --force, -f              Re-initialize even if already initialized
@@ -6668,6 +7035,120 @@ test "detectEmbeddingServer Ollama up but model missing" {
     try std.testing.expect(result != null);
     try std.testing.expectEqualStrings("http://localhost:11434", result.?.url);
     try std.testing.expect(!result.?.model_available);
+}
+
+test "validateEmbeddingModel probes an installed Ollama model and returns its dimension" {
+	const allocator = std.testing.allocator;
+	const tags_body = try std.fmt.allocPrint(
+		allocator,
+		\\{{"models":[{{"name":"{s}"}}]}}
+		,
+		.{embedding_model_recommendation.name},
+	);
+	defer allocator.free(tags_body);
+	var mock = embedding_http.MockTransportCtx{
+		.tags_body = tags_body,
+		.ps_body =
+			\\{"models":[]}
+		,
+	};
+
+	const dimension = try validateEmbeddingModel(
+		allocator,
+		mock.transport(),
+		"http://localhost:11434",
+		embedding_model_recommendation.name,
+		.ollama,
+		null,
+	);
+
+	try std.testing.expectEqual(@as(usize, 2), dimension);
+	try std.testing.expectEqual(@as(usize, 1), mock.embed_count);
+}
+
+test "validateEmbeddingModel supports authenticated OpenAI-compatible providers" {
+	const allocator = std.testing.allocator;
+	var mock = embedding_http.MockTransportCtx{
+		.tags_body = "{}",
+		.ps_body = "{}",
+	};
+
+	const dimension = try validateEmbeddingModel(
+		allocator,
+		mock.transport(),
+		"http://localhost:8000",
+		"jinaai/jina-code-embeddings-1.5b-mlx",
+		.openai,
+		"Bearer local-key",
+	);
+
+	try std.testing.expectEqual(@as(usize, 2), dimension);
+	try std.testing.expect(mock.auth_header_sent);
+}
+
+test "incompatible Ollama model is rejected before config access" {
+	const allocator = std.testing.allocator;
+	var mock = embedding_http.MockTransportCtx{
+		.tags_body =
+			\\{"models":[{"name":"llama3:latest"}]}
+		,
+		.ps_body =
+			\\{"models":[]}
+		,
+		.status_override = 400,
+	};
+
+	try std.testing.expectError(
+		error.IncompatibleEmbeddingModel,
+		configureEmbeddingModel(
+			allocator,
+			mock.transport(),
+			"http://localhost:11434",
+			"/this/config/root/must/not/be/accessed",
+			"llama3:latest",
+			.ollama,
+			null,
+		),
+	);
+	try std.testing.expectEqual(@as(usize, 1), mock.embed_count);
+}
+
+test "embedding model choice defaults only to an installed recommendation" {
+	const recommended = embedding_model_recommendation.name;
+
+	try std.testing.expectEqualDeep(
+		ModelChoice{ .model = recommended },
+		parseEmbeddingModelChoice("  \n", recommended, true),
+	);
+	try std.testing.expectEqual(
+		ModelChoice.retry,
+		parseEmbeddingModelChoice("\n", recommended, false),
+	);
+	try std.testing.expectEqual(
+		ModelChoice.cancel,
+		parseEmbeddingModelChoice("q\n", recommended, true),
+	);
+	try std.testing.expectEqualDeep(
+		ModelChoice{ .model = "nomic-embed-text:latest" },
+		parseEmbeddingModelChoice(" nomic-embed-text:latest \n", recommended, false),
+	);
+}
+
+test "Ollama model prompt renders the global recommendation and setup guide" {
+	const allocator = std.testing.allocator;
+	const prompt = try renderOllamaModelChoicePrompt(allocator, false);
+	defer allocator.free(prompt);
+
+	try std.testing.expect(std.mem.indexOf(
+		u8,
+		prompt,
+		embedding_model_recommendation.name,
+	) != null);
+	try std.testing.expect(std.mem.indexOf(
+		u8,
+		prompt,
+		embedding_model_recommendation.setup_guide,
+	) != null);
 }
 
 test "findRepoRoot finds nearest .codescan ancestor" {
