@@ -7,10 +7,18 @@ close=[
 ]
 
 annotate=[
+	README.md = usage, search evidence semantics, model setup, and operations guide
 	docs/jina-code-embeddings-ollama.md = Verified fully local Ollama Jina setup, pooling-metadata fix, hashes, configuration, and acceptance evidence
-	reindex_all = Sequentially index direct-child Git projects with local Ollama Jina and percentage progress
+	reindex_all = Sequentially update direct-child Git projects with local Ollama Jina and percentage progress
+	src/freshness.zig = Watcher-aware pre-search reconciliation, stale fallback, and watcher-advisory classifiers
+	src/indexer.zig = Crash-safe incremental indexing with post-flush completion markers and recovery
+	src/output.zig = human/JSON search output with score explanations and confidence notes
+	src/scan.zig = Direct Git candidate iteration with native-walker fallback and delayed discovery progress
+	src/search.zig = hybrid retrieval, lexical field provenance, and evidence/confidence classification
+	src/storage.zig = SQLite/sqlite-vec storage with linear-time embedding completeness checks
 	test_jina = Live acceptance gate proving fully local Ollama serves 1536-dimensional Jina embeddings
 	test_jina_omlx = Live acceptance gate for the remote Tailscale Mac oMLX Jina fallback
+	tests/integration/test-integration = RAM-backed live Ollama integration suite with explicit model/dimension pairing
 	tests/unit/test-dev-shell-cache = Regression proving nix develop preserves inherited nonempty Zig cache paths
 	tests/unit/test-no-committed-secrets = Security regression rejecting tracked literal oMLX embedding API keys without echoing secrets
 	tests/unit/test-reindex-all-projects = RAM-backed set-classifier tests for the sequential multi-project reindex runner

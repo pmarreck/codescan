@@ -21,6 +21,7 @@ const diff = @import("diff.zig");
 const lsp = @import("lsp.zig");
 const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
+const freshness = @import("freshness.zig");
 const pidfile = @import("pidfile.zig");
 const watcher_mgmt = @import("watcher_mgmt.zig");
 const progress_mod = @import("progress.zig");
@@ -99,6 +100,13 @@ const Settings = struct {
 	http_host: []const u8,
 	http_port: u16,
 	search_weights: ?*const weights.Table,
+
+	fn deinit(self: *Settings, allocator: std.mem.Allocator) void {
+		if (self.db_path_owned) allocator.free(self.db_path);
+		if (self.embedding_model_owned) allocator.free(self.embedding_model);
+		if (self.embedding_auth_header_owned) allocator.free(self.embedding_auth_header.?);
+		self.* = undefined;
+	}
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -187,9 +195,7 @@ pub fn main(init: std.process.Init) !void {
 
 	var settings = try resolveSettings(allocator, parsed, cfg, config_root);
 	settings.search_weights = &search_weights;
-	defer if (settings.db_path_owned) allocator.free(settings.db_path);
-	defer if (settings.embedding_model_owned) allocator.free(settings.embedding_model);
-	defer if (settings.embedding_auth_header_owned) allocator.free(settings.embedding_auth_header.?);
+	defer settings.deinit(allocator);
 
 	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null) {
 		var stderr_buf: [4096]u8 = undefined;
@@ -1133,7 +1139,13 @@ fn canConnectToEmbeddingServer(allocator: std.mem.Allocator, url: []const u8) bo
 }
 
 /// Spawns `codescan watch` in the background if not already running.
-fn maybeStartWatcher(allocator: std.mem.Allocator, settings: Settings, stderr: *std.Io.Writer) void {
+fn maybeStartWatcher(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	stderr: *std.Io.Writer,
+	reason: freshness.WatcherStartReason,
+) void {
+	if (!freshness.shouldStartWatcher(reason)) return;
 
 	// Derive the .codescan dir from db_path (parent of index.sqlite3)
 	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse return;
@@ -1873,7 +1885,7 @@ fn runInit(
 	}
 	try stdout.flush();
 	// Start background watcher
-	maybeStartWatcher(allocator, settings, stderr);
+	maybeStartWatcher(allocator, settings, stderr, .index_completed);
 }
 
 /// Run a full index of the repository: scan, extract, embed, and store.
@@ -1953,6 +1965,202 @@ fn runIndex(
 
 /// Run an incremental index — scan for new/modified/deleted files and update.
 /// Extracted from the `.update` switch arm of `pub fn main` (2026-06-01).
+const UpdateDbRebuildReason = enum {
+	none,
+	incompatible,
+	embedding_mismatch,
+};
+
+const UpdateDb = struct {
+	db: storage.Db,
+	schema_result: storage.InitSchemaResult,
+	rebuild_reason: UpdateDbRebuildReason = .none,
+	previous_embedding_model: ?[]u8 = null,
+	previous_embedding_dim: ?usize = null,
+
+	fn deinit(self: *UpdateDb, allocator: std.mem.Allocator) void {
+		if (self.previous_embedding_model) |value| allocator.free(value);
+		self.schema_result.deinit(allocator);
+		storage.close(self.db);
+		self.* = undefined;
+	}
+};
+
+/// Opens an update database and atomically chooses a fresh index whenever its
+/// stored embedding model/dimension cannot represent the configured vectors.
+const OpenUpdateDbMode = enum {
+	inspect_only,
+	immediate_recreate,
+};
+
+fn openUpdateDb(
+	allocator: std.mem.Allocator,
+	db_path: []const u8,
+	schema: storage.Schema,
+	mode: OpenUpdateDbMode,
+) !UpdateDb {
+	var db = try storage.openFileWithVec(allocator, db_path);
+	var schema_result = storage.initSchema(allocator, db, schema) catch {
+		storage.close(db);
+		if (mode == .inspect_only) return error.IncompatibleDatabase;
+		db = try storage.openFileWithVecRecreate(allocator, db_path);
+		errdefer storage.close(db);
+		const fresh_schema_result = try storage.initSchema(allocator, db, schema);
+		return .{
+			.db = db,
+			.schema_result = fresh_schema_result,
+			.rebuild_reason = .incompatible,
+		};
+	};
+
+	if (!schema_result.embedding_model_mismatch and !schema_result.embedding_dim_mismatch) {
+		return .{ .db = db, .schema_result = schema_result };
+	}
+
+	const previous_model = schema_result.stored_embedding_model;
+	schema_result.stored_embedding_model = null;
+	const previous_dim = schema_result.stored_embedding_dim;
+	schema_result.deinit(allocator);
+	storage.close(db);
+	if (mode == .inspect_only) {
+		if (previous_model) |value| allocator.free(value);
+		return error.EmbeddingMismatch;
+	}
+
+	db = try storage.openFileWithVecRecreate(allocator, db_path);
+	errdefer {
+		if (previous_model) |value| allocator.free(value);
+		storage.close(db);
+	}
+	schema_result = try storage.initSchema(allocator, db, schema);
+	return .{
+		.db = db,
+		.schema_result = schema_result,
+		.rebuild_reason = .embedding_mismatch,
+		.previous_embedding_model = previous_model,
+		.previous_embedding_dim = previous_dim,
+	};
+}
+
+const UpdateInvocation = enum {
+	explicit,
+	pre_search,
+};
+
+const DiscoveryProgress = struct {
+	const Clock = union(enum) {
+		system: std.Io,
+		injected: *const i96,
+	};
+
+	writer: *std.Io.Writer,
+	clock: Clock,
+	started_ns: i96,
+	last_seen: usize = 0,
+	last_reported: usize = 0,
+	visible: bool = false,
+
+	fn init(writer: *std.Io.Writer, io: std.Io) DiscoveryProgress {
+		return .{
+			.writer = writer,
+			.clock = .{ .system = io },
+			.started_ns = std.Io.Clock.awake.now(io).nanoseconds,
+		};
+	}
+
+	fn initForTest(writer: *std.Io.Writer, now_ns: *const i96) DiscoveryProgress {
+		return .{
+			.writer = writer,
+			.clock = .{ .injected = now_ns },
+			.started_ns = now_ns.*,
+		};
+	}
+
+	fn now(self: DiscoveryProgress) i96 {
+		return switch (self.clock) {
+			.system => |io| std.Io.Clock.awake.now(io).nanoseconds,
+			.injected => |value| value.*,
+		};
+	}
+
+	fn adapter(self: *DiscoveryProgress) scan.FileProgress {
+		return .{
+			.context = self,
+			.observe_fn = observeCallback,
+			.finish_fn = finishCallback,
+		};
+	}
+
+	fn observeCallback(context: *anyopaque, eligible_files: usize) void {
+		const self: *DiscoveryProgress = @ptrCast(@alignCast(context));
+		self.observe(eligible_files);
+	}
+
+	fn finishCallback(context: *anyopaque) void {
+		const self: *DiscoveryProgress = @ptrCast(@alignCast(context));
+		self.finish();
+	}
+
+	fn observe(self: *DiscoveryProgress, eligible_files: usize) void {
+		self.last_seen = eligible_files;
+		if (!self.visible) {
+			if (self.now() - self.started_ns <= std.time.ns_per_s) return;
+			self.visible = true;
+		} else if (eligible_files < self.last_reported + 100) {
+			return;
+		}
+		output.writeDiscoveryProgress(self.writer, eligible_files, false) catch return;
+		self.writer.flush() catch {};
+		self.last_reported = eligible_files;
+	}
+
+	fn finish(self: *DiscoveryProgress) void {
+		if (!self.visible) return;
+		output.writeDiscoveryProgress(self.writer, self.last_seen, true) catch return;
+		self.writer.flush() catch {};
+	}
+};
+
+pub const UpdateSettings = struct {
+	output: cli.OutputFormat,
+	root_path: []const u8,
+	db_path: []const u8,
+	embedding_url: []const u8,
+	embedding_model: []const u8,
+	embedding_dialect: embedding_http.ApiDialect,
+	embedding_auth_header: ?[]const u8,
+	embedding_dim: usize,
+	batch_size: usize,
+	max_file_size: usize,
+	index_ext: ?[]const u8,
+	index_type: ?[]const u8,
+	ignore_global: []const []const u8,
+	always_include: []const []const u8,
+	ignore_lang: []const config.IgnoreOverride,
+	include_node_modules: bool,
+};
+
+fn updateSettings(settings: Settings) UpdateSettings {
+	return .{
+		.output = settings.output,
+		.root_path = settings.root_path,
+		.db_path = settings.db_path,
+		.embedding_url = settings.embedding_url,
+		.embedding_model = settings.embedding_model,
+		.embedding_dialect = settings.embedding_dialect,
+		.embedding_auth_header = settings.embedding_auth_header,
+		.embedding_dim = settings.embedding_dim,
+		.batch_size = settings.batch_size,
+		.max_file_size = settings.max_file_size,
+		.index_ext = settings.index_ext,
+		.index_type = settings.index_type,
+		.ignore_global = settings.ignore_global,
+		.always_include = settings.always_include,
+		.ignore_lang = settings.ignore_lang,
+		.include_node_modules = settings.include_node_modules,
+	};
+}
+
 fn runUpdate(
 	allocator: std.mem.Allocator,
 	settings: Settings,
@@ -1960,63 +2168,39 @@ fn runUpdate(
 	lexical_only: bool,
 	stdout: *std.Io.Writer,
 ) !void {
+	return runUpdateWithInvocation(allocator, updateSettings(settings), registry, lexical_only, stdout, .explicit);
+}
+
+fn runUpdateWithInvocation(
+	allocator: std.mem.Allocator,
+	settings: UpdateSettings,
+	registry: plugin.Registry,
+	lexical_only: bool,
+	stdout: ?*std.Io.Writer,
+	invocation: UpdateInvocation,
+) !void {
+	const invocation_started = std.Io.Clock.awake.now(io_singleton.getOrInit());
 	checkTmpSpace();
 	try io_singleton.ensureParentDir(settings.db_path);
 	// Warn if watcher is already running (concurrent indexing causes constraint errors)
 	{
 		const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 		if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
-			var sb: [4096]u8 = undefined;
-			var sw = io_singleton.stderrWriter(&sb);
-			const se = &sw.interface;
-			_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
-			_ = se.flush() catch {};
+			if (invocation == .explicit) {
+				var sb: [4096]u8 = undefined;
+				var sw = io_singleton.stderrWriter(&sb);
+				const se = &sw.interface;
+				_ = se.print("note: watcher is already running and keeping the index up to date.\n      Manual update is unnecessary. Use 'codescan watch stop' first if you need to force an update.\n", .{}) catch {};
+				_ = se.flush() catch {};
+			}
 			return;
 		}
-	}
-	var db = try storage.openFileWithVec(allocator, settings.db_path);
-	var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
-		storage.close(db);
-		{
-			var sb2: [4096]u8 = undefined;
-			var sw2 = io_singleton.stderrWriter(&sb2);
-			const se2 = &sw2.interface;
-			_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-			_ = se2.flush() catch {};
-		}
-		db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-		break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-	};
-	defer storage.close(db);
-	defer schema_result.deinit(allocator);
-	if (schema_result.did_schema_upgrade) {
-		var sb: [4096]u8 = undefined;
-		var sw = io_singleton.stderrWriter(&sb);
-		const se = &sw.interface;
-		_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
-		_ = se.flush() catch {};
-	}
-	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
-		var sb: [4096]u8 = undefined;
-		var sw = io_singleton.stderrWriter(&sb);
-		const se = &sw.interface;
-		if (schema_result.embedding_model_mismatch) {
-			_ = se.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
-		}
-		if (schema_result.embedding_dim_mismatch) {
-			_ = se.print("error: Embedding dimension mismatch. Index was built with {d}, but current setting is {d}.\n", .{ schema_result.stored_embedding_dim orelse 0, settings.embedding_dim }) catch {};
-		}
-		_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
-		_ = se.flush() catch {};
-		std.process.exit(1);
 	}
 
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
-	var use_null_embedder = false;
-	if (lexical_only) {
-		use_null_embedder = true;
-	} else {
+	var use_null_embedder = lexical_only;
+	if (!lexical_only and invocation == .explicit) {
 		ensureModelAvailableOrPrompt(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect, &use_null_embedder) catch {
 			std.process.exit(1);
 		};
@@ -2033,14 +2217,90 @@ fn runUpdate(
 	else
 		embedder_adapter.embedder();
 
-	// Auto-detect embedding dimension if using a real embedder
-	const effective_dim = if (!use_null_embedder)
-		probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
-	else
-		settings.embedding_dim;
+	var effective_dim = settings.embedding_dim;
+	const initial_open_mode: OpenUpdateDbMode = .inspect_only;
+	var prepared = openUpdateDb(allocator, settings.db_path, .{
+		.embedding_dim = settings.embedding_dim,
+		.embedding_model = settings.embedding_model,
+	}, initial_open_mode) catch |err| retry: {
+		switch (err) {
+			error.EmbeddingMismatch, error.IncompatibleDatabase => {},
+			else => return err,
+		}
+		if (use_null_embedder) {
+			if (invocation == .pre_search) return err;
+		} else {
+			if (invocation == .explicit) {
+				var verify_stderr_buf: [4096]u8 = undefined;
+				var verify_stderr_writer = io_singleton.stderrWriter(&verify_stderr_buf);
+				_ = verify_stderr_writer.interface.writeAll(
+					"Just a moment... verifying the embedding model before rebuilding the index.\n",
+				) catch {};
+				_ = verify_stderr_writer.interface.flush() catch {};
+			}
+			const detected_dim = probeEmbeddingDim(allocator, active_embedder) orelse
+				return error.EmbeddingUnavailable;
+			if (detected_dim != settings.embedding_dim) return error.EmbeddingDimensionMismatch;
+			effective_dim = detected_dim;
+		}
+		break :retry try openUpdateDb(allocator, settings.db_path, .{
+			.embedding_dim = effective_dim,
+			.embedding_model = settings.embedding_model,
+		}, .immediate_recreate);
+	};
+	defer prepared.deinit(allocator);
+	const db = prepared.db;
+	const schema_result = &prepared.schema_result;
+
+	if (invocation == .explicit) switch (prepared.rebuild_reason) {
+		.incompatible => {
+			var sb: [4096]u8 = undefined;
+			var sw = io_singleton.stderrWriter(&sb);
+			const se = &sw.interface;
+			_ = se.print("\x1b[33mnote: Database corrupt or incompatible; recreating index before update.\x1b[0m\n", .{}) catch {};
+			_ = se.flush() catch {};
+		},
+		.embedding_mismatch => {
+			var sb: [4096]u8 = undefined;
+			var sw = io_singleton.stderrWriter(&sb);
+			const se = &sw.interface;
+			_ = se.print(
+				"\x1b[33mnote: Embedding model/dimension changed ({s}, {d} -> {s}, {d}); recreating and regenerating the index.\x1b[0m\n",
+				.{
+					prepared.previous_embedding_model orelse "unknown",
+					prepared.previous_embedding_dim orelse 0,
+					settings.embedding_model,
+					settings.embedding_dim,
+				},
+			) catch {};
+			_ = se.flush() catch {};
+		},
+		.none => {},
+	};
+
+	if (invocation == .explicit and schema_result.did_schema_upgrade) {
+		var sb: [4096]u8 = undefined;
+		var sw = io_singleton.stderrWriter(&sb);
+		const se = &sw.interface;
+		_ = se.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
+		_ = se.flush() catch {};
+	}
 
 	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
 	defer index_filters.deinit(allocator);
+
+	const show_progress = invocation == .explicit and
+		shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output);
+	var discovery_stderr_buf: [4096]u8 = undefined;
+	var discovery_stderr_writer = io_singleton.stderrWriter(&discovery_stderr_buf);
+	var discovery_progress = DiscoveryProgress.init(
+		&discovery_stderr_writer.interface,
+		io_singleton.getOrInit(),
+	);
+	const discovery_adapter: ?scan.FileProgress = if (show_progress)
+		discovery_progress.adapter()
+	else
+		null;
 
 	const stats = try indexer.indexIncremental(
 		allocator,
@@ -2060,36 +2320,152 @@ fn runUpdate(
 				.include_node_modules = settings.include_node_modules,
 				.always_include = settings.always_include,
 			},
-			.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
+			.require_embeddings = !use_null_embedder,
+			.show_progress = show_progress,
+			.discovery_progress = discovery_adapter,
 		},
 	);
+	const invocation_duration = invocation_started.durationTo(
+		std.Io.Clock.awake.now(io_singleton.getOrInit()),
+	).nanoseconds;
+	const invocation_elapsed_ns: u64 = if (invocation_duration > 0)
+		@intCast(invocation_duration)
+	else
+		0;
+	const watcher_advisory = if (invocation == .explicit and invocation_elapsed_ns > std.time.ns_per_s) advice: {
+		const io = io_singleton.getOrInit();
+		const activity = freshness.detectGitActivity(
+			allocator,
+			io,
+			settings.root_path,
+			std.Io.Clock.real.now(io).nanoseconds,
+		);
+		break :advice freshness.watcherAdvisory(invocation_elapsed_ns, activity);
+	} else null;
 
-	if (settings.output == .json) {
-		try stdout.print("{{\"status\":\"ok\",\"new\":{d},\"modified\":{d},\"deleted\":{d},\"unchanged\":{d},\"symbols\":{d}}}\n", .{
+	if (invocation == .explicit and settings.output == .json) {
+		try stdout.?.print("{{\"status\":\"ok\",\"new\":{d},\"modified\":{d},\"deleted\":{d},\"unchanged\":{d},\"recovered\":{d},\"symbols\":{d},\"update_seconds\":{d:.6},\"watcher_recommended\":{s},\"watcher_help\":\"codescan help watch\"}}\n", .{
 			stats.new_files,
 			stats.modified_files,
 			stats.deleted_files,
 			stats.unchanged_files,
+			stats.recovered_files,
 			stats.symbols,
+			@as(f64, @floatFromInt(invocation_elapsed_ns)) /
+				@as(f64, @floatFromInt(std.time.ns_per_s)),
+			if (watcher_advisory != null) "true" else "false",
 		});
-	} else {
-		try stdout.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged ({d} symbols re-embedded)\n", .{
+	} else if (invocation == .explicit) {
+		try stdout.?.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged, !{d} recovered ({d} symbols re-embedded)\n", .{
 			stats.new_files,
 			stats.modified_files,
 			stats.deleted_files,
 			stats.unchanged_files,
+			stats.recovered_files,
 			stats.symbols,
 		});
 	}
-	try stdout.flush();
-
-	// Auto-launch background watcher after update
-	{
-		var update_stderr_buf: [4096]u8 = undefined;
-		var update_stderr_writer = io_singleton.stderrWriter(&update_stderr_buf);
-		const update_stderr = &update_stderr_writer.interface;
-		maybeStartWatcher(allocator, settings, update_stderr);
+	if (invocation == .explicit) try stdout.?.flush();
+	if (watcher_advisory) |advisory| {
+		var advisory_stderr_buf: [4096]u8 = undefined;
+		var advisory_stderr_writer = io_singleton.stderrWriter(&advisory_stderr_buf);
+		_ = advisory_stderr_writer.interface.print(
+			"note: This update took {d:.2} seconds; consider `codescan watch start` for active projects. See `codescan help watch`.\n",
+			.{advisory.elapsed_seconds},
+		) catch {};
+		_ = advisory_stderr_writer.interface.flush() catch {};
 	}
+}
+
+const SearchFreshnessContext = struct {
+	allocator: std.mem.Allocator,
+	settings: UpdateSettings,
+	registry: plugin.Registry,
+	lexical_only: bool,
+
+	fn adapter(self: *SearchFreshnessContext, watcher_running: bool) freshness.Adapter {
+		return .{
+			.context = self,
+			.watcher_running = watcher_running,
+			.reconcile_fn = reconcile,
+			.usable_index_fn = usableIndex,
+		};
+	}
+
+	fn reconcile(context: *anyopaque) !void {
+		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
+		try runUpdateWithInvocation(
+			self.allocator,
+			self.settings,
+			self.registry,
+			self.lexical_only,
+			null,
+			.pre_search,
+		);
+	}
+
+	fn usableIndex(context: *anyopaque) bool {
+		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
+		std.Io.Dir.accessAbsolute(io_singleton.getOrInit(), self.settings.db_path, .{}) catch return false;
+		const db = storage.openFileWithVec(self.allocator, self.settings.db_path) catch return false;
+		defer storage.close(db);
+		return storage.isIndexPopulated(db);
+	}
+};
+
+pub const SearchFreshness = struct {
+	outcome: freshness.Outcome,
+	elapsed_ns: u64,
+	watcher_advisory: ?freshness.WatcherAdvisory,
+
+	pub fn outputMetadata(self: SearchFreshness) output.FreshnessMetadata {
+		return .{
+			.outcome = self.outcome,
+			.update_seconds = if (self.outcome == .watcher_active)
+				null
+			else
+				@as(f64, @floatFromInt(self.elapsed_ns)) /
+					@as(f64, @floatFromInt(std.time.ns_per_s)),
+			.watcher_recommended = self.watcher_advisory != null,
+		};
+	}
+};
+
+/// Reconciles on demand when no watcher owns freshness for this project.
+pub fn ensureSearchFreshness(
+	allocator: std.mem.Allocator,
+	settings: UpdateSettings,
+	registry: plugin.Registry,
+	lexical_only: bool,
+) !SearchFreshness {
+	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+	var context = SearchFreshnessContext{
+		.allocator = allocator,
+		.settings = settings,
+		.registry = registry,
+		.lexical_only = lexical_only,
+	};
+	const io = io_singleton.getOrInit();
+	const started = std.Io.Clock.awake.now(io);
+	const outcome = try freshness.ensureFresh(context.adapter(
+		pidfile.isWatcherRunning(allocator, codescan_dir),
+	));
+	const duration = started.durationTo(std.Io.Clock.awake.now(io)).nanoseconds;
+	const elapsed_ns: u64 = if (duration > 0) @intCast(duration) else 0;
+	const watcher_advisory = if (outcome == .reconciled and elapsed_ns > std.time.ns_per_s) advice: {
+		const activity = freshness.detectGitActivity(
+			allocator,
+			io,
+			settings.root_path,
+			std.Io.Clock.real.now(io).nanoseconds,
+		);
+		break :advice freshness.watcherAdvisory(elapsed_ns, activity);
+	} else null;
+	return .{
+		.outcome = outcome,
+		.elapsed_ns = elapsed_ns,
+		.watcher_advisory = watcher_advisory,
+	};
 }
 
 /// Run a search query against the index — vector, lexical (FTS5),
@@ -2103,12 +2479,44 @@ fn runSearch(
 	stdout: *std.Io.Writer,
 ) !void {
 	const query = parsed.query orelse "";
-	try io_singleton.ensureParentDir(settings.db_path);
-	var db = try storage.openFileWithVec(allocator, settings.db_path);
 
 	var stderr_buf: [4096]u8 = undefined;
 	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
+
+	const freshness_result = ensureSearchFreshness(
+		allocator,
+		updateSettings(settings),
+		registry,
+		parsed.regex_search or settings.search_mode == .lexical,
+	) catch |err| {
+		_ = stderr.print(
+			"error: could not update the index before search, and no usable existing index is available: {s}\n",
+			.{@errorName(err)},
+		) catch {};
+		_ = stderr.flush() catch {};
+		return err;
+	};
+	const effective_search_mode = if (freshness_result.outcome == .stale)
+		search.SearchMode.lexical
+	else
+		settings.search_mode;
+	if (freshness_result.outcome == .stale) {
+		_ = stderr.writeAll(
+			"warning: pre-search index update failed; searching the existing index in lexical mode (results may be stale).\n",
+		) catch {};
+		_ = stderr.flush() catch {};
+	}
+	if (freshness_result.watcher_advisory) |advisory| {
+		_ = stderr.print(
+			"note: Updating the index before search took {d:.2} seconds; consider a watcher for active projects to reduce this to zero. See `codescan help watch`.\n",
+			.{advisory.elapsed_seconds},
+		) catch {};
+		_ = stderr.flush() catch {};
+	}
+
+	try io_singleton.ensureParentDir(settings.db_path);
+	var db = try storage.openFileWithVec(allocator, settings.db_path);
 
 	// Always run schema init/migration so older DBs get new columns
 	var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
@@ -2124,7 +2532,9 @@ fn runSearch(
 		_ = stderr.print("\x1b[33mnote: Database schema upgraded. A full re-index is strongly recommended:\n  codescan index\x1b[0m\n", .{}) catch {};
 		_ = stderr.flush() catch {};
 	}
-	if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+	if ((schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) and
+		freshness_result.outcome != .stale)
+	{
 		if (schema_result.embedding_model_mismatch) {
 			_ = stderr.print("error: Embedding model mismatch. Index was built with '{s}', but current model is '{s}'.\n", .{ schema_result.stored_embedding_model orelse "unknown", settings.embedding_model }) catch {};
 		}
@@ -2173,63 +2583,8 @@ fn runSearch(
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
-	// Track whether we should use lexical-only (Ollama unavailable)
-	var effective_search_mode = settings.search_mode;
-	var did_auto_index = false;
-
-	// Auto-index if DB is empty
-	if (!storage.isIndexPopulated(db)) {
-		_ = stderr.print("note: No index found. Setting up codescan for this project...\n", .{}) catch {};
-		_ = stderr.flush() catch {};
-
-		// Auto-detect embedding server; use NullEmbedder if unavailable
-		const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
-		const use_embeddings = detected != null and detected.?.model_available;
-
-		if (!use_embeddings) {
-			effective_search_mode = .lexical;
-			if (detected) |d| {
-				if (!d.model_available) {
-					_ = stderr.print("  note: Embedding server found at {s} but model '{s}' not installed.\n" ++
-						"  Run 'codescan setup-model' then 'codescan update' for semantic search.\n", .{ d.url, settings.embedding_model }) catch {};
-				}
-			} else {
-				_ = stderr.print("  note: No embedding server found. Using lexical-only search.\n" ++
-					"  Run 'codescan setup-model' for semantic search.\n", .{}) catch {};
-			}
-			_ = stderr.flush() catch {};
-		}
-
-		const emb_url = if (detected) |d| d.url else settings.embedding_url;
-		const emb_dialect = if (detected) |d| d.dialect else settings.embedding_dialect;
-		const emb_model = if (detected) |d| (d.default_model orelse settings.embedding_model) else settings.embedding_model;
-		var embedder_adapter = embedding.HttpEmbedder{
-			.transport = http_client.transport(),
-			.base_url = emb_url,
-			.model = emb_model,
-			.dialect = emb_dialect,
-			.auth_header = settings.embedding_auth_header,
-		};
-		const active_embedder = if (use_embeddings)
-			embedder_adapter.embedder()
-		else
-			embedding.NullEmbedder.embedder();
-
-		_ = try performFullIndex(
-			allocator,
-			db,
-			settings,
-			registry,
-			active_embedder,
-			stderr,
-			shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
-		);
-		did_auto_index = true;
-	} else {
-		// Normal path: ensure Ollama if needed
-		if (effective_search_mode != .lexical) {
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
-		}
+	if (effective_search_mode != .lexical) {
+		try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
 	}
 
 	var embedder_adapter = embedding.HttpEmbedder{
@@ -2366,19 +2721,20 @@ fn runSearch(
 		break :blk env_map.get("NO_COLOR") != null;
 	};
 	const use_color = settings.output == .human and !no_color_set;
+	if (settings.output == .human) {
+		try output.writeConfidenceNote(stderr, display_results);
+		try stderr.flush();
+	}
 	try output.writeResults(allocator, stdout, settings.output, display_results, .{
 		.show_comments = settings.show_comments,
 		.show_body = parsed.include_body,
 		.use_color = use_color,
 		.total_relevant = sr.total_relevant,
 		.top_n = settings.top_n,
+		.freshness = freshness_result.outputMetadata(),
 	});
 	try stdout.flush();
 
-	// Auto-launch background watcher after first auto-index
-	if (did_auto_index) {
-		maybeStartWatcher(allocator, settings, stderr);
-	}
 }
 
 /// Manage the background watcher (start/stop/status/list/prune).
@@ -2418,7 +2774,7 @@ fn runWatch(
 				}
 				try stdout.flush();
 			} else {
-				maybeStartWatcher(allocator, settings, stdout);
+				maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command);
 			}
 		},
 		.restart => {
@@ -2434,7 +2790,7 @@ fn runWatch(
 					io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
 					pidfile.removePid(allocator, codescan_dir);
 				}
-				maybeStartWatcher(allocator, settings, stdout);
+				maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command);
 			}
 		},
 		.status => {
@@ -4991,7 +5347,10 @@ const usage_rename =
 const usage_watch =
     \\Usage: codescan watch [subcommand] [options]
     \\
-    \\Watch for file changes and re-index continuously.
+    \\Opt in to continuous re-indexing for an active project.
+    \\Without a watcher, each search silently runs an incremental update.
+    \\macOS uses FSEvents; Linux uses fanotify when permitted; other cases
+    \\fall back to polling. Watchman is not required.
     \\
     \\Subcommands:
     \\  (none)                   Run watcher in foreground
@@ -6520,6 +6879,7 @@ test "buildSearchFilters defaults to primary language" {
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
 	var settings = try resolveSettings(allocator, parsed, cfg, ".");
+	defer settings.deinit(allocator);
 	settings.include_docs = false;
 
 	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
@@ -6573,6 +6933,7 @@ test "buildSearchFilters includes docs when requested" {
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
 	var settings = try resolveSettings(allocator, parsed, cfg, ".");
+	defer settings.deinit(allocator);
 	settings.include_docs = true;
 
 	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
@@ -6614,8 +6975,8 @@ test "resolveSettings uses discovered repo root for db path" {
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
 
-	const settings = try resolveSettings(allocator, parsed, cfg, root.?);
-	defer if (settings.db_path_owned) allocator.free(settings.db_path);
+	var settings = try resolveSettings(allocator, parsed, cfg, root.?);
+	defer settings.deinit(allocator);
 
 	const expected_db = try std.fs.path.join(allocator, &.{ root.?, ".codescan", "index.sqlite3" });
 	defer allocator.free(expected_db);
@@ -6633,7 +6994,8 @@ test "resolveSettings defaults index_type to code and doc" {
 	var cfg = config.Config{};
 	defer cfg.deinit(allocator);
 
-	const settings = try resolveSettings(allocator, parsed, cfg, ".");
+	var settings = try resolveSettings(allocator, parsed, cfg, ".");
+	defer settings.deinit(allocator);
 	try std.testing.expect(settings.index_type != null);
 	try std.testing.expectEqualStrings("code,doc", settings.index_type.?);
 }
@@ -6884,6 +7246,105 @@ test "runReadFile partial read with from/to" {
 	// Version should still be based on the LAST line of the entire file
 	const version = root.get("version").?.string;
 	try std.testing.expectEqual(@as(usize, 3), version.len);
+}
+
+test "openUpdateDb recreates populated indexes when embedding model or dimension changes" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db_path = try std.fs.path.join(allocator, &.{ root, "index.sqlite3" });
+	defer allocator.free(db_path);
+
+	{
+		const old_db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(old_db);
+		var old_schema = try storage.initSchema(allocator, old_db, .{
+			.embedding_dim = 2,
+			.embedding_model = "bge-large",
+		});
+		defer old_schema.deinit(allocator);
+
+		var symbol = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/main.zig"),
+			.name = try allocator.dupe(u8, "main"),
+			.signature = try allocator.dupe(u8, "pub fn main() void"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer symbol.deinit(allocator);
+		const rowid = try storage.insertSymbol(old_db, symbol);
+		try storage.insertEmbedding(old_db, allocator, rowid, &.{ 0.1, 0.2 });
+		try storage.upsertIndexedFile(old_db, "src/main.zig", 1, 20);
+	}
+
+	try std.testing.expectError(error.EmbeddingMismatch, openUpdateDb(allocator, db_path, .{
+		.embedding_dim = 4,
+		.embedding_model = "jina-code-embeddings:1.5b",
+	}, .inspect_only));
+	{
+		const preserved_db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(preserved_db);
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(preserved_db, allocator, "symbols"));
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(preserved_db, allocator, "embeddings"));
+	}
+
+	var prepared = try openUpdateDb(allocator, db_path, .{
+		.embedding_dim = 4,
+		.embedding_model = "jina-code-embeddings:1.5b",
+	}, .immediate_recreate);
+	defer prepared.deinit(allocator);
+
+	try std.testing.expectEqual(UpdateDbRebuildReason.embedding_mismatch, prepared.rebuild_reason);
+	try std.testing.expectEqualStrings("bge-large", prepared.previous_embedding_model.?);
+	try std.testing.expectEqual(@as(?usize, 2), prepared.previous_embedding_dim);
+	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(prepared.db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(prepared.db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(?i64, null), try storage.getIndexedFileMtime(prepared.db, "src/main.zig"));
+
+	// Prove sqlite-vec was recreated at the requested width, not merely emptied.
+	var fresh_symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/fresh.zig"),
+		.name = try allocator.dupe(u8, "fresh"),
+		.signature = try allocator.dupe(u8, "fn fresh() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer fresh_symbol.deinit(allocator);
+	const fresh_rowid = try storage.insertSymbol(prepared.db, fresh_symbol);
+	try storage.insertEmbedding(prepared.db, allocator, fresh_rowid, &.{ 0.1, 0.2, 0.3, 0.4 });
+}
+
+test "delayed discovery progress uses an injected monotonic clock" {
+	const allocator = std.testing.allocator;
+	var now_ns: i96 = 0;
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	var reporter = DiscoveryProgress.initForTest(&out.writer, &now_ns);
+
+	now_ns = std.time.ns_per_s;
+	reporter.observe(6);
+	try std.testing.expectEqual(@as(usize, 0), out.writer.buffered().len);
+
+	now_ns += 1;
+	reporter.observe(7);
+	reporter.observe(106);
+	reporter.observe(107);
+	reporter.finish();
+
+	const rendered = try out.toOwnedSlice();
+	defer allocator.free(rendered);
+	try std.testing.expectEqualStrings(
+		"\rJust a moment... scanning files: 7" ++
+			"\rJust a moment... scanning files: 107" ++
+			"\rJust a moment... scanning files: 107\n",
+		rendered,
+	);
 }
 
 test "runReplaceContent rejects stale version" {

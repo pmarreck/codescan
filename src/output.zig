@@ -1,6 +1,7 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const search = @import("search.zig");
+const freshness_mod = @import("freshness.zig");
 const hashline = @import("hashline.zig");
 const model = @import("model.zig");
 
@@ -10,6 +11,13 @@ pub const OutputOptions = struct {
 	use_color: bool = true,
 	total_relevant: usize = 0,
 	top_n: usize = 10,
+	freshness: ?FreshnessMetadata = null,
+};
+
+pub const FreshnessMetadata = struct {
+	outcome: freshness_mod.Outcome,
+	update_seconds: ?f64 = null,
+	watcher_recommended: bool = false,
 };
 
 pub fn writeResults(
@@ -59,9 +67,14 @@ fn writeHuman(writer: *std.Io.Writer, results: []const search.Result, options: O
 
 		if (options.use_color) try writer.writeAll("\x1b[2m");
 		try writer.print(
-			"   score {d:.3}  vec {d:.3}  lex {d:.3}\n",
-			.{ res.score, 1.0 / (1.0 + res.distance), res.lexical },
+			"   score {d:.3}  vec {d:.3}  lex {d:.3}  evidence {s}",
+			.{ res.score, vectorScore(res), res.lexical, @tagName(search.evidenceFor(res)) },
 		);
+		if (res.lexical_sources.any()) {
+			try writer.writeAll("  match ");
+			try writeLexicalSources(writer, res.lexical_sources);
+		}
+		try writer.writeAll("\n");
 		if (options.use_color) try writer.writeAll("\x1b[0m");
 
 		if (options.show_comments) {
@@ -99,14 +112,22 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		symbol_scope: ?[]const u8,
 		symbol_arity: ?i32,
 		score: f32,
-		distance: f32,
+		distance: ?f32,
+		vector: f32,
 		lexical: f32,
 		bm25: f32,
+		evidence: search.Evidence,
+		lexical_sources: search.LexicalSources,
 	};
 
 	const Payload = struct {
 		total_relevant: usize,
 		showing: usize,
+		confidence: search.ResultSetConfidence,
+		freshness: ?freshness_mod.Outcome,
+		update_seconds: ?f64,
+		watcher_recommended: bool,
+		watcher_help: ?[]const u8,
 		results: []const JsonResult,
 	};
 
@@ -130,9 +151,12 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 			.symbol_scope = res.symbol.symbol_scope,
 			.symbol_arity = res.symbol.symbol_arity,
 			.score = res.score,
-			.distance = res.distance,
+			.distance = if (std.math.isInf(res.distance)) null else res.distance,
+			.vector = vectorScore(res),
 			.lexical = res.lexical,
 			.bm25 = res.bm25,
+			.evidence = search.evidenceFor(res),
+			.lexical_sources = res.lexical_sources,
 		};
 	}
 
@@ -140,8 +164,58 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 	try stream.write(Payload{
 		.total_relevant = options.total_relevant,
 		.showing = results.len,
+		.confidence = search.confidenceFor(results),
+		.freshness = if (options.freshness) |value| value.outcome else null,
+		.update_seconds = if (options.freshness) |value| value.update_seconds else null,
+		.watcher_recommended = if (options.freshness) |value| value.watcher_recommended else false,
+		.watcher_help = if (options.freshness) |value|
+			if (value.watcher_recommended) "codescan help watch" else null
+		else
+			null,
 		.results = rows,
 	});
+}
+
+/// Writes a concise result-set warning while retaining every weak hit; callers
+/// route this metadata to stderr so stdout remains composable.
+pub fn writeConfidenceNote(writer: *std.Io.Writer, results: []const search.Result) !void {
+	switch (search.confidenceFor(results)) {
+		.mixed => try writer.writeAll(
+			"note: mixed-confidence results: the top hit is weak, but stronger evidence appears below it; all hits are retained. Lexical matches may come from undisplayed comments (use --show-comments).\n",
+		),
+		.weak => try writer.writeAll(
+			"note: weak-confidence results: no hit has strong or corroborated evidence; all hits are retained for recall.\n",
+		),
+		.none, .strong => {},
+	}
+}
+
+/// Renders the discovery phase from explicit state so timing and I/O remain
+/// outside the visual formatter.
+pub fn writeDiscoveryProgress(writer: *std.Io.Writer, eligible_files: usize, done: bool) !void {
+	try writer.print("\rJust a moment... scanning files: {d}", .{eligible_files});
+	if (done) try writer.writeAll("\n");
+}
+
+fn vectorScore(result: search.Result) f32 {
+	return if (std.math.isInf(result.distance)) 0 else 1.0 / (1.0 + result.distance);
+}
+
+fn writeLexicalSources(writer: *std.Io.Writer, sources: search.LexicalSources) !void {
+	var wrote_one = false;
+	inline for (.{
+		.{ "name", sources.name },
+		.{ "signature", sources.signature },
+		.{ "comment", sources.comment },
+		.{ "body", sources.body },
+		.{ "path", sources.path },
+	}) |entry| {
+		if (entry[1]) {
+			if (wrote_one) try writer.writeAll(",");
+			try writer.writeAll(entry[0]);
+			wrote_one = true;
+		}
+	}
 }
 
 test "writeResults emits json payload" {
@@ -417,4 +491,136 @@ test "human output shows plain line range when hashes absent" {
 
 	// Without hashes, plain range format
 	try std.testing.expect(std.mem.indexOf(u8, payload, "10-20") != null);
+}
+
+test "human output labels evidence and undisplayed comment match provenance" {
+	const allocator = std.testing.allocator;
+	var res = search.Result{
+		.id = 1,
+		.symbol = .{
+			.language = try allocator.dupe(u8, "go"),
+			.file_path = try allocator.dupe(u8, "internal/audio/stream.go"),
+			.name = try allocator.dupe(u8, "chooseCandidate"),
+			.signature = try allocator.dupe(u8, "func chooseCandidate()"),
+			.doc_comment = try allocator.dupe(u8, "Excludes DRM-only variants."),
+			.start_line = 1,
+			.end_line = 2,
+		},
+		.score = 0.24,
+		.distance = std.math.inf(f32),
+		.lexical = 1.0,
+		.bm25 = -7.8,
+		.lexical_sources = .{ .comment = true },
+	};
+	defer res.deinit(allocator);
+
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try writeResults(allocator, &out.writer, .human, &.{res}, .{ .use_color = false });
+	const payload = try out.toOwnedSlice();
+	defer allocator.free(payload);
+
+	try std.testing.expect(std.mem.indexOf(u8, payload, "evidence strong") != null);
+	try std.testing.expect(std.mem.indexOf(u8, payload, "match comment") != null);
+	try std.testing.expect(std.mem.indexOf(u8, payload, "doc:") == null);
+}
+
+test "json output exposes result-set confidence evidence and lexical sources" {
+	const allocator = std.testing.allocator;
+	var weak = search.Result{
+		.id = 1,
+		.symbol = .{
+			.language = try allocator.dupe(u8, "go"),
+			.file_path = try allocator.dupe(u8, "cmd/main.go"),
+			.name = try allocator.dupe(u8, "min"),
+			.signature = try allocator.dupe(u8, "func min(a, b int) int"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 2,
+		},
+		.score = 0.30,
+		.distance = 1.335,
+		.lexical = 0,
+		.bm25 = 0,
+	};
+	defer weak.deinit(allocator);
+	var comment = search.Result{
+		.id = 2,
+		.symbol = .{
+			.language = try allocator.dupe(u8, "go"),
+			.file_path = try allocator.dupe(u8, "internal/audio/stream.go"),
+			.name = try allocator.dupe(u8, "chooseCandidate"),
+			.signature = try allocator.dupe(u8, "func chooseCandidate()"),
+			.doc_comment = try allocator.dupe(u8, "Excludes DRM-only variants."),
+			.start_line = 3,
+			.end_line = 4,
+		},
+		.score = 0.24,
+		.distance = std.math.inf(f32),
+		.lexical = 1.0,
+		.bm25 = -7.8,
+		.lexical_sources = .{ .comment = true },
+	};
+	defer comment.deinit(allocator);
+
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try writeResults(allocator, &out.writer, .json, &.{ weak, comment }, .{
+		.freshness = .{
+			.outcome = .reconciled,
+			.update_seconds = 1.25,
+			.watcher_recommended = true,
+		},
+	});
+	const payload = try out.toOwnedSlice();
+	defer allocator.free(payload);
+
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+	defer parsed.deinit();
+	const root = parsed.value.object;
+	try std.testing.expectEqualStrings("mixed", root.get("confidence").?.string);
+	try std.testing.expectEqualStrings("reconciled", root.get("freshness").?.string);
+	try std.testing.expectApproxEqAbs(@as(f64, 1.25), root.get("update_seconds").?.float, 0.001);
+	try std.testing.expect(root.get("watcher_recommended").?.bool);
+	try std.testing.expectEqualStrings("codescan help watch", root.get("watcher_help").?.string);
+	const results = root.get("results").?.array.items;
+	try std.testing.expectEqualStrings("weak", results[0].object.get("evidence").?.string);
+	try std.testing.expectEqualStrings("strong", results[1].object.get("evidence").?.string);
+	try std.testing.expect(results[1].object.get("lexical_sources").?.object.get("comment").?.bool);
+}
+
+test "confidence note warns for mixed and weak result sets without hiding hits" {
+	const weak = search.Result{
+		.id = 1,
+		.symbol = undefined,
+		.score = 0.30,
+		.distance = 1.335,
+		.lexical = 0,
+		.bm25 = 0,
+	};
+	const strong = search.Result{
+		.id = 2,
+		.symbol = undefined,
+		.score = 0.24,
+		.distance = std.math.inf(f32),
+		.lexical = 1.0,
+		.bm25 = -7.8,
+		.lexical_sources = .{ .comment = true },
+	};
+
+	var mixed_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+	defer mixed_out.deinit();
+	try writeConfidenceNote(&mixed_out.writer, &.{ weak, strong });
+	const mixed_payload = try mixed_out.toOwnedSlice();
+	defer std.testing.allocator.free(mixed_payload);
+	try std.testing.expect(std.mem.indexOf(u8, mixed_payload, "mixed-confidence") != null);
+	try std.testing.expect(std.mem.indexOf(u8, mixed_payload, "retained") != null);
+	try std.testing.expect(std.mem.indexOf(u8, mixed_payload, "--show-comments") != null);
+
+	var strong_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+	defer strong_out.deinit();
+	try writeConfidenceNote(&strong_out.writer, &.{strong});
+	const strong_payload = try strong_out.toOwnedSlice();
+	defer std.testing.allocator.free(strong_payload);
+	try std.testing.expectEqual(@as(usize, 0), strong_payload.len);
 }

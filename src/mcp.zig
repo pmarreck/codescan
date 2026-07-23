@@ -61,6 +61,27 @@ pub const Settings = struct {
 	search_weights: ?*const weights.Table = null,
 };
 
+fn updateSettings(settings: Settings) main.UpdateSettings {
+	return .{
+		.output = .json,
+		.root_path = settings.root_path,
+		.db_path = settings.db_path,
+		.embedding_url = settings.embedding_url,
+		.embedding_model = settings.embedding_model,
+		.embedding_dialect = settings.embedding_dialect,
+		.embedding_auth_header = settings.embedding_auth_header,
+		.embedding_dim = settings.embedding_dim,
+		.batch_size = settings.batch_size,
+		.max_file_size = settings.max_file_size,
+		.index_ext = null,
+		.index_type = null,
+		.ignore_global = settings.ignore_global,
+		.always_include = settings.always_include,
+		.ignore_lang = settings.ignore_lang,
+		.include_node_modules = settings.include_node_modules,
+	};
+}
+
 /// Read a single JSON-RPC message from the reader.
 /// MCP uses newline-delimited JSON (one JSON object per line).
 pub fn readMessage(allocator: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
@@ -368,6 +389,14 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP search: query is required when no filters are provided\n", .{});
 		}
 
+		const freshness_result = main.ensureSearchFreshness(
+			allocator,
+			updateSettings(settings),
+			plugin.defaultRegistry(),
+			regex_flag or settings.search_mode == .lexical,
+		) catch |err|
+			return toolError("MCP search: pre-search update failed and no usable index exists: {}\n", .{err});
+
 		// Regex search: skip vector/FTS entirely
 		if (regex_flag) {
 			if (query.len == 0) {
@@ -429,7 +458,9 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			_ = se.print("note: Database schema upgraded. A full re-index is strongly recommended.\n", .{}) catch {};
 			_ = se.flush() catch {};
 		}
-		if (schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) {
+		if ((schema_result.embedding_model_mismatch or schema_result.embedding_dim_mismatch) and
+			freshness_result.outcome != .stale)
+		{
 			var msg_buf: [512]u8 = undefined;
 			var msg_writer: std.Io.Writer = .fixed(&msg_buf);
 			if (schema_result.embedding_model_mismatch) {
@@ -447,7 +478,10 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		defer http_client.deinit();
 
 		// Auto-index if DB is empty
-		var effective_search_mode = mcp_settings.search_mode;
+		var effective_search_mode = if (freshness_result.outcome == .stale)
+			search.SearchMode.lexical
+		else
+			mcp_settings.search_mode;
 		if (!storage.isIndexPopulated(db)) {
 			embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.embedding_url, mcp_settings.embedding_model, mcp_settings.embedding_dialect) catch |err| {
 				if (err != error.ModelLoading) {
@@ -545,6 +579,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.use_color = false,
 			.total_relevant = sr.total_relevant,
 			.top_n = mcp_settings.search_top_n,
+			.freshness = freshness_result.outputMetadata(),
 		}) catch |err|
 			return toolError("MCP search: failed to write results: {}\n", .{err});
 

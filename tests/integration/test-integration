@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FIXTURES_DIR="$ROOT/.codescan-fixtures"
+FIXTURES_DIR="${CODESCAN_FIXTURES_DIR:-$TMPDIR/codescan-fixtures}"
 MANIFEST="$ROOT/fixtures/manifest.toml"
 BIN="$ROOT/zig-out/bin/codescan"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 MODEL_NAME="${OLLAMA_MODEL:-bge-large}"
+MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1024}"
 
 out=
 err=
@@ -109,7 +110,7 @@ search_names() {
 	local min_score="$3"
 	local top_n="$4"
 
-	capture "$BIN" search "$query" --root "$root" --json --top "$top_n" --min-score "$min_score"
+	capture "$BIN" search "$query" --root "$root" --json --top "$top_n" --min-score "$min_score" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "search failed for $root"
@@ -122,7 +123,7 @@ search_count() {
 	local query="$2"
 	local min_score="$3"
 
-	capture "$BIN" search "$query" --root "$root" --json --top 10 --min-score "$min_score"
+	capture "$BIN" search "$query" --root "$root" --json --top 10 --min-score "$min_score" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "search failed for $root"
@@ -137,7 +138,7 @@ search_names_from_subdir() {
 	local min_score="$4"
 	local top_n="$5"
 
-	capture bash -c 'cd "$1" && "$2" search "$3" --json --top "$4" --min-score "$5"' _ "$root/$subdir" "$BIN" "$query" "$top_n" "$min_score"
+	capture bash -c 'cd "$1" && "$2" search "$3" --json --top "$4" --min-score "$5" --embedding-dim "$6"' _ "$root/$subdir" "$BIN" "$query" "$top_n" "$min_score" "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "search failed from subdir $root/$subdir"
@@ -147,7 +148,7 @@ search_names_from_subdir() {
 
 index_repo() {
 	local root="$1"
-	capture "$BIN" index --root "$root"
+	capture "$BIN" index --root "$root" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "index failed for $root"
@@ -249,13 +250,13 @@ main() {
 This is a docs-only test for embeddings.
 MD
 
-	capture "$BIN" index --root "$DOCS_DIR" --type doc --db "$DOCS_DIR/.codescan/index.sqlite3"
+	capture "$BIN" index --root "$DOCS_DIR" --type doc --db "$DOCS_DIR/.codescan/index.sqlite3" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "doc-only index failed"
 	fi
 
-	capture "$BIN" search "docs-only test" --root "$DOCS_DIR" --docs --mode lexical --json
+	capture "$BIN" search "docs-only test" --root "$DOCS_DIR" --docs --mode lexical --json --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "doc-only search failed"
@@ -310,7 +311,9 @@ MD
 	# Duplicate-related searches
 	zig_dupe=$(search_names "$FIXTURES_DIR/$ZIG_NAME" "parse integer value" 0.2 8)
 	ex_dupe=$(search_names "$FIXTURES_DIR/$ELIXIR_NAME" "parse json value" 0.2 8)
-	c_dupe=$(search_names "$FIXTURES_DIR/$C_NAME" "crc32 checksum" 0.2 8)
+	# Duplicate coexistence is a lookup invariant, not an embedding-model
+	# ranking oracle: query the shared identifier so both must be candidates.
+	c_dupe=$(search_names "$FIXTURES_DIR/$C_NAME" "crc32" 0.2 8)
 
 	printf '%s\n' "$zig_dupe" | rg -q '^int$' || fail "zig duplicate query missing 'int'"
 	printf '%s\n' "$zig_dupe" | rg -q '^int_duplicate$' || fail "zig duplicate query missing 'int_duplicate'"

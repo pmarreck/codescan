@@ -85,7 +85,7 @@
 					pname = "codescan-test";
 					version = "0.1.0";
 					src = ./.;
-					nativeBuildInputs = [ pkgs.zig_0_16 ];
+					nativeBuildInputs = [ pkgs.zig_0_16 pkgs.git ];
 					dontConfigure = true;
 					dontFixup = true;
 					buildPhase = ''
@@ -108,6 +108,7 @@
 				devShells.default = pkgs.mkShell {
 					packages = with pkgs; [
 						zig_0_16
+						git
 						jq
 						sqlite
 						luajit

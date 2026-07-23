@@ -51,6 +51,27 @@ pub const Settings = struct {
 	search_weights: ?*const weights.Table = null,
 };
 
+fn updateSettings(settings: Settings) main.UpdateSettings {
+	return .{
+		.output = .json,
+		.root_path = settings.root_path,
+		.db_path = settings.db_path,
+		.embedding_url = settings.embedding_url,
+		.embedding_model = settings.embedding_model,
+		.embedding_dialect = settings.embedding_dialect,
+		.embedding_auth_header = settings.embedding_auth_header,
+		.embedding_dim = settings.embedding_dim,
+		.batch_size = settings.batch_size,
+		.max_file_size = settings.max_file_size,
+		.index_ext = settings.index_ext,
+		.index_type = settings.index_type,
+		.ignore_global = settings.ignore_global,
+		.always_include = settings.always_include,
+		.ignore_lang = settings.ignore_lang,
+		.include_node_modules = settings.include_node_modules,
+	};
+}
+
 pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 	try io_singleton.ensureParentDir(settings.db_path);
 	const db = try storage.openFileWithVec(allocator, settings.db_path);
@@ -227,6 +248,19 @@ fn handleRequest(
 
 		var parsed = try parseSearchRequest(allocator, body);
 		defer parsed.deinit(allocator);
+		const requested_mode = parsed.mode orelse settings.search_mode;
+		const freshness_result = main.ensureSearchFreshness(
+			allocator,
+			updateSettings(settings),
+			plugin.defaultRegistry(),
+			requested_mode == .lexical,
+		) catch {
+			try req.respond(
+				"{\"error\":\"pre-search update failed and no usable index exists\"}\n",
+				.{ .status = .service_unavailable },
+			);
+			return;
+		};
 
 		var search_filters = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
 			.search_ext = parsed.ext orelse settings.search_ext,
@@ -252,7 +286,7 @@ fn handleRequest(
 		);
 		const sr = try search.search(allocator, db, embedder, parsed.query, .{
 			.top_n = top_n,
-			.mode = parsed.mode orelse settings.search_mode,
+			.mode = if (freshness_result.outcome == .stale) .lexical else requested_mode,
 			.fusion = parsed.fusion orelse settings.search_fusion,
 			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
 			.fts_mode = parsed.fts_mode orelse settings.search_fts_mode,
@@ -277,6 +311,7 @@ fn handleRequest(
 			.use_color = false,
 			.total_relevant = sr.total_relevant,
 			.top_n = top_n,
+			.freshness = freshness_result.outputMetadata(),
 		});
 		const payload = try out.toOwnedSlice();
 		defer allocator.free(payload);

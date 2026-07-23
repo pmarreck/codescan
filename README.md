@@ -49,6 +49,21 @@ artifacts from the latest CI build:
 nix develop -c zig build -Doptimize=ReleaseFast
 ```
 
+### Optional Git integration
+
+Codescan does not require Git and does not bundle it into the release binary.
+When `git` is available and the selected root is a Git repository, Codescan
+uses `git ls-files --cached --others --exclude-standard` to obtain the exact
+tracked-plus-eligible-untracked file set. This both honors `.gitignore`
+authoritatively and avoids traversing ignored dependency and build trees.
+The working tree does not need to be clean, staged, or recently committed.
+
+If Git is absent, the root is not a Git repository, or Git returns an error,
+Codescan falls back to its native filesystem walker. Built-in and
+`.codescan/config.ini` ignore rules still apply, but Git-specific ignore rules
+cannot be interpreted exactly. Configure `always_include` when a deliberately
+gitignored file should remain searchable.
+
 ## Test
 
 ```bash
@@ -155,11 +170,68 @@ printf '{"action":"search","query":"checksum","mode":"lexical","db":".codescan/i
 If `--root` is omitted, `codescan` searches upward from the current directory for a `.codescan/`
 directory and uses that as the root (otherwise it falls back to the current directory).
 
+### Fresh searches and opt-in watchers
+
+`codescan index` and `codescan update` never start a background process. Before
+an indexed search, codescan checks for a live project watcher:
+
+- with a watcher, search uses the continuously maintained index immediately;
+- without one, search silently performs the same incremental reconciliation as
+  `codescan update` (new, modified, deleted, interrupted, and model-mismatched
+  data) before reading results;
+- if reconciliation fails but an existing index is usable, search warns once
+  and returns lexical results from that potentially stale index; with no usable
+  index, search fails rather than presenting incomplete data as current.
+
+JSON, HTTP, and MCP search results report `freshness`, `update_seconds`,
+`watcher_recommended`, and `watcher_help`. If an on-demand update takes more
+than one second in an active Git repository (latest commit within seven days,
+or more than two changed/untracked paths), human output recommends an explicit
+watcher. Old repositories remain quiet during one-off archaeological searches.
+
+Enable watchers only for projects where near-zero search startup latency is
+worth a resident process:
+
+```bash
+cd ~/Code/my-active-project
+codescan watch start
+codescan watch status
+
+# Restart after changing .codescan/config.ini
+codescan watch restart
+
+# Return to on-demand updates
+codescan watch stop
+```
+
+No Watchman installation is required. On macOS, codescan uses FSEvents. On
+Linux it uses fanotify when available and permitted. Windows, unsupported
+native backends, and native initialization failures fall back to polling with
+the configured `--interval` (default 2000 ms). All platforms use the same
+`codescan watch start|status|restart|stop` commands.
+
 Search defaults to the primary code language by file count unless a filter is supplied.
 Multi-word queries use OR semantics in lexical/hybrid search — results matching any term surface, with BM25 ranking results matching all terms higher.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
 `--scope <code|docs|comments|all>` is a unified alias for common filter combinations.
+
+Search scores rank hits for one query and configuration; they are not probabilities
+and are not directly comparable across weighted-sum, RRF, lexical, and vector modes.
+Each hit therefore also reports an evidence label:
+
+- `strong`: substantial lexical evidence or a close vector match
+- `corroborated`: weaker lexical and vector signals agree
+- `weak`: only one weak signal is present
+
+Codescan retains weak hits for recall. If every hit is weak—or weak top hits precede
+stronger evidence—it prints a confidence note to stderr rather than suppressing
+results. Lexical hits also report their matched indexed fields (`name`, `signature`,
+`comment`, `body`, and/or `path`). An attached comment can legitimately make a
+result relevant even when the comment itself is hidden; use `--show-comments` to
+display it. JSON, HTTP, and MCP search output expose the same `confidence`,
+`evidence`, and `lexical_sources` data for agents.
+
 Index/update defaults to code + docs unless `--type`/`index_type` is set.
 Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `node_modules/` (opt-in), `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/` (see PROJECT_STATE for full list).
 

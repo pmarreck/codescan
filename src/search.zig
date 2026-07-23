@@ -72,6 +72,31 @@ pub const Options = struct {
 	comments_only: bool = false,
 };
 
+pub const LexicalSources = struct {
+	name: bool = false,
+	signature: bool = false,
+	comment: bool = false,
+	body: bool = false,
+	path: bool = false,
+
+	pub fn any(self: LexicalSources) bool {
+		return self.name or self.signature or self.comment or self.body or self.path;
+	}
+};
+
+pub const Evidence = enum {
+	strong,
+	corroborated,
+	weak,
+};
+
+pub const ResultSetConfidence = enum {
+	none,
+	strong,
+	mixed,
+	weak,
+};
+
 pub const Result = struct {
 	id: i64,
 	symbol: model.Symbol,
@@ -79,6 +104,7 @@ pub const Result = struct {
 	distance: f32,
 	lexical: f32,
 	bm25: f32, // raw FTS5 bm25 score (negative; 0 = no FTS data)
+	lexical_sources: LexicalSources = .{},
 
 	pub fn deinit(self: *Result, allocator: std.mem.Allocator) void {
 		self.symbol.deinit(allocator);
@@ -90,6 +116,31 @@ pub const SearchResult = struct {
 	results: []Result,
 	total_relevant: usize,
 };
+
+const strong_vector_evidence: f32 = 0.5;
+const strong_lexical_evidence: f32 = 0.5;
+
+/// Grades the independent evidence behind a hit without treating its fused
+/// ranking score as a probability. Two weaker signals count as corroboration.
+pub fn evidenceFor(result: Result) Evidence {
+	const vector_score = if (std.math.isInf(result.distance)) 0 else 1.0 / (1.0 + result.distance);
+	if (vector_score >= strong_vector_evidence or result.lexical >= strong_lexical_evidence) {
+		return .strong;
+	}
+	if (vector_score > 0 and result.lexical > 0) return .corroborated;
+	return .weak;
+}
+
+/// Summarizes whether the ranked list starts strong, mixes weak top hits with
+/// useful evidence below, or contains only weak evidence; it never drops hits.
+pub fn confidenceFor(results: []const Result) ResultSetConfidence {
+	if (results.len == 0) return .none;
+	if (evidenceFor(results[0]) == .strong) return .strong;
+	for (results) |result| {
+		if (evidenceFor(result) != .weak) return .mixed;
+	}
+	return .weak;
+}
 
 /// Apply post-gather filtering to the candidate set:
 ///   - comments_only:    keep only symbols whose doc_comment is non-null
@@ -318,6 +369,7 @@ pub fn search(
 			break :blk bm25_norm * coverage;
 		} else try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
 		res.lexical = lexical;
+		if (lexical > 0) res.lexical_sources = lexicalSources(query_tokens, res.symbol);
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
 		if (options.mode == .vector) {
 			res.score = vector_score;
@@ -1059,6 +1111,27 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 	}
 	if (significant == 0) return 1.0;
 	return @as(f32, @floatFromInt(matched)) / @as(f32, @floatFromInt(significant));
+}
+
+/// Classifies lexical provenance over the complete set of FTS-indexed symbol
+/// fields so hidden comments can explain a hit without being printed in full.
+fn lexicalSources(query_tokens: []const []const u8, symbol: model.Symbol) LexicalSources {
+	var sources: LexicalSources = .{};
+	for (query_tokens) |tok| {
+		if (tok.len < 2) continue;
+		sources.name = sources.name or simd.indexOfIgnoreCase(symbol.name, tok) != null;
+		sources.signature = sources.signature or simd.indexOfIgnoreCase(symbol.signature, tok) != null;
+		sources.comment = sources.comment or if (symbol.doc_comment) |doc|
+			simd.indexOfIgnoreCase(doc, tok) != null
+		else
+			false;
+		sources.body = sources.body or if (symbol.body) |body|
+			simd.indexOfIgnoreCase(body, tok) != null
+		else
+			false;
+		sources.path = sources.path or simd.indexOfIgnoreCase(symbol.file_path, tok) != null;
+	}
+	return sources;
 }
 
 fn pathTokenCoverage(query_tokens: []const []const u8, file_path: []const u8) f32 {
@@ -3722,4 +3795,66 @@ test "browse mode: path filter restricts results by file path" {
 
 	try std.testing.expectEqual(@as(usize, 1), sr.results.len);
 	try std.testing.expectEqualStrings("initDb", sr.results[0].symbol.name);
+}
+
+test "lexical source classifier reports every matching indexed field as a set" {
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "go"),
+		.file_path = try allocator.dupe(u8, "internal/drm/stream.go"),
+		.name = try allocator.dupe(u8, "chooseCandidate"),
+		.signature = try allocator.dupe(u8, "func chooseCandidate()"),
+		.doc_comment = try allocator.dupe(u8, "Excludes DRM-only variants."),
+		.body = try allocator.dupe(u8, "return drmCandidate"),
+		.start_line = 1,
+		.end_line = 2,
+	};
+	defer symbol.deinit(allocator);
+
+	const sources = lexicalSources(&.{"drm"}, symbol);
+	try std.testing.expect(!sources.name);
+	try std.testing.expect(!sources.signature);
+	try std.testing.expect(sources.comment);
+	try std.testing.expect(sources.body);
+	try std.testing.expect(sources.path);
+}
+
+test "result evidence distinguishes strong comment hits from weak vector-only hits" {
+	const strong_comment = Result{
+		.id = 1,
+		.symbol = undefined,
+		.score = 0.24,
+		.distance = std.math.inf(f32),
+		.lexical = 1.0,
+		.bm25 = -7.8,
+		.lexical_sources = .{ .comment = true },
+	};
+	const weak_vector = Result{
+		.id = 2,
+		.symbol = undefined,
+		.score = 0.30,
+		.distance = 1.335,
+		.lexical = 0,
+		.bm25 = 0,
+	};
+	const corroborated = Result{
+		.id = 3,
+		.symbol = undefined,
+		.score = 0.31,
+		.distance = 1.1,
+		.lexical = 0.4,
+		.bm25 = -2,
+	};
+
+	try std.testing.expectEqual(Evidence.strong, evidenceFor(strong_comment));
+	try std.testing.expectEqual(Evidence.weak, evidenceFor(weak_vector));
+	try std.testing.expectEqual(Evidence.corroborated, evidenceFor(corroborated));
+	try std.testing.expectEqual(
+		ResultSetConfidence.mixed,
+		confidenceFor(&.{ weak_vector, strong_comment }),
+	);
+	try std.testing.expectEqual(
+		ResultSetConfidence.weak,
+		confidenceFor(&.{weak_vector}),
+	);
 }

@@ -891,6 +891,73 @@ pub fn getAllIndexedFiles(db: Db, allocator: std.mem.Allocator) ![]IndexedFile {
 	return list.toOwnedSlice(allocator);
 }
 
+/// Returns completion-marked files whose code or attached-comment vectors are
+/// missing, allowing update to repair indexes created by interrupted old runs.
+pub fn getIncompleteIndexedFiles(db: Db, allocator: std.mem.Allocator) ![][]const u8 {
+	var code_rowids = try collectRowids(db, allocator, "SELECT rowid FROM embeddings;\x00");
+	defer code_rowids.deinit();
+	var comment_rowids = try collectRowids(db, allocator, "SELECT rowid FROM embeddings_comment;\x00");
+	defer comment_rowids.deinit();
+
+	const sql: [:0]const u8 =
+		"SELECT s.id, s.file_path, s.doc_comment IS NOT NULL " ++
+		"FROM symbols AS s " ++
+		"JOIN indexed_files AS f ON f.file_path = s.file_path " ++
+		"ORDER BY s.file_path, s.id;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "getIncompleteIndexedFiles: prepare");
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	var paths: std.ArrayListUnmanaged([]const u8) = .empty;
+	errdefer {
+		for (paths.items) |path| allocator.free(path);
+		paths.deinit(allocator);
+	}
+	while (true) {
+		const rc = c.sqlite3_step(stmt.?);
+		if (rc == c.SQLITE_DONE) break;
+		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+		const rowid = c.sqlite3_column_int64(stmt.?, 0);
+		const requires_comment = c.sqlite3_column_int(stmt.?, 2) != 0;
+		if (code_rowids.contains(rowid) and (!requires_comment or comment_rowids.contains(rowid))) continue;
+
+		const ptr = c.sqlite3_column_text(stmt.?, 1) orelse continue;
+		const path = std.mem.span(ptr);
+		if (paths.items.len > 0 and std.mem.eql(u8, paths.items[paths.items.len - 1], path)) continue;
+		try paths.append(allocator, try allocator.dupe(u8, path));
+	}
+	return paths.toOwnedSlice(allocator);
+}
+
+/// Materializes virtual-table rowids once so completeness checks stay linear
+/// instead of issuing one sqlite-vec point probe for every indexed symbol.
+fn collectRowids(
+	db: Db,
+	allocator: std.mem.Allocator,
+	sql: [:0]const u8,
+) !std.AutoHashMap(i64, void) {
+	var rowids = std.AutoHashMap(i64, void).init(allocator);
+	errdefer rowids.deinit();
+
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "collectRowids: prepare");
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	while (true) {
+		const rc = c.sqlite3_step(stmt.?);
+		if (rc == c.SQLITE_DONE) break;
+		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+		try rowids.put(c.sqlite3_column_int64(stmt.?, 0), {});
+	}
+	return rowids;
+}
+
 pub fn deleteIndexedFile(db: Db, file_path: []const u8) !void {
 	const sql: [:0]const u8 =
 		"DELETE FROM indexed_files WHERE file_path = ?1;\x00";

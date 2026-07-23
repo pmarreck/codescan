@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
@@ -10,6 +10,7 @@ PORT="${CODESCAN_HTTP_TEST_PORT:-8124}"
 HOST="127.0.0.1"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 MODEL_NAME="${OLLAMA_MODEL:-bge-large}"
+MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1024}"
 
 out=
 err=
@@ -75,13 +76,14 @@ main() {
 	DB="$DB_DIR/index.sqlite3"
 	trap 'rm -rf "$DB_DIR"' EXIT
 
-	capture "$ROOT/zig-out/bin/mk-test-db" --db "$DB"
+	capture "$ROOT/zig-out/bin/mk-test-db" --db "$DB" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "mk_test_db failed"
 	fi
 
-	"$BIN" serve --db "$DB" --http-host "$HOST" --http-port "$PORT" --ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" &
+	"$BIN" serve --db "$DB" --http-host "$HOST" --http-port "$PORT" \
+		--ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" --embedding-dim "$MODEL_DIM" &
 	SERVER_PID=$!
 	trap 'kill "$SERVER_PID" >/dev/null 2>&1 || true; rm -rf "$DB_DIR"' EXIT
 

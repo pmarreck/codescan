@@ -24,9 +24,18 @@ mkdir -p \
 	"$root/projects/alpha/.git" \
 	"$root/projects/codescan/.git" \
 	"$root/projects/dirtree/.git" \
+	"$root/projects/dockapps/.git" \
+	"$root/projects/docscan/.git" \
+	"$root/projects/domatkd/.git" \
+	"$root/projects/domatkd_site/.git" \
+	"$root/projects/eextoheex/.git" \
+	"$root/projects/elixir_snippets/.git" \
+	"$root/projects/elm-posix/.git" \
+	"$root/projects/entropy_shield/.git" \
 	"$root/projects/not-a-repo" \
 	"$root/projects/project with space/.git" \
 	"$root/projects/project with space/.codescan" \
+	"$root/projects/sctui/.git" \
 	"$root/projects/validate/.git" \
 	"$root/projects/worktree"
 printf 'gitdir: elsewhere\n' > "$root/projects/worktree/.git"
@@ -42,7 +51,8 @@ cat > "$fake_bin/codescan" <<'FAKE'
 #!/usr/bin/env bash
 set -u
 printf '%s\n' "$PWD" >> "$CODESCAN_TEST_LOG"
-expected='index --ollama-url http://127.0.0.1:11434 --ollama-model jina-code-embeddings:1.5b --embedding-dim 1536'
+expected_action="${CODESCAN_EXPECT_ACTION:-index}"
+expected="$expected_action --ollama-url http://127.0.0.1:11435 --ollama-model jina-code-embeddings:1.5b --embedding-dim 1536"
 if [ "$*" != "$expected" ]; then
 	printf 'unexpected command: %s\n' "$*" >&2
 	exit 64
@@ -59,6 +69,7 @@ rc=
 capture env \
 	CODESCAN_CODE_ROOT="$root/projects" \
 	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_JINA_URL='http://127.0.0.1:11435' \
 	CODESCAN_TEST_LOG="$log" \
 	./reindex_all
 
@@ -68,7 +79,7 @@ fi
 
 expected_paths=$(printf '%s\n' \
 	"$root/projects/alpha" \
-	"$root/projects/dirtree" \
+	"$root/projects/entropy_shield" \
 	"$root/projects/project with space" \
 	"$root/projects/worktree")
 actual_paths=$(cat "$log")
@@ -89,7 +100,7 @@ do
 	esac
 done
 
-if printf '%s' "$actual_paths" | rg -q '/(aedicule|codescan|validate)$'; then
+if printf '%s' "$actual_paths" | rg -q '/(aedicule|codescan|dirtree|dockapps|docscan|domatkd|domatkd_site|eextoheex|elixir_snippets|elm-posix|sctui|validate)$'; then
 	fail 'excluded project was indexed'
 fi
 if printf '%s' "$actual_paths" | rg -q '/not-a-repo$'; then
@@ -102,7 +113,7 @@ for created_config in \
 do
 	for setting in \
 		'embedding_api=ollama' \
-		'embedding_url=http://127.0.0.1:11434' \
+		'embedding_url=http://127.0.0.1:11435' \
 		'embedding_model=jina-code-embeddings:1.5b' \
 		'embedding_dim=1536'
 	do
@@ -117,6 +128,42 @@ if [ "$existing_config_after" != "$existing_config_before" ]; then
 	fail 'runner modified an existing project config'
 fi
 
+mkdir -p \
+	"$root/resume-projects/nixpkgs/.git" \
+	"$root/resume-projects/ollama/.git" \
+	"$root/resume-projects/sctui/.git" \
+	"$root/resume-projects/ulam-flower-wat/.git" \
+	"$root/resume-projects/validate/.git"
+printf '' > "$log"
+out=
+err=
+rc=
+capture env \
+	CODESCAN_CODE_ROOT="$root/resume-projects" \
+	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_JINA_URL='http://127.0.0.1:11435' \
+	CODESCAN_ACTION=update \
+	CODESCAN_EXPECT_ACTION=update \
+	CODESCAN_START_AFTER=nixpkgs \
+	CODESCAN_TEST_LOG="$log" \
+	./reindex_all
+
+if [ "$rc" -ne 0 ]; then
+	fail "resume-boundary run exited $rc: $err"
+fi
+expected_resume_paths=$(printf '%s\n' \
+	"$root/resume-projects/ollama" \
+	"$root/resume-projects/sctui" \
+	"$root/resume-projects/ulam-flower-wat")
+actual_resume_paths=$(cat "$log")
+if [ "$actual_resume_paths" != "$expected_resume_paths" ]; then
+	fail "resume boundary candidate set/order mismatch; got: $actual_resume_paths"
+fi
+case "$out" in
+	*'[3/3 — 100%]'*) ;;
+	*) fail 'resume-boundary run did not finish its candidate set' ;;
+esac
+
 printf '' > "$log"
 out=
 err=
@@ -124,6 +171,7 @@ rc=
 capture env \
 	CODESCAN_CODE_ROOT="$root/projects" \
 	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_JINA_URL='http://127.0.0.1:11435' \
 	CODESCAN_TEST_LOG="$log" \
 	CODESCAN_FAIL_PROJECT='project with space' \
 	./reindex_all
@@ -150,6 +198,7 @@ rc=
 capture env \
 	CODESCAN_CODE_ROOT="$root/empty-projects" \
 	CODESCAN_BIN="$fake_bin/codescan" \
+	CODESCAN_JINA_URL='http://127.0.0.1:11435' \
 	CODESCAN_TEST_LOG="$log" \
 	./reindex_all
 

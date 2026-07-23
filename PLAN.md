@@ -2,6 +2,22 @@
 
 ## 2026-07-22 — fully local Jina via Ollama
 
+- [x] Make watchers explicit and reconcile the index silently before every indexed search when no project watcher is active. (completed 2026-07-23 11:33 EDT)
+  Curiosity poke: an unavailable embedding service must preserve useful stale search, while an absent/invalid index must fail honestly; recommend a watcher only after >1 second when the latest commit is ≤7 days old or Git reports >2 changed paths.
+- [x] Give explicit `codescan update` phase-specific stderr feedback when its initial filesystem discovery/comparison exceeds one second. (completed 2026-07-23 11:33 EDT)
+  Curiosity poke: inject the monotonic clock and assert exact threshold behavior without sleeps; keep fast updates and machine-readable stdout clean.
+- [ ] Add `codescan reap-stale-watchers` with `--days-old`, `CODESCAN_WATCHER_REAP_AGE_DAYS`, a seven-day default, and command-specific help.
+  Curiosity poke: define staleness from the last successful index commit rather than mere process age or a received event that failed to index; preserve explicit CLI-over-environment precedence.
+- [x] Change the sequential fleet job to `codescan update` every eligible Git repository except the three intentional exclusions. (completed 2026-07-23 11:33 EDT)
+  Curiosity poke: the old completed-index resume list must not suppress update reconciliation, and the runner must never leave one implicit watcher per repository.
+- [x] Make incremental completion crash-safe, recover partial/missing vectors, remove vanished files, and rebuild indexes whose stored embedding model differs. (completed 2026-07-23 11:33 EDT)
+  Curiosity poke: a file marker is valid only after its final code and comment batches commit; interrupted cross-file batches must remain recoverable without sacrificing batching.
+- [x] Label weak search hits without suppressing them, and expose lexical match provenance in human and JSON output. (completed 2026-07-23 11:33 EDT)
+  Curiosity poke: a strong match in an undisplayed attached comment must remain strong and identify `comment` as its source; raw hybrid/RRF scores are not probabilities.
+- [ ] Resume the sequential sweep at incomplete `entropy_shield` through the patched three-slot Ollama sidecar.
+  Curiosity poke: skip every repository proven complete through `elm-posix`, but do not skip the partially rebuilt `entropy_shield`.
+- [x] Audit every direct `~/Code/*/.codescan` configuration and make the effective model explicit Jina/1536. (completed 2026-07-23 09:23 EDT)
+  Curiosity poke: a missing config silently falls back to BGE even when no file contains the literal `bge-large`; distinguish old metadata from stored vectors.
 - [x] Add a sequential `~/Code` Git-project reindex runner with exact exclusions and percentage progress. (completed 2026-07-22 18:06 EDT)
   Curiosity poke: paths with spaces, `.git` files, failed indexes, and an empty candidate set must not corrupt traversal or hide failures.
 - [x] Resume the interrupted sweep at `dirtree` by skipping only previously completed project names. (completed 2026-07-22 20:24 EDT)
@@ -37,7 +53,7 @@
   Curiosity poke: upstream oMLX support and local patched state may diverge after restart.
 - [ ] Document/test the `bge-m3` failover path without weakening the code-relevance oracle.
   Curiosity poke: provider failover must not silently accept materially worse semantic retrieval.
-- [ ] Move integration fixture clones and generated indexes under RAM-backed `TMPDIR` before another full integration run.
+- [x] Move integration fixture clones and generated indexes under RAM-backed `TMPDIR` before another full integration run. (completed 2026-07-23 11:33 EDT)
   Curiosity poke: preserve reusable source fixtures without directing SQLite rebuild traffic to spinning storage.
 
 - [x] Add command-specific CLI help topics (`codescan help <command>`, `<command> --help`) with focused usage text for search/index/update/config (completed 2026-02-21 EST)

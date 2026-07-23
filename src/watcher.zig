@@ -259,18 +259,19 @@ fn configChanged(config_path: ?[]const u8, stored_mtime: *?i128) bool {
 }
 
 fn printChangeSummary(writer: *std.Io.Writer, stats: indexer.IncrementalStats) void {
-	const total_changed = stats.new_files + stats.modified_files + stats.deleted_files;
+	const total_changed = stats.new_files + stats.modified_files + stats.deleted_files + stats.recovered_files;
 	if (total_changed == 0 and stats.unchanged_files > 0) {
 		_ = writer.print("Up to date ({d} files, {d} symbols)\n", .{
 			stats.unchanged_files,
 			stats.symbols,
 		}) catch {};
 	} else {
-		_ = writer.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged ({d} symbols)\n", .{
+		_ = writer.print("+{d} new, ~{d} modified, -{d} deleted, ={d} unchanged, !{d} recovered ({d} symbols)\n", .{
 			stats.new_files,
 			stats.modified_files,
 			stats.deleted_files,
 			stats.unchanged_files,
+			stats.recovered_files,
 			stats.symbols,
 		}) catch {};
 	}
@@ -287,6 +288,7 @@ test "printChangeSummary formats correctly" {
 		.modified_files = 1,
 		.deleted_files = 0,
 		.unchanged_files = 10,
+		.recovered_files = 0,
 		.symbols = 5,
 	});
 
@@ -308,6 +310,7 @@ test "printChangeSummary shows up to date" {
 		.modified_files = 0,
 		.deleted_files = 0,
 		.unchanged_files = 10,
+		.recovered_files = 0,
 		.symbols = 0,
 	});
 

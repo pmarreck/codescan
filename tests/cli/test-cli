@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
@@ -37,7 +37,10 @@ main() {
 	require_tool jq
 	require_tool rg
 
+	original_dir="$PWD"
+	cd "$ROOT"
 	capture nix develop -c zig build -Doptimize=ReleaseFast
+	cd "$original_dir"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "zig build failed"
@@ -52,6 +55,25 @@ main() {
 		printf '%s' "$err" >&2
 		fail "mk_test_db failed"
 	fi
+
+	fresh_root="$DB_DIR/fresh-search"
+	mkdir -p "$fresh_root/.git"
+	printf '%s\n' \
+		'/// Finds a freshly indexed value.' \
+		'pub fn freshSearchValue() usize { return 42; }' \
+		> "$fresh_root/fresh.zig"
+	capture "$BIN" search freshSearchValue --root "$fresh_root" --mode lexical --json
+	[ "$rc" -eq 0 ] || fail "fresh search could not create its index"
+	[ "$(printf '%s' "$out" | jq '.results | length')" -gt 0 ] || fail "fresh search omitted the new source file"
+	[ "$(printf '%s' "$out" | jq -r '.freshness')" = reconciled ] || fail "fresh search omitted reconciled metadata"
+	[ ! -e "$fresh_root/.codescan/watcher.pid" ] || fail "fresh search implicitly started a watcher"
+
+	mv "$fresh_root/fresh.zig" "$fresh_root/fresh.zig.off"
+	capture "$BIN" search freshSearchValue --root "$fresh_root" --mode lexical --json
+	[ "$rc" -eq 0 ] || fail "fresh search failed after deleting the indexed source"
+	[ "$(printf '%s' "$out" | jq '.results | length')" -eq 0 ] || fail "fresh search retained data for a deleted source file"
+	printf '%s' "$err" | rg -q 'No index found' && fail "fresh search redundantly auto-indexed after reconciliation"
+	[ ! -e "$fresh_root/.codescan/watcher.pid" ] || fail "deleted-file search implicitly started a watcher"
 
 	names=$(search_names "checksum")
 	printf '%s\n' "$names" | rg -q '^Checksum Docs$' && fail "default search included docs unexpectedly"

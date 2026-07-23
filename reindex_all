@@ -3,11 +3,18 @@ set -u
 
 code_root="${CODESCAN_CODE_ROOT:-$HOME/Code}"
 codescan_bin="${CODESCAN_BIN:-codescan}"
-jina_url='http://127.0.0.1:11434'
+action="${CODESCAN_ACTION:-index}"
+start_after="${CODESCAN_START_AFTER:-}"
+jina_url="${CODESCAN_JINA_URL:-http://127.0.0.1:11434}"
 jina_model='jina-code-embeddings:1.5b'
 jina_dim=1536
 projects=()
 failures=()
+excluded_projects=(
+	63a769e1b33da2d7d74630d274747af2
+	aedicule
+	validate
+)
 completed_projects=(
 	63a769e1b33da2d7d74630d274747af2
 	7z_cleanroom
@@ -49,6 +56,15 @@ completed_projects=(
 	deflate_fingerprint
 	dgop
 	difz
+	dirtree
+	dockapps
+	docscan
+	domatkd
+	domatkd_site
+	eextoheex
+	elixir_snippets
+	elm-posix
+	sctui
 	validate
 )
 
@@ -70,9 +86,21 @@ ensure_local_jina_config() {
 		> "$codescan_dir/config.ini"
 }
 
-# Resume after the first sweep completed these projects; dirtree was interrupted.
+# These projects were explicitly excluded from the sweep, independent of action.
+is_excluded_project() {
+	local excluded
+	for excluded in "${excluded_projects[@]}"; do
+		[ "$1" = "$excluded" ] && return 0
+	done
+	return 1
+}
+
+# The completed set only resumes the old full-index sweep. Updates reconcile every
+# eligible project, including ones that were fully indexed by an earlier sweep.
 should_skip_project() {
 	local completed
+	is_excluded_project "$1" && return 0
+	[ "$action" = update ] && return 1
 	for completed in "${completed_projects[@]}"; do
 		[ "$1" = "$completed" ] && return 0
 	done
@@ -89,12 +117,27 @@ if ! command -v "$codescan_bin" >/dev/null 2>&1; then
 	exit 127
 fi
 
+case "$action" in
+	index) action_label='Indexing' ;;
+	update) action_label='Updating' ;;
+	*)
+		printf 'CODESCAN_ACTION must be index or update, got: %s\n' "$action" >&2
+		exit 2
+		;;
+esac
+
 # Discover first so every progress percentage uses one stable candidate set.
+start_after_found=0
+[ -z "$start_after" ] && start_after_found=1
 while IFS= read -r -d '' project; do
 	[ -d "$project" ] || continue
 	[ -e "$project/.git" ] || continue
 
 	name="${project##*/}"
+	if [ "$start_after_found" -eq 0 ]; then
+		[ "$name" = "$start_after" ] && start_after_found=1
+		continue
+	fi
 	should_skip_project "$name" && continue
 
 	projects+=("$project")
@@ -102,7 +145,12 @@ done < <(
 	find -H "$code_root" -mindepth 1 -maxdepth 1 \
 		\( -type d -o -type l \) -print0 \
 		| LC_ALL=C sort -z
-)
+	)
+
+if [ "$start_after_found" -eq 0 ]; then
+	printf 'Resume boundary is not an eligible Git project: %s\n' "$start_after" >&2
+	exit 2
+fi
 
 total="${#projects[@]}"
 if [ "$total" -eq 0 ]; then
@@ -110,12 +158,12 @@ if [ "$total" -eq 0 ]; then
 	exit 0
 fi
 
-printf '[0/%d — 0%%] Ready to index projects in %s\n' "$total" "$code_root"
+printf '[0/%d — 0%%] Ready to %s projects in %s\n' "$total" "$action" "$code_root"
 
 completed=0
 for project in "${projects[@]}"; do
 	name="${project##*/}"
-	printf '\nIndexing %s\n' "$project"
+	printf '\n%s %s\n' "$action_label" "$project"
 
 	status=passed
 	if ! ensure_local_jina_config "$project"; then
@@ -123,7 +171,7 @@ for project in "${projects[@]}"; do
 		failures+=("$project")
 	elif ! (
 		cd "$project" &&
-		"$codescan_bin" index \
+		"$codescan_bin" "$action" \
 			--ollama-url "$jina_url" \
 			--ollama-model "$jina_model" \
 			--embedding-dim "$jina_dim"
@@ -139,9 +187,9 @@ for project in "${projects[@]}"; do
 done
 
 if [ "${#failures[@]}" -gt 0 ]; then
-	printf '\n%d project(s) failed to index:\n' "${#failures[@]}" >&2
+	printf '\n%d project(s) failed to %s:\n' "${#failures[@]}" "$action" >&2
 	printf '  %s\n' "${failures[@]}" >&2
 	exit 1
 fi
 
-printf '\nAll %d projects indexed successfully.\n' "$total"
+printf '\nAll %d projects %sd successfully.\n' "$total" "$action"

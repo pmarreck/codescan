@@ -22,12 +22,101 @@ pub const Options = struct {
 		.per_language = &[_]config.IgnoreOverride{},
 		.include_node_modules = false,
 	},
+	require_embeddings: bool = true,
 	show_progress: bool = false,
+	discovery_progress: ?scan.FileProgress = null,
 };
 
 pub const Stats = struct {
 	files: usize,
 	symbols: usize,
+};
+
+const EmbeddingChannel = enum { code, comment };
+
+const PendingFile = struct {
+	path: []const u8,
+	mtime: i64,
+	size: i64,
+	code_pending: usize = 0,
+	comment_pending: usize = 0,
+	sealed: bool = false,
+	recorded: bool = false,
+};
+
+/// Tracks which files still have queued code/comment vectors so a file enters
+/// indexed_files only after every embedding channel has durably flushed.
+const FileCompletionTracker = struct {
+	files: std.ArrayListUnmanaged(PendingFile) = .empty,
+	code_batch_files: std.ArrayListUnmanaged(usize) = .empty,
+	comment_batch_files: std.ArrayListUnmanaged(usize) = .empty,
+
+	fn deinit(self: *FileCompletionTracker, allocator: std.mem.Allocator) void {
+		self.files.deinit(allocator);
+		self.code_batch_files.deinit(allocator);
+		self.comment_batch_files.deinit(allocator);
+	}
+
+	fn beginFile(
+		self: *FileCompletionTracker,
+		allocator: std.mem.Allocator,
+		path: []const u8,
+		mtime: i64,
+		size: i64,
+	) !usize {
+		const index = self.files.items.len;
+		try self.files.append(allocator, .{ .path = path, .mtime = mtime, .size = size });
+		return index;
+	}
+
+	fn queue(
+		self: *FileCompletionTracker,
+		allocator: std.mem.Allocator,
+		file_index: usize,
+		channel: EmbeddingChannel,
+	) !void {
+		const file = &self.files.items[file_index];
+		switch (channel) {
+			.code => {
+				try self.code_batch_files.append(allocator, file_index);
+				file.code_pending += 1;
+			},
+			.comment => {
+				try self.comment_batch_files.append(allocator, file_index);
+				file.comment_pending += 1;
+			},
+		}
+	}
+
+	fn completeBatch(self: *FileCompletionTracker, db: storage.Db, channel: EmbeddingChannel) !void {
+		const file_indices = switch (channel) {
+			.code => &self.code_batch_files,
+			.comment => &self.comment_batch_files,
+		};
+		for (file_indices.items) |file_index| {
+			const file = &self.files.items[file_index];
+			switch (channel) {
+				.code => file.code_pending -= 1,
+				.comment => file.comment_pending -= 1,
+			}
+		}
+		for (file_indices.items) |file_index| {
+			try self.recordIfReady(db, file_index);
+		}
+		file_indices.clearRetainingCapacity();
+	}
+
+	fn seal(self: *FileCompletionTracker, db: storage.Db, file_index: usize) !void {
+		self.files.items[file_index].sealed = true;
+		try self.recordIfReady(db, file_index);
+	}
+
+	fn recordIfReady(self: *FileCompletionTracker, db: storage.Db, file_index: usize) !void {
+		const file = &self.files.items[file_index];
+		if (file.recorded or !file.sealed or file.code_pending != 0 or file.comment_pending != 0) return;
+		try storage.upsertIndexedFile(db, file.path, file.mtime, file.size);
+		file.recorded = true;
+	}
 };
 
 pub fn indexAll(
@@ -46,7 +135,13 @@ pub fn indexAll(
 	const debug = try debugEnabled(allocator);
 	const show_progress = options.show_progress and !debug;
 
-	const files = try scan.findFiles(allocator, root_path, registry, options.ignore);
+	const files = try scan.findFilesWithProgress(
+		allocator,
+		root_path,
+		registry,
+		options.ignore,
+		options.discovery_progress,
+	);
 	defer {
 		for (files) |path| allocator.free(path);
 		allocator.free(files);
@@ -56,6 +151,8 @@ pub fn indexAll(
 	var batch_rowids: std.ArrayListUnmanaged(i64) = .empty;
 	var comment_texts: std.ArrayListUnmanaged([]const u8) = .empty;
 	var comment_rowids: std.ArrayListUnmanaged(i64) = .empty;
+	var completion: FileCompletionTracker = .{};
+	defer completion.deinit(allocator);
 	defer {
 		for (batch_texts.items) |text| allocator.free(text);
 		batch_texts.deinit(allocator);
@@ -131,6 +228,10 @@ pub fn indexAll(
 		const hashes = computeFileHashes(allocator, source) catch null;
 		defer if (hashes) |h| allocator.free(h);
 
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
+		const current_size: i64 = @intCast(size);
+		const file_index = try completion.beginFile(allocator, rel_path, current_mtime, current_size);
+
 		for (symbols, 0..) |sym, sym_idx| {
 			var sym_with_hash = sym;
 			if (hashes) |h| {
@@ -148,6 +249,7 @@ pub fn indexAll(
 			const text = try buildSymbolText(allocator, sym, extractor.kind);
 			try batch_texts.append(allocator, text);
 			try batch_rowids.append(allocator, rowid);
+			try completion.queue(allocator, file_index, .code);
 
 			if (batch_texts.items.len >= options.batch_size) {
 				if (show_progress and symbols.len > options.batch_size) {
@@ -157,26 +259,26 @@ pub fn indexAll(
 					debugLog(stderr, "codescan: debug: embedding {d} symbols\n", .{batch_texts.items.len});
 				}
 				try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+				try completion.completeBatch(db, .code);
 			}
 
 			if (sym.doc_comment) |doc| {
 				const comment_text = try buildCommentText(allocator, doc, .doc);
 				try comment_texts.append(allocator, comment_text);
 				try comment_rowids.append(allocator, rowid);
+				try completion.queue(allocator, file_index, .comment);
 
 				if (comment_texts.items.len >= options.batch_size) {
 					if (debug) {
 						debugLog(stderr, "codescan: debug: embedding {d} comments\n", .{comment_texts.items.len});
 					}
 					try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+					try completion.completeBatch(db, .comment);
 				}
 			}
 		}
 
-		// Track indexed file so indexIncremental knows about it
-		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
-		const current_size: i64 = @intCast(size);
-		try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
+		try completion.seal(db, file_index);
 	}
 
 	if (batch_texts.items.len > 0) {
@@ -184,12 +286,14 @@ pub fn indexAll(
 			debugLog(stderr, "codescan: debug: embedding {d} symbols\n", .{batch_texts.items.len});
 		}
 		try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+		try completion.completeBatch(db, .code);
 	}
 	if (comment_texts.items.len > 0) {
 		if (debug) {
 			debugLog(stderr, "codescan: debug: embedding {d} comments\n", .{comment_texts.items.len});
 		}
 		try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+		try completion.completeBatch(db, .comment);
 	}
 
 	if (show_progress) {
@@ -204,6 +308,7 @@ pub const IncrementalStats = struct {
 	modified_files: usize,
 	deleted_files: usize,
 	unchanged_files: usize,
+	recovered_files: usize,
 	symbols: usize,
 };
 
@@ -228,10 +333,30 @@ pub fn indexIncremental(
 	const stderr = &stderr_writer.interface;
 
 	// 1. Scan filesystem for current files
-	const files = try scan.findFiles(allocator, root_path, registry, options.ignore);
+	const files = try scan.findFilesWithProgress(
+		allocator,
+		root_path,
+		registry,
+		options.ignore,
+		options.discovery_progress,
+	);
 	defer {
 		for (files) |path| allocator.free(path);
 		allocator.free(files);
+	}
+
+	var recovered_files: usize = 0;
+	if (options.require_embeddings) {
+		const incomplete = try storage.getIncompleteIndexedFiles(db, allocator);
+		defer {
+			for (incomplete) |path| allocator.free(path);
+			allocator.free(incomplete);
+		}
+		for (incomplete) |path| {
+			try storage.deleteIndexedFile(db, path);
+			try storage.deleteSymbolsByFile(db, path);
+		}
+		recovered_files = incomplete.len;
 	}
 
 	// 2. Get previously indexed files
@@ -261,6 +386,7 @@ pub fn indexIncremental(
 		.modified_files = 0,
 		.deleted_files = 0,
 		.unchanged_files = 0,
+		.recovered_files = recovered_files,
 		.symbols = 0,
 	};
 
@@ -281,6 +407,8 @@ pub fn indexIncremental(
 	var batch_rowids: std.ArrayListUnmanaged(i64) = .empty;
 	var comment_texts: std.ArrayListUnmanaged([]const u8) = .empty;
 	var comment_rowids: std.ArrayListUnmanaged(i64) = .empty;
+	var completion: FileCompletionTracker = .{};
+	defer completion.deinit(allocator);
 	defer {
 		for (batch_texts.items) |text| allocator.free(text);
 		batch_texts.deinit(allocator);
@@ -326,16 +454,21 @@ pub fn indexIncremental(
 				stats.unchanged_files += 1;
 				continue;
 			}
-			// Modified: remove old symbols first
+			// Modified: remove the completion marker before replacing content so
+			// a crash can never leave partial rows classified as unchanged.
 			if (debug) {
 				debugLog(stderr, "codescan: debug: modified {s}\n", .{rel_path});
 			}
+			try storage.deleteIndexedFile(db, rel_path);
 			try storage.deleteSymbolsByFile(db, rel_path);
 			stats.modified_files += 1;
 		} else {
 			if (debug) {
 				debugLog(stderr, "codescan: debug: new {s}\n", .{rel_path});
 			}
+			// A present-but-untracked path may contain debris from an interrupted
+			// full/update run. Purge it before rebuilding to avoid duplicates.
+			try storage.deleteSymbolsByFile(db, rel_path);
 			stats.new_files += 1;
 		}
 
@@ -358,6 +491,7 @@ pub fn indexIncremental(
 		// Compute chain hashes for this file's lines
 		const hashes = computeFileHashes(allocator, source) catch null;
 		defer if (hashes) |h| allocator.free(h);
+		const file_index = try completion.beginFile(allocator, rel_path, current_mtime, current_size);
 
 		for (symbols, 0..) |sym, sym_idx| {
 			var sym_with_hash = sym;
@@ -376,35 +510,40 @@ pub fn indexIncremental(
 			const text = try buildSymbolText(allocator, sym, extractor.kind);
 			try batch_texts.append(allocator, text);
 			try batch_rowids.append(allocator, rowid);
+			try completion.queue(allocator, file_index, .code);
 
 			if (batch_texts.items.len >= options.batch_size) {
 				if (show_progress and symbols.len > options.batch_size) {
 					printFileProgress(stderr, progress_count, files.len, rel_path, sym_idx + 1, symbols.len);
 				}
 				try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+				try completion.completeBatch(db, .code);
 			}
 
 			if (sym.doc_comment) |doc| {
 				const comment_text = try buildCommentText(allocator, doc, .doc);
 				try comment_texts.append(allocator, comment_text);
 				try comment_rowids.append(allocator, rowid);
+				try completion.queue(allocator, file_index, .comment);
 
 				if (comment_texts.items.len >= options.batch_size) {
 					try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+					try completion.completeBatch(db, .comment);
 				}
 			}
 		}
 
-		// Update file tracking
-		try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
+		try completion.seal(db, file_index);
 	}
 
 	// Flush remaining batches
 	if (batch_texts.items.len > 0) {
 		try flushBatch(allocator, db, embedder, options, &batch_texts, &batch_rowids);
+		try completion.completeBatch(db, .code);
 	}
 	if (comment_texts.items.len > 0) {
 		try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
+		try completion.completeBatch(db, .comment);
 	}
 
 	if (show_progress) {
@@ -1436,6 +1575,160 @@ test "indexIncremental detects deleted files" {
 	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
 }
 
+test "indexAll does not mark a file complete before its final comment embedding flush" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "src/math.zig",
+		.data = "/// Adds two integers.\npub fn add(a: i32, b: i32) i32 { return a + b; }\n",
+	});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	// With a large batch, indexAll flushes code at EOF, then comments. The
+	// second call fails after code vectors are durable but before comments are.
+	var failing = FailOnCallEmbedder{ .fail_on_call = 2 };
+	try std.testing.expectError(
+		error.DeliberateEmbeddingFailure,
+		indexAll(allocator, db, root, plugin.defaultRegistry(), failing.embedder(), .{
+			.embedding_dim = 2,
+			.batch_size = 16,
+		}),
+	);
+
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(db, allocator, "embeddings_comment"));
+	try std.testing.expectEqual(@as(?i64, null), try storage.getIndexedFileMtime(db, "src/math.zig"));
+}
+
+test "indexIncremental purges partial rows for present untracked files" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "src/math.zig",
+		.data = "pub fn add(a: i32, b: i32) i32 { return a + b; }\n",
+	});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+
+	// Simulate a crash after inserting a symbol but before recording the file.
+	var partial = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/math.zig"),
+		.name = try allocator.dupe(u8, "partial_add"),
+		.signature = try allocator.dupe(u8, "pub fn partial_add() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer partial.deinit(allocator);
+	_ = try storage.insertSymbol(db, partial);
+
+	var fake = FakeEmbedder{};
+	const stats = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 16,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.new_files);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expect((try storage.getIndexedFileMtime(db, "src/math.zig")) != null);
+}
+
+test "indexIncremental recovers unchanged files falsely marked complete without embeddings" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "src/math.zig",
+		.data = "/// Adds two integers.\npub fn add(a: i32, b: i32) i32 { return a + b; }\n",
+	});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+
+	var partial = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/math.zig"),
+		.name = try allocator.dupe(u8, "add"),
+		.signature = try allocator.dupe(u8, "pub fn add(a: i32, b: i32) i32"),
+		.doc_comment = try allocator.dupe(u8, "Adds two integers."),
+		.start_line = 2,
+		.end_line = 2,
+	};
+	defer partial.deinit(allocator);
+	_ = try storage.insertSymbol(db, partial);
+
+	const file = try tmp.dir.openFile(io_singleton.getOrInit(), "src/math.zig", .{});
+	defer file.close(io_singleton.getOrInit());
+	const stat = try file.stat(io_singleton.getOrInit());
+	try storage.upsertIndexedFile(
+		db,
+		"src/math.zig",
+		@intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)),
+		@intCast(stat.size),
+	);
+
+	var fake = FakeEmbedder{};
+	const stats = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 16,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.recovered_files);
+	try std.testing.expectEqual(@as(usize, 1), stats.new_files);
+	try std.testing.expectEqual(@as(usize, 0), stats.unchanged_files);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+}
+
+test "indexAll preserves embedding batches across file boundaries" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/a.zig", .data = "pub fn a() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/b.zig", .data = "pub fn b() void {}\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var counting = FlakyEmbedder{};
+	_ = try indexAll(allocator, db, root, plugin.defaultRegistry(), counting.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), counting.call_count);
+	try std.testing.expect((try storage.getIndexedFileMtime(db, "src/a.zig")) != null);
+	try std.testing.expect((try storage.getIndexedFileMtime(db, "src/b.zig")) != null);
+}
+
 const FakeEmbedder = struct {
 	pub fn embedder(self: *FakeEmbedder) embedding.Embedder {
 		return .{ .ctx = self, .embed = embed, .free = free };
@@ -1460,6 +1753,42 @@ const FakeEmbedder = struct {
 
 	fn free(ctx: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
 		_ = ctx;
+		for (embeddings) |row| allocator.free(row);
+		allocator.free(embeddings);
+	}
+};
+
+const FailOnCallEmbedder = struct {
+	fail_on_call: usize,
+	call_count: usize = 0,
+
+	pub fn embedder(self: *FailOnCallEmbedder) embedding.Embedder {
+		return .{ .ctx = self, .embed = embed, .free = free };
+	}
+
+	fn embed(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
+		const self: *FailOnCallEmbedder = @ptrCast(@alignCast(ctx));
+		self.call_count += 1;
+		if (self.call_count == self.fail_on_call) return error.DeliberateEmbeddingFailure;
+
+		var rows = try allocator.alloc([]f32, inputs.len);
+		var initialized: usize = 0;
+		errdefer {
+			for (rows[0..initialized]) |row| allocator.free(row);
+			allocator.free(rows);
+		}
+		for (inputs, 0..) |input, idx| {
+			const row = try allocator.alloc(f32, 2);
+			const len: f32 = @floatFromInt(input.len);
+			row[0] = len;
+			row[1] = len + 0.5;
+			rows[idx] = row;
+			initialized += 1;
+		}
+		return rows;
+	}
+
+	fn free(_: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
 		for (embeddings) |row| allocator.free(row);
 		allocator.free(embeddings);
 	}

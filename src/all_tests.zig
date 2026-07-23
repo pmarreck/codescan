@@ -50,6 +50,7 @@ const _log_cmd = @import("log_cmd.zig");
 const _symbol_tree = @import("symbol_tree.zig");
 const _ts_symbols = @import("ts_symbols.zig");
 const _watcher = @import("watcher.zig");
+const _freshness = @import("freshness.zig");
 const _weights = @import("weights.zig");
 
 test {
@@ -105,5 +106,6 @@ test {
 	_ = _symbol_tree;
 	_ = _ts_symbols;
 	_ = _watcher;
+	_ = _freshness;
 	_ = _weights;
 }

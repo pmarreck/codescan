@@ -25,6 +25,20 @@ const IgnoreSet = struct {
 const node_modules_pattern = "**/node_modules/**";
 const bin_pattern = "**/bin/**";
 
+pub const FileProgress = struct {
+	context: *anyopaque,
+	observe_fn: *const fn (context: *anyopaque, eligible_files: usize) void,
+	finish_fn: *const fn (context: *anyopaque) void,
+
+	pub fn observe(self: FileProgress, eligible_files: usize) void {
+		self.observe_fn(self.context, eligible_files);
+	}
+
+	pub fn finish(self: FileProgress) void {
+		self.finish_fn(self.context);
+	}
+};
+
 const default_ignore_global = &[_][]const u8{
 	"**/.git/**",
 	"**/.jj/**",
@@ -87,24 +101,54 @@ pub fn findFiles(
 	registry: plugin.Registry,
 	ignore_cfg: IgnoreConfig,
 ) ![]const []const u8 {
+	return findFilesWithProgress(allocator, root_path, registry, ignore_cfg, null);
+}
+
+pub fn findFilesWithProgress(
+	allocator: std.mem.Allocator,
+	root_path: []const u8,
+	registry: plugin.Registry,
+	ignore_cfg: IgnoreConfig,
+	progress: ?FileProgress,
+) ![]const []const u8 {
+	defer if (progress) |value| value.finish();
 	var dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{ .iterate = true });
 	defer dir.close(io_singleton.getOrInit());
-
-	var walker = try dir.walk(allocator);
-	defer walker.deinit();
 
 	const skip_bin_ignore = isBashProject(dir);
 	const ignore_sets = try buildIgnoreSets(allocator, registry, ignore_cfg, skip_bin_ignore);
 	defer deinitIgnoreSets(allocator, ignore_sets);
-
-	var git_allow = try buildGitAllowSet(allocator, root_path);
-	defer if (git_allow) |*set| deinitGitAllowSet(allocator, set);
 
 	var results = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	errdefer {
 		for (results.items) |path| allocator.free(path);
 		results.deinit(allocator);
 	}
+
+	const git_files = try captureGitFileList(allocator, root_path);
+	defer if (git_files) |files| allocator.free(files);
+
+	// Git already computed the exact tracked-plus-eligible-untracked candidate
+	// set. Iterating it directly avoids walking large ignored build/cache trees.
+	if (git_files != null and ignore_cfg.always_include.len == 0) {
+		var paths = std.mem.splitScalar(u8, git_files.?, 0);
+		while (paths.next()) |path| {
+			if (path.len == 0) continue;
+			const stat = dir.statFile(io_singleton.getOrInit(), path, .{}) catch continue;
+			if (stat.kind != .file) continue;
+			try appendEligibleFile(allocator, dir, registry, ignore_sets, path, &results, progress);
+		}
+		return results.toOwnedSlice(allocator);
+	}
+
+	var git_allow = if (git_files) |files|
+		try buildGitAllowSetFromList(allocator, files)
+	else
+		null;
+	defer if (git_allow) |*set| deinitGitAllowSet(allocator, set);
+
+	var walker = try dir.walk(allocator);
+	defer walker.deinit();
 
 	while (try walker.next(io_singleton.getOrInit())) |entry| {
 		const is_file = entry.kind == .file or
@@ -123,21 +167,34 @@ pub fn findFiles(
 				if (!set.contains(entry.path)) continue;
 			}
 		}
-		var extractor = registry.find(entry.path);
-		if (extractor == null) {
-			if (detectShebangLanguage(dir, entry.path)) |language| {
-				extractor = registry.findByLanguage(language);
-			}
-		}
-		const chosen = extractor orelse continue;
-		if (shouldIgnore(allocator, ignore_sets, chosen.language, entry.path)) continue;
-		try results.append(allocator, try allocator.dupe(u8, entry.path));
+		try appendEligibleFile(allocator, dir, registry, ignore_sets, entry.path, &results, progress);
 	}
 
 	return results.toOwnedSlice(allocator);
 }
 
-fn buildGitAllowSet(allocator: std.mem.Allocator, root_path: []const u8) !?std.StringHashMapUnmanaged(void) {
+fn appendEligibleFile(
+	allocator: std.mem.Allocator,
+	dir: std.Io.Dir,
+	registry: plugin.Registry,
+	ignore_sets: []IgnoreSet,
+	path: []const u8,
+	results: *std.ArrayListUnmanaged([]const u8),
+	progress: ?FileProgress,
+) !void {
+	var extractor = registry.find(path);
+	if (extractor == null) {
+		if (detectShebangLanguage(dir, path)) |language| {
+			extractor = registry.findByLanguage(language);
+		}
+	}
+	const chosen = extractor orelse return;
+	if (shouldIgnore(allocator, ignore_sets, chosen.language, path)) return;
+	try results.append(allocator, try allocator.dupe(u8, path));
+	if (progress) |value| value.observe(results.items.len);
+}
+
+fn captureGitFileList(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
 	// Delegate .gitignore semantics to Git directly. If unavailable or not a repo,
 	// fall back to existing scanner ignore logic.
 	var root_dir = std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{}) catch return null;
@@ -158,8 +215,10 @@ fn buildGitAllowSet(allocator: std.mem.Allocator, root_path: []const u8) !?std.S
 		allocator,
 		&[_][]const u8{ "git", "-C", root_path, "ls-files", "-z", "--cached", "--others", "--exclude-standard" },
 	) catch return null;
-	defer allocator.free(stdout);
+	return stdout;
+}
 
+fn buildGitAllowSetFromList(allocator: std.mem.Allocator, stdout: []const u8) !std.StringHashMapUnmanaged(void) {
 	var allow = std.StringHashMapUnmanaged(void){};
 	errdefer deinitGitAllowSet(allocator, &allow);
 
@@ -623,6 +682,49 @@ test "findFiles respects .gitignore for untracked files" {
 
 	try std.testing.expectEqual(@as(usize, 1), files.len);
 	try std.testing.expectEqualStrings("src/main.zig", files[0]);
+}
+
+test "findFiles classifies gitignored symlinks with the full candidate set" {
+	if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "generated");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".gitignore", .data = "generated/\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/real.sh", .data = "#!/usr/bin/env bash\n" });
+	try tmp.dir.symLink(io_singleton.getOrInit(), "../src/real.sh", "generated/alias.sh", .{});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+
+	const io = io_singleton.getOrInit();
+	var init_child = std.process.spawn(io, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
+		.stdin = .close,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return error.SkipZigTest;
+	const init_term = try init_child.wait(io);
+	switch (init_term) {
+		.exited => |code| if (code != 0) return error.SkipZigTest,
+		else => return error.SkipZigTest,
+	}
+
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &[_][]const u8{},
+		.per_language = &[_]config.IgnoreOverride{},
+		.include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), files.len);
+	try std.testing.expectEqualStrings("src/real.sh", files[0]);
 }
 
 test "findFiles still includes tracked files even if matched by .gitignore" {

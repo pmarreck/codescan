@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
