@@ -7,13 +7,14 @@ close=[
 ]
 
 annotate=[
-	README.md = usage, search evidence semantics, model setup, and operations guide
+	README.md = User guide, including supported languages, extensionless-script rules, Jina setup, and watcher operation.
 	docs/jina-code-embeddings-ollama.md = Verified fully local Ollama Jina setup, pooling-metadata fix, hashes, configuration, and acceptance evidence
 	reindex_all = Sequentially update direct-child Git projects with local Ollama Jina and percentage progress
+	src/extract_bash.zig = Extracts Bash functions and a file-level module for searchable top-level script content.
 	src/freshness.zig = Watcher-aware pre-search reconciliation, stale fallback, and watcher-advisory classifiers
-	src/indexer.zig = Crash-safe incremental indexing with post-flush completion markers and recovery
+	src/indexer.zig = Indexes full/update/watcher paths with shared classification and crash-safe post-embedding file markers.
 	src/output.zig = human/JSON search output with score explanations and confidence notes
-	src/scan.zig = Direct Git candidate iteration with native-walker fallback and delayed discovery progress
+	src/scan.zig = Discovers eligible files and classifies extensionless executable text scripts by recognized shebang.
 	src/search.zig = hybrid retrieval, lexical field provenance, and evidence/confidence classification
 	src/storage.zig = SQLite/sqlite-vec storage with linear-time embedding completeness checks
 	test_jina = Live acceptance gate proving fully local Ollama serves 1536-dimensional Jina embeddings

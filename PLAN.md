@@ -1,5 +1,16 @@
 # Plan
 
+## 2026-07-23 — script discovery and language expansion
+
+- [x] Classify extensionless scripts consistently in discovery, full index, update, and watcher reindex paths using regular-text-file, executable-bit, and recognized-shebang evidence. (completed 2026-07-23 12:55 EDT)
+  Curiosity poke: extension-bearing source remains governed by its plugin, while non-executable files and NUL-containing binary impostors must never enter through shebang fallback.
+- [x] Preserve top-level Bash commands, assignments, and control flow as a searchable file-level module alongside extracted functions. (completed 2026-07-23 13:00 EDT)
+  Curiosity poke: top-level literals such as `notarytool` need file provenance without pretending every command is a named function.
+- [ ] Add supported-language shebang aliases for existing extractors, beginning with Ruby and then explicitly reviewing Clojure/Babashka, Node-family JavaScript, Elixir/Escript, Haskell runners, Swift, Nim, Erlang, and OCaml.
+  Curiosity poke: an interpreter alias is valid only when its syntax is genuinely compatible with the selected extractor grammar; Nix multi-line shebangs and `env -S` need deliberate fixtures.
+- [ ] Expand the supported-language matrix with Fish, Nushell, PowerShell, Tcl, Oil Shell (OSH/YSH distinctions), F#, Elm, Gleam, Racket/Scheme, Common Lisp, and Standard ML; document grammar provenance, extensions, shebang aliases, extraction coverage, and limitations.
+  Curiosity poke: Clojure and OCaml are already supported; explicitly document Python and Scala as project-policy exclusions so they are not added accidentally.
+
 ## 2026-07-22 — fully local Jina via Ollama
 
 - [x] Make watchers explicit and reconcile the index silently before every indexed search when no project watcher is active. (completed 2026-07-23 11:33 EDT)
@@ -24,8 +35,8 @@
   Curiosity poke: `dirtree` itself must remain eligible because its recreate-first index was interrupted.
 - [ ] Reproduce the historical `codescan watch` heap growth with deterministic synthetic event batches and compare implicit versus explicit roots.
   Curiosity poke: distinguish an event-loop allocation leak from an unbounded cache without overnight sleeps or RSS-only assertions.
-- [ ] Reproduce WAT and extensionless-Bash indexing as a tracked-file classifier set before changing plugin coverage.
-  Curiosity poke: `code.wat`, executable `test`, nested extensionless scripts, ignored files, and ordinary extensionless data must be classified together.
+- [ ] Reproduce WAT indexing as a tracked-file classifier set before changing plugin coverage.
+  Curiosity poke: `code.wat`, nested tracked modules, ignored files, and ordinary extensionless data must be classified together.
 - [x] Import Jina GGUF with explicit last-token pooling metadata so Ollama exposes embedding capability. (completed 2026-07-22 17:00 EDT)
   Curiosity poke: model metadata must select Jina's required EOS/last pooling, not merely make the endpoint return numbers.
 - [x] Point this repository at `127.0.0.1:11434` without an API key or Tailscale dependency. (completed 2026-07-22 17:00 EDT)

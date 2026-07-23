@@ -170,6 +170,8 @@ pub fn indexAll(
 	if (debug) {
 		debugLog(stderr, "codescan: debug: indexing {d} files\n", .{files.len});
 	}
+	var root_dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{});
+	defer root_dir.close(io_singleton.getOrInit());
 	if (show_progress) {
 		printProgress(stderr, 0, files.len, false);
 	}
@@ -185,7 +187,7 @@ pub fn indexAll(
 		if (debug) {
 			debugLog(stderr, "codescan: debug: scanning {s}\n", .{rel_path});
 		}
-		const extractor = registry.find(rel_path) orelse continue;
+		const extractor = scan.findExtractor(root_dir, registry, rel_path) orelse continue;
 		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
 		if (!extAllowed(rel_path, options.allowed_exts)) continue;
 		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
@@ -389,6 +391,8 @@ pub fn indexIncremental(
 		.recovered_files = recovered_files,
 		.symbols = 0,
 	};
+	var root_dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{});
+	defer root_dir.close(io_singleton.getOrInit());
 
 	// 3. Detect and process deleted files
 	for (indexed) |item| {
@@ -431,7 +435,7 @@ pub fn indexIncremental(
 			}
 		}
 
-		const extractor = registry.find(rel_path) orelse continue;
+		const extractor = scan.findExtractor(root_dir, registry, rel_path) orelse continue;
 		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
 		if (!extAllowed(rel_path, options.allowed_exts)) continue;
 
@@ -564,7 +568,9 @@ pub fn reindexFile(
 	root_path: []const u8,
 	registry: plugin.Registry,
 ) !void {
-	const extractor = registry.find(rel_path) orelse return;
+	var root_dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{});
+	defer root_dir.close(io_singleton.getOrInit());
+	const extractor = scan.findExtractor(root_dir, registry, rel_path) orelse return;
 
 	const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
 	defer allocator.free(full_path);
@@ -1535,6 +1541,69 @@ test "indexIncremental indexes new files and skips unchanged" {
 	try std.testing.expectEqual(@as(usize, 0), stats2.new_files);
 	try std.testing.expectEqual(@as(usize, 0), stats2.modified_files);
 	try std.testing.expectEqual(@as(usize, 1), stats2.unchanged_files);
+}
+
+test "indexIncremental indexes extensionless scripts classified by shebang" {
+	if (comptime !std.Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "notarize_macos",
+		.data = "#!/usr/bin/env bash\nnotarize_macos() {\n\tprintf 'notarizing\\n'\n}\n",
+		.flags = .{ .permissions = .executable_file },
+	});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+	const stats = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
+		.embedding_dim = 2,
+		.batch_size = 2,
+	});
+
+	try std.testing.expectEqual(@as(usize, 1), stats.new_files);
+	try std.testing.expectEqual(@as(usize, 1), stats.symbols);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+
+	const languages = try storage.languageStats(db, allocator);
+	defer {
+		for (languages) |language| allocator.free(language.language);
+		allocator.free(languages);
+	}
+	try std.testing.expectEqual(@as(usize, 1), languages.len);
+	try std.testing.expectEqualStrings("bash", languages[0].language);
+	try std.testing.expectEqual(@as(i64, 1), languages[0].file_count);
+}
+
+test "reindexFile classifies an extensionless executable script by shebang" {
+	if (comptime !std.Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "publish",
+		.data = "#!/bin/bash\npublish() {\n\tprintf 'publishing\\n'\n}\n",
+		.flags = .{ .permissions = .executable_file },
+	});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	try reindexFile(allocator, db, "publish", root, plugin.defaultRegistry());
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
 }
 
 test "indexIncremental detects deleted files" {

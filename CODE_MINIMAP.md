@@ -60,15 +60,15 @@
 - src/extract_idris.zig: Idris2 extractor (line-based fallback) + tests
 - src/extract_nix.zig: Nix extractor using tree-sitter + tests
 - src/extract_nim.zig: Nim extractor using tree-sitter + tests
-- src/extract_bash.zig: Bash extractor using tree-sitter + tests
+- src/extract_bash.zig: Bash tree-sitter extractor for functions plus file-level modules that preserve searchable top-level script content + tests
 - src/extract_lua.zig: Lua extractor using tree-sitter + tests
 - src/extract_haskell.zig: Haskell extractor using tree-sitter + tests
 - src/extract_markdown.zig: Markdown heading-based chunk extractor + tests
 - src/extract_text.zig: Plain text paragraph/line/sentence extractor + tests
 - src/extract_log.zig: Log line extractor + tests
 - src/extract_util.zig: shared helpers for doc comments + line splitting
-- src/scan.zig: direct Git candidate iteration with native-walker fallback, ignore matching, delayed discovery progress, symlink classification, and shebang detection + tests
-- src/indexer.zig: indexing pipeline with post-flush file completion markers, interrupted-file recovery, vanished-file cleanup, heuristic symbol metadata, embedding truncation, and TTY progress + tests
+- src/scan.zig: direct Git candidate iteration with native-walker fallback, ignore matching, delayed discovery progress, symlink classification, and executable/text/shebang classification for extensionless scripts + tests
+- src/indexer.zig: indexing pipeline with shared script classification across full/update/watcher paths, post-flush file completion markers, interrupted-file recovery, vanished-file cleanup, heuristic symbol metadata, embedding truncation, and TTY progress + tests
 - src/freshness.zig: watcher-aware pre-search reconciliation, stale-index fallback policy, activity detection, and watcher advisory threshold classifiers with injected-time tests
 - src/search.zig: vector/lexical/hybrid search + weighted_sum/RRF fusion + lower default score dropoff threshold (0.3) + FTS candidate generation + intent-aware natural-language scoring (lookup/navigation/conceptual), local/generic symbol demotion, duplicate signature diversity penalty, metadata-aware scoring boosts, lexical match-field provenance, and evidence/confidence classification + tests
 - src/output.zig: human/json output formatting for results (includes symbol metadata, evidence/confidence, and lexical-source explanation in JSON payload) + tests

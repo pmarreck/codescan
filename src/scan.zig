@@ -24,6 +24,7 @@ const IgnoreSet = struct {
 
 const node_modules_pattern = "**/node_modules/**";
 const bin_pattern = "**/bin/**";
+const max_shebang_line_bytes = 256;
 
 pub const FileProgress = struct {
 	context: *anyopaque,
@@ -182,16 +183,19 @@ fn appendEligibleFile(
 	results: *std.ArrayListUnmanaged([]const u8),
 	progress: ?FileProgress,
 ) !void {
-	var extractor = registry.find(path);
-	if (extractor == null) {
-		if (detectShebangLanguage(dir, path)) |language| {
-			extractor = registry.findByLanguage(language);
-		}
-	}
-	const chosen = extractor orelse return;
+	const chosen = findExtractor(dir, registry, path) orelse return;
 	if (shouldIgnore(allocator, ignore_sets, chosen.language, path)) return;
 	try results.append(allocator, try allocator.dupe(u8, path));
 	if (progress) |value| value.observe(results.items.len);
+}
+
+/// Resolves an extractor by filename first, then by an extensionless script's
+/// shebang so discovery, updates, and watcher reindexing classify identically.
+pub fn findExtractor(dir: std.Io.Dir, registry: plugin.Registry, path: []const u8) ?*const plugin.Extractor {
+	if (registry.find(path)) |extractor| return extractor;
+	if (std.fs.path.extension(path).len != 0) return null;
+	const language = detectShebangLanguage(dir, path) orelse return null;
+	return registry.findByLanguage(language);
 }
 
 fn captureGitFileList(allocator: std.mem.Allocator, root_path: []const u8) !?[]u8 {
@@ -304,19 +308,52 @@ fn isSymlinkToFile(dir: std.Io.Dir, rel_path: []const u8) bool {
 }
 
 fn detectShebangLanguage(dir: std.Io.Dir, rel_path: []const u8) ?[]const u8 {
-	var file = dir.openFile(io_singleton.getOrInit(), rel_path, .{}) catch return null;
-	defer file.close(io_singleton.getOrInit());
-
-	var buf: [256]u8 = undefined;
 	const io = io_singleton.getOrInit();
-	var freader = file.reader(io, &buf);
-	const n = freader.interface.readSliceShort(&buf) catch return null;
-	if (n < 2) return null;
-	if (buf[0] != '#' or buf[1] != '!') return null;
+	const stat = dir.statFile(io, rel_path, .{}) catch return null;
+	if (stat.kind != .file) return null;
+	if (comptime std.Io.File.Permissions.has_executable_bit) {
+		if (stat.permissions.toMode() & 0o111 == 0) return null;
+	} else {
+		return null;
+	}
 
-	const slice = buf[0..n];
-	const line_end = std.mem.indexOfScalar(u8, slice, '\n') orelse slice.len;
-	return parseShebang(slice[0..line_end]);
+	var file = dir.openFile(io_singleton.getOrInit(), rel_path, .{}) catch return null;
+	defer file.close(io);
+
+	var chunk: [4096]u8 = undefined;
+	var first_line: [max_shebang_line_bytes]u8 = undefined;
+	var first_line_len: usize = 0;
+	var language: ?[]const u8 = null;
+	var first_line_complete = false;
+
+	while (true) {
+		const n = file.readStreaming(io, &.{&chunk}) catch |err| switch (err) {
+			error.EndOfStream => break,
+			else => return null,
+		};
+		if (n == 0) return null;
+
+		for (chunk[0..n]) |byte| {
+			// NUL is not valid shell source and is the conventional binary-file
+			// discriminator. Continue through the entire candidate after parsing
+			// its shebang so a binary payload cannot masquerade as a script.
+			if (byte == 0) return null;
+			if (first_line_complete) continue;
+			if (byte == '\n') {
+				language = parseShebang(first_line[0..first_line_len]) orelse return null;
+				first_line_complete = true;
+				continue;
+			}
+			if (first_line_len == first_line.len) return null;
+			first_line[first_line_len] = byte;
+			first_line_len += 1;
+		}
+	}
+
+	if (!first_line_complete) {
+		language = parseShebang(first_line[0..first_line_len]) orelse return null;
+	}
+	return language;
 }
 
 fn parseShebang(line: []const u8) ?[]const u8 {
@@ -359,6 +396,7 @@ fn basename(path: []const u8) []const u8 {
 fn shebangLanguage(name: []const u8) ?[]const u8 {
 	if (std.mem.eql(u8, name, "bash") or std.mem.eql(u8, name, "sh")) return "bash";
 	if (std.mem.eql(u8, name, "lua") or std.mem.eql(u8, name, "luajit")) return "lua";
+	if (std.mem.eql(u8, name, "ruby")) return "ruby";
 	return null;
 }
 
@@ -523,13 +561,47 @@ test "findFiles finds supported extensions" {
 	try std.testing.expect(found_readme);
 }
 
-test "findFiles includes shebang scripts without extension" {
+test "findFiles classifies extensionless scripts from text executable shebangs" {
+	if (comptime !std.Io.File.Permissions.has_executable_bit) return error.SkipZigTest;
+
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "script", .data = "#!/usr/bin/env bash\nexit 0\n" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "luascript", .data = "#!/usr/bin/env luajit\nprint('ok')\n" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "pythonscript", .data = "#!/usr/bin/env python3\nprint('no')\n" });
+	const executable = std.Io.Dir.CreateFileOptions{ .permissions = .executable_file };
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "script",
+		.data = "#!/usr/bin/env bash\nexit 0\n",
+		.flags = executable,
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "luascript",
+		.data = "#!/usr/bin/env luajit\nprint('ok')\n",
+		.flags = executable,
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "rubyscript",
+		.data = "#!/usr/bin/env ruby\ndef ok = true\n",
+		.flags = executable,
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "non_executable",
+		.data = "#!/usr/bin/env bash\nexit 0\n",
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "missing_shebang",
+		.data = "echo no\n",
+		.flags = executable,
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "unsupported_shebang",
+		.data = "#!/usr/bin/env python3\nprint('no')\n",
+		.flags = executable,
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "binary_impostor",
+		.data = "#!/usr/bin/env bash\nprintf ok\n\x00binary\n",
+		.flags = executable,
+	});
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -545,18 +617,24 @@ test "findFiles includes shebang scripts without extension" {
 		allocator.free(files);
 	}
 
-	try std.testing.expectEqual(@as(usize, 2), files.len);
+	try std.testing.expectEqual(@as(usize, 3), files.len);
 	var found_bash = false;
 	var found_lua = false;
-	var found_python = false;
+	var found_ruby = false;
+	var found_false_positive = false;
 	for (files) |path| {
 		if (std.mem.eql(u8, path, "script")) found_bash = true;
 		if (std.mem.eql(u8, path, "luascript")) found_lua = true;
-		if (std.mem.eql(u8, path, "pythonscript")) found_python = true;
+		if (std.mem.eql(u8, path, "rubyscript")) found_ruby = true;
+		if (std.mem.eql(u8, path, "non_executable") or
+			std.mem.eql(u8, path, "missing_shebang") or
+			std.mem.eql(u8, path, "unsupported_shebang") or
+			std.mem.eql(u8, path, "binary_impostor")) found_false_positive = true;
 	}
 	try std.testing.expect(found_bash);
 	try std.testing.expect(found_lua);
-	try std.testing.expect(!found_python);
+	try std.testing.expect(found_ruby);
+	try std.testing.expect(!found_false_positive);
 }
 
 test "findFiles respects ignores" {

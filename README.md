@@ -64,6 +64,24 @@ Codescan falls back to its native filesystem walker. Built-in and
 cannot be interpreted exactly. Configure `always_include` when a deliberately
 gitignored file should remain searchable.
 
+### Extensionless scripts
+
+Files with registered extensions such as `.sh`, `.bash`, `.lua`, and `.rb` use
+their language plugin directly. Codescan also recognizes an extensionless file
+as a script when all of these are true:
+
+- it is a regular text file (NUL-containing binary files are rejected);
+- at least one executable permission bit is set on platforms that provide
+  executable bits; and
+- its first line is a recognized shebang.
+
+Current shebang mappings are `bash`/`sh` to Bash, `lua`/`luajit` to Lua, and
+`ruby` to Ruby, including `/usr/bin/env` forms. Discovery, full indexing,
+incremental updates, and watcher-triggered reindexing share this classifier.
+The Bash extractor also emits a file-level module for top-level commands,
+assignments, and control flow, so literals outside shell functions remain
+searchable with their source-file provenance.
+
 ## Test
 
 ```bash

@@ -36,7 +36,12 @@ pub fn extract(
 	var lines = try util.splitLines(allocator, source);
 	defer lines.deinit(allocator);
 
-	var cursor = ts.ts_tree_cursor_new(ts.ts_tree_root_node(tree));
+	const root = ts.ts_tree_root_node(tree);
+	if (hasTopLevelScriptContent(root)) {
+		try results.append(allocator, try extractFileSymbol(allocator, file_path, root));
+	}
+
+	var cursor = ts.ts_tree_cursor_new(root);
 	defer ts.ts_tree_cursor_delete(&cursor);
 
 	var done = false;
@@ -61,6 +66,49 @@ pub fn extract(
 	}
 
 	return results.toOwnedSlice(allocator);
+}
+
+/// Preserves commands, assignments, and control flow outside functions by
+/// representing the executable script itself as a searchable module.
+fn hasTopLevelScriptContent(root: ts.TSNode) bool {
+	const child_count = ts.ts_node_named_child_count(root);
+	for (0..child_count) |index| {
+		const child = ts.ts_node_named_child(root, @intCast(index));
+		const ty = std.mem.span(ts.ts_node_type(child));
+		if (!std.mem.eql(u8, ty, "comment") and
+			!std.mem.eql(u8, ty, "function_definition")) return true;
+	}
+	return false;
+}
+
+fn extractFileSymbol(
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	root: ts.TSNode,
+) !model.Symbol {
+	const language = try allocator.dupe(u8, "bash");
+	errdefer allocator.free(language);
+	const owned_path = try allocator.dupe(u8, file_path);
+	errdefer allocator.free(owned_path);
+	const name = try allocator.dupe(u8, std.fs.path.basename(file_path));
+	errdefer allocator.free(name);
+	const signature = try std.fmt.allocPrint(allocator, "script {s}", .{name});
+	errdefer allocator.free(signature);
+	const symbol_kind = try allocator.dupe(u8, "module");
+	errdefer allocator.free(symbol_kind);
+
+	const end = ts.ts_node_end_point(root);
+	const end_line = @as(usize, @intCast(end.row)) + @intFromBool(end.column > 0);
+	return .{
+		.language = language,
+		.file_path = owned_path,
+		.name = name,
+		.signature = signature,
+		.doc_comment = null,
+		.symbol_kind = symbol_kind,
+		.start_line = 1,
+		.end_line = @max(1, end_line),
+	};
 }
 
 fn isFunctionDefinition(node: ts.TSNode) bool {
@@ -138,6 +186,27 @@ test "extract finds bash functions" {
 	try std.testing.expectEqual(@as(usize, 1), symbols.len);
 	try std.testing.expectEqualStrings("greet", symbols[0].name);
 	try std.testing.expectEqualStrings("greets", symbols[0].doc_comment.?);
+}
+
+test "extract exposes top-level script content as a file symbol" {
+	const allocator = std.testing.allocator;
+	const source =
+		"#!/usr/bin/env bash\n" ++
+		"# Submit the signed archive to Apple's notary service.\n" ++
+		"profile=\"${NOTARY_PROFILE:-release}\"\n" ++
+		"xcrun notarytool submit app.zip --keychain-profile \"$profile\"\n";
+
+	const symbols = try extract(allocator, "notarize_macos", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expectEqualStrings("notarize_macos", symbols[0].name);
+	try std.testing.expectEqualStrings("module", symbols[0].symbol_kind.?);
+	try std.testing.expectEqual(@as(usize, 1), symbols[0].start_line);
+	try std.testing.expectEqual(@as(usize, 4), symbols[0].end_line);
 }
 
 
