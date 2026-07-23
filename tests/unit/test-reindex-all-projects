@@ -22,6 +22,8 @@ mkdir -p \
 	"$fake_bin" \
 	"$root/projects/aedicule/.git" \
 	"$root/projects/alpha/.git" \
+	"$root/projects/codescan/.git" \
+	"$root/projects/dirtree/.git" \
 	"$root/projects/not-a-repo" \
 	"$root/projects/project with space/.git" \
 	"$root/projects/project with space/.codescan" \
@@ -66,6 +68,7 @@ fi
 
 expected_paths=$(printf '%s\n' \
 	"$root/projects/alpha" \
+	"$root/projects/dirtree" \
 	"$root/projects/project with space" \
 	"$root/projects/worktree")
 actual_paths=$(cat "$log")
@@ -74,10 +77,11 @@ if [ "$actual_paths" != "$expected_paths" ]; then
 fi
 
 for progress in \
-	'[0/3 — 0%]' \
-	'[1/3 — 33%]' \
-	'[2/3 — 66%]' \
-	'[3/3 — 100%]'
+	'[0/4 — 0%]' \
+	'[1/4 — 25%]' \
+	'[2/4 — 50%]' \
+	'[3/4 — 75%]' \
+	'[4/4 — 100%]'
 do
 	case "$out" in
 		*"$progress"*) ;;
@@ -85,7 +89,7 @@ do
 	esac
 done
 
-if printf '%s' "$actual_paths" | rg -q '/(aedicule|validate)$'; then
+if printf '%s' "$actual_paths" | rg -q '/(aedicule|codescan|validate)$'; then
 	fail 'excluded project was indexed'
 fi
 if printf '%s' "$actual_paths" | rg -q '/not-a-repo$'; then
@@ -127,11 +131,11 @@ capture env \
 if [ "$rc" -ne 1 ]; then
 	fail "failure run exited $rc instead of 1"
 fi
-if [ "$(wc -l < "$log")" -ne 3 ]; then
+if [ "$(wc -l < "$log")" -ne 4 ]; then
 	fail 'runner did not continue after an indexing failure'
 fi
 case "$out" in
-	*'[3/3 — 100%]'*) ;;
+	*'[4/4 — 100%]'*) ;;
 	*) fail 'failure run did not finish its candidate set' ;;
 esac
 case "$err" in

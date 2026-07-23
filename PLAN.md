@@ -4,6 +4,8 @@
 
 - [x] Add a sequential `~/Code` Git-project reindex runner with exact exclusions and percentage progress. (completed 2026-07-22 18:06 EDT)
   Curiosity poke: paths with spaces, `.git` files, failed indexes, and an empty candidate set must not corrupt traversal or hide failures.
+- [x] Resume the interrupted sweep at `dirtree` by skipping only previously completed project names. (completed 2026-07-22 20:24 EDT)
+  Curiosity poke: `dirtree` itself must remain eligible because its recreate-first index was interrupted.
 - [x] Import Jina GGUF with explicit last-token pooling metadata so Ollama exposes embedding capability. (completed 2026-07-22 17:00 EDT)
   Curiosity poke: model metadata must select Jina's required EOS/last pooling, not merely make the endpoint return numbers.
 - [x] Point this repository at `127.0.0.1:11434` without an API key or Tailscale dependency. (completed 2026-07-22 17:00 EDT)

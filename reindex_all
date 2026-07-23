@@ -8,6 +8,49 @@ jina_model='jina-code-embeddings:1.5b'
 jina_dim=1536
 projects=()
 failures=()
+completed_projects=(
+	63a769e1b33da2d7d74630d274747af2
+	7z_cleanroom
+	7zip
+	BLIP
+	ChronoPulse
+	GodotOceanWaves
+	MazeWarsVT100
+	Nim
+	addigence-backend
+	addigence-ex
+	addigence-mobile
+	aedicule
+	aff3ct
+	alpaca-lora
+	baml
+	bash_irc_quotes
+	bitrot_guard
+	blar
+	blip_mp
+	browser-use
+	bzip2z
+	c0
+	calendar_spam_burninator
+	chatscan
+	checkmate
+	checkmate.orig
+	chip
+	cj5
+	claudecodeusage
+	clocksound-service-gist
+	codescan
+	codex
+	coherence
+	cols
+	compact_pro
+	critical_thinker
+	deadcells_save_editor
+	deflate_fingerprint
+	dgop
+	difz
+	validate
+)
 
 # Persist the same local model used for indexing without rewriting existing policy.
 ensure_local_jina_config() {
@@ -27,6 +70,15 @@ ensure_local_jina_config() {
 		> "$codescan_dir/config.ini"
 }
 
+# Resume after the first sweep completed these projects; dirtree was interrupted.
+should_skip_project() {
+	local completed
+	for completed in "${completed_projects[@]}"; do
+		[ "$1" = "$completed" ] && return 0
+	done
+	return 1
+}
+
 if [ ! -d "$code_root" ]; then
 	printf 'Project root is not a directory: %s\n' "$code_root" >&2
 	exit 2
@@ -43,9 +95,7 @@ while IFS= read -r -d '' project; do
 	[ -e "$project/.git" ] || continue
 
 	name="${project##*/}"
-	case "$name" in
-		aedicule|validate) continue ;;
-	esac
+	should_skip_project "$name" && continue
 
 	projects+=("$project")
 done < <(
