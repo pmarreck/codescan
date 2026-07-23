@@ -43,7 +43,8 @@ const Defaults = struct {
 	db_path: []const u8 = ".codescan/index.sqlite3",
 	embedding_url: []const u8 = "http://localhost:11434",
 	embedding_model: []const u8 = "bge-large",
-	embedding_dim: usize = 1024,	batch_size: usize = 16,
+    embedding_dim: usize = 1024,
+    batch_size: usize = 16,
 	max_file_size: usize = 5 * 1024 * 1024,
 	search_mode: search.SearchMode = .hybrid,
 	fusion: search.FusionMode = .weighted_sum,
@@ -62,6 +63,7 @@ const Defaults = struct {
 const Settings = struct {
 	output: cli.OutputFormat,
 	show_comments: bool,
+    no_progress: bool,
 	top_n: usize,
 	root_path: []const u8,
 	db_path: []const u8,
@@ -154,7 +156,8 @@ pub fn main(init: std.process.Init) !void {
 				_ = stderr.print("error: {s} for {s}\n\n", .{ usageErrorMessage(err), cli.last_err_context }) catch {};
 			} else {
 				_ = stderr.print("error: {s}\n\n", .{usageErrorMessage(err)}) catch {};
-			}            _ = printUsage(stderr, null) catch {};
+            }
+            _ = printUsage(stderr, null) catch {};
 			_ = stderr.flush() catch {};
 			std.process.exit(64);
 		}
@@ -457,7 +460,8 @@ pub fn main(init: std.process.Init) !void {
             setup_model_text.print(stdout, dialect) catch {};
             try stdout.flush();
         },
-		.clean => {			const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+        .clean => {
+            const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 
 			// Require confirmation to prevent accidental data loss
 			if (!parsed.confirm) {
@@ -510,6 +514,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	var settings = Settings{
 		.output = defaults.output,
 		.show_comments = false,
+        .no_progress = parsed.no_progress,
 		.top_n = defaults.top_n,
 		.root_path = default_root,
 		.db_path = defaults.db_path,
@@ -689,7 +694,6 @@ fn probeEmbeddingDim(allocator: std.mem.Allocator, embedder: embedding.Embedder)
     return embeddings[0].len;
 }
 
-
 fn ensureModelAvailableOrExit(
 	allocator: std.mem.Allocator,
 	transport: embedding_http.Transport,
@@ -796,9 +800,8 @@ fn ensureModelAvailableOrPrompt(
 	};
 }
 
-
-fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat) bool {
-	return is_tty and out_format == .human;
+fn shouldShowProgress(is_tty: bool, out_format: cli.OutputFormat, no_progress: bool) bool {
+    return !no_progress and is_tty and out_format == .human;
 }
 
 /// Tries to connect to Ollama and ensure the model is available.
@@ -1073,8 +1076,6 @@ fn writeDetectedConfigLexical(allocator: std.mem.Allocator, config_root: []const
     try file.writeStreamingAll(io_singleton.getOrInit(), updated);
 }
 
-
-
 /// Performs a full index (shared between `codescan index` and auto-index-before-search).
 fn performFullIndex(
 	allocator: std.mem.Allocator,
@@ -1310,7 +1311,6 @@ fn findRepoRootInfoUntil(
 	allocator.free(current);
 	return null;
 }
-
 
 fn findRepoRootUntil(
 	allocator: std.mem.Allocator,
@@ -1594,7 +1594,6 @@ fn tryReindexFile(allocator: std.mem.Allocator, db_path: []const u8, root_path: 
 	};
 }
 
-
 const MIN_TMP_SPACE_BYTES: u64 = 50 * 1024 * 1024; // 50 MB
 
 /// Platform-dispatched statvfs: manual extern struct for Linux (musl
@@ -1859,7 +1858,11 @@ fn runInit(
 	else
 		embedding.NullEmbedder.embedder();
 
-	const show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output);
+    const show_progress = shouldShowProgress(
+        std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
+        settings.output,
+        settings.no_progress,
+    );
 
 	const stats = try performFullIndex(
 		allocator,
@@ -1938,7 +1941,8 @@ fn runIndex(
 		db,
 		settings.root_path,
 		registry,
-		active_embedder,				.{
+        active_embedder,
+        .{
 			.embedding_dim = effective_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
@@ -1951,7 +1955,11 @@ fn runIndex(
 				.include_node_modules = settings.include_node_modules,
 				.always_include = settings.always_include,
 			},
-			.show_progress = shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output),
+            .show_progress = shouldShowProgress(
+                std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
+                settings.output,
+                settings.no_progress,
+            ),
 		},
 	);
 
@@ -2123,6 +2131,7 @@ const DiscoveryProgress = struct {
 
 pub const UpdateSettings = struct {
 	output: cli.OutputFormat,
+    no_progress: bool = false,
 	root_path: []const u8,
 	db_path: []const u8,
 	embedding_url: []const u8,
@@ -2143,6 +2152,7 @@ pub const UpdateSettings = struct {
 fn updateSettings(settings: Settings) UpdateSettings {
 	return .{
 		.output = settings.output,
+        .no_progress = settings.no_progress,
 		.root_path = settings.root_path,
 		.db_path = settings.db_path,
 		.embedding_url = settings.embedding_url,
@@ -2290,7 +2300,11 @@ fn runUpdateWithInvocation(
 	defer index_filters.deinit(allocator);
 
 	const show_progress = invocation == .explicit and
-		shouldShowProgress(std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false, settings.output);
+        shouldShowProgress(
+            std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
+            settings.output,
+            settings.no_progress,
+        );
 	var discovery_stderr_buf: [4096]u8 = undefined;
 	var discovery_stderr_writer = io_singleton.stderrWriter(&discovery_stderr_buf);
 	var discovery_progress = DiscoveryProgress.init(
@@ -2307,7 +2321,8 @@ fn runUpdateWithInvocation(
 		db,
 		settings.root_path,
 		registry,
-		active_embedder,				.{
+        active_embedder,
+        .{
 			.embedding_dim = effective_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
@@ -2734,7 +2749,6 @@ fn runSearch(
 		.freshness = freshness_result.outputMetadata(),
 	});
 	try stdout.flush();
-
 }
 
 /// Manage the background watcher (start/stop/status/list/prune).
@@ -2838,7 +2852,8 @@ fn runWatch(
 						w.elapsed,
 						if (w.active) "yes" else "no",
 						w.root,
-					});						}
+                    });
+                }
 				var orphan_count: usize = 0;
 				for (watchers.items) |w| {
 					if (!w.active) orphan_count += 1;
@@ -3470,7 +3485,6 @@ fn findFirstMatch(
 	}
 	return null;
 }
-
 
 fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 	// Returns byte offset of the start of each line (0-indexed line numbers)
@@ -5011,7 +5025,7 @@ const usage =
     \\
     \\Use 'codescan help <command>' for details on any command.
     \\Topics: hashlines, name-paths, languages, lsp
-    \\Common: --root <path>  --json  --top <n>  --file <path>  -h/--help
+    \\Common: --root <path>  --json  --no-progress  --top <n>  --file <path>  -h/--help
     \\
 ;
 
@@ -5085,6 +5099,8 @@ const usage_index =
     \\  --ext <csv>                     Restrict indexed extensions
     \\  --include-node-modules          Include node_modules
     \\  --lexical-only                  Skip embeddings, index for lexical search only
+    \\  --no-progress                   Suppress interactive progress on stderr
+    \\  --progress                      Restore automatic TTY progress if suppressed earlier
     \\  --json                          JSON output
     \\
     \\Examples:
@@ -5104,6 +5120,8 @@ const usage_update =
     \\  --ext <csv>                     Restrict indexed extensions
     \\  --include-node-modules          Include node_modules
     \\  --lexical-only                  Skip embeddings, index for lexical search only
+    \\  --no-progress                   Suppress interactive progress on stderr
+    \\  --progress                      Restore automatic TTY progress if suppressed earlier
     \\  --json                          JSON output
     \\
     \\Examples:
@@ -6652,7 +6670,6 @@ test "detectEmbeddingServer Ollama up but model missing" {
     try std.testing.expect(!result.?.model_available);
 }
 
-
 test "findRepoRoot finds nearest .codescan ancestor" {
 	const allocator = std.testing.allocator;
 	var tmp = std.testing.tmpDir(.{});
@@ -6779,9 +6796,10 @@ test "findRepoRoot returns null when missing" {
 }
 
 test "shouldShowProgress requires tty and human output" {
-	try std.testing.expect(shouldShowProgress(true, .human));
-	try std.testing.expect(!shouldShowProgress(false, .human));
-	try std.testing.expect(!shouldShowProgress(true, .json));
+    try std.testing.expect(shouldShowProgress(true, .human, false));
+    try std.testing.expect(!shouldShowProgress(false, .human, false));
+    try std.testing.expect(!shouldShowProgress(true, .json, false));
+    try std.testing.expect(!shouldShowProgress(true, .human, true));
 }
 
 test "help topic search returns focused usage" {

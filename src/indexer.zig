@@ -243,7 +243,7 @@ pub fn indexAll(
                 if (sym.end_line > 0 and sym.end_line <= h.len)
                     sym_with_hash.end_hash = h[sym.end_line - 1];
             }
-            const body = try extractSourceBody(allocator, source, sym.start_line, sym.end_line);
+            const body = try extractSymbolBody(allocator, source, sym);
             defer if (body) |b| allocator.free(b);
             sym_with_hash.body = body;
             const rowid = try storage.insertSymbol(db, sym_with_hash);
@@ -506,7 +506,7 @@ pub fn indexIncremental(
                 if (sym.end_line > 0 and sym.end_line <= h.len)
                     sym_with_hash.end_hash = h[sym.end_line - 1];
             }
-            const body = try extractSourceBody(allocator, source, sym.start_line, sym.end_line);
+            const body = try extractSymbolBody(allocator, source, sym);
             defer if (body) |b| allocator.free(b);
             sym_with_hash.body = body;
             const rowid = try storage.insertSymbol(db, sym_with_hash);
@@ -608,7 +608,7 @@ pub fn reindexFile(
             if (sym.end_line > 0 and sym.end_line <= h.len)
                 sym_with_hash.end_hash = h[sym.end_line - 1];
         }
-        const body = try extractSourceBody(allocator, source, sym.start_line, sym.end_line);
+        const body = try extractSymbolBody(allocator, source, sym);
         defer if (body) |b| allocator.free(b);
         sym_with_hash.body = body;
         _ = try storage.insertSymbol(db, sym_with_hash);
@@ -824,6 +824,19 @@ fn hasExtensionIgnoreCase(path: []const u8, ext: []const u8) bool {
 
 /// Split source into lines and compute chain hashes.
 const max_body_bytes: usize = 16 * 1024; // 16 KB cap per symbol body
+
+/// Avoids copying normalized Markdown frontmatter back into its FTS body field;
+/// metadata symbols already carry the weighted description and tag evidence.
+fn extractSymbolBody(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    symbol: model.Symbol,
+) !?[]const u8 {
+    if (symbol.symbol_kind) |symbol_kind| {
+        if (std.mem.eql(u8, symbol_kind, "frontmatter")) return null;
+    }
+    return extractSourceBody(allocator, source, symbol.start_line, symbol.end_line);
+}
 
 /// Extract the source body for a symbol from source text, given its 1-based line range.
 /// Returns an owned slice truncated to max_body_bytes, or null if the range is invalid.
@@ -1252,6 +1265,34 @@ test "buildSymbolText truncates long inputs" {
     const text = try buildSymbolText(allocator, symbol, .doc);
     defer allocator.free(text);
     try std.testing.expect(text.len <= max_embed_bytes_doc);
+}
+
+test "frontmatter symbol body does not duplicate raw yaml" {
+    const allocator = std.testing.allocator;
+    var frontmatter = model.Symbol{
+        .language = try allocator.dupe(u8, "markdown"),
+        .file_path = try allocator.dupe(u8, "memory.frontmatter.md"),
+        .name = try allocator.dupe(u8, "memory.frontmatter.md"),
+        .signature = try allocator.dupe(u8, "A searchable description"),
+        .doc_comment = try allocator.dupe(u8, "nix flakes"),
+        .symbol_kind = try allocator.dupe(u8, "frontmatter"),
+        .start_line = 1,
+        .end_line = 4,
+    };
+    defer frontmatter.deinit(allocator);
+    const source =
+        "---\n" ++
+        "description: A searchable description\n" ++
+        "datetime: 2026-07-23T14:00:00-04:00\n" ++
+        "---\n";
+
+    try std.testing.expect(try extractSymbolBody(allocator, source, frontmatter) == null);
+
+    allocator.free(frontmatter.symbol_kind.?);
+    frontmatter.symbol_kind = null;
+    const ordinary = try extractSymbolBody(allocator, source, frontmatter);
+    defer if (ordinary) |body| allocator.free(body);
+    try std.testing.expect(ordinary != null);
 }
 
 test "doc truncation avoids Ollama context length errors" {

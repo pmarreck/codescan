@@ -125,6 +125,14 @@ main() {
 	fi
 	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "search --help did not print focused usage"
 
+	capture "$BIN" --no-progress update --help
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "global --no-progress before update failed"
+	fi
+	printf '%s' "$out" | rg -q '^Usage: codescan update' || fail "global --no-progress obscured focused update help"
+	printf '%s' "$out" | rg -q -- '--no-progress' || fail "update help omitted --no-progress"
+
 	auth_root="$DB_DIR/openai-without-key"
 	mkdir -p "$auth_root/.codescan"
 	printf '%s\n' \

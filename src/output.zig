@@ -209,6 +209,8 @@ fn writeLexicalSources(writer: *std.Io.Writer, sources: search.LexicalSources) !
 		.{ "comment", sources.comment },
 		.{ "body", sources.body },
 		.{ "path", sources.path },
+        .{ "frontmatter-description", sources.frontmatter_description },
+        .{ "frontmatter-tags", sources.frontmatter_tags },
 	}) |entry| {
 		if (entry[1]) {
 			if (wrote_one) try writer.writeAll(",");
@@ -523,6 +525,44 @@ test "human output labels evidence and undisplayed comment match provenance" {
 	try std.testing.expect(std.mem.indexOf(u8, payload, "evidence strong") != null);
 	try std.testing.expect(std.mem.indexOf(u8, payload, "match comment") != null);
 	try std.testing.expect(std.mem.indexOf(u8, payload, "doc:") == null);
+}
+
+test "human output labels frontmatter field provenance" {
+    const allocator = std.testing.allocator;
+    var res = search.Result{
+        .id = 1,
+        .symbol = .{
+            .language = try allocator.dupe(u8, "markdown"),
+            .file_path = try allocator.dupe(u8, "MEMORIES/nix.frontmatter.md"),
+            .name = try allocator.dupe(u8, "nix.frontmatter.md"),
+            .signature = try allocator.dupe(u8, "Git-backed Nix flakes exclude untracked inputs."),
+            .doc_comment = try allocator.dupe(u8, "nix flakes untracked-files"),
+            .symbol_kind = try allocator.dupe(u8, "frontmatter"),
+            .start_line = 1,
+            .end_line = 5,
+        },
+        .score = 0.8,
+        .distance = std.math.inf(f32),
+        .lexical = 1.0,
+        .bm25 = -9.0,
+        .lexical_sources = .{
+            .frontmatter_description = true,
+            .frontmatter_tags = true,
+        },
+    };
+    defer res.deinit(allocator);
+
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    try writeResults(allocator, &out.writer, .human, &.{res}, .{ .use_color = false });
+    const payload = try out.toOwnedSlice();
+    defer allocator.free(payload);
+
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        payload,
+        "match frontmatter-description,frontmatter-tags",
+    ) != null);
 }
 
 test "json output exposes result-set confidence evidence and lexical sources" {

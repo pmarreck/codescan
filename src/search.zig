@@ -78,9 +78,12 @@ pub const LexicalSources = struct {
 	comment: bool = false,
 	body: bool = false,
 	path: bool = false,
+    frontmatter_description: bool = false,
+    frontmatter_tags: bool = false,
 
 	pub fn any(self: LexicalSources) bool {
-		return self.name or self.signature or self.comment or self.body or self.path;
+        return self.name or self.signature or self.comment or self.body or self.path or
+            self.frontmatter_description or self.frontmatter_tags;
 	}
 };
 
@@ -960,10 +963,11 @@ fn ftsCandidates(
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, symbols.body, "
 		++ "1e999 AS distance, "
-		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) AS bm25_score "
+		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) "
+		++ "* CASE WHEN symbols.symbol_kind = 'frontmatter' THEN 2.0 ELSE 1.0 END AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
-		++ "ORDER BY bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) "
+		++ "ORDER BY bm25_score "
 		++ "LIMIT {d};",
 		.{ escaped, limit },
 	);
@@ -974,7 +978,8 @@ fn ftsCandidates(
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, symbols.body, "
 		++ "1e999 AS distance, "
-		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) AS bm25_score "
+		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) "
+		++ "* CASE WHEN symbols.symbol_kind = 'frontmatter' THEN 2.0 ELSE 1.0 END AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
 		++ "WHERE symbols_fts MATCH '{s}' "
 		++ "LIMIT {d};",
@@ -1089,7 +1094,6 @@ fn dupColumnTextOptional(
 	return @as(?[]const u8, try allocator.dupe(u8, slice));
 }
 
-
 const NameRelevance = enum { exact, substring, none };
 
 /// Compute the fraction of significant query tokens that appear in a symbol's
@@ -1117,14 +1121,27 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 /// fields so hidden comments can explain a hit without being printed in full.
 fn lexicalSources(query_tokens: []const []const u8, symbol: model.Symbol) LexicalSources {
 	var sources: LexicalSources = .{};
+    const is_frontmatter = if (symbol.symbol_kind) |value|
+        std.mem.eql(u8, value, "frontmatter")
+    else
+        false;
 	for (query_tokens) |tok| {
 		if (tok.len < 2) continue;
 		sources.name = sources.name or simd.indexOfIgnoreCase(symbol.name, tok) != null;
+        if (is_frontmatter) {
+            sources.frontmatter_description = sources.frontmatter_description or
+                simd.indexOfIgnoreCase(symbol.signature, tok) != null;
+            sources.frontmatter_tags = sources.frontmatter_tags or if (symbol.doc_comment) |tags|
+                frontmatterTagMatches(tags, tok)
+            else
+                false;
+        } else {
 		sources.signature = sources.signature or simd.indexOfIgnoreCase(symbol.signature, tok) != null;
 		sources.comment = sources.comment or if (symbol.doc_comment) |doc|
 			simd.indexOfIgnoreCase(doc, tok) != null
 		else
 			false;
+        }
 		sources.body = sources.body or if (symbol.body) |body|
 			simd.indexOfIgnoreCase(body, tok) != null
 		else
@@ -1132,6 +1149,14 @@ fn lexicalSources(query_tokens: []const []const u8, symbol: model.Symbol) Lexica
 		sources.path = sources.path or simd.indexOfIgnoreCase(symbol.file_path, tok) != null;
 	}
 	return sources;
+}
+
+fn frontmatterTagMatches(tags: []const u8, query_token: []const u8) bool {
+    var tag_tokens = std.mem.tokenizeAny(u8, tags, " \t\r\n,[]'\"");
+    while (tag_tokens.next()) |tag| {
+        if (std.ascii.eqlIgnoreCase(tag, query_token)) return true;
+    }
+    return false;
 }
 
 fn pathTokenCoverage(query_tokens: []const []const u8, file_path: []const u8) f32 {
@@ -2151,6 +2176,78 @@ test "search lexical uses fts when available" {
 	} else {
 		try std.testing.expectEqual(@as(usize, 0), results.len);
 	}
+}
+
+test "frontmatter description ranks above an ordinary markdown body match" {
+    const allocator = std.testing.allocator;
+    const db = try storage.openMemoryWithVec(allocator);
+    defer storage.close(db);
+    _ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+    var ordinary = model.Symbol{
+        .language = try allocator.dupe(u8, "markdown"),
+        .file_path = try allocator.dupe(u8, "docs/ordinary.md"),
+        .name = try allocator.dupe(u8, "Ordinary"),
+        .signature = try allocator.dupe(u8, "Overview"),
+        .doc_comment = try allocator.dupe(u8, "frobnicator tagonly recovery notes"),
+        .start_line = 1,
+        .end_line = 2,
+    };
+    defer ordinary.deinit(allocator);
+    var frontmatter = model.Symbol{
+        .language = try allocator.dupe(u8, "markdown"),
+        .file_path = try allocator.dupe(u8, "MEMORIES/recovery.frontmatter.md"),
+        .name = try allocator.dupe(u8, "recovery.frontmatter.md"),
+        .signature = try allocator.dupe(u8, "Durable frobnicator recovery protocol"),
+        .doc_comment = try allocator.dupe(u8, "recovery protocol tagonly"),
+        .symbol_kind = try allocator.dupe(u8, "frontmatter"),
+        .start_line = 1,
+        .end_line = 5,
+    };
+    defer frontmatter.deinit(allocator);
+
+    _ = try storage.insertSymbol(db, ordinary);
+    _ = try storage.insertSymbol(db, frontmatter);
+    const results = try ftsCandidates(allocator, db, "frobnicator", 2, .broad);
+    defer freeResults(allocator, results);
+
+    try std.testing.expectEqual(@as(usize, 2), results.len);
+    const top_kind = results[0].symbol.symbol_kind orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("frontmatter", top_kind);
+
+    const tag_results = try ftsCandidates(allocator, db, "tagonly", 2, .broad);
+    defer freeResults(allocator, tag_results);
+    try std.testing.expectEqual(@as(usize, 2), tag_results.len);
+    const tag_top_kind = tag_results[0].symbol.symbol_kind orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("frontmatter", tag_top_kind);
+}
+
+test "frontmatter lexical provenance distinguishes descriptions and exact tags" {
+    const allocator = std.testing.allocator;
+    var symbol = model.Symbol{
+        .language = try allocator.dupe(u8, "markdown"),
+        .file_path = try allocator.dupe(u8, "MEMORIES/nix.frontmatter.md"),
+        .name = try allocator.dupe(u8, "nix.frontmatter.md"),
+        .signature = try allocator.dupe(u8, "Git-backed flakes exclude untracked inputs"),
+        .doc_comment = try allocator.dupe(u8, "nix nixos untracked-files"),
+        .symbol_kind = try allocator.dupe(u8, "frontmatter"),
+        .start_line = 1,
+        .end_line = 5,
+    };
+    defer symbol.deinit(allocator);
+
+    const description = lexicalSources(&.{"untracked"}, symbol);
+    try std.testing.expect(description.frontmatter_description);
+    try std.testing.expect(!description.frontmatter_tags);
+    try std.testing.expect(!description.signature);
+    try std.testing.expect(!description.comment);
+
+    const tag = lexicalSources(&.{"nix"}, symbol);
+    try std.testing.expect(tag.frontmatter_tags);
+    try std.testing.expect(!tag.frontmatter_description);
+
+    const substring = lexicalSources(&.{"nixo"}, symbol);
+    try std.testing.expect(!substring.frontmatter_tags);
 }
 
 test "tokenCoverage counts matches in body, not just name/sig/doc" {

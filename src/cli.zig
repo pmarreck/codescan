@@ -1,7 +1,6 @@
 const std = @import("std");
 const search = @import("search.zig");
 
-
 /// Set before returning MissingValue/InvalidValue errors to identify which flag caused the error.
 pub var last_err_context: []const u8 = "";
 pub const OutputFormat = enum {
@@ -85,7 +84,8 @@ pub const Seen = struct {
 	force: bool = false,
 	dry_run: bool = false,
 	confirm: bool = false,
-    lexical_only: bool = false,};
+    lexical_only: bool = false,
+};
 
 pub const Parsed = struct {
 	command: CommandTag,
@@ -146,6 +146,7 @@ pub const Parsed = struct {
 	dry_run: bool,
 	confirm: bool,
     lexical_only: bool,
+    no_progress: bool,
     // log subcommand fields
     log_root: ?[]const u8 = null,
     log_since: []const u8 = "1h",
@@ -188,7 +189,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.db_path = ".codescan/index.sqlite3",
 		.embedding_url = "http://localhost:11434",
 		.embedding_model = "bge-large",
-		.embedding_dim = 1536,		.batch_size = 16,
+        .embedding_dim = 1536,
+        .batch_size = 16,
 		.max_file_size = 2 * 1024 * 1024,
 		.http_host = "127.0.0.1",
 		.http_port = 8123,
@@ -228,6 +230,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.dry_run = false,
 		.confirm = false,
 		.lexical_only = false,
+        .no_progress = false,
 		.log_root = null,
 		.log_since = "1h",
 		.log_since_owned = false,
@@ -242,6 +245,16 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	defer if (query_parts_inited) query_parts.deinit(allocator);
 
 	var i: usize = 1;
+    while (i < args.len) {
+        if (std.mem.eql(u8, args[i], "--no-progress")) {
+            parsed.no_progress = true;
+        } else if (std.mem.eql(u8, args[i], "--progress")) {
+            parsed.no_progress = false;
+        } else {
+            break;
+        }
+        i += 1;
+    }
 	if (i >= args.len) {
 		return parsed;
 	}
@@ -380,6 +393,16 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+        if (std.mem.eql(u8, arg, "--no-progress")) {
+            parsed.no_progress = true;
+            i += 1;
+            continue;
+        }
+        if (std.mem.eql(u8, arg, "--progress")) {
+            parsed.no_progress = false;
+            i += 1;
+            continue;
+        }
 		if (std.mem.eql(u8, arg, "--format")) {
 			i += 1;
 			if (i >= args.len) {
@@ -787,7 +810,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
             parsed.seen.lexical_only = true;
             i += 1;
             continue;
-        }		if (std.mem.eql(u8, arg, "--confirm") or std.mem.eql(u8, arg, "-y")) {
+        }
+        if (std.mem.eql(u8, arg, "--confirm") or std.mem.eql(u8, arg, "-y")) {
 			parsed.confirm = true;
 			parsed.seen.confirm = true;
 			i += 1;
@@ -929,7 +953,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (!query_parts_inited or query_parts.items.len == 0) {
 			// Allow empty query when filters are present (browse mode)
 			if (parsed.kind_filter == null and parsed.lang_filter == null and parsed.ext_filter == null and
-				parsed.path_filters.items.len == 0 and parsed.file_filter == null) {
+                parsed.path_filters.items.len == 0 and parsed.file_filter == null)
+            {
 				return error.MissingQuery;
 			}
 			// query stays null — search.zig will handle browse mode
@@ -1533,6 +1558,36 @@ test "parse --lexical-only flag" {
     defer parsed.deinit(std.testing.allocator);
     try std.testing.expect(parsed.lexical_only);
     try std.testing.expect(parsed.seen.lexical_only);
+}
+
+test "parse accepts global no-progress before or after the command" {
+    const before_args = [_][]const u8{ "codescan", "--no-progress", "update" };
+    var before = try parse(std.testing.allocator, &before_args);
+    defer before.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandTag.update, before.command);
+    try std.testing.expect(before.no_progress);
+
+    const after_args = [_][]const u8{ "codescan", "index", "--no-progress" };
+    var after = try parse(std.testing.allocator, &after_args);
+    defer after.deinit(std.testing.allocator);
+    try std.testing.expectEqual(CommandTag.index, after.command);
+    try std.testing.expect(after.no_progress);
+}
+
+test "parse progress switches use last argument wins" {
+    const suppressed_args = [_][]const u8{
+        "codescan", "update", "--no-progress", "--progress", "--no-progress",
+    };
+    var suppressed = try parse(std.testing.allocator, &suppressed_args);
+    defer suppressed.deinit(std.testing.allocator);
+    try std.testing.expect(suppressed.no_progress);
+
+    const enabled_args = [_][]const u8{
+        "codescan", "update", "--no-progress", "--progress",
+    };
+    var enabled = try parse(std.testing.allocator, &enabled_args);
+    defer enabled.deinit(std.testing.allocator);
+    try std.testing.expect(!enabled.no_progress);
 }
 
 test "parse: codescan log defaults" {

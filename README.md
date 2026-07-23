@@ -310,11 +310,39 @@ result relevant even when the comment itself is hidden; use `--show-comments` to
 display it. JSON, HTTP, and MCP search output expose the same `confidence`,
 `evidence`, and `lexical_sources` data for agents.
 
+### Markdown frontmatter
+
+Markdown files beginning at byte zero with a complete `---` YAML fence receive
+one dedicated `frontmatter` search symbol in addition to their normal heading
+sections. Codescan currently recognizes the memory-oriented fields:
+
+```yaml
+---
+description: "Git-backed Nix flakes exclude untracked inputs."
+tags: [nix, flakes, untracked-files]
+---
+```
+
+The description and normalized tag values are embedded together as a compact
+metadata-only chunk; `datetime` and other fields are not given semantic weight.
+Frontmatter is removed from the ordinary Markdown section stream, so metadata
+is neither duplicated into every heading nor confused with body prose.
+Lexical description/tag hits receive a deliberate ranking boost over ordinary
+Markdown body matches and report `frontmatter-description` or
+`frontmatter-tags` provenance. An unfinished fence is treated as ordinary
+Markdown so a partially written file remains searchable rather than silently
+losing content. This applies to any Markdown file, including Peter's
+`.frontmatter.md` convention; no general YAML parser or extra dependency is
+required.
+
 Index/update defaults to code + docs unless `--type`/`index_type` is set.
 Built-in ignores: `.git/`, `.codescan/`, `.codescan-fixtures/`, `deps/`, `node_modules/` (opt-in), `.zig-cache/`, `zig-cache/`, `.zig-out/`, `zig-out/` (see PROJECT_STATE for full list).
 
 Human output uses ANSI colors by default; set `NO_COLOR=1` to disable.
 Interactive index/update shows a compact per-file progress counter on stderr (TTY only).
+Pass `--no-progress` to suppress discovery and per-file progress; a later
+`--progress` restores normal automatic TTY progress. Final summaries, delayed
+model-loading notices, warnings, and errors remain visible.
 Set `DEBUG=1` to emit verbose indexing progress to stderr.
 
 ## Run (HTTP)

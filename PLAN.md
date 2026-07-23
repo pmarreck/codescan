@@ -14,9 +14,9 @@
   Curiosity poke: Clojure and OCaml are already supported; explicitly document Python and Scala as project-policy exclusions so they are not added accidentally.
 - [x] Attach adjacent WAT `;;` and nested `(; ... ;)` comments to extracted symbols and prove comment-only vocabulary retrieves the associated symbol. (completed 2026-07-23 14:05 EDT)
   Curiosity poke: WAT is terse, so comment provenance must survive extraction and comment embedding without accidentally stealing a sibling declaration's trailing comment.
-- [ ] Parse leading Markdown YAML frontmatter as explicit search evidence, ranking `description` and exact `tags` matches above ordinary body text while preserving field provenance and metadata-only retrieval.
+- [x] Parse leading Markdown YAML frontmatter as explicit search evidence, ranking `description` and exact `tags` matches above ordinary body text while preserving field provenance and metadata-only retrieval. (completed 2026-07-23 14:20 EDT)
   Curiosity poke: accept Peter's `.frontmatter.md` memory contract without requiring a general YAML dependency; malformed delimiters, multiline values, tag-vs-prose collisions, and accidental metadata duplication across every heading must remain deterministic.
-- [ ] Support global `--no-progress` across long-running CLI operations, beginning with a failing parser/CLI test and preserving final output, warnings, and errors.
+- [x] Support global `--no-progress` across long-running CLI operations, beginning with a failing parser/CLI test and preserving final output, warnings, and errors. (completed 2026-07-23 14:20 EDT)
   Curiosity poke: later arguments must still override earlier conflicting progress flags, and non-TTY behavior must remain silent without changing JSON/stdout contracts.
 
 ## 2026-07-22 — fully local Jina via Ollama
