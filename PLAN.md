@@ -6,10 +6,18 @@
   Curiosity poke: extension-bearing source remains governed by its plugin, while non-executable files and NUL-containing binary impostors must never enter through shebang fallback.
 - [x] Preserve top-level Bash commands, assignments, and control flow as a searchable file-level module alongside extracted functions. (completed 2026-07-23 13:00 EDT)
   Curiosity poke: top-level literals such as `notarytool` need file provenance without pretending every command is a named function.
-- [ ] Add supported-language shebang aliases for existing extractors, beginning with Ruby and then explicitly reviewing Clojure/Babashka, Node-family JavaScript, Elixir/Escript, Haskell runners, Swift, Nim, Erlang, and OCaml.
+- [x] Add supported-language shebang aliases for existing extractors, beginning with Ruby and then explicitly reviewing Clojure/Babashka, Node-family JavaScript, Elixir/Escript, Haskell runners, Swift, Nim, Erlang, and OCaml. (completed 2026-07-23 14:05 EDT)
   Curiosity poke: an interpreter alias is valid only when its syntax is genuinely compatible with the selected extractor grammar; Nix multi-line shebangs and `env -S` need deliberate fixtures.
-- [ ] Expand the supported-language matrix with Fish, Nushell, PowerShell, Tcl, Oil Shell (OSH/YSH distinctions), F#, Elm, Gleam, Racket/Scheme, Common Lisp, and Standard ML; document grammar provenance, extensions, shebang aliases, extraction coverage, and limitations.
+- [x] Fetch and pin the approved Tree-sitter grammars through the Nix flake; source builds deliberately require the flake-provided grammar root. (completed 2026-07-23 14:05 EDT)
+  Curiosity poke: every pinned source must expose generated C parser/scanner inputs for all five supported target combinations without requiring Node or network access during the build.
+- [x] Expand the supported-language matrix with Fish, Nushell, PowerShell, Tcl, Oil Shell (OSH/YSH distinctions), F#, Elm, Gleam, Racket/Scheme, Common Lisp, Standard ML, and WebAssembly Text; document grammar provenance, extensions, shebang aliases, extraction coverage, and limitations. (completed 2026-07-23 14:05 EDT)
   Curiosity poke: Clojure and OCaml are already supported; explicitly document Python and Scala as project-policy exclusions so they are not added accidentally.
+- [x] Attach adjacent WAT `;;` and nested `(; ... ;)` comments to extracted symbols and prove comment-only vocabulary retrieves the associated symbol. (completed 2026-07-23 14:05 EDT)
+  Curiosity poke: WAT is terse, so comment provenance must survive extraction and comment embedding without accidentally stealing a sibling declaration's trailing comment.
+- [ ] Parse leading Markdown YAML frontmatter as explicit search evidence, ranking `description` and exact `tags` matches above ordinary body text while preserving field provenance and metadata-only retrieval.
+  Curiosity poke: accept Peter's `.frontmatter.md` memory contract without requiring a general YAML dependency; malformed delimiters, multiline values, tag-vs-prose collisions, and accidental metadata duplication across every heading must remain deterministic.
+- [ ] Support global `--no-progress` across long-running CLI operations, beginning with a failing parser/CLI test and preserving final output, warnings, and errors.
+  Curiosity poke: later arguments must still override earlier conflicting progress flags, and non-TTY behavior must remain silent without changing JSON/stdout contracts.
 
 ## 2026-07-22 — fully local Jina via Ollama
 

@@ -5502,22 +5502,30 @@ const usage_name_paths =
 const usage_languages =
     \\Supported Languages
     \\
-    \\Symbol extraction and LSP:
+    \\Symbol extraction:
     \\  Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua,
     \\  Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml,
-    \\  Swift, LLVM IR, Clojure, Assembly
+    \\  Swift, LLVM IR, Clojure, Assembly, Fish, Nushell, PowerShell,
+    \\  Tcl, Oil, F#, Elm, Gleam, Scheme, Racket, Common Lisp,
+    \\  Standard ML, WebAssembly Text (WAT/WAST)
     \\
     \\Indexing and search:
     \\  Any text file (Markdown, logs, plain text, etc.)
     \\
     \\Auto-detection:
-    \\  Extensionless scripts with shebangs (#!/usr/bin/env bash, etc.)
-    \\  are auto-detected for bash, lua, node/deno/bun, and ruby.
+    \\  Extensionless executable text scripts with recognized direct,
+    \\  /usr/bin/env, or env -S shebangs use the matching extractor.
     \\
     \\Language filter values (--lang):
     \\  zig, c, typescript, rust, elixir, bash, lua, nix, nim, lean,
     \\  idris, haskell, go, ruby, erlang, ocaml, swift, llvm, clojure,
-    \\  assembly, markdown, text, log
+    \\  assembly, fish, nushell, powershell, tcl, oil, fsharp, elm,
+    \\  gleam, scheme, racket, common-lisp, sml, wat, markdown, text, log
+    \\
+    \\Notes:
+    \\  WAT line and nested block comments attach to symbols and inform
+    \\  comment embeddings. Python and Scala are intentionally unsupported.
+    \\  See README.md for extensions, grammar pins, and parser limitations.
     \\
 ;
 

@@ -9,13 +9,17 @@ Semantic code search for local repositories.
 - Embedding providers: Ollama and OpenAI-compatible (oMLX, LiteLLM, vLLM) — default model: `bge-large`
 - sqlite-vec vector storage
 - Hybrid search (vector + lexical)
-- Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash, Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift, LLVM IR, Clojure, Assembly
-- LSP (references, rename): all of the above
+- Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash,
+  Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift,
+  LLVM IR, Clojure, Assembly, Fish, Nushell, PowerShell, Tcl, Oil, F#,
+  Elm, Gleam, Scheme, Racket, Common Lisp, Standard ML, and WAT
+- LSP (references, rename): available where a language server is configured;
+  run `codescan help lsp` for the current adapter list
 - Markdown/text/log indexing with semantic chunking
 
 ## Install
 
-### With Nix (recommended)
+### With Nix
 
 ```bash
 # Run directly without installing
@@ -46,8 +50,14 @@ artifacts from the latest CI build:
 ### Build from source
 
 ```bash
-nix develop -c zig build -Doptimize=ReleaseFast
+./build
 ```
+
+Source builds require Nix. The flake pins and fetches every external grammar,
+including its generated C parser/scanner inputs, before Zig enters the
+sandboxed build. This is deliberate: there is one reproducible dependency
+contract rather than an undocumented collection of host packages. Pre-built
+binaries remain self-contained and do not require Nix at runtime.
 
 ### Optional Git integration
 
@@ -75,12 +85,62 @@ as a script when all of these are true:
   executable bits; and
 - its first line is a recognized shebang.
 
-Current shebang mappings are `bash`/`sh` to Bash, `lua`/`luajit` to Lua, and
-`ruby` to Ruby, including `/usr/bin/env` forms. Discovery, full indexing,
-incremental updates, and watcher-triggered reindexing share this classifier.
+Recognized interpreters include:
+
+- shell: `bash`, `sh`, `zsh`, `dash`, `ash`, `ksh`, `fish`, `nu`/`nushell`,
+  `pwsh`/`powershell`, `tclsh`/`wish`, and `osh`/`ysh`;
+- functional runtimes: `fsi`, `racket`/`raco`, Guile/Scheme variants,
+  SBCL/CLISP/ECL, SML/PolyML, and Clojure/Babashka;
+- existing script runtimes: Lua/LuaJIT, Ruby/IRB, Node/Node.js/Deno/Bun,
+  Elixir/IEx, RunGHC/RunHaskell, Swift, Nim, Escript, and OCaml.
+
+Direct paths, `/usr/bin/env`, and `env -S` forms are supported. Discovery,
+full indexing, incremental updates, and watcher-triggered reindexing share
+this classifier.
 The Bash extractor also emits a file-level module for top-level commands,
 assignments, and control flow, so literals outside shell functions remain
 searchable with their source-file provenance.
+
+## Added language matrix
+
+All grammar revisions below are immutable Nix fetches. Extensions are matched
+before the executable/shebang fallback.
+
+| Language | Extensions | Grammar/source revision | Structural extraction |
+| --- | --- | --- | --- |
+| Fish | `.fish` | `ram02z/tree-sitter-fish@f435b0b` | functions |
+| Nushell | `.nu` | `nushell/tree-sitter-nu@d694570` | defs, externs, modules, aliases |
+| PowerShell | `.ps1`, `.psm1`, `.psd1` | `wharflab/tree-sitter-powershell@afb492d` | functions, filters, classes, enums, methods |
+| Tcl | `.tcl`, `.tm` | `tree-sitter-grammars/tree-sitter-tcl@8f11ac7` | procedures |
+| Oil Shell | `.osh`, `.oil`, `.ysh` | vendored Tree-sitter Bash plus codescan's YSH definition scanner | Bash-compatible OSH functions and native YSH `proc`/`func` definitions |
+| F# | `.fs`, `.fsi`, `.fsx` | `ionide/tree-sitter-fsharp@ac263e4` | values/functions, modules, namespaces, types, members |
+| Elm | `.elm` | `elm-tooling/tree-sitter-elm@e1e8fea` | values/functions, modules, types |
+| Gleam | `.gleam` | `gleam-lang/tree-sitter-gleam@cefbd68` | functions and types |
+| Scheme | `.scm`, `.ss` | `6cdh/tree-sitter-scheme@c6cb7c7` | definition, syntax, record, library, and module forms |
+| Racket | `.rkt`, `.rktd`, `.scrbl` | same pinned Scheme grammar | Racket definition, syntax, struct, and module forms |
+| Common Lisp | `.lisp`, `.lsp`, `.cl`, `.asd` | `tree-sitter-grammars/tree-sitter-commonlisp@3232350` | functions, macros, methods, generics, classes, structs, types, variables, constants, packages |
+| Standard ML | `.sml`, `.sig`, `.fun` | `MatthewFluet/tree-sitter-sml@fd4b495` | functions, values, datatypes, types, structures, signatures, functors |
+| WebAssembly Text | `.wat`, `.wast` | `g-plane/tree-sitter-wat@e376947` | modules, functions, globals, memories, tables, types, and named WAST actions/assertions |
+
+WAT `;;` line comments and nested `(; ... ;)` block comments immediately
+above a definition are attached to that symbol and embedded in the dedicated
+comment channel. This is especially important for terse WAT: a comment-only
+concept can retrieve its associated function, memory, or other named field
+without displaying comments in every normal result.
+WAST assertions and direct actions are additionally indexed under the export
+name they invoke. Their complete balanced form is searchable, and an adjacent
+WAT comment explains the behavior under test. This lets a behavioral query
+retrieve names such as `help_fits_height` instead of unrelated prose elsewhere
+in a repository.
+
+Oil's OSH surface is intentionally parsed through the Bash grammar because
+OSH is shell-compatible. Native YSH `proc` and `func` declarations receive
+explicit structural spans; other YSH-only constructs are currently indexed as
+searchable source but may not receive named-symbol boundaries.
+
+Clojure and OCaml were already supported; their executable forms now include
+Babashka/Clojure and OCaml shebangs. Python and Scala are intentionally outside
+codescan's supported-language policy.
 
 ## Test
 
