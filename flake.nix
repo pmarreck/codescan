@@ -149,7 +149,7 @@
 						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
 						mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 						# 1) actually RUN the suite (the part never wired into CI)
-						zig build test --system ${zigPkgCache} --color off
+						zig build test-unit --system ${zigPkgCache} --color off
 						# 2) smoke-EXECUTE the built binary (catches runtime/loader regressions)
 						zig build --system ${zigPkgCache} -Doptimize=ReleaseFast --color off
 						./zig-out/bin/codescan --help >/dev/null

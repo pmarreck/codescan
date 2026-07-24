@@ -20,7 +20,7 @@ jobs:
 
       - name: Run tests
         shell: bash
-        run: nix develop -c zig build test
+        run: nix develop -c zig build test-unit
 
   build:
     needs: test
