@@ -10,6 +10,7 @@ const embedding_http = @import("embedding_http.zig");
 const config = @import("config.zig");
 const filters = @import("filters.zig");
 const weights = @import("weights.zig");
+const search_service = @import("search_service.zig");
 const main = @import("main.zig");
 const cli = @import("cli.zig");
 const hashline = @import("hashline.zig");
@@ -262,7 +263,24 @@ fn handleRequest(
 			return;
 		};
 
-		var search_filters = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+		const top_n = parsed.top_n orelse settings.search_top_n;
+		const request_has_weight_override = parsed.weight_vector != null or parsed.weight_lexical != null;
+		var execution = try search_service.execute(
+			allocator,
+			db,
+			plugin.defaultRegistry(),
+			embedder,
+			.{
+			.query = parsed.query,
+			.top_n = top_n,
+			.mode = if (freshness_result.outcome == .stale) .lexical else requested_mode,
+			.fusion = parsed.fusion orelse settings.search_fusion,
+			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
+			.fts_mode = parsed.fts_mode orelse settings.search_fts_mode,
+			.weight_vector = parsed.weight_vector orelse settings.search_weight_vector,
+			.weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical,
+			.explicit_weight_override = request_has_weight_override,
+			.min_score = parsed.min_score orelse settings.search_min_score,
 			.search_ext = parsed.ext orelse settings.search_ext,
 			.search_type = parsed.type orelse settings.search_type,
 			.search_lang = parsed.lang orelse settings.search_lang,
@@ -270,39 +288,11 @@ fn handleRequest(
 			.primary_lang = settings.primary_lang,
 			.include_docs = parsed.include_docs orelse settings.include_docs,
 			.docs_only = parsed.docs_only orelse settings.docs_only,
-		});
-		defer search_filters.deinit(allocator);
-
-		const top_n = parsed.top_n orelse settings.search_top_n;
-		const request_has_weight_override = parsed.weight_vector != null or parsed.weight_lexical != null;
-		const base_weight_vector = parsed.weight_vector orelse settings.search_weight_vector;
-		const base_weight_lexical = parsed.weight_lexical orelse settings.search_weight_lexical;
-		const effective_weights = weights.resolveSearchWeights(
-			settings.search_weights,
-			search_filters.langs.items,
-			base_weight_vector,
-			base_weight_lexical,
-			request_has_weight_override,
-		);
-		const sr = try search.search(allocator, db, embedder, parsed.query, .{
-			.top_n = top_n,
-			.mode = if (freshness_result.outcome == .stale) .lexical else requested_mode,
-			.fusion = parsed.fusion orelse settings.search_fusion,
-			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
-			.fts_mode = parsed.fts_mode orelse settings.search_fts_mode,
-			.weight_vector = effective_weights.weight_vector,
-			.weight_lexical = effective_weights.weight_lexical,
-			.weight_symbol_kind = effective_weights.weight_symbol_kind,
-			.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
-			.weight_symbol_scope = effective_weights.weight_symbol_scope,
-			.weight_symbol_arity = effective_weights.weight_symbol_arity,
-			.min_score = parsed.min_score orelse settings.search_min_score,
-			.allowed_langs = search_filters.langs.items,
-			.allowed_exts = search_filters.exts.items,
-			.allowed_symbol_kinds = search_filters.symbol_kinds.items,
 			.comments_only = parsed.comments_only orelse settings.comments_only,
+			.search_weights = settings.search_weights,
 		});
-		defer search.freeResults(allocator, sr.results);
+		defer execution.deinit();
+		const sr = execution.result;
 
 		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();

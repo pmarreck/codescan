@@ -42,6 +42,7 @@ const _kind = @import("kind.zig");
 const _last_index = @import("last_index.zig");
 const _scan = @import("scan.zig");
 const _search = @import("search.zig");
+const _search_service = @import("search_service.zig");
 const _simd = @import("simd.zig");
 const _server = @import("server.zig");
 const _setup_model_text = @import("setup_model_text.zig");
@@ -99,6 +100,7 @@ test {
 	_ = _last_index;
 	_ = _scan;
 	_ = _search;
+	_ = _search_service;
 	_ = _simd;
 	_ = _server;
 	_ = _setup_model_text;
