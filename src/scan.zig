@@ -203,7 +203,12 @@ fn captureGitFileList(allocator: std.mem.Allocator, root_path: []const u8) !?[]u
     // fall back to existing scanner ignore logic.
     var root_dir = std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{}) catch return null;
     defer root_dir.close(io_singleton.getOrInit());
-    _ = root_dir.statFile(io_singleton.getOrInit(), ".git", .{}) catch return null;
+    const git_marker = root_dir.statFile(io_singleton.getOrInit(), ".git", .{}) catch return null;
+    switch (git_marker.kind) {
+        .directory => _ = root_dir.statFile(io_singleton.getOrInit(), ".git/HEAD", .{}) catch return null,
+        .file => {},
+        else => return null,
+    }
 
     const stdout = gitCaptureStdout(
         allocator,

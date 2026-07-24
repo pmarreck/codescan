@@ -4,6 +4,8 @@
 
 - [x] Route GitHub and Nix CI through the aggregated `test-unit` target so same-seed imported tests cannot contend across duplicate binaries. (completed 2026-07-24 10:39 EDT)
   Curiosity poke: the aggregate must still import every source module, and the Nix check must continue smoke-executing the release binary after tests pass.
+- [x] Reject fake `.git` directories before Git file-list acceleration so scanners deterministically fall back to filesystem traversal. (completed 2026-07-24 10:51 EDT)
+  Curiosity poke: real repositories require `.git/HEAD`, while worktrees and submodules use a regular `.git` marker file and must remain accelerated.
 - [x] Rank canonical word/component matches above contained substrings without sacrificing snake_case, kebab-case, or camelCase recall. (completed 2026-07-24 09:27 EDT)
   Curiosity poke: `time` must outrank `runtime`, while `help height` must still find `help_fits_height`; BM25-backed and fallback-only candidates must use comparable lexical evidence.
 - [x] Make weak-result CLI guidance concise while preserving structured confidence/evidence in JSON. (completed 2026-07-24 09:27 EDT)
