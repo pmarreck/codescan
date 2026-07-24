@@ -1,0 +1,3 @@
+# Mechatron Prime CI targets for Thelio's x86_64-linux worker.
+packages.x86_64-linux.default
+checks.x86_64-linux.test

@@ -1,7 +1,7 @@
 # codescan
 
 [![build](https://github.com/pmarreck/codescan/actions/workflows/build.yml/badge.svg?branch=yolo)](https://github.com/pmarreck/codescan/actions/workflows/build.yml)
-[![built with garnix](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Fgarnix.io%2Fapi%2Fbadges%2Fpmarreck%2Fcodescan%3Fbranch%3Dyolo)](https://garnix.io)
+[![Mechatron Prime CI](https://img.shields.io/endpoint?url=https%3A%2F%2Fthelio-nixos.tail66c90.ts.net%2Fbadges%2Fcodescan.json&style=for-the-badge)](https://thelio-nixos.tail66c90.ts.net/mechatron-prime/)
 
 Semantic code search for local repositories.
 
@@ -28,10 +28,6 @@ nix run github:pmarreck/codescan -- search "your query"
 
 # Install to your profile
 nix profile install github:pmarreck/codescan
-
-# For faster downloads, add the garnix binary cache to /etc/nix/nix.conf:
-#   extra-substituters = https://cache.garnix.io
-#   extra-trusted-public-keys = cache.garnix.io:CTFPyKSLcx5RMJKfLo5EEPUObbA78b0YQ2DTCJXqr9g=
 ```
 
 ### Pre-built binaries (no Nix required)
