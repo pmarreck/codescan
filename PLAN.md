@@ -2,6 +2,12 @@
 
 ## 2026-07-24 — lexical match quality
 
+- [x] Make `--root` order-independent for every project-root command and resolve `read-file` relative paths against the effective root. (completed 2026-07-24 12:35 EDT)
+  Curiosity poke: later `--root` arguments must win, absolute paths must remain absolute, and neither ordering may silently fall back to search.
+- [x] Trace unchanged pre-search reconciliation and prove the prior discovery fix keeps it subsecond on representative repositories. (completed 2026-07-24 12:34 EDT)
+  Curiosity poke: separate filesystem/SQLite reconciliation from changed-file extraction and remote embedding so one aggregate duration cannot hide the real bottleneck.
+- [ ] Prevent changed-file embedding from blocking the initial search response under the selected freshness policy.
+  Curiosity poke: fresh lexical evidence, valid old vectors, missing new vectors, explicit updates, and watcher-owned freshness must remain distinguishable rather than claiming a fully fresh hybrid index.
 - [x] Route GitHub and Nix CI through the aggregated `test-unit` target so same-seed imported tests cannot contend across duplicate binaries. (completed 2026-07-24 10:39 EDT)
   Curiosity poke: the aggregate must still import every source module, and the Nix check must continue smoke-executing the release binary after tests pass.
 - [x] Reject fake `.git` directories before Git file-list acceleration so scanners deterministically fall back to filesystem traversal. (completed 2026-07-24 10:51 EDT)

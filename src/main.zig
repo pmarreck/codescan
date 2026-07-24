@@ -355,7 +355,9 @@ pub fn main(init: std.process.Init) !void {
 		.read_file => {
 			const file_path = parsed.pattern orelse
 				if (parsed.symbols_files.items.len > 0) parsed.symbols_files.items[0] else exitWithError("error: read-file requires a file path\nusage: codescan read-file <path> [--from N] [--to N]\n");
-			try runReadFile(allocator, file_path, parsed.from_line, parsed.to_line, parsed.output, stdout);
+			const resolved_path = try resolveProjectFilePath(allocator, settings.root_path, file_path);
+			defer allocator.free(resolved_path);
+			try runReadFile(allocator, resolved_path, parsed.from_line, parsed.to_line, parsed.output, stdout);
 			try stdout.flush();
 		},
 		.destroy_file => {
@@ -3901,6 +3903,13 @@ fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 }
 
 // ─── Read File Command ──────────────────────────────────────────────
+
+/// Gives semantic-editing reads the same project-root contract as indexed
+/// commands while leaving explicitly absolute filesystem paths untouched.
+fn resolveProjectFilePath(allocator: std.mem.Allocator, root_path: []const u8, file_path: []const u8) ![]u8 {
+	if (std.fs.path.isAbsolute(file_path)) return allocator.dupe(u8, file_path);
+	return std.fs.path.join(allocator, &.{ root_path, file_path });
+}
 
 pub fn runReadFile(allocator: std.mem.Allocator, file_path: []const u8, from_line: ?usize, to_line: ?usize, format: cli.OutputFormat, writer: *std.Io.Writer) !void {
 	const source = try readFileContents(allocator, file_path);
@@ -7835,6 +7844,17 @@ test "runReadFile partial read with from/to" {
 	// Version should still be based on the LAST line of the entire file
 	const version = root.get("version").?.string;
 	try std.testing.expectEqual(@as(usize, 3), version.len);
+}
+
+test "resolveProjectFilePath roots relative paths and preserves absolute paths" {
+	const allocator = std.testing.allocator;
+	const relative = try resolveProjectFilePath(allocator, "/project", "bin/tool");
+	defer allocator.free(relative);
+	try std.testing.expectEqualStrings("/project/bin/tool", relative);
+
+	const absolute = try resolveProjectFilePath(allocator, "/ignored", "/project/bin/tool");
+	defer allocator.free(absolute);
+	try std.testing.expectEqualStrings("/project/bin/tool", absolute);
 }
 
 test "openUpdateDb recreates populated indexes when embedding model or dimension changes" {

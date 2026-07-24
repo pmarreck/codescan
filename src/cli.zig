@@ -250,6 +250,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
             parsed.no_progress = true;
         } else if (std.mem.eql(u8, args[i], "--progress")) {
             parsed.no_progress = false;
+		} else if (std.mem.eql(u8, args[i], "--root")) {
+			i += 1;
+			if (i >= args.len) {
+				last_err_context = "--root";
+				return error.MissingValue;
+			}
+			parsed.root_path = args[i];
+			parsed.seen.root_path = true;
         } else {
             break;
         }
@@ -929,7 +937,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 
 		// Collect positional args for commands that expect them
 		switch (parsed.command) {
-			.symbols, .replace_symbol, .insert_after, .insert_before, .replace_content, .references, .rename => {
+			.symbols, .replace_symbol, .insert_after, .insert_before, .replace_content, .read_file, .references, .rename => {
 				if (parsed.pattern == null) {
 					parsed.pattern = arg;
 					i += 1;
@@ -1572,6 +1580,79 @@ test "parse accepts global no-progress before or after the command" {
     defer after.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandTag.index, after.command);
     try std.testing.expect(after.no_progress);
+}
+
+test "parse accepts root before or after every project-root command" {
+	const Case = struct {
+		verb: []const u8,
+		tag: CommandTag,
+		positional: ?[]const u8 = null,
+	};
+	const cases = [_]Case{
+		.{ .verb = "config", .tag = .config },
+		.{ .verb = "init", .tag = .init },
+		.{ .verb = "index", .tag = .index },
+		.{ .verb = "update", .tag = .update },
+		.{ .verb = "search", .tag = .search, .positional = "query" },
+		.{ .verb = "serve", .tag = .serve },
+		.{ .verb = "symbols", .tag = .symbols },
+		.{ .verb = "replace-symbol", .tag = .replace_symbol },
+		.{ .verb = "insert-after", .tag = .insert_after },
+		.{ .verb = "insert-before", .tag = .insert_before },
+		.{ .verb = "replace-lines", .tag = .replace_lines },
+		.{ .verb = "insert-at", .tag = .insert_at },
+		.{ .verb = "replace-content", .tag = .replace_content },
+		.{ .verb = "create-file", .tag = .create_file },
+		.{ .verb = "read-file", .tag = .read_file, .positional = "nested/source.txt" },
+		.{ .verb = "destroy-file", .tag = .destroy_file },
+		.{ .verb = "diff", .tag = .diff },
+		.{ .verb = "references", .tag = .references },
+		.{ .verb = "rename", .tag = .rename },
+		.{ .verb = "watch", .tag = .watch },
+		.{ .verb = "mcp-serve", .tag = .mcp_serve },
+		.{ .verb = "clean", .tag = .clean },
+		.{ .verb = "status", .tag = .status },
+		.{ .verb = "log", .tag = .log },
+	};
+
+	for (cases) |case| {
+		var before_args: std.ArrayListUnmanaged([]const u8) = .empty;
+		defer before_args.deinit(std.testing.allocator);
+		try before_args.appendSlice(std.testing.allocator, &.{ "codescan", "--root", "/repo", case.verb });
+		if (case.positional) |value| try before_args.append(std.testing.allocator, value);
+		var before = try parse(std.testing.allocator, before_args.items);
+		defer before.deinit(std.testing.allocator);
+		try std.testing.expectEqual(case.tag, before.command);
+		try std.testing.expectEqualStrings("/repo", before.root_path);
+		try std.testing.expect(!before.assumed_search);
+
+		var after_args: std.ArrayListUnmanaged([]const u8) = .empty;
+		defer after_args.deinit(std.testing.allocator);
+		try after_args.appendSlice(std.testing.allocator, &.{ "codescan", case.verb, "--root", "/repo" });
+		if (case.positional) |value| try after_args.append(std.testing.allocator, value);
+		var after = try parse(std.testing.allocator, after_args.items);
+		defer after.deinit(std.testing.allocator);
+		try std.testing.expectEqual(case.tag, after.command);
+		try std.testing.expectEqualStrings("/repo", after.root_path);
+		try std.testing.expect(!after.assumed_search);
+	}
+}
+
+test "parse root uses the last argument and keeps read-file positional path" {
+	const args = [_][]const u8{
+		"codescan",
+		"--root",
+		"/first",
+		"read-file",
+		"--root",
+		"/second",
+		"nested/source.txt",
+	};
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.read_file, parsed.command);
+	try std.testing.expectEqualStrings("/second", parsed.root_path);
+	try std.testing.expectEqualStrings("nested/source.txt", parsed.pattern.?);
 }
 
 test "parse progress switches use last argument wins" {

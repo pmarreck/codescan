@@ -133,6 +133,26 @@ main() {
 	printf '%s' "$out" | rg -q '^Usage: codescan update' || fail "global --no-progress obscured focused update help"
 	printf '%s' "$out" | rg -q -- '--no-progress' || fail "update help omitted --no-progress"
 
+	read_root="$DB_DIR/read-file-root"
+	read_caller="$DB_DIR/read-file-caller"
+	mkdir -p "$read_root/.git" "$read_root/bin" "$read_caller"
+	printf '%s\n' 'ref: refs/heads/yolo' > "$read_root/.git/HEAD"
+	printf '%s\n' 'root-relative-read-marker' > "$read_root/bin/example"
+
+	capture bash -c 'cd "$1" && "$2" read-file --root "$3" bin/example' _ \
+		"$read_caller" "$BIN" "$read_root"
+	[ "$rc" -eq 0 ] || fail "read-file rejected --root after the verb: $err"
+	printf '%s' "$out" | rg -q 'root-relative-read-marker' || \
+		fail "read-file after-verb --root did not resolve the relative path from root"
+
+	capture bash -c 'cd "$1" && "$2" --root "$3" read-file bin/example' _ \
+		"$read_caller" "$BIN" "$read_root"
+	[ "$rc" -eq 0 ] || fail "read-file rejected --root before the verb: $err"
+	printf '%s' "$out" | rg -q 'root-relative-read-marker' || \
+		fail "read-file before-verb --root did not resolve the relative path from root"
+	printf '%s' "$err" | rg -q 'assuming .search.' && \
+		fail "read-file with leading --root silently fell back to search"
+
 	auth_root="$DB_DIR/openai-without-key"
 	mkdir -p "$auth_root/.codescan"
 	printf '%s\n' \
