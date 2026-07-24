@@ -2,6 +2,8 @@
 
 ## 2026-07-23 — script discovery and language expansion
 
+- [x] Make unchanged update/search reconciliation write-free and remove redundant Git executable PATH probing. (completed 2026-07-23 23:28 EDT)
+  Curiosity poke: a current compatible schema must not rewrite identical metadata or force WAL fsyncs, while migrations, model changes, new files, and deletions must still commit normally.
 - [x] Make every interactive confirmation/model prompt consume one submitted line immediately, honor its displayed default, and announce each potentially slow init phase before doing work. (completed 2026-07-23 23:08 EDT)
   Curiosity poke: an open TTY that has delivered `y\n` is not EOF; confirmation, cancellation, overlong input, model loading, and indexing must never depend on filling an arbitrary buffer.
 - [x] Make interactive `codescan init` choose an Ollama embedding model when the configured model is unavailable, recommend locally patched Jina, validate a real non-empty embedding through Ollama or authenticated oMLX, and persist only the validated selection and returned dimension. (completed 2026-07-23 17:36 EDT)

@@ -205,16 +205,6 @@ fn captureGitFileList(allocator: std.mem.Allocator, root_path: []const u8) !?[]u
     defer root_dir.close(io_singleton.getOrInit());
     _ = root_dir.statFile(io_singleton.getOrInit(), ".git", .{}) catch return null;
 
-    const root_abs = std.Io.Dir.cwd().realPathFileAlloc(io_singleton.getOrInit(), root_path, allocator) catch return null;
-    defer allocator.free(root_abs);
-    const top_level_raw = gitCaptureStdout(
-        allocator,
-        &[_][]const u8{ "git", "-C", root_path, "rev-parse", "--show-toplevel" },
-    ) catch return null;
-    defer allocator.free(top_level_raw);
-    const top_level = std.mem.trimEnd(u8, top_level_raw, "\r\n");
-    if (!std.mem.eql(u8, top_level, root_abs)) return null;
-
     const stdout = gitCaptureStdout(
         allocator,
         &[_][]const u8{ "git", "-C", root_path, "ls-files", "-z", "--cached", "--others", "--exclude-standard" },

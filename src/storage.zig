@@ -144,20 +144,14 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 
 	// Always stamp schema version, but preserve embedding metadata when the
 	// existing populated index does not match current embedding settings.
-	try setSchemaVersion(allocator, db);
+	try setSchemaVersion(db);
 	if (!(result.embedding_model_mismatch or result.embedding_dim_mismatch)) {
-		try setEmbeddingMeta(allocator, db, schema);
+		try setEmbeddingMeta(db, schema);
 	}
 
 	// Initialize FTS (idempotent)
 	const fts_enabled = tryInitFts(allocator, db);
-	const fts_sql = if (fts_enabled)
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '1');"
-	else
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('fts_enabled', '0');";
-	const fts_meta = try allocator.dupeZ(u8, fts_sql);
-	defer allocator.free(fts_meta);
-	try exec(db, fts_meta);
+	try setMetaValue(db, "fts_enabled", if (fts_enabled) "1" else "0");
 
 	return result;
 }
@@ -242,31 +236,42 @@ fn migrateV4ToV5(db: Db) !void {
 }
 
 /// Write the current schema version to meta.
-fn setSchemaVersion(allocator: std.mem.Allocator, db: Db) !void {
-	const version_sql = try allocPrintZ(allocator,
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '{d}');",
-		.{current_schema_version},
-	);
-	defer allocator.free(version_sql);
-	try exec(db, version_sql);
+fn setSchemaVersion(db: Db) !void {
+	var buffer: [32]u8 = undefined;
+	const value = try std.fmt.bufPrint(&buffer, "{d}", .{current_schema_version});
+	try setMetaValue(db, "schema_version", value);
 }
 
 /// Write embedding dim/model metadata to meta.
-fn setEmbeddingMeta(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
-	const dim_sql = try allocPrintZ(allocator,
-		"INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_dim', '{d}');",
-		.{schema.embedding_dim},
-	);
-	defer allocator.free(dim_sql);
-	try exec(db, dim_sql);
+fn setEmbeddingMeta(db: Db, schema: Schema) !void {
+	var buffer: [32]u8 = undefined;
+	const dimension = try std.fmt.bufPrint(&buffer, "{d}", .{schema.embedding_dim});
+	try setMetaValue(db, "embedding_dim", dimension);
 
 	if (schema.embedding_model.len > 0) {
-		const model_sql = try allocPrintZ(allocator,
-			"INSERT OR REPLACE INTO meta(key, value) VALUES ('embedding_model', '{s}');",
-			.{schema.embedding_model},
-		);
-		defer allocator.free(model_sql);
-		try exec(db, model_sql);
+		try setMetaValue(db, "embedding_model", schema.embedding_model);
+	}
+}
+
+/// Updates schema metadata only when its value changed, keeping read-only
+/// reconciliation free of WAL writes and fsyncs.
+fn setMetaValue(db: Db, key: []const u8, value: []const u8) !void {
+	const sql: [:0]const u8 =
+		"INSERT INTO meta(key, value) VALUES (?1, ?2) " ++
+		"ON CONFLICT(key) DO UPDATE SET value = excluded.value " ++
+		"WHERE meta.value <> excluded.value;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "setMetaValue: prepare");
+		return error.SqlPrepareFailed;
+	}
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	try bindText(stmt.?, 1, key);
+	try bindText(stmt.?, 2, value);
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		logSqliteError(db, "setMetaValue: step");
+		return error.SqlStepFailed;
 	}
 }
 
@@ -1048,6 +1053,27 @@ test "initSchema creates tables" {
 	defer if (version) |v| allocator.free(v);
 	try std.testing.expect(version != null);
 	try std.testing.expectEqualStrings("5", version.?);
+}
+
+test "initSchema repeated with matching metadata performs no data writes" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer _ = c.sqlite3_close(db);
+
+	var first = try initSchema(allocator, db, .{
+		.embedding_dim = 2,
+		.embedding_model = "jina-code-embeddings:1.5b",
+	});
+	defer first.deinit(allocator);
+	const changes_before = c.sqlite3_total_changes64(db);
+
+	var repeated = try initSchema(allocator, db, .{
+		.embedding_dim = 2,
+		.embedding_model = "jina-code-embeddings:1.5b",
+	});
+	defer repeated.deinit(allocator);
+
+	try std.testing.expectEqual(changes_before, c.sqlite3_total_changes64(db));
 }
 
 test "initSchema migrates v2 symbols table by adding metadata columns" {
