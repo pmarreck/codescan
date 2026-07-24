@@ -2,6 +2,8 @@
 
 ## 2026-07-23 — script discovery and language expansion
 
+- [x] Make every interactive confirmation/model prompt consume one submitted line immediately, honor its displayed default, and announce each potentially slow init phase before doing work. (completed 2026-07-23 23:08 EDT)
+  Curiosity poke: an open TTY that has delivered `y\n` is not EOF; confirmation, cancellation, overlong input, model loading, and indexing must never depend on filling an arbitrary buffer.
 - [x] Make interactive `codescan init` choose an Ollama embedding model when the configured model is unavailable, recommend locally patched Jina, validate a real non-empty embedding through Ollama or authenticated oMLX, and persist only the validated selection and returned dimension. (completed 2026-07-23 17:36 EDT)
   Curiosity poke: an installed completion-only model, a missing custom name, bad oMLX credentials, EOF/cancellation, or a failed probe must never leave an active model/dimension setting, schema, or watcher branded with unvalidated metadata.
 - [x] Classify extensionless scripts consistently in discovery, full index, update, and watcher reindex paths using regular-text-file, executable-bit, and recognized-shebang evidence. (completed 2026-07-23 12:55 EDT)

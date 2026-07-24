@@ -473,8 +473,9 @@ pub fn main(init: std.process.Init) !void {
 					_ = stderr.flush() catch {};
 					var input_buf: [16]u8 = undefined;
 					var stdin_reader2 = std.Io.File.stdin().reader(io_singleton.getOrInit(), &input_buf);
-					const n = stdin_reader2.interface.readSliceShort(&input_buf) catch 0;
-					if (n == 0 or (input_buf[0] != 'y' and input_buf[0] != 'Y')) {
+					const input = readInteractiveLine(&stdin_reader2.interface) catch null;
+					const line = input orelse "";
+					if (!parseYesNoResponse(line, false)) {
 						try stdout.print("Aborted.\n", .{});
 						try stdout.flush();
 						return;
@@ -702,6 +703,18 @@ const ModelChoice = union(enum) {
 	model: []const u8,
 };
 
+/// Reads one submitted terminal line without waiting for the stream to close
+/// or for the reader's backing buffer to fill.
+fn readInteractiveLine(reader: *std.Io.Reader) !?[]const u8 {
+	return try reader.takeDelimiter('\n');
+}
+
+fn parseYesNoResponse(input: []const u8, default_value: bool) bool {
+	const trimmed = std.mem.trim(u8, input, " \t\r\n");
+	if (trimmed.len == 0) return default_value;
+	return trimmed[0] == 'y' or trimmed[0] == 'Y';
+}
+
 fn parseEmbeddingModelChoice(
 	input: []const u8,
 	recommended_model: []const u8,
@@ -883,14 +896,14 @@ fn promptForOllamaEmbeddingModel(
 
 		var input_buf: [512]u8 = undefined;
 		var stdin_reader = std.Io.File.stdin().reader(io, &input_buf);
-		const input_len = stdin_reader.interface.readSliceShort(&input_buf) catch return null;
-		if (input_len == 0) return null;
-		if (input_len == input_buf.len and input_buf[input_len - 1] != '\n') {
-			return error.ModelNameTooLong;
-		}
+		const input = readInteractiveLine(&stdin_reader.interface) catch |err| switch (err) {
+			error.StreamTooLong => return error.ModelNameTooLong,
+			error.ReadFailed => return null,
+		};
+		const input_line = input orelse return null;
 
 		switch (parseEmbeddingModelChoice(
-			input_buf[0..input_len],
+			input_line,
 			embedding_model_recommendation.name,
 			recommended_installed,
 		)) {
@@ -902,6 +915,11 @@ fn promptForOllamaEmbeddingModel(
 			.model => |model_name| {
 				const owned_name = try allocator.dupe(u8, model_name);
 				errdefer allocator.free(owned_name);
+				try stderr.print(
+					"  Validating embedding model '{s}'; Ollama may need to load it...\n",
+					.{owned_name},
+				);
+				try stderr.flush();
 				const dimension = configureEmbeddingModel(
 					allocator,
 					transport,
@@ -1279,9 +1297,9 @@ fn promptYesNo(stderr: *std.Io.Writer, non_tty_default: bool) bool {
     var input_buf: [16]u8 = undefined;
     const stdin = std.Io.File.stdin();
     var stdin_reader = stdin.reader(io, &input_buf);
-    const n = stdin_reader.interface.readSliceShort(&input_buf) catch return false;
-    if (n == 0) return false;
-    return input_buf[0] == 'y' or input_buf[0] == 'Y';
+    const input = readInteractiveLine(&stdin_reader.interface) catch return false;
+    const line = input orelse return false;
+    return parseYesNoResponse(line, non_tty_default);
 }
 
 fn writeDetectedConfig(
@@ -1978,6 +1996,8 @@ fn runInit(
 	if (dir_exists) {
 		if (force) {
 			// --force: delete and recreate
+			try stderr.print("  Removing existing {s}/...\n", .{codescan_dir});
+			try stderr.flush();
 			std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 				_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
 				_ = stderr.flush() catch {};
@@ -1990,8 +2010,11 @@ fn runInit(
 			var input_buf: [16]u8 = undefined;
 			const stdin = std.Io.File.stdin();
 			var stdin_reader = stdin.reader(io_singleton.getOrInit(), &input_buf);
-			const n = stdin_reader.interface.readSliceShort(&input_buf) catch 0;
-			if (n > 0 and (input_buf[0] == 'y' or input_buf[0] == 'Y')) {
+			const input = readInteractiveLine(&stdin_reader.interface) catch null;
+			const line = input orelse "";
+			if (parseYesNoResponse(line, false)) {
+				try stderr.print("\n  Removing existing {s}/...\n", .{codescan_dir});
+				try stderr.flush();
 				std.Io.Dir.cwd().deleteTree(io_singleton.getOrInit(), codescan_dir) catch |err| {
 					_ = stderr.print("error: could not remove {s}: {s}\n", .{ codescan_dir, @errorName(err) }) catch {};
 					_ = stderr.flush() catch {};
@@ -2027,6 +2050,8 @@ fn runInit(
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
+	try stderr.writeAll("  Detecting embedding provider and available model...\n");
+	try stderr.flush();
 	const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
 	defer if (detected) |d| {
 		if (d.dialect == .openai) {
@@ -2042,8 +2067,13 @@ fn runInit(
 		resolved_settings.embedding_url = d.url;
 		resolved_settings.embedding_dialect = d.dialect;
 		if (d.dialect == .ollama) {
-			const configured_dimension: ?usize = if (d.model_available)
-				configureEmbeddingModel(
+			const configured_dimension: ?usize = if (d.model_available) blk: {
+				try stderr.print(
+					"  Validating embedding model '{s}'; Ollama may need to load it...\n",
+					.{settings.embedding_model},
+				);
+				try stderr.flush();
+				break :blk configureEmbeddingModel(
 					allocator,
 					http_client.transport(),
 					d.url,
@@ -2054,8 +2084,8 @@ fn runInit(
 				) catch |err| switch (err) {
 					error.ModelNotFound, error.IncompatibleEmbeddingModel => null,
 					else => return err,
-				}
-			else
+				};
+			} else
 				null;
 
 			if (configured_dimension) |dimension| {
@@ -2116,8 +2146,13 @@ fn runInit(
 			}
 		} else {
 			const model_name = d.default_model orelse settings.embedding_model;
-			const configured_dimension: ?usize = if (settings.embedding_auth_header) |auth_header|
-				configureEmbeddingModel(
+			const configured_dimension: ?usize = if (settings.embedding_auth_header) |auth_header| blk: {
+				try stderr.print(
+					"  Validating authenticated oMLX embedding model '{s}'...\n",
+					.{model_name},
+				);
+				try stderr.flush();
+				break :blk configureEmbeddingModel(
 					allocator,
 					http_client.transport(),
 					d.url,
@@ -2128,8 +2163,8 @@ fn runInit(
 				) catch |err| switch (err) {
 					error.Unauthorized, error.IncompatibleEmbeddingModel => null,
 					else => return err,
-				}
-			else
+				};
+			} else
 				null;
 
 			if (configured_dimension) |dimension| {
@@ -2228,6 +2263,8 @@ fn runInit(
         resolved_settings.no_progress,
     );
 
+	try stderr.writeAll("  Indexing project files...\n");
+	try stderr.flush();
 	const stats = try performFullIndex(
 		allocator,
 		db,
@@ -7132,6 +7169,51 @@ test "embedding model choice defaults only to an installed recommendation" {
 		ModelChoice{ .model = "nomic-embed-text:latest" },
 		parseEmbeddingModelChoice(" nomic-embed-text:latest \n", recommended, false),
 	);
+}
+
+test "interactive line returns at newline without waiting for EOF or a full buffer" {
+	const FailingStream = struct {
+		fn stream(
+			_: *std.Io.Reader,
+			_: *std.Io.Writer,
+			_: std.Io.Limit,
+		) std.Io.Reader.StreamError!usize {
+			return error.ReadFailed;
+		}
+	};
+	var buffer: [16]u8 = undefined;
+	@memcpy(buffer[0..2], "y\n");
+	var reader: std.Io.Reader = .{
+		.vtable = &.{ .stream = FailingStream.stream },
+		.buffer = &buffer,
+		.seek = 0,
+		.end = 2,
+	};
+
+	const line = try readInteractiveLine(&reader);
+
+	try std.testing.expectEqualStrings("y", line.?);
+}
+
+test "yes/no response honors the displayed default and explicit answer" {
+	const cases = [_]struct {
+		input: []const u8,
+		default: bool,
+		expected: bool,
+	}{
+		.{ .input = "", .default = true, .expected = true },
+		.{ .input = "", .default = false, .expected = false },
+		.{ .input = "yes", .default = false, .expected = true },
+		.{ .input = "Y", .default = false, .expected = true },
+		.{ .input = "no", .default = true, .expected = false },
+		.{ .input = "N", .default = true, .expected = false },
+	};
+	for (cases) |case| {
+		try std.testing.expectEqual(
+			case.expected,
+			parseYesNoResponse(case.input, case.default),
+		);
+	}
 }
 
 test "Ollama model prompt renders the global recommendation and setup guide" {
