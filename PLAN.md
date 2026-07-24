@@ -8,7 +8,7 @@
   Curiosity poke: preserve command/help/root semantics and API parity while moving behavior mechanically in independently tested slices rather than one unreviewable rewrite.
   - [x] Introduce one application-level search service that owns filter, weight, and search-option resolution. (completed 2026-07-24 15:45 EDT)
   - [x] Migrate HTTP search to the shared service and retain HTTP-only parsing/rendering in the adapter. (completed 2026-07-24 15:45 EDT)
-  - [ ] Migrate MCP search to the shared service and retain JSON-RPC diagnostics/rendering in the adapter.
+  - [x] Migrate MCP search to the shared service and retain JSON-RPC diagnostics/rendering in the adapter. (completed 2026-07-24 15:57 EDT)
   - [ ] Migrate CLI search to the shared service and retain terminal diagnostics/rendering in the adapter.
 - [x] Make `--root` order-independent for every project-root command and resolve `read-file` relative paths against the effective root. (completed 2026-07-24 12:35 EDT)
   Curiosity poke: later `--root` arguments must win, absolute paths must remain absolute, and neither ordering may silently fall back to search.
@@ -64,8 +64,8 @@
   Curiosity poke: an unavailable embedding service must preserve useful stale search, while an absent/invalid index must fail honestly; recommend a watcher only after >1 second when the latest commit is ≤7 days old or Git reports >2 changed paths.
 - [x] Give explicit `codescan update` phase-specific stderr feedback when its initial filesystem discovery/comparison exceeds one second. (completed 2026-07-23 11:33 EDT)
   Curiosity poke: inject the monotonic clock and assert exact threshold behavior without sleeps; keep fast updates and machine-readable stdout clean.
-- [ ] Add `codescan reap-stale-watchers` with `--days-old`, `CODESCAN_WATCHER_REAP_AGE_DAYS`, a seven-day default, and command-specific help.
-  Curiosity poke: define staleness from the last successful index commit rather than mere process age or a received event that failed to index; preserve explicit CLI-over-environment precedence.
+- [ ] Make each `codescan watch` process retire itself after a configurable idle interval, replacing the planned external stale-watcher reaper.
+  Curiosity poke: define idleness from the last successful index commit, never exit during an active index, and use CLI override → project config → global config → one-day default precedence.
 - [x] Change the sequential fleet job to `codescan update` every eligible Git repository except the three intentional exclusions. (completed 2026-07-23 11:33 EDT)
   Curiosity poke: the old completed-index resume list must not suppress update reconciliation, and the runner must never leave one implicit watcher per repository.
 - [x] Make incremental completion crash-safe, recover partial/missing vectors, remove vanished files, and rebuild indexes whose stored embedding model differs. (completed 2026-07-23 11:33 EDT)

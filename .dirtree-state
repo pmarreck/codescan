@@ -17,6 +17,7 @@ annotate=[
 	src/indexer.zig = Full and incremental indexing with crash-safe embedding completion, empty-input exclusion, and successful-commit markers.
 	src/last_index.zig = Touches the empty project marker whose mtime records the last successful index commit
 	src/main.zig = CLI orchestration, root-aware file reads, prompts, embedding validation, indexing, search, watchers, and command help.
+	src/mcp.zig = MCP JSON-RPC adapter; delegates search policy and execution to search_service while retaining transport diagnostics/rendering
 	src/output.zig = human/JSON search output with score explanations and confidence notes
 	src/plugins/common_lisp/mod.zig = Common Lisp language plugin metadata and Tree-sitter extractor registration.
 	src/plugins/elm/mod.zig = Elm language plugin metadata and Tree-sitter extractor registration.

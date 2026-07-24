@@ -10,10 +10,10 @@ const indexer = @import("indexer.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
 const embedding_http = @import("embedding_http.zig");
-const filters = @import("filters.zig");
 const kind = @import("kind.zig");
 const model = @import("model.zig");
 const weights = @import("weights.zig");
+const search_service = @import("search_service.zig");
 
 /// Log an error to stderr (skipped during tests) and return error.ToolFailed.
 /// Use at catch sites to make MCP errors visible instead of silently swallowing them.
@@ -36,7 +36,8 @@ pub const Settings = struct {
 	embedding_model: []const u8 = "bge-large",
 	embedding_dialect: embedding_http.ApiDialect = .ollama,
 	embedding_auth_header: ?[]const u8 = null,
-	embedding_dim: usize = 1024,	batch_size: usize = 16,
+	embedding_dim: usize = 1024,
+	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
 	search_top_n: usize = 20,
 	search_mode: search.SearchMode = .hybrid,
@@ -250,7 +251,6 @@ fn formatToolResult(allocator: std.mem.Allocator, id: ?std.json.Value, text: []c
 	defer allocator.free(id_str);
 	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"result\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{s}\"}}]}}}}", .{ id_str, escaped_text });
 }
-
 
 fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.ObjectMap, settings: Settings, err_detail: *?[]u8) ![]u8 {
 	var out: std.Io.Writer.Allocating = .init(allocator);
@@ -532,7 +532,16 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.auth_header = mcp_settings.embedding_auth_header,
 		};
 
-		var search_filters = filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+		var execution = search_service.execute(allocator, db, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
+			.query = query,
+			.top_n = mcp_settings.search_top_n,
+			.mode = effective_search_mode,
+			.fusion = mcp_settings.search_fusion,
+			.rrf_k = mcp_settings.search_rrf_k,
+			.fts_mode = mcp_settings.search_fts_mode,
+			.weight_vector = mcp_settings.search_weight_vector,
+			.weight_lexical = mcp_settings.search_weight_lexical,
+			.min_score = mcp_settings.search_min_score,
 			.search_ext = mcp_settings.search_ext,
 			.search_type = mcp_settings.search_type,
 			.search_lang = mcp_settings.search_lang,
@@ -540,39 +549,13 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.primary_lang = mcp_settings.primary_lang,
 			.include_docs = mcp_settings.include_docs,
 			.docs_only = mcp_settings.docs_only,
-		}) catch |err|
-			return toolError("MCP search: failed to build search filters: {}\n", .{err});
-		defer search_filters.deinit(allocator);
-		const effective_weights = weights.resolveSearchWeights(
-			mcp_settings.search_weights,
-			search_filters.langs.items,
-			mcp_settings.search_weight_vector,
-			mcp_settings.search_weight_lexical,
-			false,
-		);
-
-		const search_opts: search.Options = .{
-			.top_n = mcp_settings.search_top_n,
-			.mode = effective_search_mode,
-			.fusion = mcp_settings.search_fusion,
-			.rrf_k = mcp_settings.search_rrf_k,
-			.fts_mode = mcp_settings.search_fts_mode,
-			.weight_vector = effective_weights.weight_vector,
-			.weight_lexical = effective_weights.weight_lexical,
-			.weight_symbol_kind = effective_weights.weight_symbol_kind,
-			.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
-			.weight_symbol_scope = effective_weights.weight_symbol_scope,
-			.weight_symbol_arity = effective_weights.weight_symbol_arity,
-			.min_score = mcp_settings.search_min_score,
-			.allowed_langs = search_filters.langs.items,
-			.allowed_exts = search_filters.exts.items,
-			.allowed_symbol_kinds = search_filters.symbol_kinds.items,
 			.allowed_paths = path_filters.items,
 			.comments_only = mcp_settings.comments_only,
-		};
-		const sr = search.search(allocator, db, embedder_adapter.embedder(), query, search_opts) catch |err|
+			.search_weights = mcp_settings.search_weights,
+		}) catch |err|
 			return toolError("MCP search: search failed for query '{s}': {}\n", .{ query, err });
-		defer search.freeResults(allocator, sr.results);
+		defer execution.deinit();
+		const sr = execution.result;
 
 		output.writeResults(allocator, &out.writer, .json, sr.results, .{
 			.show_comments = false,
@@ -586,7 +569,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		// Append diagnostics when no results and multiple filters active
 		if (sr.results.len == 0) {
 			const diagnostics = @import("diagnostics.zig");
-			const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, search_opts) catch null;
+			const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, execution.options) catch null;
 			const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
 			if (has_diag) {
 				const d = diag.?;
@@ -925,7 +908,7 @@ const tools_list_json =
 	\\{"name":"references","description":"Find all references to a symbol (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"}},"required":["file","pattern"]}},
 	\\{"name":"rename","description":"Rename a symbol across the workspace (via LSP)","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"to":{"type":"string","description":"New name"},"dry_run":{"type":"boolean","description":"Preview changes without applying"}},"required":["file","pattern","to"]}},
 	\\{"name":"config","description":"Show current codescan configuration","inputSchema":{"type":"object","properties":{}}},
-		\\{"name":"status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}},
+	\\{"name":"status","description":"Show index and watcher status","inputSchema":{"type":"object","properties":{}}},
 	\\{"name":"logs","description":"Read recent watcher logs from the OS log (macOS unified log / Linux journald), filtered to codescan and optionally to a project root.","inputSchema":{"type":"object","properties":{"root":{"type":"string","description":"Absolute project root path; filters messages to this project"},"since":{"type":"string","description":"Time window (e.g. '1h', '15m'). Default 1h."},"limit":{"type":"integer","description":"Max lines to return (last N after filter)"},"all":{"type":"boolean","description":"If true, show logs from all codescan projects"}}}},
 	\\{"name":"root","description":"Report which .codescan/ directory codescan resolves to from the server's project root. Returns absolute path of project root, the .codescan dir, db_path, watcher pid/status, and how many directory levels were walked up.","inputSchema":{"type":"object","properties":{}}}
 	\\]}
@@ -1129,7 +1112,8 @@ test "handleToolsCall dispatches symbols and config" {
 	};
 
 	// Test symbols tool — no Ollama needed
-	const symbols_params_str = try std.fmt.allocPrint(allocator,
+	const symbols_params_str = try std.fmt.allocPrint(
+		allocator,
 		"{{\"name\":\"symbols\",\"arguments\":{{\"file\":\"{s}\"}}}}",
 		.{file_path},
 	);
