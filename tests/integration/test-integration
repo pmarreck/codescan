@@ -8,8 +8,8 @@ FIXTURES_DIR="${CODESCAN_FIXTURES_DIR:-$TMPDIR/codescan-fixtures}"
 MANIFEST="$ROOT/fixtures/manifest.toml"
 BIN="$ROOT/zig-out/bin/codescan"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
-MODEL_NAME="${OLLAMA_MODEL:-bge-large}"
-MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1024}"
+MODEL_NAME="${OLLAMA_MODEL:-jina-code-embeddings:1.5b}"
+MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1536}"
 
 out=
 err=
@@ -110,7 +110,8 @@ search_names() {
 	local min_score="$3"
 	local top_n="$4"
 
-	capture "$BIN" search "$query" --root "$root" --json --top "$top_n" --min-score "$min_score" --embedding-dim "$MODEL_DIM"
+	capture "$BIN" search "$query" --root "$root" --json --top "$top_n" --min-score "$min_score" \
+		--ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "search failed for $root"
@@ -123,7 +124,8 @@ search_count() {
 	local query="$2"
 	local min_score="$3"
 
-	capture "$BIN" search "$query" --root "$root" --json --top 10 --min-score "$min_score" --embedding-dim "$MODEL_DIM"
+	capture "$BIN" search "$query" --root "$root" --json --top 10 --min-score "$min_score" \
+		--ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "search failed for $root"
@@ -138,7 +140,8 @@ search_names_from_subdir() {
 	local min_score="$4"
 	local top_n="$5"
 
-	capture bash -c 'cd "$1" && "$2" search "$3" --json --top "$4" --min-score "$5" --embedding-dim "$6"' _ "$root/$subdir" "$BIN" "$query" "$top_n" "$min_score" "$MODEL_DIM"
+	capture bash -c 'cd "$1" && "$2" search "$3" --json --top "$4" --min-score "$5" --embedding-dim "$6" --ollama-url "$7" --ollama-model "$8"' _ \
+		"$root/$subdir" "$BIN" "$query" "$top_n" "$min_score" "$MODEL_DIM" "$OLLAMA_URL" "$MODEL_NAME"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "search failed from subdir $root/$subdir"
@@ -148,7 +151,7 @@ search_names_from_subdir() {
 
 index_repo() {
 	local root="$1"
-	capture "$BIN" index --root "$root" --embedding-dim "$MODEL_DIM"
+	capture "$BIN" index --root "$root" --ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "index failed for $root"
@@ -250,13 +253,15 @@ main() {
 This is a docs-only test for embeddings.
 MD
 
-	capture "$BIN" index --root "$DOCS_DIR" --type doc --db "$DOCS_DIR/.codescan/index.sqlite3" --embedding-dim "$MODEL_DIM"
+	capture "$BIN" index --root "$DOCS_DIR" --type doc --db "$DOCS_DIR/.codescan/index.sqlite3" \
+		--ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "doc-only index failed"
 	fi
 
-	capture "$BIN" search "docs-only test" --root "$DOCS_DIR" --docs --mode lexical --json --embedding-dim "$MODEL_DIM"
+	capture "$BIN" search "docs-only test" --root "$DOCS_DIR" --docs --mode lexical --json \
+		--ollama-url "$OLLAMA_URL" --ollama-model "$MODEL_NAME" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "doc-only search failed"

@@ -155,7 +155,7 @@ nix develop -c ./tests/http/test-http
 ## Integration test
 
 ```bash
-# requires Ollama running with bge-large pulled (or set OLLAMA_MODEL)
+# requires Ollama running with jina-code-embeddings:1.5b (or set OLLAMA_MODEL and OLLAMA_EMBEDDING_DIM)
 nix develop -c ./tests/integration/test-integration
 ```
 

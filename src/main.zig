@@ -31,6 +31,7 @@ const diagnostics = @import("diagnostics.zig");
 const syslog = @import("syslog.zig");
 const setup_model_text = @import("setup_model_text.zig");
 const preflight = @import("preflight.zig");
+const search_service = @import("search_service.zig");
 const io_singleton = @import("io_singleton.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
@@ -3013,25 +3014,6 @@ fn runSearch(
 		.auth_header = settings.embedding_auth_header,
 	};
 
-	var search_filters = try filters.buildSearchFilters(allocator, registry, db, .{
-		.search_ext = settings.search_ext,
-		.search_type = settings.search_type,
-		.search_lang = settings.search_lang,
-		.search_symbol_kind = settings.search_symbol_kind,
-		.primary_lang = settings.primary_lang,
-		.include_docs = settings.include_docs,
-		.docs_only = settings.docs_only,
-	});
-	defer search_filters.deinit(allocator);
-
-	const effective_weights = weights.resolveSearchWeights(
-		settings.search_weights,
-		search_filters.langs.items,
-		settings.weight_vector,
-		settings.weight_lexical,
-		parsed.seen.weight_vector or parsed.seen.weight_lexical,
-	);
-
 	// Build path filters from --path and --file flags
 	var path_filters = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer path_filters.deinit(allocator);
@@ -3042,44 +3024,47 @@ fn runSearch(
 		try path_filters.append(allocator, f);
 	}
 
-	const search_opts = search.Options{
-		.top_n = settings.top_n,
-		.mode = effective_search_mode,
-		.fusion = settings.fusion,
-		.rrf_k = settings.rrf_k,
-		.fts_mode = settings.fts_mode,
-		.weight_vector = effective_weights.weight_vector,
-		.weight_lexical = effective_weights.weight_lexical,
-		.weight_symbol_kind = effective_weights.weight_symbol_kind,
-		.weight_symbol_visibility = effective_weights.weight_symbol_visibility,
-		.weight_symbol_scope = effective_weights.weight_symbol_scope,
-		.weight_symbol_arity = effective_weights.weight_symbol_arity,
-		.min_score = settings.min_score,
-		.allowed_langs = search_filters.langs.items,
-		.allowed_exts = search_filters.exts.items,
-		.allowed_symbol_kinds = search_filters.symbol_kinds.items,
-		.allowed_paths = path_filters.items,
-		.comments_only = settings.comments_only,
-	};
-	const sr = try search.search(
+	var execution = try search_service.execute(
 		allocator,
 		db,
+		registry,
 		embedder_adapter.embedder(),
-		query,
-		search_opts,
+		.{
+			.query = query,
+			.top_n = settings.top_n,
+			.mode = effective_search_mode,
+			.fusion = settings.fusion,
+			.rrf_k = settings.rrf_k,
+			.fts_mode = settings.fts_mode,
+			.weight_vector = settings.weight_vector,
+			.weight_lexical = settings.weight_lexical,
+			.explicit_weight_override = parsed.seen.weight_vector or parsed.seen.weight_lexical,
+			.min_score = settings.min_score,
+			.search_ext = settings.search_ext,
+			.search_type = settings.search_type,
+			.search_lang = settings.search_lang,
+			.search_symbol_kind = settings.search_symbol_kind,
+			.primary_lang = settings.primary_lang,
+			.include_docs = settings.include_docs,
+			.docs_only = settings.docs_only,
+			.comments_only = settings.comments_only,
+			.allowed_paths = path_filters.items,
+			.search_weights = settings.search_weights,
+		},
 	);
-	defer search.freeResults(allocator, sr.results);
+	defer execution.deinit();
+	const sr = execution.result;
 
 	if (sr.results.len == 0) {
 		const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 		// Show per-filter diagnostic counts when 2+ filter dimensions were active
-		const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, search_opts) catch null;
+		const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, execution.options) catch null;
 		const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
 		if (has_diag) {
 			const d = diag.?;
 			// Build a short description of active filters for the note header
-			const kind_str = if (search_opts.allowed_symbol_kinds.len > 0) search_opts.allowed_symbol_kinds[0] else "";
-			const lang_str = if (search_opts.allowed_langs.len > 0) search_opts.allowed_langs[0] else "";
+			const kind_str = if (execution.options.allowed_symbol_kinds.len > 0) execution.options.allowed_symbol_kinds[0] else "";
+			const lang_str = if (execution.options.allowed_langs.len > 0) execution.options.allowed_langs[0] else "";
 			if (kind_str.len > 0 and lang_str.len > 0) {
 				_ = stderr.print("note: no results for query \"{s}\" with kind={s} lang={s}\n", .{ query, kind_str, lang_str }) catch {};
 			} else if (kind_str.len > 0) {

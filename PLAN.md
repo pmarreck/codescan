@@ -4,12 +4,15 @@
 
 - [x] Keep empty normalized metadata/comments out of embedding batches and preserve YAML block-list frontmatter tags. (completed 2026-07-24 15:31 EDT)
   Curiosity poke: Ollama/Jina misleadingly reports empty input as a context overflow; classify empty, whitespace-only, and real comments as a set without weakening unrelated HTTP 400 failures.
+- [x] Make live HTTP/integration tests default to the currently recommended local Jina model instead of the removed `bge-large` installation. (completed 2026-07-24 16:02 EDT)
+  Curiosity poke: retain explicit `OLLAMA_MODEL` and `OLLAMA_EMBEDDING_DIM` overrides so alternate compatible providers remain testable.
 - [ ] Boldly split command orchestration from CLI, HTTP, and MCP adapters after the context-overflow repair is committed green.
   Curiosity poke: preserve command/help/root semantics and API parity while moving behavior mechanically in independently tested slices rather than one unreviewable rewrite.
   - [x] Introduce one application-level search service that owns filter, weight, and search-option resolution. (completed 2026-07-24 15:45 EDT)
   - [x] Migrate HTTP search to the shared service and retain HTTP-only parsing/rendering in the adapter. (completed 2026-07-24 15:45 EDT)
   - [x] Migrate MCP search to the shared service and retain JSON-RPC diagnostics/rendering in the adapter. (completed 2026-07-24 15:57 EDT)
-  - [ ] Migrate CLI search to the shared service and retain terminal diagnostics/rendering in the adapter.
+  - [x] Migrate CLI search to the shared service and retain terminal diagnostics/rendering in the adapter. (completed 2026-07-24 16:00 EDT)
+  - [ ] Extract index/update orchestration behind an application service while keeping CLI progress and watcher presentation in adapters.
 - [x] Make `--root` order-independent for every project-root command and resolve `read-file` relative paths against the effective root. (completed 2026-07-24 12:35 EDT)
   Curiosity poke: later `--root` arguments must win, absolute paths must remain absolute, and neither ordering may silently fall back to search.
 - [x] Trace unchanged pre-search reconciliation and prove the prior discovery fix keeps it subsecond on representative repositories. (completed 2026-07-24 12:34 EDT)

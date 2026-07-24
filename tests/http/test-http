@@ -9,8 +9,8 @@ BIN="$ROOT/zig-out/bin/codescan"
 PORT="${CODESCAN_HTTP_TEST_PORT:-8124}"
 HOST="127.0.0.1"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
-MODEL_NAME="${OLLAMA_MODEL:-bge-large}"
-MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1024}"
+MODEL_NAME="${OLLAMA_MODEL:-jina-code-embeddings:1.5b}"
+MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1536}"
 
 out=
 err=
