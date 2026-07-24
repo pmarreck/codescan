@@ -2,6 +2,10 @@
 
 ## 2026-07-24 — lexical match quality
 
+- [x] Keep empty normalized metadata/comments out of embedding batches and preserve YAML block-list frontmatter tags. (completed 2026-07-24 15:31 EDT)
+  Curiosity poke: Ollama/Jina misleadingly reports empty input as a context overflow; classify empty, whitespace-only, and real comments as a set without weakening unrelated HTTP 400 failures.
+- [ ] Boldly split command orchestration from CLI, HTTP, and MCP adapters after the context-overflow repair is committed green.
+  Curiosity poke: preserve command/help/root semantics and API parity while moving behavior mechanically in independently tested slices rather than one unreviewable rewrite.
 - [x] Make `--root` order-independent for every project-root command and resolve `read-file` relative paths against the effective root. (completed 2026-07-24 12:35 EDT)
   Curiosity poke: later `--root` arguments must win, absolute paths must remain absolute, and neither ordering may silently fall back to search.
 - [x] Trace unchanged pre-search reconciliation and prove the prior discovery fix keeps it subsecond on representative repositories. (completed 2026-07-24 12:34 EDT)
@@ -12,8 +16,6 @@
   Curiosity poke: assert the connection's effective pragma rather than trusting configuration text; retain checkpoints and crash-consistent SQLite transactions.
 - [x] Make cross-table symbol deletion atomic and harden hashline/FTS persistence paths identified by the independent deep review. (completed 2026-07-24 14:54 EDT)
   Curiosity poke: inject a final-delete failure to prove vectors roll back, round-trip distinct boundary hashes, and treat quotes inside FTS tokens as literal query text.
-- [ ] Decompose the 8,569-line `main.zig` after choosing a safe command-group extraction or a bold ports/adapters split.
-  Curiosity poke: preserve test imports, command help, FFI/MCP/HTTP parity, and avoid a formatting-only mega-diff that obscures behavior.
 - [x] Route GitHub and Nix CI through the aggregated `test-unit` target so same-seed imported tests cannot contend across duplicate binaries. (completed 2026-07-24 10:39 EDT)
   Curiosity poke: the aggregate must still import every source module, and the Nix check must continue smoke-executing the release binary after tests pass.
 - [x] Reject fake `.git` directories before Git file-list acceleration so scanners deterministically fall back to filesystem traversal. (completed 2026-07-24 10:51 EDT)

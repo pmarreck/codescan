@@ -266,7 +266,7 @@ pub fn indexAll(
                 try completion.completeBatch(db, .code);
             }
 
-            if (sym.doc_comment) |doc| {
+            if (sym.doc_comment) |doc| if (isEmbeddableText(doc)) {
                 const comment_text = try buildCommentText(allocator, doc, .doc);
                 try comment_texts.append(allocator, comment_text);
                 try comment_rowids.append(allocator, rowid);
@@ -279,7 +279,7 @@ pub fn indexAll(
                     try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
                     try completion.completeBatch(db, .comment);
                 }
-            }
+            };
         }
 
         try completion.seal(db, file_index);
@@ -527,7 +527,7 @@ pub fn indexIncremental(
                 try completion.completeBatch(db, .code);
             }
 
-            if (sym.doc_comment) |doc| {
+            if (sym.doc_comment) |doc| if (isEmbeddableText(doc)) {
                 const comment_text = try buildCommentText(allocator, doc, .doc);
                 try comment_texts.append(allocator, comment_text);
                 try comment_rowids.append(allocator, rowid);
@@ -537,7 +537,7 @@ pub fn indexIncremental(
                     try flushCommentBatch(allocator, db, embedder, options, &comment_texts, &comment_rowids);
                     try completion.completeBatch(db, .comment);
                 }
-            }
+            };
         }
 
         try completion.seal(db, file_index);
@@ -931,6 +931,10 @@ pub fn buildCommentText(
     comment_kind: kind.Kind,
 ) ![]u8 {
     return truncateForKind(allocator, comment_kind, doc);
+}
+
+fn isEmbeddableText(text: []const u8) bool {
+    return std.mem.trim(u8, text, " \t\r\n").len > 0;
 }
 
 const max_embed_bytes_code: usize = 1600;
@@ -1491,6 +1495,51 @@ test "indexAll stores symbols and embeddings" {
     try std.testing.expectEqual(@as(u64, 0), marker.size);
 }
 
+test "indexAll never sends empty or whitespace-only comments to the embedder" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    const source =
+        "---\n" ++
+        "tags: [\"\"]\n" ++
+        "---\n" ++
+        "# Useful section\n" ++
+        "Searchable body.\n";
+    try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "notes.md", .data = source });
+
+    const allocator = std.testing.allocator;
+    const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+    defer allocator.free(root);
+    const db = try storage.openMemoryWithVec(allocator);
+    defer storage.close(db);
+
+    var rejecting = RejectEmptyEmbedder{};
+    const stats = try indexAll(allocator, db, root, plugin.defaultRegistry(), rejecting.embedder(), .{
+        .embedding_dim = 2,
+        .batch_size = 16,
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), stats.symbols);
+    try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
+    try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+}
+
+test "isEmbeddableText classifies empty text over a representative set" {
+    const cases = [_]struct {
+        text: []const u8,
+        expected: bool,
+    }{
+        .{ .text = "", .expected = false },
+        .{ .text = "   ", .expected = false },
+        .{ .text = "\t\r\n", .expected = false },
+        .{ .text = " comment ", .expected = true },
+        .{ .text = "\ncode\n", .expected = true },
+    };
+    for (cases) |case| {
+        try std.testing.expectEqual(case.expected, isEmbeddableText(case.text));
+    }
+}
+
 test "wat comment-only vocabulary retrieves its associated terse symbol" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1956,6 +2005,27 @@ const FakeEmbedder = struct {
         _ = ctx;
         for (embeddings) |row| allocator.free(row);
         allocator.free(embeddings);
+    }
+};
+
+const RejectEmptyEmbedder = struct {
+    pub fn embedder(self: *RejectEmptyEmbedder) embedding.Embedder {
+        return .{ .ctx = self, .embed = embed, .free = free };
+    }
+
+    fn embed(_: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
+        for (inputs) |input| {
+            if (std.mem.trim(u8, input, " \t\r\n").len == 0) {
+                return error.EmptyEmbeddingInput;
+            }
+        }
+        var fake = FakeEmbedder{};
+        return FakeEmbedder.embed(&fake, allocator, inputs);
+    }
+
+    fn free(_: *anyopaque, allocator: std.mem.Allocator, embeddings: [][]f32) void {
+        var fake = FakeEmbedder{};
+        FakeEmbedder.free(&fake, allocator, embeddings);
     }
 };
 

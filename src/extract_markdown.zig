@@ -49,7 +49,12 @@ pub fn extract(
 const Frontmatter = struct {
     end_line_index: usize,
     description: ?[]const u8,
-    tags: ?[]const u8,
+    tags: ?FrontmatterTags,
+};
+
+const FrontmatterTags = union(enum) {
+    scalar: []const u8,
+    block: []const []const u8,
 };
 
 /// Recognizes only a complete leading YAML fence and the two memory-recall
@@ -57,20 +62,42 @@ const Frontmatter = struct {
 fn parseLeadingFrontmatter(lines: []const []const u8) ?Frontmatter {
     if (lines.len < 2 or !std.mem.eql(u8, std.mem.trim(u8, lines[0], "\r"), "---")) return null;
     var description: ?[]const u8 = null;
-    var tags: ?[]const u8 = null;
+    var scalar_tags: ?[]const u8 = null;
+    var block_tags_start: ?usize = null;
+    var block_tags_end: ?usize = null;
+    var reading_block_tags = false;
     for (lines[1..], 1..) |line, index| {
         const trimmed = std.mem.trim(u8, line, " \t\r");
         if (std.mem.eql(u8, trimmed, "---")) {
+            const tags: ?FrontmatterTags = if (scalar_tags) |value|
+                .{ .scalar = value }
+            else if (block_tags_start) |start|
+                if (block_tags_end) |end| .{ .block = lines[start..end] } else null
+            else
+                null;
             return .{
                 .end_line_index = index,
                 .description = description,
                 .tags = tags,
             };
         }
+        if (reading_block_tags) {
+            if (std.mem.startsWith(u8, trimmed, "-")) {
+                if (block_tags_start == null) block_tags_start = index;
+                block_tags_end = index + 1;
+                continue;
+            }
+            if (trimmed.len == 0) continue;
+            reading_block_tags = false;
+        }
         if (frontmatterValue(trimmed, "description")) |value| {
             description = unquoteYamlScalar(value);
         } else if (frontmatterValue(trimmed, "tags")) |value| {
-            tags = value;
+            if (value.len == 0) {
+                reading_block_tags = true;
+            } else {
+                scalar_tags = value;
+            }
         }
     }
     return null;
@@ -91,7 +118,7 @@ fn unquoteYamlScalar(value: []const u8) []const u8 {
     return value;
 }
 
-fn normalizeFrontmatterTags(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
+fn normalizeInlineFrontmatterTags(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
     var value = std.mem.trim(u8, raw, " \t\r");
     if (value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']') {
         value = value[1 .. value.len - 1];
@@ -110,6 +137,25 @@ fn normalizeFrontmatterTags(allocator: std.mem.Allocator, raw: []const u8) ![]u8
     return out.toOwnedSlice();
 }
 
+fn normalizeBlockFrontmatterTags(
+    allocator: std.mem.Allocator,
+    lines: []const []const u8,
+) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(allocator);
+    defer out.deinit();
+    var wrote_one = false;
+    for (lines) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (!std.mem.startsWith(u8, trimmed, "-")) continue;
+        const tag = unquoteYamlScalar(std.mem.trim(u8, trimmed[1..], " \t\r"));
+        if (tag.len == 0) continue;
+        if (wrote_one) try out.writer.writeByte(' ');
+        try out.writer.writeAll(tag);
+        wrote_one = true;
+    }
+    return out.toOwnedSlice();
+}
+
 fn emitFrontmatter(
     allocator: std.mem.Allocator,
     file_path: []const u8,
@@ -117,7 +163,10 @@ fn emitFrontmatter(
     out: *std.ArrayListUnmanaged(model.Symbol),
 ) !void {
     if (metadata.description == null and metadata.tags == null) return;
-    const tags = if (metadata.tags) |raw| try normalizeFrontmatterTags(allocator, raw) else null;
+    const tags = if (metadata.tags) |raw| switch (raw) {
+        .scalar => |value| try normalizeInlineFrontmatterTags(allocator, value),
+        .block => |lines| try normalizeBlockFrontmatterTags(allocator, lines),
+    } else null;
     errdefer if (tags) |value| allocator.free(value);
     const signature_source = metadata.description orelse "frontmatter tags";
     const language = try allocator.dupe(u8, "markdown");
@@ -295,6 +344,30 @@ test "extract emits leading frontmatter once as structured metadata" {
     try std.testing.expectEqualStrings("Recovery", symbols[1].name);
     try std.testing.expectEqual(@as(usize, 6), symbols[1].start_line);
     try std.testing.expect(std.mem.indexOf(u8, symbols[1].doc_comment.?, "description:") == null);
+}
+
+test "extract normalizes block-list frontmatter tags" {
+    const allocator = std.testing.allocator;
+    const source =
+        "---\n" ++
+        "tags:\n" ++
+        "  - type/cheatsheet\n" ++
+        "  - area/dev-tools\n" ++
+        "created: 2026-02-03\n" ++
+        "---\n" ++
+        "# Zig API Reference\n";
+
+    const symbols = try extract(allocator, "ZIG_RECENT_API_CHANGES.md", source);
+    defer {
+        for (symbols) |*sym| sym.deinit(allocator);
+        allocator.free(symbols);
+    }
+
+    try std.testing.expectEqual(@as(usize, 2), symbols.len);
+    try std.testing.expectEqualStrings(
+        "type/cheatsheet area/dev-tools",
+        symbols[0].doc_comment.?,
+    );
 }
 
 test "extract leaves unterminated frontmatter searchable as ordinary markdown" {

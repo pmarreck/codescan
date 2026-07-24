@@ -341,8 +341,17 @@ tags: [nix, flakes, untracked-files]
 ---
 ```
 
+Standard block-list tags are also normalized:
+
+```yaml
+tags:
+  - type/cheatsheet
+  - area/dev-tools
+```
+
 The description and normalized tag values are embedded together as a compact
 metadata-only chunk; `datetime` and other fields are not given semantic weight.
+Empty or whitespace-only metadata is never sent to the embedding provider.
 Frontmatter is removed from the ordinary Markdown section stream, so metadata
 is neither duplicated into every heading nor confused with body prose.
 Lexical description/tag hits receive a deliberate ranking boost over ordinary
