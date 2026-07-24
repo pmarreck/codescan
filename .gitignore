@@ -8,3 +8,6 @@ zig-out/
 result
 inbox
 zig-pkg/
+
+# session handoff docs (skill: handoff)
+HANDOFF*
