@@ -7,6 +7,7 @@ const extract_util = @import("extract_util.zig");
 const embedding = @import("embedding.zig");
 const embedding_http = @import("embedding_http.zig");
 const indexer = @import("indexer.zig");
+const index_service = @import("index_service.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
 const server = @import("server.zig");
@@ -1364,34 +1365,31 @@ fn performFullIndex(
 	stderr: *std.Io.Writer,
 	show_progress: bool,
 ) !indexer.Stats {
-	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-	defer index_filters.deinit(allocator);
-
 	// Auto-detect embedding dimension from a test embed
 	const effective_dim = probeEmbeddingDim(allocator, embedder) orelse settings.embedding_dim;
 
-	const stats = try indexer.indexAll(
+	const result = try index_service.execute(
 		allocator,
 		db,
-		settings.root_path,
 		registry,
 		embedder,
 		.{
+			.mode = .full,
+			.root_path = settings.root_path,
 			.embedding_dim = effective_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
-			.allowed_exts = index_filters.exts.items,
-			.allowed_kinds = index_filters.kinds.items,
-			.ignore = .{
-				.global = settings.ignore_global,
-				.per_language = settings.ignore_lang,
-				.include_node_modules = settings.include_node_modules,
-				.always_include = settings.always_include,
-			},
+			.index_ext = settings.index_ext,
+			.index_type = settings.index_type,
+			.ignore_global = settings.ignore_global,
+			.ignore_per_language = settings.ignore_lang,
+			.include_node_modules = settings.include_node_modules,
+			.always_include = settings.always_include,
 			.show_progress = show_progress,
 		},
 	);
+	const stats = result.full;
 
 	if (show_progress) {
 		_ = stderr.print("  Indexed {d} files, {d} symbols\n", .{ stats.files, stats.symbols }) catch {};
@@ -2337,35 +2335,32 @@ fn runIndex(
 	else
 		settings.embedding_dim;
 
-	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-	defer index_filters.deinit(allocator);
-
-	const stats = try indexer.indexAll(
+	const result = try index_service.execute(
 		allocator,
 		db,
-		settings.root_path,
 		registry,
-        active_embedder,
-        .{
+		active_embedder,
+		.{
+			.mode = .full,
+			.root_path = settings.root_path,
 			.embedding_dim = effective_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
-			.allowed_exts = index_filters.exts.items,
-			.allowed_kinds = index_filters.kinds.items,
-			.ignore = .{
-				.global = settings.ignore_global,
-				.per_language = settings.ignore_lang,
-				.include_node_modules = settings.include_node_modules,
-				.always_include = settings.always_include,
-			},
-            .show_progress = shouldShowProgress(
-                std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
-                settings.output,
-                settings.no_progress,
-            ),
+			.index_ext = settings.index_ext,
+			.index_type = settings.index_type,
+			.ignore_global = settings.ignore_global,
+			.ignore_per_language = settings.ignore_lang,
+			.include_node_modules = settings.include_node_modules,
+			.always_include = settings.always_include,
+			.show_progress = shouldShowProgress(
+				std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
+				settings.output,
+				settings.no_progress,
+			),
 		},
 	);
+	const stats = result.full;
 
 	if (settings.output == .json) {
 		try stdout.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}\n", .{ stats.files, stats.symbols });
@@ -2700,9 +2695,6 @@ fn runUpdateWithInvocation(
 		_ = se.flush() catch {};
 	}
 
-	var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
-	defer index_filters.deinit(allocator);
-
 	const show_progress = invocation == .explicit and
         shouldShowProgress(
             std.Io.File.stderr().isTty(io_singleton.getOrInit()) catch false,
@@ -2720,30 +2712,30 @@ fn runUpdateWithInvocation(
 	else
 		null;
 
-	const stats = try indexer.indexIncremental(
+	const result = try index_service.execute(
 		allocator,
 		db,
-		settings.root_path,
 		registry,
-        active_embedder,
-        .{
+		active_embedder,
+		.{
+			.mode = .incremental,
+			.root_path = settings.root_path,
 			.embedding_dim = effective_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
-			.allowed_exts = index_filters.exts.items,
-			.allowed_kinds = index_filters.kinds.items,
-			.ignore = .{
-				.global = settings.ignore_global,
-				.per_language = settings.ignore_lang,
-				.include_node_modules = settings.include_node_modules,
-				.always_include = settings.always_include,
-			},
+			.index_ext = settings.index_ext,
+			.index_type = settings.index_type,
+			.ignore_global = settings.ignore_global,
+			.ignore_per_language = settings.ignore_lang,
+			.include_node_modules = settings.include_node_modules,
+			.always_include = settings.always_include,
 			.require_embeddings = !use_null_embedder,
 			.show_progress = show_progress,
 			.discovery_progress = discovery_adapter,
 		},
 	);
+	const stats = result.incremental;
 	const invocation_duration = invocation_started.durationTo(
 		std.Io.Clock.awake.now(io_singleton.getOrInit()),
 	).nanoseconds;

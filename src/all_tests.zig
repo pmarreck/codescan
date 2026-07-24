@@ -26,6 +26,7 @@ const _filter = @import("filter.zig");
 const _fs_watch = @import("fs_watch.zig");
 const _hashline = @import("hashline.zig");
 const _indexer = @import("indexer.zig");
+const _index_service = @import("index_service.zig");
 const _line_index = @import("line_index.zig");
 const _lsp = @import("lsp.zig");
 const _main = @import("main.zig");
@@ -84,6 +85,7 @@ test {
 	_ = _fs_watch;
 	_ = _hashline;
 	_ = _indexer;
+	_ = _index_service;
 	_ = _line_index;
 	_ = _lsp;
 	_ = _main;

@@ -12,7 +12,8 @@
   - [x] Migrate HTTP search to the shared service and retain HTTP-only parsing/rendering in the adapter. (completed 2026-07-24 15:45 EDT)
   - [x] Migrate MCP search to the shared service and retain JSON-RPC diagnostics/rendering in the adapter. (completed 2026-07-24 15:57 EDT)
   - [x] Migrate CLI search to the shared service and retain terminal diagnostics/rendering in the adapter. (completed 2026-07-24 16:00 EDT)
-  - [ ] Extract index/update orchestration behind an application service while keeping CLI progress and watcher presentation in adapters.
+  - [x] Route full and incremental indexing through one application service while keeping provider probing and terminal progress in adapters. (completed 2026-07-24 16:16 EDT)
+  - [ ] Move update database preparation/rebuild policy and freshness reconciliation out of the CLI adapter.
 - [x] Make `--root` order-independent for every project-root command and resolve `read-file` relative paths against the effective root. (completed 2026-07-24 12:35 EDT)
   Curiosity poke: later `--root` arguments must win, absolute paths must remain absolute, and neither ordering may silently fall back to search.
 - [x] Trace unchanged pre-search reconciliation and prove the prior discovery fix keeps it subsecond on representative repositories. (completed 2026-07-24 12:34 EDT)
