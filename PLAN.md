@@ -6,8 +6,14 @@
   Curiosity poke: later `--root` arguments must win, absolute paths must remain absolute, and neither ordering may silently fall back to search.
 - [x] Trace unchanged pre-search reconciliation and prove the prior discovery fix keeps it subsecond on representative repositories. (completed 2026-07-24 12:34 EDT)
   Curiosity poke: separate filesystem/SQLite reconciliation from changed-file extraction and remote embedding so one aggregate duration cannot hide the real bottleneck.
-- [ ] Prevent changed-file embedding from blocking the initial search response under the selected freshness policy.
-  Curiosity poke: fresh lexical evidence, valid old vectors, missing new vectors, explicit updates, and watcher-owned freshness must remain distinguishable rather than claiming a fully fresh hybrid index.
+- [x] Make `search --lexical-only` an explicit alias for `--mode lexical`, skipping semantic reconciliation while hybrid/vector searches retain fully fresh embeddings. (completed 2026-07-24 14:49 EDT)
+  Curiosity poke: later mode switches must win, regex must remain non-semantic, and lexical-only search must never contact a configured embedding endpoint.
+- [x] Switch rebuildable WAL indexes to `synchronous=NORMAL`, reducing a 1,000-symbol syscall oracle from 2,046 fsyncs to 32 without weakening incremental completion boundaries. (completed 2026-07-24 14:56 EDT)
+  Curiosity poke: assert the connection's effective pragma rather than trusting configuration text; retain checkpoints and crash-consistent SQLite transactions.
+- [x] Make cross-table symbol deletion atomic and harden hashline/FTS persistence paths identified by the independent deep review. (completed 2026-07-24 14:54 EDT)
+  Curiosity poke: inject a final-delete failure to prove vectors roll back, round-trip distinct boundary hashes, and treat quotes inside FTS tokens as literal query text.
+- [ ] Decompose the 8,569-line `main.zig` after choosing a safe command-group extraction or a bold ports/adapters split.
+  Curiosity poke: preserve test imports, command help, FFI/MCP/HTTP parity, and avoid a formatting-only mega-diff that obscures behavior.
 - [x] Route GitHub and Nix CI through the aggregated `test-unit` target so same-seed imported tests cannot contend across duplicate binaries. (completed 2026-07-24 10:39 EDT)
   Curiosity poke: the aggregate must still import every source module, and the Nix check must continue smoke-executing the release binary after tests pass.
 - [x] Reject fake `.git` directories before Git file-list acceleration so scanners deterministically fall back to filesystem traversal. (completed 2026-07-24 10:51 EDT)

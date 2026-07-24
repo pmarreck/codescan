@@ -66,6 +66,9 @@ pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !Db {
 
 	// Enable WAL mode for concurrent access (watcher + CLI commands)
 	_ = execMaybe(handle, "PRAGMA journal_mode=WAL;\x00");
+	// Indexes are rebuildable; NORMAL avoids one WAL fsync per autocommit while
+	// preserving consistency and syncing at checkpoints.
+	try exec(handle, "PRAGMA synchronous=NORMAL;\x00");
 	// Wait up to 5s if another process holds the write lock
 	_ = execMaybe(handle, "PRAGMA busy_timeout=5000;\x00");
 
@@ -327,14 +330,18 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	try bindText(stmt.?, 1, symbol.language);
 	try bindText(stmt.?, 2, symbol.file_path);
 	try bindInt(stmt.?, 3, symbol.start_line);
+	var start_hash_buffer: hashline.Hash = undefined;
 	if (symbol.start_hash) |hash| {
-		_ = c.sqlite3_bind_text(stmt.?, 4, &hash, hashline.HASH_LEN, null);
+		start_hash_buffer = hash;
+		try bindText(stmt.?, 4, &start_hash_buffer);
 	} else {
 		_ = c.sqlite3_bind_null(stmt.?, 4);
 	}
 	try bindInt(stmt.?, 5, symbol.end_line);
+	var end_hash_buffer: hashline.Hash = undefined;
 	if (symbol.end_hash) |hash| {
-		_ = c.sqlite3_bind_text(stmt.?, 6, &hash, hashline.HASH_LEN, null);
+		end_hash_buffer = hash;
+		try bindText(stmt.?, 6, &end_hash_buffer);
 	} else {
 		_ = c.sqlite3_bind_null(stmt.?, 6);
 	}
@@ -980,6 +987,9 @@ pub fn deleteIndexedFile(db: Db, file_path: []const u8) !void {
 }
 
 pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
+	try exec(db, "BEGIN IMMEDIATE;\x00");
+	errdefer _ = execMaybe(db, "ROLLBACK;\x00");
+
 	// First delete corresponding embeddings and FTS entries
 	const del_embed_sql: [:0]const u8 =
 		"DELETE FROM embeddings WHERE rowid IN (SELECT id FROM symbols WHERE file_path = ?1);\x00";
@@ -1026,6 +1036,8 @@ pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
 			return error.SqlStepFailed;
 		}
 	}
+
+	try exec(db, "COMMIT;\x00");
 }
 
 fn allocPrintZ(allocator: std.mem.Allocator, comptime fmt: []const u8, args: anytype) ![:0]u8 {
@@ -1201,6 +1213,54 @@ test "insertSymbol and insertEmbedding" {
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
 }
 
+test "file databases use WAL with NORMAL synchronization" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "index.sqlite3", .data = "" });
+	const path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "index.sqlite3", allocator);
+	defer allocator.free(path);
+
+	const db = try openFileWithVec(allocator, path);
+	defer close(db);
+
+	var stmt: ?*c.sqlite3_stmt = null;
+	try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_prepare_v2(db, "PRAGMA synchronous;\x00", -1, &stmt, null));
+	defer _ = c.sqlite3_finalize(stmt.?);
+	try std.testing.expectEqual(c.SQLITE_ROW, c.sqlite3_step(stmt.?));
+	try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_column_int(stmt.?, 0));
+}
+
+test "insertSymbol round-trips distinct hashline boundaries" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/main.zig"),
+		.name = try allocator.dupe(u8, "main"),
+		.signature = try allocator.dupe(u8, "pub fn main() void"),
+		.doc_comment = null,
+		.start_hash = .{ 'a', '1', 'Z' },
+		.end_hash = .{ 'x', '9', 'Q' },
+		.start_line = 3,
+		.end_line = 7,
+	};
+	defer symbol.deinit(allocator);
+	const rowid = try insertSymbol(db, symbol);
+
+	var stmt: ?*c.sqlite3_stmt = null;
+	const sql: [:0]const u8 = "SELECT start_hash, end_hash FROM symbols WHERE id = ?1;\x00";
+	try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_prepare_v2(db, sql, -1, &stmt, null));
+	defer _ = c.sqlite3_finalize(stmt.?);
+	_ = c.sqlite3_bind_int64(stmt.?, 1, rowid);
+	try std.testing.expectEqual(c.SQLITE_ROW, c.sqlite3_step(stmt.?));
+	try std.testing.expectEqualStrings("a1Z", std.mem.span(c.sqlite3_column_text(stmt.?, 0).?));
+	try std.testing.expectEqualStrings("x9Q", std.mem.span(c.sqlite3_column_text(stmt.?, 1).?));
+}
+
 test "insertSymbol stores symbol metadata columns when provided" {
 	const allocator = std.testing.allocator;
 	const db = try openMemoryWithVec(allocator);
@@ -1323,6 +1383,37 @@ test "deleteSymbolsByFile removes symbols and embeddings" {
 	try deleteSymbolsByFile(db, "src/a.zig");
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
 	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
+}
+
+test "deleteSymbolsByFile rolls back related-table deletes on failure" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/a.zig"),
+		.name = try allocator.dupe(u8, "a"),
+		.signature = try allocator.dupe(u8, "fn a() void"),
+		.doc_comment = try allocator.dupe(u8, "Attached comment"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+	const rowid = try insertSymbol(db, symbol);
+	try insertEmbedding(db, allocator, rowid, &[_]f32{ 0.1, 0.2 });
+	try insertCommentEmbedding(db, allocator, rowid, &[_]f32{ 0.3, 0.4 });
+	try exec(
+		db,
+		"CREATE TRIGGER reject_symbol_delete BEFORE DELETE ON symbols "
+		++ "BEGIN SELECT RAISE(ABORT, 'deliberate delete failure'); END;\x00",
+	);
+
+	try std.testing.expectError(error.SqlStepFailed, deleteSymbolsByFile(db, "src/a.zig"));
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "embeddings_comment"));
 }
 
 test "primaryLanguage selects most common language" {

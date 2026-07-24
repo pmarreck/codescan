@@ -262,6 +262,18 @@ an indexed search, codescan checks for a live project watcher:
   and returns lexical results from that potentially stale index; with no usable
   index, search fails rather than presenting incomplete data as current.
 
+The search mode controls the reconciliation work explicitly. Hybrid/vector
+search waits for changed symbols to receive fresh embeddings before searching.
+`--lexical-only` is an alias for `--mode lexical`; it and `--regex` reconcile
+lexical data without contacting the embedding service. As elsewhere in the CLI,
+later conflicting arguments win:
+
+```bash
+codescan search "transaction boundary" --lexical-only
+codescan search 'BEGIN|COMMIT' --regex
+codescan search "transaction boundary" --lexical-only --mode hybrid  # semantic
+```
+
 JSON, HTTP, and MCP search results report `freshness`, `update_seconds`,
 `watcher_recommended`, and `watcher_help`. If an on-demand update takes more
 than one second in an active Git repository (latest commit within seven days,

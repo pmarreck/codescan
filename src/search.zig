@@ -955,11 +955,8 @@ fn ftsCandidates(
 
 	const fts_query = try buildFtsQueryMode(allocator, query, fts_mode);
 	defer allocator.free(fts_query);
-	const escaped = try escapeSqlLiteral(allocator, fts_query);
-	defer allocator.free(escaped);
 
-	const sql_ranked = try allocPrintZ(
-		allocator,
+	const sql_ranked: [:0]const u8 =
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, symbols.body, "
@@ -967,14 +964,10 @@ fn ftsCandidates(
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) "
 		++ "* CASE WHEN symbols.symbol_kind = 'frontmatter' THEN 2.0 ELSE 1.0 END AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
-		++ "WHERE symbols_fts MATCH '{s}' "
+		++ "WHERE symbols_fts MATCH ?1 "
 		++ "ORDER BY bm25_score "
-		++ "LIMIT {d};",
-		.{ escaped, limit },
-	);
-	defer allocator.free(sql_ranked);
-	const sql_plain = try allocPrintZ(
-		allocator,
+		++ "LIMIT ?2;\x00";
+	const sql_plain: [:0]const u8 =
 		"SELECT symbols.id, symbols.lang, symbols.file_path, symbols.start_line, symbols.start_hash, "
 		++ "symbols.end_line, symbols.end_hash, symbols.symbol_name, symbols.signature, symbols.doc_comment, "
 		++ "symbols.symbol_kind, symbols.symbol_visibility, symbols.symbol_scope, symbols.symbol_arity, symbols.body, "
@@ -982,11 +975,8 @@ fn ftsCandidates(
 		++ "bm25(symbols_fts, 10.0, 3.0, 5.0, 1.0, 0.5) "
 		++ "* CASE WHEN symbols.symbol_kind = 'frontmatter' THEN 2.0 ELSE 1.0 END AS bm25_score "
 		++ "FROM symbols_fts JOIN symbols ON symbols_fts.rowid = symbols.id "
-		++ "WHERE symbols_fts MATCH '{s}' "
-		++ "LIMIT {d};",
-		.{ escaped, limit },
-	);
-	defer allocator.free(sql_plain);
+		++ "WHERE symbols_fts MATCH ?1 "
+		++ "LIMIT ?2;\x00";
 
 	var stmt: ?*sqlite.sqlite3_stmt = null;
 	if (sqlite.sqlite3_prepare_v2(db, sql_ranked, -1, &stmt, null) != sqlite.SQLITE_OK) {
@@ -995,6 +985,8 @@ fn ftsCandidates(
 		}
 	}
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
+	try bindText(stmt.?, 1, fts_query);
+	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
 
 	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
@@ -1772,7 +1764,10 @@ fn buildFtsQueryMode(allocator: std.mem.Allocator, query: []const u8, fts_mode: 
 			try out.appendSlice(allocator, joiner);
 		}
 		try out.append(allocator, '"');
-		try out.appendSlice(allocator, tok);
+		for (tok) |ch| {
+			if (ch == '"') try out.append(allocator, '"');
+			try out.append(allocator, ch);
+		}
 		try out.append(allocator, '"');
 		token_count += 1;
 	}
@@ -1783,21 +1778,6 @@ fn buildFtsQueryMode(allocator: std.mem.Allocator, query: []const u8, fts_mode: 
 			return buildFtsQueryMode(allocator, query, .broad);
 		}
 		try out.appendSlice(allocator, query);
-	}
-
-	return out.toOwnedSlice(allocator);
-}
-
-fn escapeSqlLiteral(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
-	var out = @as(std.ArrayListUnmanaged(u8), .empty);
-	errdefer out.deinit(allocator);
-
-	for (input) |ch| {
-		if (ch == '\'') {
-			try out.appendSlice(allocator, "''");
-		} else {
-			try out.append(allocator, ch);
-		}
 	}
 
 	return out.toOwnedSlice(allocator);
@@ -2266,6 +2246,30 @@ test "frontmatter description ranks above an ordinary markdown body match" {
     try std.testing.expectEqual(@as(usize, 2), tag_results.len);
     const tag_top_kind = tag_results[0].symbol.symbol_kind orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("frontmatter", tag_top_kind);
+}
+
+test "ftsCandidates treats quotes inside query tokens as literal text" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/quoted.zig"),
+		.name = try allocator.dupe(u8, "say\"hello"),
+		.signature = try allocator.dupe(u8, "fn say\"hello() void"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+	_ = try storage.insertSymbol(db, symbol);
+
+	const results = try ftsCandidates(allocator, db, "say\"hello", 2, .broad);
+	defer freeResults(allocator, results);
+	try std.testing.expectEqual(@as(usize, 1), results.len);
+	try std.testing.expectEqualStrings("say\"hello", results[0].symbol.name);
 }
 
 test "frontmatter lexical provenance distinguishes descriptions and exact tags" {

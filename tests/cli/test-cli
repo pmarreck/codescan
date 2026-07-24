@@ -62,7 +62,8 @@ main() {
 		'/// Finds a freshly indexed value.' \
 		'pub fn freshSearchValue() usize { return 42; }' \
 		> "$fresh_root/fresh.zig"
-	capture "$BIN" search freshSearchValue --root "$fresh_root" --mode lexical --json
+	capture "$BIN" search freshSearchValue --root "$fresh_root" --lexical-only \
+		--ollama-url http://127.0.0.1:1 --json
 	[ "$rc" -eq 0 ] || fail "fresh search could not create its index"
 	[ "$(printf '%s' "$out" | jq '.results | length')" -gt 0 ] || fail "fresh search omitted the new source file"
 	[ "$(printf '%s' "$out" | jq -r '.freshness')" = reconciled ] || fail "fresh search omitted reconciled metadata"
@@ -124,6 +125,7 @@ main() {
 		fail "search --help failed"
 	fi
 	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "search --help did not print focused usage"
+	printf '%s' "$out" | rg -q -- '--lexical-only' || fail "search help omitted lexical-only mode"
 
 	capture "$BIN" --no-progress update --help
 	if [ "$rc" -ne 0 ]; then

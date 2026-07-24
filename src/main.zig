@@ -5449,6 +5449,7 @@ const usage_search =
     \\Common search options:
     \\  --top <n>                       Number of hits (default 5)
     \\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
+    \\  --lexical-only                  Alias for --mode lexical; skips embeddings
     \\  --min-score <n>                 Minimum score threshold
     \\  --scope <code|docs|comments|all>
     \\                                  Unified result scope selector

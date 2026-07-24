@@ -617,6 +617,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			}
 			parsed.search_mode = try search.SearchMode.parse(args[i]);
 			parsed.seen.search_mode = true;
+			if (parsed.command == .search) parsed.lexical_only = false;
 			i += 1;
 			continue;
 		}
@@ -813,12 +814,16 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
-        if (std.mem.eql(u8, arg, "--lexical-only")) {
-            parsed.lexical_only = true;
-            parsed.seen.lexical_only = true;
-            i += 1;
-            continue;
-        }
+		if (std.mem.eql(u8, arg, "--lexical-only")) {
+			parsed.lexical_only = true;
+			parsed.seen.lexical_only = true;
+			if (parsed.command == .search) {
+				parsed.search_mode = .lexical;
+				parsed.seen.search_mode = true;
+			}
+			i += 1;
+			continue;
+		}
         if (std.mem.eql(u8, arg, "--confirm") or std.mem.eql(u8, arg, "-y")) {
 			parsed.confirm = true;
 			parsed.seen.confirm = true;
@@ -1566,6 +1571,24 @@ test "parse --lexical-only flag" {
     defer parsed.deinit(std.testing.allocator);
     try std.testing.expect(parsed.lexical_only);
     try std.testing.expect(parsed.seen.lexical_only);
+}
+
+test "search lexical-only aliases lexical mode with later argument precedence" {
+	const lexical_last_args = [_][]const u8{
+		"codescan", "search", "--mode", "vector", "--lexical-only", "query",
+	};
+	var lexical_last = try parse(std.testing.allocator, &lexical_last_args);
+	defer lexical_last.deinit(std.testing.allocator);
+	try std.testing.expectEqual(search.SearchMode.lexical, lexical_last.search_mode);
+	try std.testing.expect(lexical_last.lexical_only);
+
+	const vector_last_args = [_][]const u8{
+		"codescan", "search", "--lexical-only", "--mode", "vector", "query",
+	};
+	var vector_last = try parse(std.testing.allocator, &vector_last_args);
+	defer vector_last.deinit(std.testing.allocator);
+	try std.testing.expectEqual(search.SearchMode.vector, vector_last.search_mode);
+	try std.testing.expect(!vector_last.lexical_only);
 }
 
 test "parse accepts global no-progress before or after the command" {
