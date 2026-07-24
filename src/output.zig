@@ -184,7 +184,7 @@ pub fn writeConfidenceNote(writer: *std.Io.Writer, results: []const search.Resul
 			"note: mixed-confidence results: the top hit is weak, but stronger evidence appears below it; all hits are retained. Lexical matches may come from undisplayed comments (use --show-comments).\n",
 		),
 		.weak => try writer.writeAll(
-			"note: weak-confidence results: no hit has strong or corroborated evidence; all hits are retained for recall.\n",
+			"note: Weak evidence; showing best-effort results.\n",
 		),
 		.none, .strong => {},
 	}
@@ -656,6 +656,16 @@ test "confidence note warns for mixed and weak result sets without hiding hits" 
 	try std.testing.expect(std.mem.indexOf(u8, mixed_payload, "mixed-confidence") != null);
 	try std.testing.expect(std.mem.indexOf(u8, mixed_payload, "retained") != null);
 	try std.testing.expect(std.mem.indexOf(u8, mixed_payload, "--show-comments") != null);
+
+	var weak_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+	defer weak_out.deinit();
+	try writeConfidenceNote(&weak_out.writer, &.{weak});
+	const weak_payload = try weak_out.toOwnedSlice();
+	defer std.testing.allocator.free(weak_payload);
+	try std.testing.expectEqualStrings(
+		"note: Weak evidence; showing best-effort results.\n",
+		weak_payload,
+	);
 
 	var strong_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
 	defer strong_out.deinit();

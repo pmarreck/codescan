@@ -357,6 +357,7 @@ pub fn search(
 	const bm25_range = worst_bm25 - best_bm25; // positive number
 
 	for (results.items) |*res| {
+		const field_lexical = try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
 		const lexical = if (res.bm25 != 0) blk: {
 			// Use normalized BM25 as the lexical score for FTS candidates.
 			const bm25_norm = if (bm25_range > 0)
@@ -369,8 +370,8 @@ pub fn search(
 			// Floor at 0.1 because FTS already confirmed the match (may be in body column
 			// which isn't loaded into the result struct).
 			const coverage = @max(tokenCoverage(query_tokens, res.symbol), 0.1);
-			break :blk bm25_norm * coverage;
-		} else try lexicalScore(allocator, query_tokens, query_trimmed, res.symbol, options.comments_only);
+			break :blk @max(bm25_norm * coverage, field_lexical);
+		} else field_lexical;
 		res.lexical = lexical;
 		if (lexical > 0) res.lexical_sources = lexicalSources(query_tokens, res.symbol);
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
@@ -1555,6 +1556,41 @@ fn toLowerDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
 	return result;
 }
 
+const LexicalMatch = enum { none, substring, component };
+
+fn isComponentStart(value: []const u8, index: usize) bool {
+	if (index == 0) return true;
+	if (!std.ascii.isAlphanumeric(value[index - 1])) return true;
+	if (!std.ascii.isUpper(value[index])) return false;
+	if (std.ascii.isLower(value[index - 1]) or std.ascii.isDigit(value[index - 1])) return true;
+	return index + 1 < value.len and std.ascii.isLower(value[index + 1]);
+}
+
+fn isComponentEnd(value: []const u8, index: usize) bool {
+	if (index == value.len) return true;
+	if (!std.ascii.isAlphanumeric(value[index])) return true;
+	if (!std.ascii.isUpper(value[index])) return false;
+	if (std.ascii.isLower(value[index - 1]) or std.ascii.isDigit(value[index - 1])) return true;
+	return index + 1 < value.len and std.ascii.isLower(value[index + 1]);
+}
+
+/// Distinguishes canonical identifier/word components from mere containment
+/// so exact vocabulary beats accidental substrings without sacrificing recall.
+fn lexicalMatch(value: []const u8, query: []const u8) LexicalMatch {
+	if (query.len == 0 or query.len > value.len) return .none;
+	var offset: usize = 0;
+	var found_substring = false;
+	while (offset + query.len <= value.len) {
+		const relative = simd.indexOfIgnoreCase(value[offset..], query) orelse break;
+		const start = offset + relative;
+		const end = start + query.len;
+		found_substring = true;
+		if (isComponentStart(value, start) and isComponentEnd(value, end)) return .component;
+		offset = start + 1;
+	}
+	return if (found_substring) .substring else .none;
+}
+
 fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, query_trimmed: []const u8, symbol: model.Symbol, comments_only: bool) !f32 {
 	var weighted_score: f32 = 0;
 
@@ -1568,11 +1604,13 @@ fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, 
 		if (comments_only) {
 			if (in_doc) weighted_score += 1.0;
 		} else {
-			const in_name = simd.indexOfIgnoreCase(symbol.name, tok) != null;
+			const name_match = lexicalMatch(symbol.name, tok);
 			const in_sig = simd.indexOfIgnoreCase(symbol.signature, tok) != null;
 			const in_body = if (symbol.body) |b| simd.indexOfIgnoreCase(b, tok) != null else false;
-			if (in_name) {
+			if (name_match == .component) {
 				weighted_score += 1.0;
+			} else if (name_match == .substring) {
+				weighted_score += 0.7;
 			} else if (in_doc) {
 				weighted_score += 0.5;
 			} else if (in_body) {
@@ -1596,16 +1634,24 @@ fn lexicalScore(allocator: std.mem.Allocator, query_tokens: []const []const u8, 
 		if (std.ascii.eqlIgnoreCase(query_trimmed, symbol.name)) {
 			// Exact name match → strong boost
 			base_score = @min(1.0, base_score + 0.5);
-		} else if (query_trimmed.len >= 3 and simd.indexOfIgnoreCase(symbol.name, query_trimmed) != null) {
-			// Full query is a substring of the name → moderate boost
-			base_score = @min(1.0, base_score + 0.2);
 		} else {
-			// Try cross-case exact/substring match for the full query
-			const cross = try crossCaseQueryMatch(allocator, query_trimmed, symbol.name);
-			if (cross == .exact) {
-				base_score = @min(1.0, base_score + 0.5);
-			} else if (cross == .substring) {
-				base_score = @min(1.0, base_score + 0.2);
+			const direct_match = if (query_trimmed.len >= 3)
+				lexicalMatch(symbol.name, query_trimmed)
+			else
+				LexicalMatch.none;
+			switch (direct_match) {
+				.component => base_score = @min(1.0, base_score + 0.2),
+				.substring => base_score = @min(1.0, base_score + 0.05),
+				.none => {},
+			}
+			if (direct_match == .none) {
+				// Try cross-case exact/substring match for the full query
+				const cross = try crossCaseQueryMatch(allocator, query_trimmed, symbol.name);
+				if (cross == .exact) {
+					base_score = @min(1.0, base_score + 0.5);
+				} else if (cross == .substring) {
+					base_score = @min(1.0, base_score + 0.2);
+				}
 			}
 		}
 	}
@@ -2343,6 +2389,76 @@ test "hybrid merge preserves bm25 when symbol is in both vector and FTS candidat
 	try std.testing.expect(results[0].lexical > 0.5);
 }
 
+test "hybrid scoring compares FTS word matches with fallback substrings on one scale" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	if (!(ftsAvailable(db) catch false)) return error.SkipZigTest;
+
+	var exact_word = model.Symbol{
+		.language = try allocator.dupe(u8, "markdown"),
+		.file_path = try allocator.dupe(u8, "local-time.frontmatter.md"),
+		.name = try allocator.dupe(u8, "Peter memory uses Eastern local time"),
+		.signature = try allocator.dupe(u8, "Peter memory uses Eastern local time"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer exact_word.deinit(allocator);
+
+	var contained = model.Symbol{
+		.language = try allocator.dupe(u8, "markdown"),
+		.file_path = try allocator.dupe(u8, "runtime.frontmatter.md"),
+		.name = try allocator.dupe(u8, "LuaJIT is the default scripting runtime"),
+		.signature = try allocator.dupe(u8, "LuaJIT is the default scripting runtime"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer contained.deinit(allocator);
+
+	// Establish a better BM25 row so normalization can push the weaker exact
+	// word row toward zero, reproducing the incomparable-scale failure.
+	var bm25_anchor = model.Symbol{
+		.language = try allocator.dupe(u8, "markdown"),
+		.file_path = try allocator.dupe(u8, "time.frontmatter.md"),
+		.name = try allocator.dupe(u8, "time"),
+		.signature = try allocator.dupe(u8, "time time time time time"),
+		.doc_comment = try allocator.dupe(u8, "time time time time time"),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer bm25_anchor.deinit(allocator);
+
+	const exact_id = try storage.insertSymbol(db, exact_word);
+	const contained_id = try storage.insertSymbol(db, contained);
+	const anchor_id = try storage.insertSymbol(db, bm25_anchor);
+	for ([_]i64{ exact_id, contained_id, anchor_id }) |id| {
+		try storage.insertEmbedding(db, allocator, id, &[_]f32{ 1.0, 0.0 });
+	}
+
+	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
+	const sr = try search(allocator, db, fake.embedder(), "time", .{
+		.top_n = 10,
+		.mode = .hybrid,
+		.min_score = 0,
+		.score_dropoff = 0,
+	});
+	defer freeResults(allocator, sr.results);
+
+	var exact_score: f32 = 0;
+	var contained_score: f32 = 0;
+	for (sr.results) |result| {
+		if (std.mem.eql(u8, result.symbol.name, exact_word.name)) exact_score = result.score;
+		if (std.mem.eql(u8, result.symbol.name, contained.name)) contained_score = result.score;
+	}
+	try std.testing.expect(exact_score > 0);
+	try std.testing.expect(contained_score > 0);
+	try std.testing.expect(exact_score > contained_score);
+}
+
 test "search surfaces body-only multi-token match (BASH_VERSION regression)" {
 	// User's original complaint: searching "bash version" failed to surface
 	// symbols whose body literally references BASH_VERSION. The bug was that
@@ -2633,6 +2749,64 @@ test "lexicalScore name substring bonus for contained query" {
 
 	// Name containing the full query should get substring bonus
 	try std.testing.expect(score_contains > score_none);
+}
+
+test "lexicalScore ranks canonical name components above contained substrings" {
+	const allocator = std.testing.allocator;
+	const cases = [_]struct {
+		name: []const u8,
+		canonical: bool,
+	}{
+		.{ .name = "Peter memory uses Eastern local time", .canonical = true },
+		.{ .name = "local-time", .canonical = true },
+		.{ .name = "time_zone", .canonical = true },
+		.{ .name = "TimeParser", .canonical = true },
+		.{ .name = "runtime", .canonical = false },
+		.{ .name = "timer", .canonical = false },
+		.{ .name = "sometime", .canonical = false },
+	};
+
+	var weakest_canonical: f32 = 1.0;
+	var strongest_substring: f32 = 0.0;
+	for (cases) |case| {
+		var symbol = model.Symbol{
+			.language = try allocator.dupe(u8, "markdown"),
+			.file_path = try allocator.dupe(u8, "memory.frontmatter.md"),
+			.name = try allocator.dupe(u8, case.name),
+			.signature = try allocator.dupe(u8, case.name),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer symbol.deinit(allocator);
+
+		const score = try testLexicalScore(allocator, "time", symbol, false);
+		try std.testing.expect(score > 0.0);
+		if (case.canonical) {
+			weakest_canonical = @min(weakest_canonical, score);
+		} else {
+			strongest_substring = @max(strongest_substring, score);
+		}
+	}
+
+	try std.testing.expect(weakest_canonical > strongest_substring);
+}
+
+test "lexicalScore preserves multi-token underscore component recall" {
+	const allocator = std.testing.allocator;
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/help.zig"),
+		.name = try allocator.dupe(u8, "help_fits_height"),
+		.signature = try allocator.dupe(u8, "fn help_fits_height() bool"),
+		.doc_comment = null,
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+
+	const score = try testLexicalScore(allocator, "help height", symbol, false);
+	try std.testing.expect(score > 0.0);
 }
 
 test "nameRelevance matches camelCase from multi-word query" {

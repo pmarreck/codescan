@@ -1,5 +1,14 @@
 # Plan
 
+## 2026-07-24 — lexical match quality
+
+- [x] Rank canonical word/component matches above contained substrings without sacrificing snake_case, kebab-case, or camelCase recall. (completed 2026-07-24 09:27 EDT)
+  Curiosity poke: `time` must outrank `runtime`, while `help height` must still find `help_fits_height`; BM25-backed and fallback-only candidates must use comparable lexical evidence.
+- [x] Make weak-result CLI guidance concise while preserving structured confidence/evidence in JSON. (completed 2026-07-24 09:27 EDT)
+  Curiosity poke: brevity must not hide that results remain best-effort rather than omitted.
+- [ ] Establish a versioned relevance corpus from real agent queries and rank expected useful results with MRR, nDCG, and Recall@k.
+  Curiosity poke: relevance judgments need an independent, auditable oracle and a held-out set so hand-tuned weights cannot merely overfit remembered failures.
+
 ## 2026-07-23 — script discovery and language expansion
 
 - [x] Touch `.codescan/last_index_datetime` only after each full, incremental, or watcher single-file index commit succeeds. (completed 2026-07-23 23:40 EDT)
