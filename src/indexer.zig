@@ -9,6 +9,7 @@ const embedding = @import("embedding.zig");
 const embedding_http = @import("embedding_http.zig");
 const config = @import("config.zig");
 const hashline = @import("hashline.zig");
+const last_index = @import("last_index.zig");
 const search_module = @import("search.zig");
 
 pub const Options = struct {
@@ -303,6 +304,7 @@ pub fn indexAll(
         printProgress(stderr, progress_last, files.len, true);
     }
 
+    try last_index.record(root_path);
     return stats;
 }
 
@@ -555,6 +557,13 @@ pub fn indexIncremental(
         printProgress(stderr, progress_count, files.len, true);
     }
 
+    if (stats.new_files > 0 or
+        stats.modified_files > 0 or
+        stats.deleted_files > 0 or
+        stats.recovered_files > 0)
+    {
+        try last_index.record(root_path);
+    }
     return stats;
 }
 
@@ -618,6 +627,7 @@ pub fn reindexFile(
     const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
     const current_size: i64 = @intCast(stat.size);
     try storage.upsertIndexedFile(db, rel_path, current_mtime, current_size);
+    try last_index.record(root_path);
 }
 
 fn enrichSymbolMetadata(allocator: std.mem.Allocator, symbol: *model.Symbol) !void {
@@ -1476,6 +1486,9 @@ test "indexAll stores symbols and embeddings" {
     try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "symbols"));
     try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
     try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+    const marker = try tmp.dir.statFile(io_singleton.getOrInit(), ".codescan/last_index_datetime", .{});
+    try std.testing.expectEqual(std.Io.File.Kind.file, marker.kind);
+    try std.testing.expectEqual(@as(u64, 0), marker.size);
 }
 
 test "wat comment-only vocabulary retrieves its associated terse symbol" {
@@ -1609,6 +1622,14 @@ test "indexIncremental indexes new files and skips unchanged" {
     try std.testing.expectEqual(@as(usize, 0), stats1.modified_files);
     try std.testing.expectEqual(@as(usize, 0), stats1.unchanged_files);
     try std.testing.expect(stats1.symbols > 0);
+    const marker = try tmp.dir.statFile(io_singleton.getOrInit(), ".codescan/last_index_datetime", .{});
+    try std.testing.expectEqual(std.Io.File.Kind.file, marker.kind);
+    try std.testing.expectEqual(@as(u64, 0), marker.size);
+    try tmp.dir.setTimestamps(
+        io_singleton.getOrInit(),
+        ".codescan/last_index_datetime",
+        .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 123_456_789_000 } } },
+    );
 
     // Second incremental index: everything unchanged (same mtime at second resolution)
     const stats2 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
@@ -1618,6 +1639,15 @@ test "indexIncremental indexes new files and skips unchanged" {
     try std.testing.expectEqual(@as(usize, 0), stats2.new_files);
     try std.testing.expectEqual(@as(usize, 0), stats2.modified_files);
     try std.testing.expectEqual(@as(usize, 1), stats2.unchanged_files);
+    const marker_after_noop = try tmp.dir.statFile(
+        io_singleton.getOrInit(),
+        ".codescan/last_index_datetime",
+        .{},
+    );
+    try std.testing.expectEqual(
+        @as(i96, 123_456_789_000),
+        marker_after_noop.mtime.nanoseconds,
+    );
 }
 
 test "indexIncremental indexes extensionless scripts classified by shebang" {
@@ -1681,6 +1711,9 @@ test "reindexFile classifies an extensionless executable script by shebang" {
 
     try reindexFile(allocator, db, "publish", root, plugin.defaultRegistry());
     try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+    const marker = try tmp.dir.statFile(io_singleton.getOrInit(), ".codescan/last_index_datetime", .{});
+    try std.testing.expectEqual(std.Io.File.Kind.file, marker.kind);
+    try std.testing.expectEqual(@as(u64, 0), marker.size);
 }
 
 test "indexIncremental detects deleted files" {
@@ -1737,6 +1770,22 @@ test "indexAll does not mark a file complete before its final comment embedding 
     const db = try storage.openMemoryWithVec(allocator);
     defer storage.close(db);
 
+    try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+    try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+        .sub_path = ".codescan/last_index_datetime",
+        .data = "",
+    });
+    try tmp.dir.setTimestamps(
+        io_singleton.getOrInit(),
+        ".codescan/last_index_datetime",
+        .{ .modify_timestamp = .{ .new = .{ .nanoseconds = 123_456_789_000 } } },
+    );
+    const marker_before = try tmp.dir.statFile(
+        io_singleton.getOrInit(),
+        ".codescan/last_index_datetime",
+        .{},
+    );
+
     // With a large batch, indexAll flushes code at EOF, then comments. The
     // second call fails after code vectors are durable but before comments are.
     var failing = FailOnCallEmbedder{ .fail_on_call = 2 };
@@ -1751,6 +1800,12 @@ test "indexAll does not mark a file complete before its final comment embedding 
     try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
     try std.testing.expectEqual(@as(i64, 0), try storage.countRows(db, allocator, "embeddings_comment"));
     try std.testing.expectEqual(@as(?i64, null), try storage.getIndexedFileMtime(db, "src/math.zig"));
+    const marker_after = try tmp.dir.statFile(
+        io_singleton.getOrInit(),
+        ".codescan/last_index_datetime",
+        .{},
+    );
+    try std.testing.expectEqual(marker_before.mtime.nanoseconds, marker_after.mtime.nanoseconds);
 }
 
 test "indexIncremental purges partial rows for present untracked files" {

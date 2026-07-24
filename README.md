@@ -289,6 +289,11 @@ native backends, and native initialization failures fall back to polling with
 the configured `--interval` (default 2000 ms). All platforms use the same
 `codescan watch start|status|restart|stop` commands.
 
+After each successful full, incremental, or single-file index commit, codescan
+touches the empty file `.codescan/last_index_datetime`. Its filesystem mtime is
+the canonical last-success timestamp used by watcher lifecycle tooling. Failed
+or interrupted indexing leaves the previous timestamp unchanged.
+
 Search defaults to the primary code language by file count unless a filter is supplied.
 Multi-word queries use OR semantics in lexical/hybrid search — results matching any term surface, with BM25 ranking results matching all terms higher.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.

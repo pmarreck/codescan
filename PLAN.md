@@ -2,6 +2,8 @@
 
 ## 2026-07-23 — script discovery and language expansion
 
+- [x] Touch `.codescan/last_index_datetime` only after each full, incremental, or watcher single-file index commit succeeds. (completed 2026-07-23 23:40 EDT)
+  Curiosity poke: a failed final embedding batch must leave the prior marker untouched so stale-watcher reaping never treats partial index state as recent success.
 - [x] Make unchanged update/search reconciliation write-free and remove redundant Git executable PATH probing. (completed 2026-07-23 23:28 EDT)
   Curiosity poke: a current compatible schema must not rewrite identical metadata or force WAL fsyncs, while migrations, model changes, new files, and deletions must still commit normally.
 - [x] Make every interactive confirmation/model prompt consume one submitted line immediately, honor its displayed default, and announce each potentially slow init phase before doing work. (completed 2026-07-23 23:08 EDT)

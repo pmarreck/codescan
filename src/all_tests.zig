@@ -39,6 +39,7 @@ const _plugin = @import("plugin.zig");
 const _preflight = @import("preflight.zig");
 const _io_singleton = @import("io_singleton.zig");
 const _kind = @import("kind.zig");
+const _last_index = @import("last_index.zig");
 const _scan = @import("scan.zig");
 const _search = @import("search.zig");
 const _simd = @import("simd.zig");
@@ -95,6 +96,7 @@ test {
 	_ = _preflight;
 	_ = _io_singleton;
 	_ = _kind;
+	_ = _last_index;
 	_ = _scan;
 	_ = _search;
 	_ = _simd;
