@@ -2,6 +2,10 @@
 
 ## 2026-07-24 — lexical match quality
 
+- [x] Stop default search from pinning the language filter to the repo's most-populous language, which silently returned zero results in polyglot repositories. (completed 2026-07-24 22:08 EDT)
+  Curiosity poke: the reporter's hypothesis (a query→language classifier) was wrong — the query text never participated. `buildSearchFilters` unconditionally applied `storage.primaryLanguage(db)` whenever no explicit filter was given, so the fix is to admit every *code* language (preserving doc exclusion) rather than to threshold a classifier that does not exist. Filters were re-tested as a classifier over a language set, not one query.
+  Consequence to watch: per-language `weights.toml` entries apply only when `allowed_langs.len == 1`, so they now take effect on explicit `--lang` searches rather than on default searches. This is more coherent than applying whichever language happened to dominate the repository, but it is a real behavior change for anyone with a per-language weights table.
+
 - [x] Keep empty normalized metadata/comments out of embedding batches and preserve YAML block-list frontmatter tags. (completed 2026-07-24 15:31 EDT)
   Curiosity poke: Ollama/Jina misleadingly reports empty input as a context overflow; classify empty, whitespace-only, and real comments as a set without weakening unrelated HTTP 400 failures.
 - [x] Make live HTTP/integration tests default to the currently recommended local Jina model instead of the removed `bge-large` installation. (completed 2026-07-24 16:02 EDT)

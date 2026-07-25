@@ -82,7 +82,7 @@ pub fn execute(
 	embedder: embedding.Embedder,
 	request: Request,
 ) !Execution {
-	var filter_lists = try filters.buildSearchFilters(allocator, registry, db, .{
+	var filter_lists = try filters.buildSearchFilters(allocator, registry, .{
 		.search_ext = request.search_ext,
 		.search_type = request.search_type,
 		.search_lang = request.search_lang,

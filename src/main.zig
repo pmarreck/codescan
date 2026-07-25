@@ -7407,7 +7407,7 @@ test "json envelope requires action" {
     try std.testing.expectError(error.InvalidJsonEnvelope, parseJsonEnvelopeArgs(allocator, payload, "codescan"));
 }
 
-test "buildSearchFilters defaults to primary language" {
+test "buildSearchFilters defaults to code languages and excludes docs" {
 	const allocator = std.testing.allocator;
 	const db = try storage.openMemoryWithVec(allocator);
 	defer storage.close(db);
@@ -7458,7 +7458,7 @@ test "buildSearchFilters defaults to primary language" {
 	defer settings.deinit(allocator);
 	settings.include_docs = false;
 
-	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), .{
 		.search_ext = settings.search_ext,
 		.search_type = settings.search_type,
 		.search_lang = settings.search_lang,
@@ -7468,8 +7468,8 @@ test "buildSearchFilters defaults to primary language" {
 	});
 	defer filter_lists.deinit(allocator);
 
-	try std.testing.expectEqual(@as(usize, 1), filter_lists.langs.items.len);
-	try std.testing.expectEqualStrings("zig", filter_lists.langs.items[0]);
+	try std.testing.expect(listContains(filter_lists.langs.items, "zig"));
+	try std.testing.expect(!listContains(filter_lists.langs.items, "markdown"));
 }
 
 test "buildSearchFilters includes docs when requested" {
@@ -7512,7 +7512,7 @@ test "buildSearchFilters includes docs when requested" {
 	defer settings.deinit(allocator);
 	settings.include_docs = true;
 
-	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), db, .{
+	var filter_lists = try filters.buildSearchFilters(allocator, plugin.defaultRegistry(), .{
 		.search_ext = settings.search_ext,
 		.search_type = settings.search_type,
 		.search_lang = settings.search_lang,
@@ -7522,7 +7522,6 @@ test "buildSearchFilters includes docs when requested" {
 	});
 	defer filter_lists.deinit(allocator);
 
-	try std.testing.expectEqual(@as(usize, 2), filter_lists.langs.items.len);
 	try std.testing.expect(listContains(filter_lists.langs.items, "zig"));
 	try std.testing.expect(listContains(filter_lists.langs.items, "markdown"));
 }
