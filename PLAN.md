@@ -2,6 +2,11 @@
 
 ## 2026-07-24 — lexical match quality
 
+- [x] Suppress ANSI styling when human search output is not written to a terminal. (completed 2026-07-24 22:16 EDT)
+  Curiosity poke: `NO_COLOR` was honored but stdout was never checked for TTY-ness, so every piped or agent-consumed search carried escape codes. Verified in both directions — plain under a pipe, styled under a forced pty.
+- [ ] Reject unknown CLI flags instead of silently ignoring them; `--bogus-flag-xyz` currently exits 0 and searches anyway, so a misspelled `--lexical-only` would silently run a semantic search.
+  Curiosity poke: check the blast radius first — the MCP/HTTP adapters and existing scripts may pass flags the search parser does not know.
+- [ ] Add the conventional `--simple` / `--no-color` / `--no-ansi` switches; none currently exist, and `--simple` is accepted-and-ignored.
 - [x] Stop default search from pinning the language filter to the repo's most-populous language, which silently returned zero results in polyglot repositories. (completed 2026-07-24 22:08 EDT)
   Curiosity poke: the reporter's hypothesis (a query→language classifier) was wrong — the query text never participated. `buildSearchFilters` unconditionally applied `storage.primaryLanguage(db)` whenever no explicit filter was given, so the fix is to admit every *code* language (preserving doc exclusion) rather than to threshold a classifier that does not exist. Filters were re-tested as a classifier over a language set, not one query.
   Consequence to watch: per-language `weights.toml` entries apply only when `allowed_langs.len == 1`, so they now take effect on explicit `--lang` searches rather than on default searches. This is more coherent than applying whichever language happened to dominate the repository, but it is a real behavior change for anyone with a per-language weights table.

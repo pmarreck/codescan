@@ -202,6 +202,18 @@ main() {
 	fi
 	printf '%s' "$out" | jq -r '.results[].name' | rg -q '^checksum_fn$' || fail "stdin json did not return expected result"
 
+	# Human search output must be plain when stdout is not a terminal. Agents and
+	# shell pipelines consume this stream directly, so ANSI escapes are corruption
+	# rather than style. `capture` gives us a pipe, i.e. the non-TTY case.
+	capture "$BIN" search "checksum" --db "$DB" --mode lexical --top 3
+	if [ "$rc" -ne 0 ]; then
+		printf '%s' "$err" >&2
+		fail "human search failed"
+	fi
+	if printf '%s' "$out" | rg -q $'\x1b\['; then
+		fail "human search emitted ANSI escapes to a non-TTY stdout"
+	fi
+
 	printf '%s\n' "cli ok"
 }
 

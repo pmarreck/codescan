@@ -3115,7 +3115,8 @@ fn runSearch(
 		const env_map = io_singleton.getEnvMap() orelse break :blk false;
 		break :blk env_map.get("NO_COLOR") != null;
 	};
-	const use_color = settings.output == .human and !no_color_set;
+	const stdout_is_tty = std.Io.File.stdout().isTty(io_singleton.getOrInit()) catch false;
+	const use_color = output.shouldUseColor(settings.output == .human, no_color_set, stdout_is_tty);
 	if (settings.output == .human) {
 		try output.writeConfidenceNote(stderr, display_results);
 		try stderr.flush();

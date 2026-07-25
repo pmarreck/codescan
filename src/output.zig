@@ -388,6 +388,32 @@ fn writePadding(writer: *std.Io.Writer, count: usize) !void {
 	}
 }
 
+/// Decides whether human output may carry ANSI styling. Pure so the policy is
+/// testable without a terminal: machine-readable output, a set `NO_COLOR`, and a
+/// non-TTY destination (a pipe, a file, or an agent reading our stdout) each
+/// independently suppress color.
+pub fn shouldUseColor(human_output: bool, no_color_env_set: bool, stdout_is_tty: bool) bool {
+	return human_output and !no_color_env_set and stdout_is_tty;
+}
+
+test "shouldUseColor suppresses ANSI for every non-interactive destination" {
+	// Classify the whole input space, not one example.
+	for ([_]bool{ true, false }) |human| {
+		for ([_]bool{ true, false }) |no_color| {
+			for ([_]bool{ true, false }) |is_tty| {
+				const expected = human and !no_color and is_tty;
+				try std.testing.expectEqual(expected, shouldUseColor(human, no_color, is_tty));
+			}
+		}
+	}
+
+	// The regression that mattered: piped human output must be plain, so agents
+	// and shell pipelines never receive escape codes.
+	try std.testing.expect(!shouldUseColor(true, false, false));
+	// An interactive terminal still gets full styling.
+	try std.testing.expect(shouldUseColor(true, false, true));
+}
+
 fn writeColored(writer: *std.Io.Writer, use_color: bool, code: []const u8, text: []const u8) !void {
 	if (use_color) try writer.writeAll(code);
 	try writer.writeAll(text);
