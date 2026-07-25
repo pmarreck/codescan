@@ -383,6 +383,41 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 
 	while (i < args.len) {
 		const arg = args[i];
+		// A bare `--` ends switch parsing: every remaining argument is data. This
+		// is what keeps flag-shaped text searchable once unknown flags are
+		// rejected, e.g. `codescan search -- --lexical-only`.
+		if (std.mem.eql(u8, arg, "--")) {
+			i += 1;
+			while (i < args.len) : (i += 1) {
+				const data = args[i];
+				if (parsed.command == .search) {
+					if (!query_parts_inited) {
+						query_parts = .empty;
+						query_parts_inited = true;
+					}
+					try query_parts.append(allocator, data);
+					continue;
+				}
+				switch (parsed.command) {
+					.symbols, .replace_symbol, .insert_after, .insert_before, .replace_content, .read_file, .references, .rename => {
+						if (parsed.pattern == null) {
+							parsed.pattern = data;
+							continue;
+						}
+					},
+					.insert_at => {
+						if (parsed.hashline_ref == null) {
+							parsed.hashline_ref = data;
+							continue;
+						}
+					},
+					else => {},
+				}
+				last_err_context = data;
+				return error.UnexpectedArg;
+			}
+			break;
+		}
 		if (parsed.command == .config) {
 			if (std.mem.eql(u8, arg, "show")) {
 				parsed.config_action = .show;
@@ -928,6 +963,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			parsed.command = .help;
             parsed.help_topic = help_topic_default;
 			return parsed;
+		}
+
+		// An unrecognized long flag is a mistake, not query text. Folding it into
+		// the query silently corrupted the search: a misspelled `--lexical-only`
+		// still returned plausible-looking weak results instead of an error.
+		if (std.mem.startsWith(u8, arg, "--") and arg.len > 2) {
+			last_err_context = arg;
+			return error.UnknownFlag;
 		}
 
 		if (parsed.command == .search) {
@@ -1692,6 +1735,55 @@ test "parse progress switches use last argument wins" {
     var enabled = try parse(std.testing.allocator, &enabled_args);
     defer enabled.deinit(std.testing.allocator);
     try std.testing.expect(!enabled.no_progress);
+}
+
+test "parse rejects unknown double-dash flags instead of folding them into the query" {
+	// A misspelled switch used to become query text, so `--lexical-onl` silently
+	// ran a semantic search over a corrupted query and returned plausible weak
+	// results. Classify the whole shape: unknown long flags are rejected wherever
+	// they appear, while known flags and their values keep parsing.
+	const allocator = std.testing.allocator;
+
+	const unknown_cases = [_][]const []const u8{
+		&.{ "codescan", "search", "checksum", "--bogus-flag-xyz" },
+		&.{ "codescan", "search", "--bogus-flag-xyz", "checksum" },
+		&.{ "codescan", "search", "checksum", "--lexical-onl" },
+	};
+	for (unknown_cases) |args| {
+		try std.testing.expectError(error.UnknownFlag, parse(allocator, args));
+	}
+
+	// Known flags still parse, including their values and later-wins precedence.
+	const good = [_][]const u8{ "codescan", "search", "checksum", "--top", "3" };
+	var parsed = try parse(allocator, &good);
+	defer parsed.deinit(allocator);
+	try std.testing.expectEqualStrings("checksum", parsed.query.?);
+	try std.testing.expectEqual(@as(?usize, 3), parsed.top_n);
+}
+
+test "parse treats everything after a bare -- as data rather than switches" {
+	// Without this escape hatch, rejecting unknown flags would make dash-prefixed
+	// text unsearchable — and `--lexical-only` is exactly the kind of token a
+	// caller wants to grep for in their own source.
+	const allocator = std.testing.allocator;
+
+	const args = [_][]const u8{ "codescan", "search", "--", "--bogus-flag-xyz" };
+	var parsed = try parse(allocator, &args);
+	defer parsed.deinit(allocator);
+	try std.testing.expectEqualStrings("--bogus-flag-xyz", parsed.query.?);
+
+	// A switch before `--` is still honored; the same token after it is data.
+	const mixed = [_][]const u8{ "codescan", "search", "--top", "2", "--", "--top" };
+	var parsed_mixed = try parse(allocator, &mixed);
+	defer parsed_mixed.deinit(allocator);
+	try std.testing.expectEqual(@as(?usize, 2), parsed_mixed.top_n);
+	try std.testing.expectEqualStrings("--top", parsed_mixed.query.?);
+
+	// Multi-token queries after `--` join normally.
+	const joined = [_][]const u8{ "codescan", "search", "--", "--flag", "like", "text" };
+	var parsed_joined = try parse(allocator, &joined);
+	defer parsed_joined.deinit(allocator);
+	try std.testing.expectEqualStrings("--flag like text", parsed_joined.query.?);
 }
 
 test "parse: codescan log defaults" {

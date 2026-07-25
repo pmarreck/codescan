@@ -5974,6 +5974,7 @@ fn isUsageError(err: anyerror) bool {
         err == error.InvalidValue or
 		err == error.InvalidMode or
 		err == error.UnexpectedArg or
+		err == error.UnknownFlag or
 		err == error.TooManyArgs or
 		err == error.InvalidNumber;
 }
@@ -5985,6 +5986,7 @@ fn usageErrorMessage(err: anyerror) []const u8 {
     if (err == error.InvalidValue) return "invalid value";
 	if (err == error.InvalidMode) return "invalid mode";
 	if (err == error.UnexpectedArg) return "unexpected argument";
+	if (err == error.UnknownFlag) return "unknown flag (use `--` before flag-shaped search text)";
 	if (err == error.TooManyArgs) return "too many arguments";
 	if (err == error.InvalidNumber) return "invalid number";
 	return "invalid usage";

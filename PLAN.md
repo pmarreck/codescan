@@ -4,8 +4,8 @@
 
 - [x] Suppress ANSI styling when human search output is not written to a terminal. (completed 2026-07-24 22:16 EDT)
   Curiosity poke: `NO_COLOR` was honored but stdout was never checked for TTY-ness, so every piped or agent-consumed search carried escape codes. Verified in both directions — plain under a pipe, styled under a forced pty.
-- [ ] Reject unknown CLI flags instead of silently ignoring them; `--bogus-flag-xyz` currently exits 0 and searches anyway, so a misspelled `--lexical-only` would silently run a semantic search.
-  Curiosity poke: check the blast radius first — the MCP/HTTP adapters and existing scripts may pass flags the search parser does not know.
+- [x] Reject unknown CLI flags instead of folding them into the search query. (completed 2026-07-24 22:33 EDT)
+  Curiosity poke: it was worse than "silently ignored" — `search` appended any unmatched argument to the query text, so a misspelled `--lexical-only` searched for a corrupted string and returned plausible weak results with exit 0. Rejecting flags required adding the POSIX `--` end-of-options separator first, otherwise flag-shaped text became unsearchable.
 - [ ] Add the conventional `--simple` / `--no-color` / `--no-ansi` switches; none currently exist, and `--simple` is accepted-and-ignored.
 - [x] Stop default search from pinning the language filter to the repo's most-populous language, which silently returned zero results in polyglot repositories. (completed 2026-07-24 22:08 EDT)
   Curiosity poke: the reporter's hypothesis (a query→language classifier) was wrong — the query text never participated. `buildSearchFilters` unconditionally applied `storage.primaryLanguage(db)` whenever no explicit filter was given, so the fix is to admit every *code* language (preserving doc exclusion) rather than to threshold a classifier that does not exist. Filters were re-tested as a classifier over a language set, not one query.
