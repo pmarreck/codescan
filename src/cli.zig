@@ -8,6 +8,15 @@ pub const OutputFormat = enum {
 	json,
 };
 
+/// When human output may carry ANSI styling. `auto` defers to the destination
+/// (a terminal gets color, a pipe does not); the explicit forms let a caller
+/// override that, e.g. `--color always` when piping into a pager.
+pub const ColorWhen = enum {
+	auto,
+	always,
+	never,
+};
+
 pub const CommandTag = enum {
 	help,
 	config,
@@ -147,6 +156,7 @@ pub const Parsed = struct {
 	confirm: bool,
     lexical_only: bool,
     no_progress: bool,
+    color: ColorWhen,
     // log subcommand fields
     log_root: ?[]const u8 = null,
     log_since: []const u8 = "1h",
@@ -166,6 +176,39 @@ pub const Parsed = struct {
 		self.symbols_files.deinit(allocator);
 	}
 };
+
+/// Recognizes the color switches shared by the pre-command and main argument
+/// loops, so they parse identically in either position. Returns how many
+/// arguments were consumed, or null when `arg` is not a color switch.
+fn parseColorSwitch(args: []const []const u8, i: usize, parsed: *Parsed) !?usize {
+	const arg = args[i];
+	if (std.mem.eql(u8, arg, "--no-color") or
+		std.mem.eql(u8, arg, "--no-ansi") or
+		std.mem.eql(u8, arg, "--simple"))
+	{
+		parsed.color = .never;
+		return 1;
+	}
+	if (std.mem.eql(u8, arg, "--color")) {
+		if (i + 1 >= args.len) {
+			last_err_context = arg;
+			return error.MissingValue;
+		}
+		const value = args[i + 1];
+		if (std.mem.eql(u8, value, "auto")) {
+			parsed.color = .auto;
+		} else if (std.mem.eql(u8, value, "always")) {
+			parsed.color = .always;
+		} else if (std.mem.eql(u8, value, "never")) {
+			parsed.color = .never;
+		} else {
+			last_err_context = arg;
+			return error.InvalidValue;
+		}
+		return 2;
+	}
+	return null;
+}
 
 pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	if (args.len <= 1) {
@@ -231,6 +274,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.confirm = false,
 		.lexical_only = false,
         .no_progress = false,
+        .color = .auto,
 		.log_root = null,
 		.log_since = "1h",
 		.log_since_owned = false,
@@ -258,6 +302,8 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			}
 			parsed.root_path = args[i];
 			parsed.seen.root_path = true;
+        } else if (try parseColorSwitch(args, i, &parsed)) |consumed| {
+            i += consumed - 1;
         } else {
             break;
         }
@@ -436,6 +482,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			i += 1;
 			continue;
 		}
+        if (try parseColorSwitch(args, i, &parsed)) |consumed| {
+            i += consumed;
+            continue;
+        }
         if (std.mem.eql(u8, arg, "--no-progress")) {
             parsed.no_progress = true;
             i += 1;
@@ -1784,6 +1834,35 @@ test "parse treats everything after a bare -- as data rather than switches" {
 	var parsed_joined = try parse(allocator, &joined);
 	defer parsed_joined.deinit(allocator);
 	try std.testing.expectEqualStrings("--flag like text", parsed_joined.query.?);
+}
+
+test "parse resolves color switches in any position with later-wins precedence" {
+	const allocator = std.testing.allocator;
+	const Case = struct { args: []const []const u8, want: ColorWhen };
+	const cases = [_]Case{
+		.{ .args = &.{ "codescan", "search", "q" }, .want = .auto },
+		.{ .args = &.{ "codescan", "search", "q", "--no-color" }, .want = .never },
+		.{ .args = &.{ "codescan", "search", "q", "--no-ansi" }, .want = .never },
+		.{ .args = &.{ "codescan", "search", "q", "--simple" }, .want = .never },
+		.{ .args = &.{ "codescan", "search", "q", "--color", "always" }, .want = .always },
+		.{ .args = &.{ "codescan", "search", "q", "--color", "never" }, .want = .never },
+		.{ .args = &.{ "codescan", "search", "q", "--color", "auto" }, .want = .auto },
+		// Later arguments win when they conflict.
+		.{ .args = &.{ "codescan", "search", "q", "--no-color", "--color", "always" }, .want = .always },
+		.{ .args = &.{ "codescan", "search", "q", "--color", "always", "--simple" }, .want = .never },
+		// Accepted before the command as well, like the other global switches.
+		.{ .args = &.{ "codescan", "--no-color", "search", "q" }, .want = .never },
+	};
+	for (cases) |case| {
+		var parsed = try parse(allocator, case.args);
+		defer parsed.deinit(allocator);
+		try std.testing.expectEqual(case.want, parsed.color);
+	}
+
+	const bad = [_][]const u8{ "codescan", "search", "q", "--color", "sometimes" };
+	try std.testing.expectError(error.InvalidValue, parse(allocator, &bad));
+	const missing = [_][]const u8{ "codescan", "search", "q", "--color" };
+	try std.testing.expectError(error.MissingValue, parse(allocator, &missing));
 }
 
 test "parse: codescan log defaults" {

@@ -3122,7 +3122,7 @@ fn runSearch(
 		break :blk env_map.get("NO_COLOR") != null;
 	};
 	const stdout_is_tty = std.Io.File.stdout().isTty(io_singleton.getOrInit()) catch false;
-	const use_color = output.shouldUseColor(settings.output == .human, no_color_set, stdout_is_tty);
+	const use_color = output.shouldUseColor(parsed.color, settings.output == .human, no_color_set, stdout_is_tty);
 	if (settings.output == .human) {
 		try output.writeConfidenceNote(stderr, display_results);
 		try stderr.flush();
@@ -5420,6 +5420,7 @@ const usage =
     \\Use 'codescan help <command>' for details on any command.
     \\Topics: hashlines, name-paths, languages, lsp
     \\Common: --root <path>  --json  --no-progress  --top <n>  --file <path>  -h/--help
+    \\        --color <when>  --no-color/--no-ansi/--simple
     \\
 ;
 
@@ -5459,6 +5460,11 @@ const usage_search =
     \\  --include-body                  Include function body text in output
     \\                                  (limits to 3 results by default)
     \\  --json                          JSON output
+    \\  --color <when>                  always, never, or auto (default: color on a
+    \\                                  terminal, plain when piped or redirected)
+    \\  --no-color, --no-ansi, --simple Plain output; same as --color never
+    \\  --                              End of options; everything after it is
+    \\                                  query text (e.g. search -- --lexical-only)
     \\
     \\Browse mode (no query required when filters are present):
     \\  codescan search --kind fn       List all functions

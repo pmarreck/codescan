@@ -389,29 +389,54 @@ fn writePadding(writer: *std.Io.Writer, count: usize) !void {
 }
 
 /// Decides whether human output may carry ANSI styling. Pure so the policy is
-/// testable without a terminal: machine-readable output, a set `NO_COLOR`, and a
+/// testable without a terminal. Machine-readable output is never styled; an
+/// explicit `--color` wins over the environment; otherwise `NO_COLOR` and a
 /// non-TTY destination (a pipe, a file, or an agent reading our stdout) each
 /// independently suppress color.
-pub fn shouldUseColor(human_output: bool, no_color_env_set: bool, stdout_is_tty: bool) bool {
-	return human_output and !no_color_env_set and stdout_is_tty;
+pub fn shouldUseColor(
+	when: cli.ColorWhen,
+	human_output: bool,
+	no_color_env_set: bool,
+	stdout_is_tty: bool,
+) bool {
+	if (!human_output) return false;
+	return switch (when) {
+		.never => false,
+		.always => true,
+		.auto => !no_color_env_set and stdout_is_tty,
+	};
 }
 
-test "shouldUseColor suppresses ANSI for every non-interactive destination" {
-	// Classify the whole input space, not one example.
-	for ([_]bool{ true, false }) |human| {
-		for ([_]bool{ true, false }) |no_color| {
-			for ([_]bool{ true, false }) |is_tty| {
-				const expected = human and !no_color and is_tty;
-				try std.testing.expectEqual(expected, shouldUseColor(human, no_color, is_tty));
+test "shouldUseColor classifies every combination of request, environment and destination" {
+	// Sweep the whole input space rather than sampling convenient examples.
+	for ([_]cli.ColorWhen{ .auto, .always, .never }) |when| {
+		for ([_]bool{ true, false }) |human| {
+			for ([_]bool{ true, false }) |no_color| {
+				for ([_]bool{ true, false }) |is_tty| {
+					const expected = human and switch (when) {
+						.never => false,
+						.always => true,
+						.auto => !no_color and is_tty,
+					};
+					try std.testing.expectEqual(
+						expected,
+						shouldUseColor(when, human, no_color, is_tty),
+					);
+				}
 			}
 		}
 	}
 
-	// The regression that mattered: piped human output must be plain, so agents
-	// and shell pipelines never receive escape codes.
-	try std.testing.expect(!shouldUseColor(true, false, false));
+	// The regression that mattered: piped human output is plain by default, so
+	// agents and shell pipelines never receive escape codes.
+	try std.testing.expect(!shouldUseColor(.auto, true, false, false));
 	// An interactive terminal still gets full styling.
-	try std.testing.expect(shouldUseColor(true, false, true));
+	try std.testing.expect(shouldUseColor(.auto, true, false, true));
+	// A pager pipeline can ask for color back, overriding both NO_COLOR and the
+	// non-TTY destination.
+	try std.testing.expect(shouldUseColor(.always, true, true, false));
+	// JSON is never styled, whatever was requested.
+	try std.testing.expect(!shouldUseColor(.always, false, false, true));
 }
 
 fn writeColored(writer: *std.Io.Writer, use_color: bool, code: []const u8, text: []const u8) !void {
