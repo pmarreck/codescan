@@ -9,6 +9,10 @@ pub const FilterLists = struct {
 	langs: std.ArrayListUnmanaged([]const u8) = .empty,
 	kinds: std.ArrayListUnmanaged(kind.Kind) = .empty,
 	symbol_kinds: std.ArrayListUnmanaged([]const u8) = .empty,
+	/// True when `langs` is the implicit "every code language" default rather
+	/// than a caller-requested restriction. Diagnostics must not report such a
+	/// list as a language filter, since the caller never asked for one.
+	langs_are_default: bool = false,
 
 	pub fn deinit(self: *FilterLists, allocator: std.mem.Allocator) void {
 		for (self.exts.items) |item| allocator.free(item);
@@ -109,6 +113,7 @@ pub fn buildSearchFilters(
 					try filters.langs.append(allocator, try allocator.dupe(u8, item));
 				}
 			}
+			filters.langs_are_default = true;
 		}
 
 		if (options.include_docs) {

@@ -3056,7 +3056,13 @@ fn runSearch(
 			const d = diag.?;
 			// Build a short description of active filters for the note header
 			const kind_str = if (execution.options.allowed_symbol_kinds.len > 0) execution.options.allowed_symbol_kinds[0] else "";
-			const lang_str = if (execution.options.allowed_langs.len > 0) execution.options.allowed_langs[0] else "";
+			// Only name a language the caller actually asked for. The implicit
+			// default spans every code language, so printing allowed_langs[0]
+			// would invent a filter and misdirect the reader.
+			const lang_str = if (execution.options.allowed_langs.len > 0 and !execution.options.langs_are_default)
+				execution.options.allowed_langs[0]
+			else
+				"";
 			if (kind_str.len > 0 and lang_str.len > 0) {
 				_ = stderr.print("note: no results for query \"{s}\" with kind={s} lang={s}\n", .{ query, kind_str, lang_str }) catch {};
 			} else if (kind_str.len > 0) {

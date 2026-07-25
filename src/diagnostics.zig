@@ -18,7 +18,9 @@ fn countActiveDimensions(
     var count: usize = 0;
     if (query.len > 0) count += 1;
     if (options.allowed_symbol_kinds.len > 0) count += 1;
-    if (options.allowed_langs.len > 0) count += 1;
+    // The implicit "every code language" default is corpus scope, not a filter
+    // the caller chose, so it must not present itself as a narrowing dimension.
+    if (options.allowed_langs.len > 0 and !options.langs_are_default) count += 1;
     if (options.allowed_paths.len > 0) count += 1;
     return count;
 }
@@ -128,8 +130,10 @@ pub fn countDiagnostics(
         diag.kind_only = try countKind(db, options.allowed_symbol_kinds);
     }
 
-    // Count: lang filter alone (SQL count, no search needed)
-    if (options.allowed_langs.len > 0) {
+    // Count: lang filter alone (SQL count, no search needed). Skipped for the
+    // implicit default, where the count is just the size of the code corpus and
+    // explains nothing about why the query missed.
+    if (options.allowed_langs.len > 0 and !options.langs_are_default) {
         diag.lang_only = try countLang(db, options.allowed_langs);
     }
 

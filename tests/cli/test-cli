@@ -202,6 +202,23 @@ main() {
 	fi
 	printf '%s' "$out" | jq -r '.results[].name' | rg -q '^checksum_fn$' || fail "stdin json did not return expected result"
 
+	# A zero-result default search must not claim a language filter the caller
+	# never asked for. Default search spans every code language, so naming one of
+	# them ("with lang=zig") misreports why the query found nothing — the exact
+	# misleading-diagnostic class that hid the primary-language pinning bug.
+	capture "$BIN" search "zzzqqq_nonexistent_xyzzy_token" --db "$DB" --mode lexical --top 3
+	if printf '%s' "$err" | rg -q 'with lang='; then
+		fail "zero-result default search claimed a lang filter the caller never set"
+	fi
+	if printf '%s' "$err" | rg -q 'lang filter alone'; then
+		fail "zero-result default search reported a meaningless whole-corpus lang count"
+	fi
+	# An explicitly requested language must still be named, so real filter
+	# mistakes stay diagnosable.
+	capture "$BIN" search "zzzqqq_nonexistent_xyzzy_token" --db "$DB" --mode lexical --top 3 --lang zig
+	printf '%s' "$err" | rg -q 'with lang=zig' \
+		|| fail "explicit --lang zig was not named in the zero-result diagnostic"
+
 	# Human search output must be plain when stdout is not a terminal. Agents and
 	# shell pipelines consume this stream directly, so ANSI escapes are corruption
 	# rather than style. `capture` gives us a pipe, i.e. the non-TTY case.

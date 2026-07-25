@@ -51,6 +51,7 @@ fn resolveOptions(
 	allowed_exts: []const []const u8,
 	allowed_symbol_kinds: []const []const u8,
 	resolved_weights: weights.WeightPair,
+	langs_are_default: bool,
 ) search.Options {
 	return .{
 		.top_n = request.top_n,
@@ -66,6 +67,7 @@ fn resolveOptions(
 		.weight_symbol_arity = resolved_weights.weight_symbol_arity,
 		.min_score = request.min_score,
 		.allowed_langs = allowed_langs,
+		.langs_are_default = langs_are_default,
 		.allowed_exts = allowed_exts,
 		.allowed_symbol_kinds = allowed_symbol_kinds,
 		.allowed_paths = request.allowed_paths,
@@ -106,6 +108,7 @@ pub fn execute(
 		filter_lists.exts.items,
 		filter_lists.symbol_kinds.items,
 		resolved_weights,
+		filter_lists.langs_are_default,
 	);
 	const result = try search.search(allocator, db, embedder, request.query, options);
 
@@ -149,6 +152,7 @@ test "resolveOptions maps application policy and resolved filters" {
 		&allowed_exts,
 		&allowed_symbol_kinds,
 		resolved_weights,
+		false,
 	);
 
 	try std.testing.expectEqual(@as(usize, 17), options.top_n);

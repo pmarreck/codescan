@@ -66,6 +66,10 @@ pub const Options = struct {
 	min_score: f32 = 0.0,
 	score_dropoff: f32 = 0.3,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
+	/// True when `allowed_langs` is the implicit "every code language" default.
+	/// Filtering is unaffected; this exists so diagnostics can distinguish a
+	/// caller-requested language restriction from the default corpus scope.
+	langs_are_default: bool = false,
 	allowed_exts: []const []const u8 = &[_][]const u8{},
 	allowed_symbol_kinds: []const []const u8 = &[_][]const u8{},
 	allowed_paths: []const []const u8 = &[_][]const u8{},
