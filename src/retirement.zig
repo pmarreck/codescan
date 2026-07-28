@@ -206,3 +206,87 @@ test "parseIdleLimit accepts durations, and spells never several ways" {
 		try std.testing.expectError(error.InvalidIdleLimit, parseIdleLimit(text));
 	}
 }
+
+/// Whether an index pass did anything that should reset the idle countdown.
+///
+/// This is the difference between a watcher that retires and one that never
+/// does. A polling watcher runs a pass every couple of seconds; if a pass that
+/// found nothing changed counted as activity, the countdown would reset forever
+/// and the idle limit would be unreachable. Only real work counts.
+pub fn countsAsActivity(stats: IndexActivity) bool {
+	return stats.new_files > 0 or
+		stats.modified_files > 0 or
+		stats.deleted_files > 0 or
+		stats.recovered_files > 0;
+}
+
+/// The subset of incremental index statistics that bears on idleness.
+pub const IndexActivity = struct {
+	new_files: usize = 0,
+	modified_files: usize = 0,
+	deleted_files: usize = 0,
+	recovered_files: usize = 0,
+	unchanged_files: usize = 0,
+};
+
+test "an index pass that changed nothing is not activity" {
+	// The case the whole feature depends on: a watcher polling an idle project
+	// runs this pass repeatedly, and if it reset the countdown the watcher
+	// would be immortal.
+	try std.testing.expect(!countsAsActivity(.{ .unchanged_files = 500 }));
+	try std.testing.expect(!countsAsActivity(.{}));
+}
+
+test "any real index work counts as activity" {
+	// Each contributing field checked on its own, so a missing term in the
+	// disjunction cannot hide behind another.
+	try std.testing.expect(countsAsActivity(.{ .new_files = 1 }));
+	try std.testing.expect(countsAsActivity(.{ .modified_files = 1 }));
+	try std.testing.expect(countsAsActivity(.{ .deleted_files = 1 }));
+	// Recovering an interrupted file rewrote index state, so it is work too.
+	try std.testing.expect(countsAsActivity(.{ .recovered_files = 1 }));
+	// Real work alongside a large unchanged majority still counts.
+	try std.testing.expect(countsAsActivity(.{ .unchanged_files = 999, .modified_files = 1 }));
+}
+
+/// Renders an idle limit the way it was most likely written, so a message about
+/// a 10-second limit does not report "0 minutes". Picks the largest unit that
+/// divides evenly; falls back to seconds.
+pub fn formatIdleLimit(buf: []u8, ns: u64) []const u8 {
+	const units = [_]struct { ns: u64, singular: []const u8, plural: []const u8 }{
+		.{ .ns = std.time.ns_per_day, .singular = "day", .plural = "days" },
+		.{ .ns = std.time.ns_per_hour, .singular = "hour", .plural = "hours" },
+		.{ .ns = std.time.ns_per_min, .singular = "minute", .plural = "minutes" },
+		.{ .ns = std.time.ns_per_s, .singular = "second", .plural = "seconds" },
+	};
+	for (units) |unit| {
+		if (ns >= unit.ns and ns % unit.ns == 0) {
+			const count = ns / unit.ns;
+			const noun = if (count == 1) unit.singular else unit.plural;
+			return std.fmt.bufPrint(buf, "{d} {s}", .{ count, noun }) catch "an unknown duration";
+		}
+	}
+	// Sub-second or awkward values: say something truthful in seconds rather
+	// than silently rounding to a larger unit.
+	return std.fmt.bufPrint(buf, "{d} seconds", .{ns / std.time.ns_per_s}) catch "an unknown duration";
+}
+
+
+test "formatIdleLimit reports the unit a human would have written" {
+	var buf: [64]u8 = undefined;
+	try std.testing.expectEqualStrings("10 seconds", formatIdleLimit(&buf, 10 * std.time.ns_per_s));
+	try std.testing.expectEqualStrings("1 second", formatIdleLimit(&buf, std.time.ns_per_s));
+	try std.testing.expectEqualStrings("30 minutes", formatIdleLimit(&buf, 30 * std.time.ns_per_min));
+	try std.testing.expectEqualStrings("1 minute", formatIdleLimit(&buf, std.time.ns_per_min));
+	try std.testing.expectEqualStrings("12 hours", formatIdleLimit(&buf, 12 * std.time.ns_per_hour));
+	try std.testing.expectEqualStrings("1 hour", formatIdleLimit(&buf, std.time.ns_per_hour));
+	try std.testing.expectEqualStrings("1 day", formatIdleLimit(&buf, std.time.ns_per_day));
+	try std.testing.expectEqualStrings("3 days", formatIdleLimit(&buf, 3 * std.time.ns_per_day));
+
+	// Not evenly divisible by a larger unit: fall back rather than round to a
+	// wrong-looking value like "1 hour" for 90 minutes.
+	try std.testing.expectEqualStrings("90 minutes", formatIdleLimit(&buf, 90 * std.time.ns_per_min));
+	try std.testing.expectEqualStrings("45 seconds", formatIdleLimit(&buf, 45 * std.time.ns_per_s));
+	// Sub-second limits still say something truthful rather than "0".
+	try std.testing.expectEqualStrings("0 seconds", formatIdleLimit(&buf, 1));
+}

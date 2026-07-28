@@ -34,6 +34,7 @@ const setup_model_text = @import("setup_model_text.zig");
 const preflight = @import("preflight.zig");
 const search_service = @import("search_service.zig");
 const update_service = @import("update_service.zig");
+const retirement = @import("retirement.zig");
 const mcp_install = @import("mcp_install.zig");
 const io_singleton = @import("io_singleton.zig");
 
@@ -50,6 +51,9 @@ const Defaults = struct {
     embedding_dim: usize = 1024,
     batch_size: usize = 16,
 	max_file_size: usize = 5 * 1024 * 1024,
+	/// Verbatim watcher idle limit from config; parsed when the watcher starts
+	/// so an invalid value fails loudly instead of silently defaulting.
+	watcher_idle_timeout: ?[]const u8 = null,
 	search_mode: search.SearchMode = .hybrid,
 	fusion: search.FusionMode = .weighted_sum,
 	rrf_k: f32 = 60,
@@ -81,6 +85,7 @@ const Settings = struct {
 	embedding_dim: usize,
 	batch_size: usize,
 	max_file_size: usize,
+	watcher_idle_timeout: ?[]const u8,
 	search_mode: search.SearchMode,
 	fusion: search.FusionMode,
 	rrf_k: f32,
@@ -538,6 +543,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.embedding_dim = defaults.embedding_dim,
 		.batch_size = defaults.batch_size,
 		.max_file_size = defaults.max_file_size,
+		.watcher_idle_timeout = defaults.watcher_idle_timeout,
 		.search_mode = defaults.search_mode,
 		.fusion = defaults.fusion,
 		.rrf_k = defaults.rrf_k,
@@ -590,6 +596,7 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	if (cfg.embedding_dim) |value| settings.embedding_dim = value;
 	if (cfg.batch_size) |value| settings.batch_size = value;
 	if (cfg.max_file_size) |value| settings.max_file_size = value;
+	if (cfg.watcher_idle_timeout) |value| settings.watcher_idle_timeout = value;
 	if (cfg.search_mode) |value| settings.search_mode = try search.SearchMode.parse(value);
 	if (cfg.fusion) |value| settings.fusion = try search.FusionMode.parse(value);
 	if (cfg.rrf_k) |value| settings.rrf_k = value;
@@ -3359,6 +3366,23 @@ fn runWatch(
 				std.posix.sigaction(std.posix.SIG.TERM, &act, null);
 			}
 
+			// An unparseable limit stops the watcher rather than silently
+			// becoming "never" or "immediately" — both are plausible enough
+			// that a typo would otherwise go unnoticed for a long time.
+			const watcher_idle_limit: ?u64 = if (settings.watcher_idle_timeout) |text|
+				retirement.parseIdleLimit(text) catch {
+					var idle_buf: [512]u8 = undefined;
+					var idle_writer = io_singleton.stderrWriter(&idle_buf);
+					_ = idle_writer.interface.print(
+						"error: invalid watcher_idle_timeout '{s}'. Use a duration like 1d, 12h, 30m, or 'never'.\n",
+						.{text},
+					) catch {};
+					_ = idle_writer.interface.flush() catch {};
+					return error.InvalidIdleLimit;
+				}
+			else
+				null;
+
 			watcher.watchLoop(
 				allocator,
 				db,
@@ -3367,6 +3391,7 @@ fn runWatch(
 				embedder_adapter.embedder(),
 				.{
 					.interval_ms = parsed.watch_interval,
+					.idle_limit_ns = watcher_idle_limit,
 					.codescan_dir = codescan_dir,
 				.index_request = .{
 					.mode = .incremental,

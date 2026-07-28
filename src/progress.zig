@@ -46,13 +46,20 @@ pub fn write(path: ?[]const u8, msg: []const u8) void {
 }
 
 pub fn clear(allocator: std.mem.Allocator, path: ?[]const u8, codescan_dir: ?[]const u8) void {
-    if (path) |p| std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), p) catch {};
+    if (path) |p| {
+        std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), p) catch {};
+        // `setup` returns an allocator-owned path; freeing it here keeps the
+        // setup/clear pair symmetric. This leaked unnoticed for as long as the
+        // watcher only ever exited by signal, where nothing checks.
+        allocator.free(p);
+    }
     if (codescan_dir) |dir| {
         const link_path = std.fmt.allocPrint(allocator, "{s}/watcher-progress", .{dir}) catch return;
         defer allocator.free(link_path);
         std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), link_path) catch {};
     }
 }
+
 
 /// Read the progress file (follows symlink). Returns owned string or null.
 pub fn read(allocator: std.mem.Allocator, codescan_dir: []const u8) ?[]const u8 {

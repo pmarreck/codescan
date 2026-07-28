@@ -9,6 +9,7 @@ const pidfile = @import("pidfile.zig");
 const fs_watch = @import("fs_watch.zig");
 const progress = @import("progress.zig");
 const syslog = @import("syslog.zig");
+const retirement = @import("retirement.zig");
 
 pub const WatchOptions = struct {
 	interval_ms: u64 = 2000,
@@ -16,7 +17,85 @@ pub const WatchOptions = struct {
 	/// Resolved by the caller through the application service, so a watcher
 	/// pass applies exactly the filters and ignores an explicit update would.
 	index_request: index_service.Request,
+	/// How long the watcher may sit idle before standing down. Null never
+	/// retires, which a supervised service unit requires.
+	idle_limit_ns: ?u64 = null,
+	/// Injected wall clock, so retirement logic is exercised without waiting.
+	now_fn: *const fn () i128 = systemNowNs,
 };
+
+/// Default clock for `WatchOptions.now_fn`.
+pub fn systemNowNs() i128 {
+	return std.Io.Clock.real.now(io_singleton.getOrInit()).nanoseconds;
+}
+
+/// Shared retirement bookkeeping for both watch loops. Owns the idle origin and
+/// the in-progress flag, so the two loops cannot drift on the race that matters:
+/// a retirement decision must never land while an index pass is running.
+const RetirementTracker = struct {
+	options: WatchOptions,
+	started_ns: i128,
+	last_activity_ns: ?i128 = null,
+	index_in_progress: bool = false,
+
+	fn init(options: WatchOptions) RetirementTracker {
+		return .{ .options = options, .started_ns = options.now_fn() };
+	}
+
+	fn beginIndex(self: *RetirementTracker) void {
+		self.index_in_progress = true;
+	}
+
+	/// Records the outcome of a pass. Only a pass that actually changed the
+	/// index resets the countdown — counting no-op polls would make the idle
+	/// limit unreachable.
+	fn endIndex(self: *RetirementTracker, stats: indexer.IncrementalStats) void {
+		self.index_in_progress = false;
+		if (retirement.countsAsActivity(.{
+			.new_files = stats.new_files,
+			.modified_files = stats.modified_files,
+			.deleted_files = stats.deleted_files,
+			.recovered_files = stats.recovered_files,
+		})) {
+			self.last_activity_ns = self.options.now_fn();
+		}
+	}
+
+	fn abandonIndex(self: *RetirementTracker) void {
+		self.index_in_progress = false;
+	}
+
+	fn decide(self: *const RetirementTracker) retirement.Decision {
+		return retirement.shouldRetire(.{
+			.now_ns = self.options.now_fn(),
+			.last_index_ns = self.last_activity_ns,
+			.started_ns = self.started_ns,
+			.idle_limit_ns = self.options.idle_limit_ns,
+			.index_in_progress = self.index_in_progress,
+		});
+	}
+};
+
+/// Announces retirement on both the terminal and the system log. A watcher that
+/// simply vanished would be indistinguishable from one that crashed, which is
+/// the same false-success shape as a daemon that dies with its stdio closed.
+fn announceRetirement(stderr: *std.Io.Writer, root_path: []const u8, idle_limit_ns: u64) void {
+	var limit_buf: [64]u8 = undefined;
+	const limit = retirement.formatIdleLimit(&limit_buf, idle_limit_ns);
+	_ = stderr.print(
+		"watcher: retiring after {s} with no index activity (set watcher_idle_timeout=never to disable)\n",
+		.{limit},
+	) catch {};
+	_ = stderr.flush() catch {};
+	var buf: [256]u8 = undefined;
+	const msg = std.fmt.bufPrint(
+		&buf,
+		"watcher retiring: idle {s} with no index activity",
+		.{limit},
+	) catch "watcher retiring: idle";
+	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, msg);
+}
+
 
 /// Runs the incremental indexer using OS-native file watching (FSEvents/fanotify),
 /// falling back to polling on unsupported platforms or init failure.
@@ -75,14 +154,20 @@ pub fn watchLoop(
 	var config_mtime = getFileMtime(config_path);
 
 	// Initial full incremental pass
+	var tracker = RetirementTracker.init(options);
 	progress.write(progress_path, "indexing...");
-	const initial = (try index_service.execute(
+	tracker.beginIndex();
+	const initial = (index_service.execute(
 		allocator,
 		db,
 		registry,
 		embedder,
 		options.index_request,
-	)).incremental;
+	) catch |err| {
+		tracker.abandonIndex();
+		return err;
+	}).incremental;
+	tracker.endIndex(initial);
 	progress.write(progress_path, "idle");
 	printChangeSummary(stderr, initial);
 
@@ -103,6 +188,7 @@ pub fn watchLoop(
 
 		// Run incremental index on change or periodic timeout
 		progress.write(progress_path, "indexing...");
+		tracker.beginIndex();
 		const stats = (index_service.execute(
 			allocator,
 			db,
@@ -110,6 +196,7 @@ pub fn watchLoop(
 			embedder,
 			options.index_request,
 		) catch |err| {
+			tracker.abandonIndex();
 			consecutive_errors += 1;
 			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
 			_ = stderr.flush() catch {};
@@ -124,11 +211,19 @@ pub fn watchLoop(
 			}
 			continue;
 		}).incremental;
+		tracker.endIndex(stats);
 		consecutive_errors = 0;
 		progress.write(progress_path, "idle");
 
 		if (stats.new_files > 0 or stats.modified_files > 0 or stats.deleted_files > 0) {
 			printChangeSummary(stderr, stats);
+		}
+
+		// Retirement is decided only here, outside the index call, so the
+		// in-progress flag can never be observed mid-pass.
+		if (tracker.decide() == .retire) {
+			announceRetirement(stderr, root_path, options.idle_limit_ns.?);
+			return;
 		}
 
 		// Suppress unused variable warning
@@ -164,14 +259,20 @@ fn watchLoopPolling(
 	var config_mtime = getFileMtime(config_path);
 
 	// Initial full incremental pass
+	var tracker = RetirementTracker.init(options);
 	progress.write(progress_path_poll, "indexing...");
-	const initial = (try index_service.execute(
+	tracker.beginIndex();
+	const initial = (index_service.execute(
 		allocator,
 		db,
 		registry,
 		embedder,
 		options.index_request,
-	)).incremental;
+	) catch |err| {
+		tracker.abandonIndex();
+		return err;
+	}).incremental;
+	tracker.endIndex(initial);
 	progress.write(progress_path_poll, "idle");
 	printChangeSummary(stderr, initial);
 
@@ -191,6 +292,7 @@ fn watchLoopPolling(
 		}
 
 		progress.write(progress_path_poll, "indexing...");
+		tracker.beginIndex();
 		const stats = (index_service.execute(
 			allocator,
 			db,
@@ -198,6 +300,7 @@ fn watchLoopPolling(
 			embedder,
 			options.index_request,
 		) catch |err| {
+			tracker.abandonIndex();
 			consecutive_errors += 1;
 			progress.write(progress_path_poll, "error");
 			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
@@ -213,11 +316,19 @@ fn watchLoopPolling(
 			}
 			continue;
 		}).incremental;
+		tracker.endIndex(stats);
 		consecutive_errors = 0;
 		progress.write(progress_path_poll, "idle");
 
 		if (stats.new_files > 0 or stats.modified_files > 0 or stats.deleted_files > 0) {
 			printChangeSummary(stderr, stats);
+		}
+
+		// Decided outside the index call, so the in-progress flag can never be
+		// observed mid-pass.
+		if (tracker.decide() == .retire) {
+			announceRetirement(stderr, root_path, options.idle_limit_ns.?);
+			return;
 		}
 	}
 }
@@ -320,6 +431,13 @@ test "printChangeSummary shows up to date" {
 }
 
 test "watcher source contains syslog calls at all error paths" {
+    // An exact count, deliberately: adding or removing a log call should
+    // require saying so out loud rather than passing unnoticed. A watcher that
+    // stops without leaving a reason in the system log is indistinguishable
+    // from one that crashed.
+    //
+    // 9 = start (native, polling), config-changed stop (x2), index error (x2),
+    // too-many-errors stop (x2), and retirement (shared by both loops).
     const src = @embedFile("watcher.zig");
     var count: usize = 0;
     var i: usize = 0;
@@ -327,5 +445,6 @@ test "watcher source contains syslog calls at all error paths" {
     while (std.mem.indexOfPos(u8, src, i, needle)) |pos| : (i = pos + 1) {
         count += 1;
     }
-    try std.testing.expectEqual(@as(usize, 8), count);
+    try std.testing.expectEqual(@as(usize, 9), count);
 }
+
