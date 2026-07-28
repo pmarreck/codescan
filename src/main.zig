@@ -33,6 +33,7 @@ const syslog = @import("syslog.zig");
 const setup_model_text = @import("setup_model_text.zig");
 const preflight = @import("preflight.zig");
 const search_service = @import("search_service.zig");
+const update_service = @import("update_service.zig");
 const io_singleton = @import("io_singleton.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
@@ -2410,46 +2411,53 @@ const UpdateDb = struct {
 
 /// Opens an update database and atomically chooses a fresh index whenever its
 /// stored embedding model/dimension cannot represent the configured vectors.
-const OpenUpdateDbMode = enum {
-	inspect_only,
-	immediate_recreate,
-};
 
 fn openUpdateDb(
 	allocator: std.mem.Allocator,
 	db_path: []const u8,
 	schema: storage.Schema,
-	mode: OpenUpdateDbMode,
+	mode: update_service.OpenMode,
 ) !UpdateDb {
 	var db = try storage.openFileWithVec(allocator, db_path);
-	var schema_result = storage.initSchema(allocator, db, schema) catch {
-		storage.close(db);
-		if (mode == .inspect_only) return error.IncompatibleDatabase;
-		db = try storage.openFileWithVecRecreate(allocator, db_path);
-		errdefer storage.close(db);
-		const fresh_schema_result = try storage.initSchema(allocator, db, schema);
-		return .{
-			.db = db,
-			.schema_result = fresh_schema_result,
-			.rebuild_reason = .incompatible,
-		};
+	var init_failed = false;
+	var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, schema) catch probe: {
+		init_failed = true;
+		break :probe .{};
 	};
 
-	if (!schema_result.embedding_model_mismatch and !schema_result.embedding_dim_mismatch) {
-		return .{ .db = db, .schema_result = schema_result };
-	}
+	const action = update_service.decideDbAction(.{
+		.init_failed = init_failed,
+		.model_mismatch = schema_result.embedding_model_mismatch,
+		.dim_mismatch = schema_result.embedding_dim_mismatch,
+	}, mode);
 
+	if (action == .use_existing) return .{ .db = db, .schema_result = schema_result };
+
+	// Every remaining action abandons the database that is currently open, so
+	// rescue the stored embedding identity before the schema result is freed —
+	// callers render it when explaining a rebuild.
 	const previous_model = schema_result.stored_embedding_model;
 	schema_result.stored_embedding_model = null;
 	const previous_dim = schema_result.stored_embedding_dim;
 	schema_result.deinit(allocator);
 	storage.close(db);
-	if (mode == .inspect_only) {
-		if (previous_model) |value| allocator.free(value);
-		return error.EmbeddingMismatch;
+
+	switch (action) {
+		.use_existing => unreachable,
+		.fail_incompatible, .fail_embedding_mismatch => {
+			if (previous_model) |value| allocator.free(value);
+			return switch (action) {
+				.fail_incompatible => error.IncompatibleDatabase,
+				else => error.EmbeddingMismatch,
+			};
+		},
+		.recreate_incompatible, .recreate_embedding_mismatch => {},
 	}
 
-	db = try storage.openFileWithVecRecreate(allocator, db_path);
+	db = storage.openFileWithVecRecreate(allocator, db_path) catch |err| {
+		if (previous_model) |value| allocator.free(value);
+		return err;
+	};
 	errdefer {
 		if (previous_model) |value| allocator.free(value);
 		storage.close(db);
@@ -2458,11 +2466,17 @@ fn openUpdateDb(
 	return .{
 		.db = db,
 		.schema_result = schema_result,
-		.rebuild_reason = .embedding_mismatch,
+		.rebuild_reason = switch (action) {
+			.recreate_incompatible => .incompatible,
+			else => .embedding_mismatch,
+		},
+		// A failed schema init never observed an embedding identity, so these
+		// are null on the `.incompatible` path by construction.
 		.previous_embedding_model = previous_model,
 		.previous_embedding_dim = previous_dim,
 	};
 }
+
 
 const UpdateInvocation = enum {
 	explicit,
@@ -2642,7 +2656,7 @@ fn runUpdateWithInvocation(
 		embedder_adapter.embedder();
 
 	var effective_dim = settings.embedding_dim;
-	const initial_open_mode: OpenUpdateDbMode = .inspect_only;
+	const initial_open_mode: update_service.OpenMode = .inspect_only;
 	var prepared = openUpdateDb(allocator, settings.db_path, .{
 		.embedding_dim = settings.embedding_dim,
 		.embedding_model = settings.embedding_model,
