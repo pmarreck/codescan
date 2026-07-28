@@ -231,6 +231,101 @@ main() {
 		fail "human search emitted ANSI escapes to a non-TTY stdout"
 	fi
 
+
+	# --- mcp-install -------------------------------------------------------
+	# Exercised against fake agent CLIs on a synthetic PATH so the suite never
+	# reads or writes the developer's real ~/.claude.json or ~/.codex/config.toml,
+	# and so the install path itself is testable rather than only the skip path.
+	fake_bin="$DB_DIR/fake-agents"
+	mkdir -p "$fake_bin"
+	fake_log="$DB_DIR/agent-calls.log"
+
+	# $1 = agent name, $2 = exit code returned by `mcp get` (0 = registered).
+	make_fake_agent() {
+		local name="$1" get_rc="$2"
+		cat > "$fake_bin/$name" <<FAKEEOF
+#!/usr/bin/env bash
+printf '%s %s\n' "$name" "\$*" >> "$fake_log"
+if [ "\${1:-}" = "mcp" ] && [ "\${2:-}" = "get" ]; then exit $get_rc; fi
+exit 0
+FAKEEOF
+		chmod +x "$fake_bin/$name"
+	}
+
+	# Neither agent has codescan registered -> both must be installed.
+	: > "$fake_log"
+	make_fake_agent claude 1
+	make_fake_agent codex 1
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install
+	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "mcp-install failed against unregistered agents"; }
+	printf '%s' "$out" | rg -q 'Claude Code: registered' || fail "mcp-install did not register Claude"
+	printf '%s' "$out" | rg -q 'Codex: registered' || fail "mcp-install did not register Codex"
+	rg -q -- 'claude mcp add codescan --scope user -- codescan mcp-serve' "$fake_log" \
+		|| fail "Claude was not registered at user scope with the expected argv"
+	rg -q -- 'codex mcp add codescan -- codescan mcp-serve' "$fake_log" \
+		|| fail "Codex was not registered with the expected argv"
+	# Codex has no scope concept; leaking the flag would be rejected by the real CLI.
+	if rg -q -- 'codex mcp add codescan --scope' "$fake_log"; then
+		fail "Codex registration leaked a --scope flag"
+	fi
+
+	# Both agents already have it -> nothing may be written. This is the whole
+	# point of the command being safe to re-run.
+	: > "$fake_log"
+	make_fake_agent claude 0
+	make_fake_agent codex 0
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install
+	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "mcp-install failed against registered agents"; }
+	printf '%s' "$out" | rg -q 'Claude Code: already registered' || fail "registered Claude was not left alone"
+	printf '%s' "$out" | rg -q 'Codex: already registered' || fail "registered Codex was not left alone"
+	if rg -q 'mcp add' "$fake_log"; then
+		fail "mcp-install wrote a registration that already existed"
+	fi
+
+	# --force on an already-registered agent must remove before adding, since
+	# `mcp add` refuses to overwrite.
+	: > "$fake_log"
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install --claude --force
+	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "forced mcp-install failed"; }
+	rg -q -- 'claude mcp remove codescan --scope user' "$fake_log" || fail "--force did not remove the existing entry first"
+	rg -q -- 'claude mcp add codescan --scope user' "$fake_log" || fail "--force did not re-add the entry"
+	if rg -q '^codex ' "$fake_log"; then
+		fail "--claude still contacted Codex"
+	fi
+
+	# --force must NOT escalate a first-time install into a remove-then-add of an
+	# entry that does not exist.
+	: > "$fake_log"
+	make_fake_agent claude 1
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install --claude --force
+	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "forced first-time mcp-install failed"; }
+	if rg -q 'mcp remove' "$fake_log"; then
+		fail "--force issued a remove for an unregistered entry"
+	fi
+
+	# --project must reach Claude as project scope, and later flags win.
+	: > "$fake_log"
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install --claude --project --dry-run
+	printf '%s' "$out" | rg -q -- '--scope project' || fail "--project did not select project scope"
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install --claude --project --user --dry-run
+	printf '%s' "$out" | rg -q -- '--scope user' || fail "a later --user did not override an earlier --project"
+
+	# --dry-run must not run anything at all.
+	: > "$fake_log"
+	capture env PATH="$fake_bin:$PATH" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install --dry-run
+	if rg -q 'mcp add|mcp remove' "$fake_log"; then
+		fail "--dry-run executed a registration command"
+	fi
+
+	# A missing agent CLI is reported, never treated as failure — most machines
+	# have only one of these installed.
+	: > "$fake_log"
+	empty_bin="$DB_DIR/no-agents"
+	mkdir -p "$empty_bin"
+	capture env PATH="$empty_bin" MUTE_DEBUG_STATUS=1 "$BIN" mcp-install
+	[ "$rc" -eq 0 ] || fail "mcp-install failed when no agent CLI was installed"
+	printf '%s' "$out" | rg -q 'not installed' || fail "absent agent CLI was not reported"
+
 	printf '%s\n' "cli ok"
 }
 

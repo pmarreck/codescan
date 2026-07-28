@@ -34,6 +34,7 @@ const setup_model_text = @import("setup_model_text.zig");
 const preflight = @import("preflight.zig");
 const search_service = @import("search_service.zig");
 const update_service = @import("update_service.zig");
+const mcp_install = @import("mcp_install.zig");
 const io_singleton = @import("io_singleton.zig");
 
 /// File-scope atomic flag for POSIX signal handlers (which cannot capture closures).
@@ -423,6 +424,10 @@ pub fn main(init: std.process.Init) !void {
 				.include_node_modules = settings.include_node_modules,
 				.search_weights = settings.search_weights,
 			});
+		},
+		.mcp_install => {
+			try runMcpInstall(allocator, parsed, settings.root_path, stdout);
+			try stdout.flush();
 		},
 		.watch => try runWatch(allocator, settings, registry, parsed, stdout),
 		.status => {
@@ -5893,6 +5898,32 @@ const usage_clean =
     \\
 ;
 
+const usage_mcp_install =
+    \\Usage: codescan mcp-install [options]
+    \\
+    \\Register codescan as an MCP server with your coding agents, so they can
+    \\use its search and editing tools. Idempotent: an agent that already has a
+    \\`codescan` server is left alone unless --force is given.
+    \\
+    \\Supported agents: Claude Code (claude), Codex (codex).
+    \\With no agent flag, every agent found on PATH is registered.
+    \\
+    \\Options:
+    \\  --claude                 Register with Claude Code only
+    \\  --codex                  Register with Codex only
+    \\  --user                   Register for every project (default)
+    \\  --project                Register for the current project only
+    \\                           (Claude Code only; Codex has one global list)
+    \\  --force                  Replace an existing registration
+    \\  --dry-run, -n            Print the commands without running them
+    \\
+    \\Examples:
+    \\  codescan mcp-install
+    \\  codescan mcp-install --claude --force
+    \\  codescan mcp-install --project --dry-run
+    \\
+;
+
 const usage_init =
     \\Usage: codescan init [options]
     \\
@@ -6362,6 +6393,208 @@ pub fn runRoot(
 	try writer.writeAll("}\n");
 }
 
+/// Outcome of running one agent CLI. A failed spawn is kept distinct from a
+/// non-zero exit: the first means the agent is not installed, the second means
+/// it ran and answered.
+const AgentRun = union(enum) {
+	spawn_failed,
+	exited: u8,
+};
+
+/// Runs an agent CLI without letting its output reach the user's terminal, so
+/// codescan owns the reporting. The exit status is the only signal consumed.
+fn runAgentQuietly(argv: []const []const u8) AgentRun {
+	const io = io_singleton.getOrInit();
+	var child = std.process.spawn(io, .{
+		.argv = argv,
+		.stdin = .ignore,
+		.stdout = .ignore,
+		.stderr = .ignore,
+	}) catch return .spawn_failed;
+	const term = child.wait(io) catch return .spawn_failed;
+	return switch (term) {
+		.exited => |code| .{ .exited = code },
+		else => .{ .exited = 1 },
+	};
+}
+
+/// Registers codescan as an MCP server with each installed coding agent.
+///
+/// Idempotency is delegated, not reimplemented: membership is decided by the
+/// agent's own `mcp get <name>` exit status rather than by matching text in a
+/// server listing, so a neighbouring entry such as `codescan-old` can never be
+/// mistaken for this one. A missing agent CLI is reported, never treated as a
+/// failure — most machines have only one of these installed.
+fn runMcpInstall(
+	allocator: std.mem.Allocator,
+	parsed: cli.Parsed,
+	root_path: []const u8,
+	stdout: *std.Io.Writer,
+) !void {
+	_ = root_path;
+	const server_name = "codescan";
+	const server_command = "codescan";
+	const server_args = [_][]const u8{"mcp-serve"};
+
+	// Naming no agent means "every agent you actually have"; naming one or both
+	// restricts the set explicitly.
+	const explicit = parsed.mcp_claude or parsed.mcp_codex;
+	var requested: std.ArrayListUnmanaged(mcp_install.Agent) = .empty;
+	defer requested.deinit(allocator);
+	if (!explicit or parsed.mcp_claude) try requested.append(allocator, .claude);
+	if (!explicit or parsed.mcp_codex) try requested.append(allocator, .codex);
+
+	var stderr_buf: [4096]u8 = undefined;
+	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
+	const se = &stderr_writer.interface;
+
+	// The registration points at a PATH-resolved `codescan`, so a shell that
+	// cannot find it would produce a server that fails to start. Say so rather
+	// than register something known-broken and report success.
+	if (!commandOnPath(allocator, server_command)) {
+		_ = se.print(
+			"warning: '{s}' is not on PATH; the registration will be written but the server will fail to start until it is.\n",
+			.{server_command},
+		) catch {};
+		_ = se.flush() catch {};
+	}
+
+	var installed: usize = 0;
+	var skipped: usize = 0;
+	var absent: usize = 0;
+	var failed: usize = 0;
+
+	for (requested.items) |agent| {
+		const probe = probe: {
+			const argv = mcp_install.probeArgv(agent, server_name);
+			break :probe runAgentQuietly(&argv);
+		};
+		const state = mcp_install.AgentState{
+			.cli_present = probe != .spawn_failed,
+			.already_registered = switch (probe) {
+				.spawn_failed => false,
+				.exited => |code| code == 0,
+			},
+		};
+		const action = mcp_install.decideAction(state, parsed.force);
+
+		switch (action) {
+			.skip_cli_absent => {
+				absent += 1;
+				try stdout.print("- {s}: not installed (no '{s}' on PATH), skipped\n", .{ agent.label(), agent.cli() });
+				continue;
+			},
+			.skip_already_registered => {
+				skipped += 1;
+				try stdout.print("- {s}: already registered, left unchanged\n", .{agent.label()});
+				continue;
+			},
+			.install, .reinstall_forced => {},
+		}
+
+		const install_argv = try mcp_install.installArgv(
+			allocator,
+			agent,
+			parsed.mcp_scope,
+			server_name,
+			server_command,
+			&server_args,
+		);
+		defer allocator.free(install_argv);
+
+		if (parsed.dry_run) {
+			if (action == .reinstall_forced) {
+				const remove_argv = try mcp_install.removeArgv(allocator, agent, parsed.mcp_scope, server_name);
+				defer allocator.free(remove_argv);
+				try stdout.print("- {s}: would run: ", .{agent.label()});
+				try printArgv(stdout, remove_argv);
+			}
+			try stdout.print("- {s}: would run: ", .{agent.label()});
+			try printArgv(stdout, install_argv);
+			continue;
+		}
+
+		// `mcp add` refuses to overwrite, so a forced reinstall must remove
+		// first. A failed remove is fatal for this agent: proceeding would
+		// leave the old entry and still report success.
+		if (action == .reinstall_forced) {
+			const remove_argv = try mcp_install.removeArgv(allocator, agent, parsed.mcp_scope, server_name);
+			defer allocator.free(remove_argv);
+			switch (runAgentQuietly(remove_argv)) {
+				.spawn_failed => {
+					failed += 1;
+					try stdout.print("- {s}: could not run its CLI to remove the existing entry\n", .{agent.label()});
+					continue;
+				},
+				.exited => |code| if (code != 0) {
+					failed += 1;
+					try stdout.print("- {s}: removing the existing entry failed (exit {d})\n", .{ agent.label(), code });
+					continue;
+				},
+			}
+		}
+
+		switch (runAgentQuietly(install_argv)) {
+			.spawn_failed => {
+				failed += 1;
+				try stdout.print("- {s}: could not run its CLI\n", .{agent.label()});
+			},
+			.exited => |code| if (code == 0) {
+				installed += 1;
+				const scope_note = switch (agent) {
+					.claude => parsed.mcp_scope.flagValue(),
+					// Codex keeps one global list and has no scope concept.
+					.codex => "global",
+				};
+				try stdout.print("- {s}: registered ({s} scope)\n", .{ agent.label(), scope_note });
+			} else {
+				failed += 1;
+				try stdout.print("- {s}: registration failed (exit {d}); run manually: ", .{ agent.label(), code });
+				try printArgv(stdout, install_argv);
+			},
+		}
+	}
+
+	// Flush the per-agent report before any stderr note, so the two streams
+	// do not interleave out of order on a terminal.
+	try stdout.flush();
+	if (installed > 0) {
+		_ = se.print("note: restart your agent for the new MCP server to load.\n", .{}) catch {};
+		_ = se.flush() catch {};
+	}
+	if (installed == 0 and skipped == 0 and failed == 0 and absent > 0) {
+		_ = se.print("note: no supported agent CLI was found. Supported today: claude, codex.\n", .{}) catch {};
+		_ = se.flush() catch {};
+	}
+	if (failed > 0) return error.McpInstallFailed;
+}
+
+/// Renders an argv as a copy-pasteable command line.
+fn printArgv(writer: *std.Io.Writer, argv: []const []const u8) !void {
+	for (argv, 0..) |arg, idx| {
+		if (idx > 0) try writer.writeAll(" ");
+		try writer.writeAll(arg);
+	}
+	try writer.writeAll("\n");
+}
+
+/// Whether a bare command name resolves on PATH, used to warn before writing a
+/// registration that would not start.
+fn commandOnPath(allocator: std.mem.Allocator, name: []const u8) bool {
+	const io = io_singleton.getOrInit();
+	const env_map = io_singleton.getEnvMapOrInit(allocator);
+	const path_value = env_map.get("PATH") orelse return false;
+	var it = std.mem.tokenizeScalar(u8, path_value, ':');
+	while (it.next()) |dir| {
+		var buf: [std.fs.max_path_bytes]u8 = undefined;
+		const candidate = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
+		std.Io.Dir.accessAbsolute(io, candidate, .{}) catch continue;
+		return true;
+	}
+	return false;
+}
+
+
 pub fn runStatus(
 	allocator: std.mem.Allocator,
 	db_path: []const u8,
@@ -6634,6 +6867,7 @@ fn usageForTopic(topic: []const u8) []const u8 {
     if (std.mem.eql(u8, topic, "log")) return usage_log;
     if (std.mem.eql(u8, topic, "serve")) return usage_serve;
     if (std.mem.eql(u8, topic, "mcp-serve")) return usage_mcp_serve;
+    if (std.mem.eql(u8, topic, "mcp-install")) return usage_mcp_install;
     if (std.mem.eql(u8, topic, "status")) return usage_status;
     if (std.mem.eql(u8, topic, "clean") or std.mem.eql(u8, topic, "clear")) return usage_clean;
     if (std.mem.eql(u8, topic, "init")) return usage_init;

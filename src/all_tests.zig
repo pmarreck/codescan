@@ -45,6 +45,7 @@ const _scan = @import("scan.zig");
 const _search = @import("search.zig");
 const _search_service = @import("search_service.zig");
 const _update_service = @import("update_service.zig");
+const _mcp_install = @import("mcp_install.zig");
 const _simd = @import("simd.zig");
 const _server = @import("server.zig");
 const _setup_model_text = @import("setup_model_text.zig");
@@ -105,6 +106,7 @@ test {
 	_ = _search;
 	_ = _search_service;
 	_ = _update_service;
+	_ = _mcp_install;
 	_ = _simd;
 	_ = _server;
 	_ = _setup_model_text;

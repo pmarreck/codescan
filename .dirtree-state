@@ -78,6 +78,7 @@ annotate=[
 	src/lsp.zig = Minimal LSP client (JSON-RPC 2.0 over stdio with Content-Length framing) backing the references and rename commands
 	src/main.zig = CLI adapter and command dispatcher; delegates shared search and indexing policy/execution to application services
 	src/mcp.zig = MCP JSON-RPC adapter; delegates search policy and execution to search_service while retaining transport diagnostics/rendering
+	src/mcp_install.zig = MCP self-registration policy: agent/scope model, argv builders for claude and codex, and the exhausted install-vs-skip decision
 	src/mk_test_db.zig = Generates a tiny SQLite index for the CLI and HTTP suites; embedding dimension defaults to 1024, overridable via --embedding-dim
 	src/model.zig = Core extracted-symbol data model, including optional symbol_kind/visibility/scope/arity metadata
 	src/output.zig = Human/JSON result rendering; owns shouldUseColor (ANSI policy: --color, NO_COLOR, TTY detection)
@@ -144,6 +145,7 @@ annotate=[
 	tests/integration/test-integration = RAM-backed live Ollama integration suite with explicit model/dimension pairing
 	tests/unit/test-dev-shell-cache = Regression proving nix develop preserves inherited nonempty Zig cache paths
 	tests/unit/test-no-committed-secrets = Security regression rejecting tracked literal oMLX embedding API keys without echoing secrets
+	tests/unit/test-portable-mcp-config = Set classifier rejecting machine-specific or unresolvable commands in the committed .mcp.json
 	tests/unit/test-reindex-all-projects = RAM-backed set-classifier tests for the sequential multi-project reindex runner
 	tests/unit/test-unit = Zig unit-test runner wrapping the aggregated zig build test-unit step inside the nix dev shell
 ]

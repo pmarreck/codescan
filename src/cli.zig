@@ -40,6 +40,7 @@ pub const CommandTag = enum {
 	rename,
 	watch,
 	mcp_serve,
+	mcp_install,
 	clean,
 	status,
 	setup_model,
@@ -50,6 +51,10 @@ pub const ConfigAction = enum {
 	show,
 	edit,
 };
+
+/// Where `mcp-install` writes a registration. Re-exported from the
+/// application module so the CLI and the installer cannot disagree.
+pub const McpScope = @import("mcp_install.zig").Scope;
 
 pub const WatchAction = enum {
 	run, // default: foreground watcher
@@ -91,6 +96,9 @@ pub const Seen = struct {
 	kind_filter: bool = false,
     scope: bool = false,
 	force: bool = false,
+	mcp_claude: bool = false,
+	mcp_codex: bool = false,
+	mcp_scope: bool = false,
 	dry_run: bool = false,
 	confirm: bool = false,
     lexical_only: bool = false,
@@ -152,6 +160,10 @@ pub const Parsed = struct {
 	watch_interval: u64,
 	watch_action: WatchAction,
 	force: bool,
+	// mcp-install subcommand fields
+	mcp_claude: bool,
+	mcp_codex: bool,
+	mcp_scope: McpScope,
 	dry_run: bool,
 	confirm: bool,
     lexical_only: bool,
@@ -270,6 +282,9 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.watch_interval = 2000,
 		.watch_action = .run,
 		.force = false,
+		.mcp_claude = false,
+		.mcp_codex = false,
+		.mcp_scope = .user,
 		.dry_run = false,
 		.confirm = false,
 		.lexical_only = false,
@@ -353,6 +368,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			.{ .names = &.{ "references" }, .tag = .references, .help_topic = "references", .positional = .pattern },
 			.{ .names = &.{ "rename" }, .tag = .rename, .help_topic = "rename", .positional = .pattern },
 			.{ .names = &.{ "mcp-serve" }, .tag = .mcp_serve, .help_topic = "mcp-serve" },
+			.{ .names = &.{ "mcp-install" }, .tag = .mcp_install, .help_topic = "mcp-install" },
 			.{ .names = &.{ "status" }, .tag = .status, .help_topic = "status" },
 			.{ .names = &.{ "setup-model" }, .tag = .setup_model, .help_topic = "setup-model" },
 			.{ .names = &.{ "log" }, .tag = .log, .help_topic = "log" },
@@ -918,6 +934,34 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		if (std.mem.eql(u8, arg, "--dry-run") or std.mem.eql(u8, arg, "-n")) {
 			parsed.dry_run = true;
 			parsed.seen.dry_run = true;
+			i += 1;
+			continue;
+		}
+		// mcp-install agent selection. Naming an agent explicitly opts out of
+		// the "every installed agent" default; naming both restores it.
+		if (std.mem.eql(u8, arg, "--claude")) {
+			parsed.mcp_claude = true;
+			parsed.seen.mcp_claude = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--codex")) {
+			parsed.mcp_codex = true;
+			parsed.seen.mcp_codex = true;
+			i += 1;
+			continue;
+		}
+		// Registration scope. `--scope` already means symbol scope for search,
+		// so these are spelled as standalone switches; later wins.
+		if (std.mem.eql(u8, arg, "--user")) {
+			parsed.mcp_scope = .user;
+			parsed.seen.mcp_scope = true;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--project")) {
+			parsed.mcp_scope = .project;
+			parsed.seen.mcp_scope = true;
 			i += 1;
 			continue;
 		}
