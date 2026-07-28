@@ -937,3 +937,167 @@ test "writeConfigValues roundtrip preserves ${VAR} placeholder via writeValueFor
     // Must NOT contain the resolved PATH value:
     try std.testing.expect(std.mem.indexOf(u8, updated, cfg.embedding_api_key.?) == null);
 }
+
+/// Merges a higher-precedence config over a lower-precedence one, key by key,
+/// taking ownership of the overlay's values and leaving it safe to deinit.
+///
+/// Per-key rather than whole-file is the entire point: a project that sets only
+/// `top=5` must still inherit a global `embedding_url`. A whole-file override
+/// would mean any project with a config at all stops inheriting anything.
+///
+/// The field sweep is comptime over `Config`'s fields, so a newly added setting
+/// participates automatically. A hand-written merge is exactly the kind of list
+/// that silently falls out of date, and the failure mode — one setting quietly
+/// not inheriting — is invisible until someone debugs it by hand.
+pub fn applyOver(allocator: std.mem.Allocator, base: *Config, overlay: *Config) !void {
+	inline for (@typeInfo(Config).@"struct".fields) |field| {
+		const info = @typeInfo(field.type);
+		if (comptime info == .optional) {
+			if (@field(overlay, field.name)) |value| {
+				// Owned strings must not leak when displaced; scalars and enums
+				// are copied.
+				if (comptime info.optional.child == []const u8) {
+					if (@field(base, field.name)) |old| allocator.free(old);
+				}
+				@field(base, field.name) = value;
+				@field(overlay, field.name) = null;
+			}
+		} else {
+			// List-valued settings accumulate rather than replace, so a project
+			// adds to the global ignore set instead of discarding it. Ownership
+			// of each element transfers; clearing prevents a double free.
+			try @field(base, field.name).appendSlice(allocator, @field(overlay, field.name).items);
+			@field(overlay, field.name).clearRetainingCapacity();
+		}
+	}
+}
+
+test "applyOver merges per key rather than per file" {
+	const allocator = std.testing.allocator;
+
+	// Global: a URL and a model, plus one ignore pattern.
+	var global = try parseText(allocator,
+		\\embedding_url=http://global:11434
+		\\embedding_model=jina-code-embeddings:1.5b
+		\\embedding_dim=1536
+		\\ignore=vendor/
+		\\
+	);
+	defer global.deinit(allocator);
+
+	// Project: overrides only the model and adds an ignore. Everything else
+	// must survive from the global — this is the case that makes one embedding
+	// URL across many projects actually work.
+	var project = try parseText(allocator,
+		\\embedding_model=bge-large
+		\\top=5
+		\\ignore=build/
+		\\
+	);
+	defer project.deinit(allocator);
+
+	try applyOver(allocator, &global, &project);
+
+	// Set only globally: inherited.
+	try std.testing.expectEqualStrings("http://global:11434", global.embedding_url.?);
+	try std.testing.expectEqual(@as(?usize, 1536), global.embedding_dim);
+	// Set in both: project wins.
+	try std.testing.expectEqualStrings("bge-large", global.embedding_model.?);
+	// Set only in the project: adopted.
+	try std.testing.expectEqual(@as(?usize, 5), global.top_n);
+	// Set in neither: still absent.
+	try std.testing.expect(global.search_lang == null);
+	// Lists accumulate, global first.
+	try std.testing.expectEqual(@as(usize, 2), global.ignore_global.items.len);
+	try std.testing.expectEqualStrings("vendor/", global.ignore_global.items[0]);
+	try std.testing.expectEqualStrings("build/", global.ignore_global.items[1]);
+}
+
+test "applyOver leaves the base untouched when the overlay is empty" {
+	const allocator = std.testing.allocator;
+
+	var base = try parseText(allocator,
+		\\embedding_url=http://global:11434
+		\\ignore=vendor/
+		\\
+	);
+	defer base.deinit(allocator);
+
+	// An empty config carries no opinion, so merging it must change nothing.
+	// This is what makes a project without a config inherit the global one
+	// wholesale.
+	var empty = Config{};
+	defer empty.deinit(allocator);
+
+	try applyOver(allocator, &base, &empty);
+
+	try std.testing.expectEqualStrings("http://global:11434", base.embedding_url.?);
+	try std.testing.expectEqual(@as(usize, 1), base.ignore_global.items.len);
+}
+
+test "applyOver covers every Config field, including ones added later" {
+	// A merge that silently skips a field is invisible in normal use, so assert
+	// mechanically that the sweep reaches all of them rather than trusting that
+	// the two tests above happen to cover the interesting ones.
+	comptime {
+		var optional_fields = 0;
+		var list_fields = 0;
+		for (@typeInfo(Config).@"struct".fields) |field| {
+			switch (@typeInfo(field.type)) {
+				.optional => optional_fields += 1,
+				.@"struct" => list_fields += 1,
+				else => @compileError("Config field '" ++ field.name ++
+					"' is neither optional nor a list, so applyOver has no rule for it"),
+			}
+		}
+		if (optional_fields == 0 or list_fields == 0) @compileError("Config shape changed unexpectedly");
+	}
+}
+
+/// Path to the machine-wide config, honouring `XDG_CONFIG_HOME` and falling
+/// back to `~/.config`. Returns null when neither variable is set, in which
+/// case there is simply no global tier rather than a guessed location.
+pub fn globalPath(allocator: std.mem.Allocator) !?[]u8 {
+	const env_map = io_singleton.getEnvMapOrInit(allocator);
+	if (env_map.get("XDG_CONFIG_HOME")) |xdg| {
+		if (xdg.len > 0) return try std.fs.path.join(allocator, &.{ xdg, "codescan", "config.ini" });
+	}
+	const home = env_map.get("HOME") orelse return null;
+	if (home.len == 0) return null;
+	return try std.fs.path.join(allocator, &.{ home, ".config", "codescan", "config.ini" });
+}
+
+test "globalPath prefers XDG_CONFIG_HOME and falls back to HOME" {
+	const allocator = std.testing.allocator;
+
+	var env = std.process.Environ.Map.init(allocator);
+	defer env.deinit();
+	io_singleton.setEnvMap(&env);
+	defer io_singleton.setEnvMap(null);
+
+	// Neither set: no global tier, rather than a guessed path.
+	try std.testing.expect((try globalPath(allocator)) == null);
+
+	try env.put("HOME", "/home/someone");
+	{
+		const path = (try globalPath(allocator)).?;
+		defer allocator.free(path);
+		try std.testing.expectEqualStrings("/home/someone/.config/codescan/config.ini", path);
+	}
+
+	try env.put("XDG_CONFIG_HOME", "/xdg");
+	{
+		const path = (try globalPath(allocator)).?;
+		defer allocator.free(path);
+		try std.testing.expectEqualStrings("/xdg/codescan/config.ini", path);
+	}
+
+	// An empty XDG value must not produce a path rooted at "/", which would
+	// silently read someone else's file.
+	try env.put("XDG_CONFIG_HOME", "");
+	{
+		const path = (try globalPath(allocator)).?;
+		defer allocator.free(path);
+		try std.testing.expectEqualStrings("/home/someone/.config/codescan/config.ini", path);
+	}
+}

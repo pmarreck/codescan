@@ -1643,15 +1643,35 @@ fn hasCodescanDir(path: []const u8) !bool {
 }
 
 fn loadConfig(allocator: std.mem.Allocator, root_path: []const u8) !config.Config {
+	// Machine-wide settings first, then the project's on top of them, key by
+	// key. Settings shared across every project (embedding URL, model,
+	// dimension) can therefore live in one file instead of being copied into
+	// each repository.
+	var merged = global: {
+		const global_path = (try config.globalPath(allocator)) orelse break :global config.Config{};
+		defer allocator.free(global_path);
+		break :global config.loadFromPath(allocator, global_path) catch |err| switch (err) {
+			// No global config is the common case, not an error.
+			error.FileNotFound, error.NotDir => config.Config{},
+			else => return err,
+		};
+	};
+	errdefer merged.deinit(allocator);
+
 	const path = try configPath(allocator, root_path);
 	defer allocator.free(path);
 
-	return config.loadFromPath(allocator, path) catch |err| switch (err) {
+	var project = config.loadFromPath(allocator, path) catch |err| switch (err) {
 		error.FileNotFound => config.Config{},
 		error.NotDir => config.Config{},
-		else => err,
+		else => return err,
 	};
+	defer project.deinit(allocator);
+
+	try config.applyOver(allocator, &merged, &project);
+	return merged;
 }
+
 
 fn loadWeights(allocator: std.mem.Allocator, root_path: []const u8) !weights.Table {
 	const path = try weightsPath(allocator, root_path);
@@ -1686,30 +1706,46 @@ fn weightsPath(allocator: std.mem.Allocator, root_path: []const u8) ![]u8 {
 	return std.fs.path.join(allocator, &.{ root_path, ".codescan", "weights.toml" });
 }
 
+/// Renders the configuration that is actually in force. Since a machine-wide
+/// file now merges under the project's, showing only the project file would
+/// misreport where a setting came from — and a config display that omits half
+/// the inputs is worse than none.
 fn showConfig(allocator: std.mem.Allocator, path: []const u8, writer: *std.Io.Writer) !void {
-	const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{}) catch |err| switch (err) {
-		error.FileNotFound => {
-			try writer.print("No config found at {s}\n", .{path});
-			try writer.writeAll("Use: codescan config edit\n");
-			return;
-		},
-		error.NotDir => {
-			try writer.print("No config found at {s}\n", .{path});
-			try writer.writeAll("Use: codescan config edit\n");
-			return;
-		},
-		else => return err,
-	};
-	defer file.close(io_singleton.getOrInit());
+	if (try config.globalPath(allocator)) |global_path| {
+		defer allocator.free(global_path);
+		if (readConfigText(allocator, global_path)) |data| {
+			defer allocator.free(data);
+			try writer.print("# global: {s}\n", .{global_path});
+			try writer.writeAll(data);
+			if (data.len == 0 or data[data.len - 1] != '\n') try writer.writeAll("\n");
+			try writer.writeAll("\n");
+		}
+	}
 
-	const data = try io_singleton.readToEndAlloc(file, allocator, 1024 * 1024);
+	const data = readConfigText(allocator, path) orelse {
+		try writer.print("No project config found at {s}\n", .{path});
+		try writer.writeAll("Use: codescan config edit\n");
+		return;
+	};
 	defer allocator.free(data);
+
+	try writer.print("# project: {s}\n", .{path});
 	try writer.writeAll(data);
 	if (data.len == 0 or data[data.len - 1] != '\n') {
 		try writer.writeAll("\n");
 	}
+	try writer.writeAll("# Project values override global ones, key by key.\n");
 	try writer.writeAll("# To edit: codescan config edit\n");
 }
+
+/// Reads a config file, treating "absent" as null rather than an error so a
+/// missing tier is skipped silently.
+fn readConfigText(allocator: std.mem.Allocator, path: []const u8) ?[]u8 {
+	const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), path, .{}) catch return null;
+	defer file.close(io_singleton.getOrInit());
+	return io_singleton.readToEndAlloc(file, allocator, 1024 * 1024) catch null;
+}
+
 
 fn editConfig(allocator: std.mem.Allocator, path: []const u8) !void {
 	try io_singleton.ensureParentDir(path);

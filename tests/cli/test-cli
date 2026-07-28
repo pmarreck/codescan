@@ -326,6 +326,38 @@ FAKEEOF
 	[ "$rc" -eq 0 ] || fail "mcp-install failed when no agent CLI was installed"
 	printf '%s' "$out" | rg -q 'not installed' || fail "absent agent CLI was not reported"
 
+
+	# --- global config tier ------------------------------------------------
+	# Settings shared by every project (embedding URL, model, dimension) should
+	# live in one file. Merging is per key, so a project that sets one value must
+	# still inherit the rest rather than discarding the global file wholesale.
+	gcfg="$DB_DIR/gcfg"
+	mkdir -p "$gcfg/xdg/codescan" "$gcfg/proj/.codescan"
+	printf 'embedding_url=http://from-global:11434\nembedding_dim=1536\nignore=vendor/\n' > "$gcfg/xdg/codescan/config.ini"
+	printf 'top=7\nignore=build/\n' > "$gcfg/proj/.codescan/config.ini"
+	( cd "$gcfg/proj" && git init -q . )
+
+	capture env XDG_CONFIG_HOME="$gcfg/xdg" MUTE_DEBUG_STATUS=1 "$BIN" --root "$gcfg/proj" config show
+	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "config show failed with a global tier"; }
+	printf '%s' "$out" | rg -q '^# global: ' || fail "config show hid the global tier"
+	printf '%s' "$out" | rg -q '^# project: ' || fail "config show did not label the project tier"
+	printf '%s' "$out" | rg -q 'embedding_url=http://from-global' || fail "global values were not shown"
+	printf '%s' "$out" | rg -q 'top=7' || fail "project values were not shown"
+
+	# With no global file, the display must not invent one.
+	capture env -u XDG_CONFIG_HOME HOME="$gcfg/empty-home" MUTE_DEBUG_STATUS=1 "$BIN" --root "$gcfg/proj" config show
+	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "config show failed without a global tier"; }
+	if printf '%s' "$out" | rg -q '^# global: '; then
+		fail "config show reported a global tier that does not exist"
+	fi
+
+	# A project with no config at all must inherit the global one entirely —
+	# the case that makes one embedding URL across many projects worthwhile.
+	mkdir -p "$gcfg/bare"
+	( cd "$gcfg/bare" && git init -q . )
+	capture env XDG_CONFIG_HOME="$gcfg/xdg" MUTE_DEBUG_STATUS=1 "$BIN" --root "$gcfg/bare" config show
+	printf '%s' "$out" | rg -q 'embedding_url=http://from-global' || fail "a config-less project did not inherit the global tier"
+
 	printf '%s\n' "cli ok"
 }
 
