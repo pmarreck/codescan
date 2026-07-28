@@ -5,7 +5,8 @@
 - [ ] Move update database preparation/rebuild policy and freshness reconciliation out of the CLI adapter.
   Curiosity poke: the two-phase open (inspect first, probe the live embedder's real dimension, only then recreate) is the invariant that must survive — never destroy an index before proving the replacement embedder produces the expected vector width.
   - [x] Extract the pure database-lifecycle decision (`decideDbAction`) and exhaust its probe × mode domain. (completed 2026-07-28 12:52 EDT)
-  - [ ] Move the two-phase orchestration into `update_service`, leaving `main.zig` rendering the report.
+  - [x] Move the two-phase orchestration into `update_service`, leaving `main.zig` rendering the report. (completed 2026-07-28 13:12 EDT)
+    Curiosity poke: the invariant the handoff called most important — never destroy an index before the live embedder's real width is proven — turned out to have **no test at all**, because it lived in `runUpdateWithInvocation` and needed a CLI plus a live provider to reach. The RED phase stood `prepare` up as a recreate-without-probing stub and watched it wipe a seeded index; 3 of 5 new tests failed on exactly that. `(use_null_embedder, invocation)` became an explicit `RebuildPolicy` (refuse / recreate_unverified / verify_then_recreate), and the fake embedder counts calls so "never contacted the provider" is asserted, not assumed. Also deleted the duplicate `probeEmbeddingDim` from `main.zig` — the same second-implementation smell that produced the `serverReachable` bug.
   - [ ] Repoint `SearchFreshnessContext` at the service; leave `freshness.ensureFresh` policy untouched.
   - [ ] Repoint HTTP + MCP adapters if they duplicate any of this.
 - [x] Retire `CODE_MINIMAP.md`; migrate its per-file descriptions into `dirtree note` annotations (new official guidance). (completed 2026-07-28 12:47 EDT)

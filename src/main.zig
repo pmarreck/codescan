@@ -694,16 +694,6 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	return settings;
 }
 
-/// Probe the actual embedding dimension by sending a single test input.
-/// Returns the detected dimension, or null if the probe fails.
-fn probeEmbeddingDim(allocator: std.mem.Allocator, embedder: embedding.Embedder) ?usize {
-    const inputs = [_][]const u8{"dimension probe"};
-    const embeddings = embedder.embed(embedder.ctx, allocator, &inputs) catch return null;
-    defer embedder.free(embedder.ctx, allocator, embeddings);
-    if (embeddings.len == 0) return null;
-    if (embeddings[0].len == 0) return null;
-    return embeddings[0].len;
-}
 
 const embedding_model_recommendation = setup_model_text.recommendation;
 
@@ -1372,7 +1362,7 @@ fn performFullIndex(
 	show_progress: bool,
 ) !indexer.Stats {
 	// Auto-detect embedding dimension from a test embed
-	const effective_dim = probeEmbeddingDim(allocator, embedder) orelse settings.embedding_dim;
+	const effective_dim = update_service.probeEmbeddingDim(allocator, embedder) orelse settings.embedding_dim;
 
 	const result = try index_service.execute(
 		allocator,
@@ -2352,7 +2342,7 @@ fn runIndex(
 
 	// Auto-detect embedding dimension if using a real embedder
 	const effective_dim = if (!use_null_embedder)
-		probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
+		update_service.probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
 	else
 		settings.embedding_dim;
 
@@ -2393,93 +2383,16 @@ fn runIndex(
 
 /// Run an incremental index — scan for new/modified/deleted files and update.
 /// Extracted from the `.update` switch arm of `pub fn main` (2026-06-01).
-const UpdateDbRebuildReason = enum {
-	none,
-	incompatible,
-	embedding_mismatch,
-};
-
-const UpdateDb = struct {
-	db: storage.Db,
-	schema_result: storage.InitSchemaResult,
-	rebuild_reason: UpdateDbRebuildReason = .none,
-	previous_embedding_model: ?[]u8 = null,
-	previous_embedding_dim: ?usize = null,
-
-	fn deinit(self: *UpdateDb, allocator: std.mem.Allocator) void {
-		if (self.previous_embedding_model) |value| allocator.free(value);
-		self.schema_result.deinit(allocator);
-		storage.close(self.db);
-		self.* = undefined;
-	}
-};
-
-/// Opens an update database and atomically chooses a fresh index whenever its
-/// stored embedding model/dimension cannot represent the configured vectors.
-
-fn openUpdateDb(
-	allocator: std.mem.Allocator,
-	db_path: []const u8,
-	schema: storage.Schema,
-	mode: update_service.OpenMode,
-) !UpdateDb {
-	var db = try storage.openFileWithVec(allocator, db_path);
-	var init_failed = false;
-	var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, schema) catch probe: {
-		init_failed = true;
-		break :probe .{};
-	};
-
-	const action = update_service.decideDbAction(.{
-		.init_failed = init_failed,
-		.model_mismatch = schema_result.embedding_model_mismatch,
-		.dim_mismatch = schema_result.embedding_dim_mismatch,
-	}, mode);
-
-	if (action == .use_existing) return .{ .db = db, .schema_result = schema_result };
-
-	// Every remaining action abandons the database that is currently open, so
-	// rescue the stored embedding identity before the schema result is freed —
-	// callers render it when explaining a rebuild.
-	const previous_model = schema_result.stored_embedding_model;
-	schema_result.stored_embedding_model = null;
-	const previous_dim = schema_result.stored_embedding_dim;
-	schema_result.deinit(allocator);
-	storage.close(db);
-
-	switch (action) {
-		.use_existing => unreachable,
-		.fail_incompatible, .fail_embedding_mismatch => {
-			if (previous_model) |value| allocator.free(value);
-			return switch (action) {
-				.fail_incompatible => error.IncompatibleDatabase,
-				else => error.EmbeddingMismatch,
-			};
-		},
-		.recreate_incompatible, .recreate_embedding_mismatch => {},
-	}
-
-	db = storage.openFileWithVecRecreate(allocator, db_path) catch |err| {
-		if (previous_model) |value| allocator.free(value);
-		return err;
-	};
-	errdefer {
-		if (previous_model) |value| allocator.free(value);
-		storage.close(db);
-	}
-	schema_result = try storage.initSchema(allocator, db, schema);
-	return .{
-		.db = db,
-		.schema_result = schema_result,
-		.rebuild_reason = switch (action) {
-			.recreate_incompatible => .incompatible,
-			else => .embedding_mismatch,
-		},
-		// A failed schema init never observed an embedding identity, so these
-		// are null on the `.incompatible` path by construction.
-		.previous_embedding_model = previous_model,
-		.previous_embedding_dim = previous_dim,
-	};
+/// Explains the pause before codescan probes the embedding provider ahead of a
+/// rebuild, so an interactive user is not left watching a command that appears
+/// to have stalled. Passed to the update service only on explicit invocations.
+fn notifyVerifyingEmbeddingModel() void {
+	var buf: [4096]u8 = undefined;
+	var writer = io_singleton.stderrWriter(&buf);
+	_ = writer.interface.writeAll(
+		"Just a moment... verifying the embedding model before rebuilding the index.\n",
+	) catch {};
+	_ = writer.interface.flush() catch {};
 }
 
 
@@ -2660,38 +2573,23 @@ fn runUpdateWithInvocation(
 	else
 		embedder_adapter.embedder();
 
-	var effective_dim = settings.embedding_dim;
-	const initial_open_mode: update_service.OpenMode = .inspect_only;
-	var prepared = openUpdateDb(allocator, settings.db_path, .{
+	// A null embedder cannot regenerate what a rebuild would delete, so the
+	// pre-search path must report rather than destroy. An explicit update has
+	// asked for the rebuild and accepts an index without vectors.
+	const rebuild_policy: update_service.RebuildPolicy = if (use_null_embedder)
+		(if (invocation == .pre_search) .refuse else .recreate_unverified)
+	else
+		.verify_then_recreate;
+
+	var prepared = try update_service.prepare(allocator, active_embedder, .{
+		.db_path = settings.db_path,
 		.embedding_dim = settings.embedding_dim,
 		.embedding_model = settings.embedding_model,
-	}, initial_open_mode) catch |err| retry: {
-		switch (err) {
-			error.EmbeddingMismatch, error.IncompatibleDatabase => {},
-			else => return err,
-		}
-		if (use_null_embedder) {
-			if (invocation == .pre_search) return err;
-		} else {
-			if (invocation == .explicit) {
-				var verify_stderr_buf: [4096]u8 = undefined;
-				var verify_stderr_writer = io_singleton.stderrWriter(&verify_stderr_buf);
-				_ = verify_stderr_writer.interface.writeAll(
-					"Just a moment... verifying the embedding model before rebuilding the index.\n",
-				) catch {};
-				_ = verify_stderr_writer.interface.flush() catch {};
-			}
-			const detected_dim = probeEmbeddingDim(allocator, active_embedder) orelse
-				return error.EmbeddingUnavailable;
-			if (detected_dim != settings.embedding_dim) return error.EmbeddingDimensionMismatch;
-			effective_dim = detected_dim;
-		}
-		break :retry try openUpdateDb(allocator, settings.db_path, .{
-			.embedding_dim = effective_dim,
-			.embedding_model = settings.embedding_model,
-		}, .immediate_recreate);
-	};
+		.policy = rebuild_policy,
+		.on_verify_start = if (invocation == .explicit) notifyVerifyingEmbeddingModel else null,
+	});
 	defer prepared.deinit(allocator);
+	const effective_dim = prepared.effective_dim;
 	const db = prepared.db;
 	const schema_result = &prepared.schema_result;
 
@@ -8110,78 +8008,6 @@ test "resolveProjectFilePath roots relative paths and preserves absolute paths" 
 	const absolute = try resolveProjectFilePath(allocator, "/ignored", "/project/bin/tool");
 	defer allocator.free(absolute);
 	try std.testing.expectEqualStrings("/project/bin/tool", absolute);
-}
-
-test "openUpdateDb recreates populated indexes when embedding model or dimension changes" {
-	const allocator = std.testing.allocator;
-	var tmp = std.testing.tmpDir(.{});
-	defer tmp.cleanup();
-	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
-	defer allocator.free(root);
-	const db_path = try std.fs.path.join(allocator, &.{ root, "index.sqlite3" });
-	defer allocator.free(db_path);
-
-	{
-		const old_db = try storage.openFileWithVec(allocator, db_path);
-		defer storage.close(old_db);
-		var old_schema = try storage.initSchema(allocator, old_db, .{
-			.embedding_dim = 2,
-			.embedding_model = "bge-large",
-		});
-		defer old_schema.deinit(allocator);
-
-		var symbol = model.Symbol{
-			.language = try allocator.dupe(u8, "zig"),
-			.file_path = try allocator.dupe(u8, "src/main.zig"),
-			.name = try allocator.dupe(u8, "main"),
-			.signature = try allocator.dupe(u8, "pub fn main() void"),
-			.doc_comment = null,
-			.start_line = 1,
-			.end_line = 1,
-		};
-		defer symbol.deinit(allocator);
-		const rowid = try storage.insertSymbol(old_db, symbol);
-		try storage.insertEmbedding(old_db, allocator, rowid, &.{ 0.1, 0.2 });
-		try storage.upsertIndexedFile(old_db, "src/main.zig", 1, 20);
-	}
-
-	try std.testing.expectError(error.EmbeddingMismatch, openUpdateDb(allocator, db_path, .{
-		.embedding_dim = 4,
-		.embedding_model = "jina-code-embeddings:1.5b",
-	}, .inspect_only));
-	{
-		const preserved_db = try storage.openFileWithVec(allocator, db_path);
-		defer storage.close(preserved_db);
-		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(preserved_db, allocator, "symbols"));
-		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(preserved_db, allocator, "embeddings"));
-	}
-
-	var prepared = try openUpdateDb(allocator, db_path, .{
-		.embedding_dim = 4,
-		.embedding_model = "jina-code-embeddings:1.5b",
-	}, .immediate_recreate);
-	defer prepared.deinit(allocator);
-
-	try std.testing.expectEqual(UpdateDbRebuildReason.embedding_mismatch, prepared.rebuild_reason);
-	try std.testing.expectEqualStrings("bge-large", prepared.previous_embedding_model.?);
-	try std.testing.expectEqual(@as(?usize, 2), prepared.previous_embedding_dim);
-	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(prepared.db, allocator, "symbols"));
-	try std.testing.expectEqual(@as(i64, 0), try storage.countRows(prepared.db, allocator, "embeddings"));
-	try std.testing.expectEqual(@as(?i64, null), try storage.getIndexedFileMtime(prepared.db, "src/main.zig"));
-
-	// Prove sqlite-vec was recreated at the requested width, not merely emptied.
-	var fresh_symbol = model.Symbol{
-		.language = try allocator.dupe(u8, "zig"),
-		.file_path = try allocator.dupe(u8, "src/fresh.zig"),
-		.name = try allocator.dupe(u8, "fresh"),
-		.signature = try allocator.dupe(u8, "fn fresh() void"),
-		.doc_comment = null,
-		.start_line = 1,
-		.end_line = 1,
-	};
-	defer fresh_symbol.deinit(allocator);
-	const fresh_rowid = try storage.insertSymbol(prepared.db, fresh_symbol);
-	try storage.insertEmbedding(prepared.db, allocator, fresh_rowid, &.{ 0.1, 0.2, 0.3, 0.4 });
 }
 
 test "delayed discovery progress uses an injected monotonic clock" {
