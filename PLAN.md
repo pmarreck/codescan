@@ -1,5 +1,23 @@
 # Plan
 
+## 2026-07-28 — hexagonal split: update lifecycle
+
+- [ ] Move update database preparation/rebuild policy and freshness reconciliation out of the CLI adapter.
+  Curiosity poke: the two-phase open (inspect first, probe the live embedder's real dimension, only then recreate) is the invariant that must survive — never destroy an index before proving the replacement embedder produces the expected vector width.
+  - [x] Extract the pure database-lifecycle decision (`decideDbAction`) and exhaust its probe × mode domain. (completed 2026-07-28 12:52 EDT)
+  - [ ] Move the two-phase orchestration into `update_service`, leaving `main.zig` rendering the report.
+  - [ ] Repoint `SearchFreshnessContext` at the service; leave `freshness.ensureFresh` policy untouched.
+  - [ ] Repoint HTTP + MCP adapters if they duplicate any of this.
+- [x] Retire `CODE_MINIMAP.md`; migrate its per-file descriptions into `dirtree note` annotations (new official guidance). (completed 2026-07-28 12:47 EDT)
+  Curiosity poke: it was worse than duplicated — 3 entries named files that no longer exist (`.jjignore`, `ZIG_RECENT_API_CHANGES_2025.md`, `src/ollama.zig`), 28 source files were documented in neither place, and live entries had drifted (`embedding.zig` was described as an "Ollama adapter" long after it became a dialect-aware `HttpEmbedder`/`NullEmbedder`; config moved to `config.ini` with a legacy fallback). Migrated by re-deriving each description from current code. Annotations went 43 → 139; no orphans.
+- [x] Stop shipping a machine-specific MCP server path, and guard it. (completed 2026-07-28 12:46 EDT)
+  Curiosity poke: `.mcp.json` is committed, so its absolute `/Users/pmarreck/Documents-CloudManaged/...` command was wrong on every machine but the one that wrote it — codescan's own MCP tools silently vanished from the agent with only an ENOENT in `claude mcp list`. This is precisely the "commands that report success while doing nothing" failure class the project treats as first-order. Fixed to a PATH-resolved `codescan`, with `tests/unit/test-portable-mcp-config` as a set classifier over every server's command and args, not a spot check.
+- [ ] Let codescan register itself as an MCP server for Claude and Codex if not already present.
+  Curiosity poke: idempotency is the whole feature — "add if absent" must be decided on parsed config, never on a substring match, and must not clobber a user's hand-edited entry. Claude user scope is `~/.claude.json`, Codex is `~/.codex/config.toml`; different formats, one pure planner.
+- [ ] Implement the self-retiring watcher (idle-timeout after last successful index commit, never mid-index).
+  Decisions from Peter (2026-07-28 12:40 EDT): global config tier applies to **all** settings, not just watcher keys; "never retire" IS required — accept `0` or the literal `never`; a never-indexed project times from **watcher start**, so it still eventually retires.
+  Curiosity poke: introducing a global tier changes effective config for every existing project the moment the file exists, so precedence needs its own set-level tests (project overrides global, CLI overrides both, absent file is not an empty file).
+
 ## 2026-07-27 — one way to reach the embedding server
 
 - [x] Unite every embedding-server connection on the shared `Transport` so reachability cannot contradict the code that embeds. (completed 2026-07-28 08:51 EDT)
