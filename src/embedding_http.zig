@@ -85,29 +85,79 @@ pub fn embed(
 	return parseEmbeddings(allocator, response.body, dialect);
 }
 
-pub fn buildEmbedUrl(allocator: std.mem.Allocator, base_url: []const u8, dialect: ApiDialect) ![]u8 {
-	const path: []const u8 = switch (dialect) {
-		.ollama => "api/embed",
-		.openai => "v1/embeddings",
+/// Reports whether an embedding server is answering at `base_url`.
+///
+/// Decided by the same `Transport` that performs embedding, so a reachability
+/// verdict can never contradict the code doing the real work. A hand-rolled TCP
+/// probe used to live here and diverged exactly there: it connected to a single
+/// resolved address, so on dual-stack hosts it tried ::1 and declared an
+/// IPv4-only server (Ollama binds 127.0.0.1) unreachable while indexing against
+/// the same URL succeeded. std.http.Client races every resolved address, so
+/// routing through it inherits that fallback for free.
+///
+/// Any HTTP reply — including 401 or 404 — proves a server is present; only a
+/// transport-level failure (refused, DNS failure, timeout) means unreachable.
+/// A bare TCP connect could not make that distinction and would green-light any
+/// unrelated process holding the port.
+pub fn serverReachable(
+	allocator: std.mem.Allocator,
+	transport: Transport,
+	base_url: []const u8,
+	dialect: ApiDialect,
+) bool {
+	const url = buildReachabilityUrl(allocator, base_url, dialect) catch return false;
+	defer allocator.free(url);
+
+	const headers = [_]std.http.Header{
+		.{ .name = "Accept", .value = "application/json" },
+		.{ .name = "Connection", .value = "close" },
 	};
+
+	const response = transport.send(transport.ctx, allocator, .{
+		.method = "GET",
+		.url = url,
+		.headers = &headers,
+		.body = "",
+	}) catch return false;
+	allocator.free(response.body);
+	return true;
+}
+
+/// Cheapest GET that proves a server is answering, per dialect.
+fn buildReachabilityUrl(allocator: std.mem.Allocator, base_url: []const u8, dialect: ApiDialect) ![]u8 {
+	return switch (dialect) {
+		.ollama => buildTagsUrl(allocator, base_url),
+		.openai => buildModelsUrl(allocator, base_url),
+	};
+}
+
+/// Joins a base URL and a path with exactly one separating slash. Single source
+/// of truth for endpoint construction so the builders below cannot drift apart.
+fn joinUrl(allocator: std.mem.Allocator, base_url: []const u8, path: []const u8) ![]u8 {
 	if (std.mem.endsWith(u8, base_url, "/")) {
 		return std.fmt.allocPrint(allocator, "{s}{s}", .{ base_url, path });
 	}
 	return std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_url, path });
 }
 
+pub fn buildEmbedUrl(allocator: std.mem.Allocator, base_url: []const u8, dialect: ApiDialect) ![]u8 {
+	const path: []const u8 = switch (dialect) {
+		.ollama => "api/embed",
+		.openai => "v1/embeddings",
+	};
+	return joinUrl(allocator, base_url, path);
+}
+
 pub fn buildTagsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
-	if (std.mem.endsWith(u8, base_url, "/")) {
-		return std.fmt.allocPrint(allocator, "{s}api/tags", .{base_url});
-	}
-	return std.fmt.allocPrint(allocator, "{s}/api/tags", .{base_url});
+	return joinUrl(allocator, base_url, "api/tags");
 }
 
 pub fn buildPsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
-	if (std.mem.endsWith(u8, base_url, "/")) {
-		return std.fmt.allocPrint(allocator, "{s}api/ps", .{base_url});
-	}
-	return std.fmt.allocPrint(allocator, "{s}/api/ps", .{base_url});
+	return joinUrl(allocator, base_url, "api/ps");
+}
+
+pub fn buildModelsUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+	return joinUrl(allocator, base_url, "v1/models");
 }
 
 pub fn buildEmbedRequest(
@@ -412,6 +462,146 @@ pub const MockTransportCtx = struct {	tags_body: []const u8,
 };
 
 // ── Tests ────────────────────────────────────────────────────────────────────
+
+/// One-shot HTTP responder bound to a caller-supplied listener. Answers a single
+/// request with 200 and exits, which is the minimum needed to prove a transport
+/// completed a real round trip rather than merely opening a socket.
+fn respondOnce(server: *std.Io.net.Server) void {
+	const io = io_singleton.getOrInit();
+	var stream = server.accept(io) catch return;
+	defer stream.close(io);
+
+	// Consume exactly the request head, up to the blank line that ends it.
+	// Reading a fixed-size slice instead would block until that slice filled —
+	// deadlocking against a client that has finished its request and is waiting
+	// on our response. A probe that merely opened a socket sends nothing and
+	// hits EndOfStream here, which is equally fine.
+	var in: [4096]u8 = undefined;
+	var r = stream.reader(io, &in);
+	while (r.interface.takeDelimiterInclusive('\n')) |line| {
+		if (line.len <= 2) break; // "\r\n" or "\n" terminates the head
+	} else |_| {}
+	var out: [128]u8 = undefined;
+	var w = stream.writer(io, &out);
+	_ = w.interface.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}") catch {};
+	_ = w.interface.flush() catch {};
+}
+
+/// Transport stub that yields one caller-chosen outcome, so reachability can be
+/// swept across the full set of things a server (or a dead socket) can do.
+const OutcomeTransport = struct {
+	status: ?u16,
+	fail_with: ?anyerror,
+	url_buf: [256]u8 = undefined,
+	url_len: usize = 0,
+
+	/// The URL the transport was last asked for. Copied rather than aliased:
+	/// `serverReachable` frees its URL before the test inspects this.
+	fn lastUrl(self: *const OutcomeTransport) []const u8 {
+		return self.url_buf[0..self.url_len];
+	}
+
+	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
+		const self: *OutcomeTransport = @ptrCast(@alignCast(ctx));
+		self.url_len = @min(req.url.len, self.url_buf.len);
+		@memcpy(self.url_buf[0..self.url_len], req.url[0..self.url_len]);
+		if (self.fail_with) |e| return e;
+		return .{ .status = self.status.?, .body = try allocator.dupe(u8, "{}") };
+	}
+
+	fn transport(self: *OutcomeTransport) Transport {
+		return .{ .ctx = self, .send = send };
+	}
+};
+
+test "serverReachable classifies the whole set of transport outcomes" {
+	const allocator = std.testing.allocator;
+
+	// Any HTTP reply proves a server is listening and speaking HTTP, even when
+	// it refuses the request. 401 in particular is the normal oMLX answer to an
+	// unauthenticated probe and must not be read as "server down".
+	const answering = [_]u16{ 200, 301, 400, 401, 403, 404, 500, 503 };
+	for (answering) |status| {
+		var ctx = OutcomeTransport{ .status = status, .fail_with = null };
+		try std.testing.expect(serverReachable(allocator, ctx.transport(), "http://localhost:11434", .ollama));
+	}
+
+	// Transport-level failures are the only genuine "unreachable" signals.
+	const dead = [_]anyerror{
+		error.ConnectionRefused,
+		error.UnknownHostName,
+		error.NetworkUnreachable,
+		error.ConnectionTimedOut,
+		error.ConnectionResetByPeer,
+		error.OutOfMemory,
+	};
+	for (dead) |e| {
+		var ctx = OutcomeTransport{ .status = null, .fail_with = e };
+		try std.testing.expect(!serverReachable(allocator, ctx.transport(), "http://localhost:11434", .ollama));
+	}
+}
+
+test "serverReachable probes a dialect-appropriate endpoint" {
+	const allocator = std.testing.allocator;
+
+	var ollama = OutcomeTransport{ .status = 200, .fail_with = null };
+	_ = serverReachable(allocator, ollama.transport(), "http://localhost:11434", .ollama);
+	try std.testing.expectEqualStrings("http://localhost:11434/api/tags", ollama.lastUrl());
+
+	// OpenAI-compatible servers have no /api/tags; probing it would 404 (still
+	// "reachable") but a dialect-correct endpoint keeps the signal meaningful.
+	var openai = OutcomeTransport{ .status = 200, .fail_with = null };
+	_ = serverReachable(allocator, openai.transport(), "http://localhost:8080/", .openai);
+	try std.testing.expectEqualStrings("http://localhost:8080/v1/models", openai.lastUrl());
+}
+
+test "serverReachable agrees with the embedding path for an IPv4-only server addressed as localhost" {
+	// Regression: `codescan init` embedded successfully against
+	// http://localhost:11434 and `codescan watcher start` immediately called the
+	// same URL unreachable. Ollama binds 127.0.0.1 only, while `localhost`
+	// resolves to ::1 first on dual-stack hosts. std.http.Client races every
+	// resolved address (Happy Eyeballs) and wins on IPv4; a probe that connects
+	// to one resolved address tries ::1, is refused, and reports a live server
+	// as down. Reachability must therefore be decided by the same Transport that
+	// performs embedding, never by a parallel hand-rolled socket connect.
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+
+	const bind_addr = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+	var server = try bind_addr.listen(io, .{ .reuse_address = true });
+	defer server.socket.close(io);
+
+	const bound_port = switch (server.socket.address) {
+		.ip4 => |a| a.port,
+		.ip6 => |a| a.port,
+	};
+	try std.testing.expect(bound_port != 0);
+
+	const thread = try std.Thread.spawn(.{}, respondOnce, .{&server});
+
+	const base_url = try std.fmt.allocPrint(allocator, "http://localhost:{d}", .{bound_port});
+	defer allocator.free(base_url);
+
+	var http = StdHttpTransport.init(allocator);
+	defer http.deinit();
+
+	const reachable = serverReachable(allocator, http.transport(), base_url, .ollama);
+
+	// If the probe never connected, the responder is still parked in accept();
+	// unblock it so this test fails loudly instead of hanging forever.
+	if (!reachable) {
+		const wake = try std.Io.net.IpAddress.parse("127.0.0.1", bound_port);
+		var s = wake.connect(io, .{ .mode = .stream }) catch {
+			thread.join();
+			try std.testing.expect(reachable);
+			return;
+		};
+		s.close(io);
+	}
+	thread.join();
+
+	try std.testing.expect(reachable);
+}
 
 test "buildEmbedUrl handles trailing slash" {
 	const allocator = std.testing.allocator;

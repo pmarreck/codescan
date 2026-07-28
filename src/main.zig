@@ -1399,20 +1399,43 @@ fn performFullIndex(
 	return stats;
 }
 
-fn canConnectToEmbeddingServer(allocator: std.mem.Allocator, url: []const u8) bool {
-	const uri = std.Uri.parse(url) catch return false;
-	const host_component = uri.host orelse return false;
-	const host = switch (host_component) {
-		.raw, .percent_encoded => |s| s,
-	};
-	const scheme_is_tls = std.mem.eql(u8, uri.scheme, "https");
-	const port: u16 = if (uri.port) |p| p else if (scheme_is_tls) @as(u16, 443) else @as(u16, 80);
-	const io_net = io_singleton.getOrInit();
-	const addr = std.Io.net.IpAddress.resolve(io_net, host, port) catch return false;
-	var stream = addr.connect(io_net, .{ .mode = .stream }) catch return false;
-	stream.close(io_net);
-	_ = allocator;
-	return true;
+/// Everything the watcher daemon needs from the embedding server, decided in the
+/// parent where the failure can still be reported. The daemon's stdio is closed,
+/// so anything missed here dies invisibly after we have already claimed success.
+///
+/// Both checks run over the shared embedding transport, so these verdicts cannot
+/// disagree with the code that actually embeds — a hand-rolled socket probe here
+/// once rejected servers `index` reached fine.
+fn checkEmbeddingPreflight(
+	allocator: std.mem.Allocator,
+	settings: Settings,
+	dialect_name: []const u8,
+) ?preflight.PreflightFailure {
+	var http = embedding_http.StdHttpTransport.init(allocator);
+	defer http.deinit();
+	const transport = http.transport();
+
+	if (!embedding_http.serverReachable(allocator, transport, settings.embedding_url, settings.embedding_dialect)) {
+		return preflight.PreflightFailure{ .server_unreachable = .{
+			.url = settings.embedding_url,
+			.dialect = dialect_name,
+		} };
+	}
+
+	if (preflight.checkModelAvailable(
+		allocator,
+		transport,
+		settings.embedding_url,
+		settings.embedding_model,
+		settings.embedding_dialect,
+	)) |failure| return failure;
+
+	return preflight.checkIndexConsistency(
+		allocator,
+		settings.db_path,
+		settings.embedding_model,
+		settings.embedding_dim,
+	) catch null;
 }
 
 /// Spawns `codescan watch` in the background if not already running.
@@ -1444,20 +1467,7 @@ fn maybeStartWatcher(
 		.openai => "openai (oMLX / OpenAI-compatible)",
 	};
 
-	var failure_opt: ?preflight.PreflightFailure = null;
-	if (!canConnectToEmbeddingServer(allocator, settings.embedding_url)) {
-		failure_opt = preflight.PreflightFailure{ .server_unreachable = .{
-			.url = settings.embedding_url,
-			.dialect = dialect_name,
-		} };
-	} else {
-		failure_opt = preflight.checkIndexConsistency(
-			allocator,
-			settings.db_path,
-			settings.embedding_model,
-			settings.embedding_dim,
-		) catch null;
-	}
+	var failure_opt = checkEmbeddingPreflight(allocator, settings, dialect_name);
 
 	if (failure_opt) |*failure| {
 		defer failure.deinit(allocator);
@@ -1484,6 +1494,11 @@ fn maybeStartWatcher(
 				"failed to start watcher: schema mismatch (stored model='{s}' dim={d}, current model='{s}' dim={d}); run 'codescan index'",
 				.{ m.stored_model orelse "unknown", m.stored_dim orelse 0, m.current_model, m.current_dim },
 			) catch "failed to start watcher: schema mismatch; run 'codescan index'",
+			.model_unavailable => |s| std.fmt.bufPrint(
+				&msg_buf,
+				"failed to start watcher: embedding model '{s}' not installed on {s}",
+				.{ s.model, s.url },
+			) catch "failed to start watcher: embedding model not installed",
 		};
 		syslog.logWithRoot(syslog.LOG_ERR, settings.root_path, msg);
 		return;
