@@ -1,6 +1,7 @@
 const std = @import("std");
 const io_singleton = @import("io_singleton.zig");
 const indexer = @import("indexer.zig");
+const index_service = @import("index_service.zig");
 const plugin = @import("plugin.zig");
 const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
@@ -12,7 +13,9 @@ const syslog = @import("syslog.zig");
 pub const WatchOptions = struct {
 	interval_ms: u64 = 2000,
 	codescan_dir: ?[]const u8 = null,
-	index_options: indexer.Options,
+	/// Resolved by the caller through the application service, so a watcher
+	/// pass applies exactly the filters and ignores an explicit update would.
+	index_request: index_service.Request,
 };
 
 /// Runs the incremental indexer using OS-native file watching (FSEvents/fanotify),
@@ -73,14 +76,13 @@ pub fn watchLoop(
 
 	// Initial full incremental pass
 	progress.write(progress_path, "indexing...");
-	const initial = try indexer.indexIncremental(
+	const initial = (try index_service.execute(
 		allocator,
 		db,
-		root_path,
 		registry,
 		embedder,
-		options.index_options,
-	);
+		options.index_request,
+	)).incremental;
 	progress.write(progress_path, "idle");
 	printChangeSummary(stderr, initial);
 
@@ -101,13 +103,12 @@ pub fn watchLoop(
 
 		// Run incremental index on change or periodic timeout
 		progress.write(progress_path, "indexing...");
-		const stats = indexer.indexIncremental(
+		const stats = (index_service.execute(
 			allocator,
 			db,
-			root_path,
 			registry,
 			embedder,
-			options.index_options,
+			options.index_request,
 		) catch |err| {
 			consecutive_errors += 1;
 			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
@@ -122,7 +123,7 @@ pub fn watchLoop(
 				return;
 			}
 			continue;
-		};
+		}).incremental;
 		consecutive_errors = 0;
 		progress.write(progress_path, "idle");
 
@@ -164,14 +165,13 @@ fn watchLoopPolling(
 
 	// Initial full incremental pass
 	progress.write(progress_path_poll, "indexing...");
-	const initial = try indexer.indexIncremental(
+	const initial = (try index_service.execute(
 		allocator,
 		db,
-		root_path,
 		registry,
 		embedder,
-		options.index_options,
-	);
+		options.index_request,
+	)).incremental;
 	progress.write(progress_path_poll, "idle");
 	printChangeSummary(stderr, initial);
 
@@ -191,13 +191,12 @@ fn watchLoopPolling(
 		}
 
 		progress.write(progress_path_poll, "indexing...");
-		const stats = indexer.indexIncremental(
+		const stats = (index_service.execute(
 			allocator,
 			db,
-			root_path,
 			registry,
 			embedder,
-			options.index_options,
+			options.index_request,
 		) catch |err| {
 			consecutive_errors += 1;
 			progress.write(progress_path_poll, "error");
@@ -213,7 +212,7 @@ fn watchLoopPolling(
 				return;
 			}
 			continue;
-		};
+		}).incremental;
 		consecutive_errors = 0;
 		progress.write(progress_path_poll, "idle");
 

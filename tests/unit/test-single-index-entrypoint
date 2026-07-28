@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Indexing policy — filter construction, ignore rules, batching, and the
+# embedding dimension actually in use — lives in src/index_service.zig. An
+# adapter that calls indexer.indexAll or indexer.indexIncremental directly
+# silently opts out of all of it, and the drift is invisible until someone
+# compares two adapters by hand.
+#
+# That is exactly what happened: the CLI probed the live provider for its real
+# vector width and honored index_ext/index_type, while the HTTP and MCP adapters
+# called indexer.indexAll directly with the configured dimension and empty
+# filter lists. Both surfaces reported success while doing something different.
+#
+# This is a structural control, not a style rule: it is checked mechanically,
+# it does not depend on the author remembering the convention, and it fails
+# loudly the moment a fourth adapter is added that repeats the mistake.
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# Files permitted to name the low-level entry points:
+#   src/indexer.zig       — defines them, and tests them directly
+#   src/index_service.zig — the single application-level caller
+allowed='^src/(indexer|index_service)\.zig$'
+
+failures=0
+
+check_entrypoint() {
+	local symbol="$1"
+	local offenders
+	offenders=$(
+		git -C "$root" grep -n --fixed-strings "indexer.$symbol(" -- 'src/*.zig' \
+			| cut -d: -f1 \
+			| sort -u \
+			| grep -Ev "$allowed" || true
+	)
+	if [ -n "$offenders" ]; then
+		printf 'indexer.%s is called outside the application service:\n' "$symbol" >&2
+		printf '  %s\n' $offenders >&2
+		failures=$((failures + 1))
+	fi
+}
+
+check_entrypoint indexAll
+check_entrypoint indexIncremental
+
+if [ "$failures" -ne 0 ]; then
+	printf '\nRoute these through index_service.execute so every adapter shares\n' >&2
+	printf 'filter, ignore, batching, and embedding-dimension semantics.\n' >&2
+	exit 1
+fi
+
+printf 'PASS indexing has a single application entrypoint\n'
+exit 0

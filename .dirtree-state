@@ -147,5 +147,6 @@ annotate=[
 	tests/unit/test-no-committed-secrets = Security regression rejecting tracked literal oMLX embedding API keys without echoing secrets
 	tests/unit/test-portable-mcp-config = Set classifier rejecting machine-specific or unresolvable commands in the committed .mcp.json
 	tests/unit/test-reindex-all-projects = RAM-backed set-classifier tests for the sequential multi-project reindex runner
+	tests/unit/test-single-index-entrypoint = Structural control: indexer.indexAll/indexIncremental may only be called from index_service, so adapters cannot drift on filters or dimension
 	tests/unit/test-unit = Zig unit-test runner wrapping the aggregated zig build test-unit step inside the nix dev shell
 ]

@@ -9,6 +9,8 @@ const plugin = @import("plugin.zig");
 const embedding_http = @import("embedding_http.zig");
 const config = @import("config.zig");
 const filters = @import("filters.zig");
+const index_service = @import("index_service.zig");
+const update_service = @import("update_service.zig");
 const weights = @import("weights.zig");
 const search_service = @import("search_service.zig");
 const main = @import("main.zig");
@@ -316,32 +318,31 @@ fn handleRequest(
 		var parsed = try parseIndexRequest(allocator, body);
 		defer parsed.deinit(allocator);
 
-		var index_filters = try filters.buildIndexFilters(
-			allocator,
-			parsed.ext orelse settings.index_ext,
-			parsed.type orelse settings.index_type,
-		);
-		defer index_filters.deinit(allocator);
-
-		const stats = try indexer.indexAll(
+		// Routed through the application service so the HTTP surface cannot
+		// drift from the CLI on filter, ignore, batching, or dimension
+		// semantics — they differed here until 2026-07-28.
+		const effective_dim = update_service.probeEmbeddingDim(allocator, embedder) orelse settings.embedding_dim;
+		const index_result = try index_service.execute(
 			allocator,
 			db,
-			settings.root_path,
 			plugin.defaultRegistry(),
 			embedder,
 			.{
-				.embedding_dim = settings.embedding_dim,
-				.embedding_model = settings.embedding_model,				.batch_size = settings.batch_size,
+				.mode = .full,
+				.root_path = settings.root_path,
+				.embedding_dim = effective_dim,
+				.embedding_model = settings.embedding_model,
+				.batch_size = settings.batch_size,
 				.max_file_size = settings.max_file_size,
-				.allowed_exts = index_filters.exts.items,
-				.allowed_kinds = index_filters.kinds.items,
-				.ignore = .{
-					.global = settings.ignore_global,
-					.per_language = settings.ignore_lang,
-					.include_node_modules = parsed.include_node_modules orelse settings.include_node_modules,
-				},
+				.index_ext = parsed.ext orelse settings.index_ext,
+				.index_type = parsed.type orelse settings.index_type,
+				.ignore_global = settings.ignore_global,
+				.ignore_per_language = settings.ignore_lang,
+				.include_node_modules = parsed.include_node_modules orelse settings.include_node_modules,
+				.always_include = settings.always_include,
 			},
 		);
+		const stats = index_result.full;
 
 		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();

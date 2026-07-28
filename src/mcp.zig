@@ -7,6 +7,8 @@ const config = @import("config.zig");
 const storage = @import("storage.zig");
 const embedding = @import("embedding.zig");
 const indexer = @import("indexer.zig");
+const index_service = @import("index_service.zig");
+const update_service = @import("update_service.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
 const embedding_http = @import("embedding_http.zig");
@@ -39,6 +41,10 @@ pub const Settings = struct {
 	embedding_dim: usize = 1024,
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
+	// Index-time filters, plumbed so the MCP surface honors the same
+	// index_ext/index_type configuration the CLI does.
+	index_ext: ?[]const u8 = null,
+	index_type: ?[]const u8 = null,
 	search_top_n: usize = 20,
 	search_mode: search.SearchMode = .hybrid,
 	search_fusion: search.FusionMode = .weighted_sum,
@@ -497,19 +503,23 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				.dialect = mcp_settings.embedding_dialect,
 				.auth_header = mcp_settings.embedding_auth_header,
 			};
-			_ = indexer.indexAll(allocator, db, mcp_settings.root_path, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
-				.embedding_dim = mcp_settings.embedding_dim,
+			// Through the application service, so an auto-index started by the
+			// MCP surface applies the same filters, ignores, and probed vector
+			// width the CLI would.
+			const auto_dim = update_service.probeEmbeddingDim(allocator, embedder_for_index.embedder()) orelse mcp_settings.embedding_dim;
+			_ = index_service.execute(allocator, db, plugin.defaultRegistry(), embedder_for_index.embedder(), .{
+				.mode = .full,
+				.root_path = mcp_settings.root_path,
+				.embedding_dim = auto_dim,
 				.embedding_model = mcp_settings.embedding_model,
 				.batch_size = mcp_settings.batch_size,
 				.max_file_size = mcp_settings.max_file_size,
-				.allowed_exts = &[_][]const u8{},
-				.allowed_kinds = &[_]kind.Kind{},
-				.ignore = .{
-					.global = mcp_settings.ignore_global,
-					.per_language = mcp_settings.ignore_lang,
-					.include_node_modules = mcp_settings.include_node_modules,
-				},
-				.show_progress = false,
+				.index_ext = mcp_settings.index_ext,
+				.index_type = mcp_settings.index_type,
+				.ignore_global = mcp_settings.ignore_global,
+				.ignore_per_language = mcp_settings.ignore_lang,
+				.include_node_modules = mcp_settings.include_node_modules,
+				.always_include = mcp_settings.always_include,
 			}) catch |err|
 				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ mcp_settings.root_path, err });
 		} else {
@@ -616,22 +626,26 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.auth_header = settings.embedding_auth_header,
 		};
 
-		const stats = indexer.indexAll(allocator, db, settings.root_path, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
-			.embedding_dim = settings.embedding_dim,
+		// The MCP index tool previously used the configured dimension and empty
+		// filter lists, so it could build a vec table at a width the provider
+		// does not emit and silently ignore index_ext/index_type.
+		const index_dim = update_service.probeEmbeddingDim(allocator, embedder_adapter.embedder()) orelse settings.embedding_dim;
+		const index_result = index_service.execute(allocator, db, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
+			.mode = .full,
+			.root_path = settings.root_path,
+			.embedding_dim = index_dim,
 			.embedding_model = settings.embedding_model,
 			.batch_size = settings.batch_size,
 			.max_file_size = settings.max_file_size,
-			.allowed_exts = &[_][]const u8{},
-			.allowed_kinds = &[_]kind.Kind{},
-			.ignore = .{
-				.global = settings.ignore_global,
-				.per_language = settings.ignore_lang,
-				.include_node_modules = settings.include_node_modules,
-				.always_include = settings.always_include,
-			},
-			.show_progress = false,
+			.index_ext = settings.index_ext,
+			.index_type = settings.index_type,
+			.ignore_global = settings.ignore_global,
+			.ignore_per_language = settings.ignore_lang,
+			.include_node_modules = settings.include_node_modules,
+			.always_include = settings.always_include,
 		}) catch |err|
-			return toolError("MCP index: indexAll failed for root '{s}': {}\n", .{ settings.root_path, err });
+			return toolError("MCP index: indexing failed for root '{s}': {}\n", .{ settings.root_path, err });
+		const stats = index_result.full;
 
 		try out.writer.print("{{\"status\":\"ok\",\"files\":{d},\"symbols\":{d}}}", .{ stats.files, stats.symbols });
 	} else if (std.mem.eql(u8, name, "config")) {

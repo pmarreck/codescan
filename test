@@ -25,6 +25,7 @@ run_case() {
 run_case "dev-shell cache preservation" ./tests/unit/test-dev-shell-cache
 run_case "no committed oMLX keys" ./tests/unit/test-no-committed-secrets
 run_case "portable .mcp.json" ./tests/unit/test-portable-mcp-config
+run_case "single index entrypoint" ./tests/unit/test-single-index-entrypoint
 run_case "sequential project reindex runner" ./tests/unit/test-reindex-all-projects
 run_case "unit" nix develop -c ./tests/unit/test-unit
 run_case "cli" nix develop -c ./tests/cli/test-cli
