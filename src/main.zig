@@ -2749,13 +2749,11 @@ const SearchFreshnessContext = struct {
 		);
 	}
 
-	fn usableIndex(context: *anyopaque) bool {
+		fn usableIndex(context: *anyopaque) bool {
 		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
-		std.Io.Dir.accessAbsolute(io_singleton.getOrInit(), self.settings.db_path, .{}) catch return false;
-		const db = storage.openFileWithVec(self.allocator, self.settings.db_path) catch return false;
-		defer storage.close(db);
-		return storage.isIndexPopulated(db);
+		return update_service.indexUsable(self.allocator, self.settings.db_path);
 	}
+
 };
 
 pub const SearchFreshness = struct {

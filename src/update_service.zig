@@ -582,3 +582,61 @@ test "openDb recreates populated indexes when embedding model or dimension chang
 	const fresh_rowid = try storage.insertSymbol(prepared.db, fresh_symbol);
 	try storage.insertEmbedding(prepared.db, allocator, fresh_rowid, &.{ 0.1, 0.2, 0.3, 0.4 });
 }
+
+/// Whether an index exists on disk and holds anything worth searching.
+/// Freshness policy uses this to decide whether a failed reconciliation may
+/// fall back to a stale index rather than failing the search outright, so
+/// "missing" and "present but empty" must both answer false.
+pub fn indexUsable(allocator: std.mem.Allocator, db_path: []const u8) bool {
+	std.Io.Dir.accessAbsolute(io_singleton.getOrInit(), db_path, .{}) catch return false;
+	const db = storage.openFileWithVec(allocator, db_path) catch return false;
+	defer storage.close(db);
+	return storage.isIndexPopulated(db);
+}
+
+test "indexUsable classifies missing, empty, and populated indexes" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+
+	// Missing: no file at all.
+	const missing = try std.fs.path.join(allocator, &.{ root, "absent.sqlite3" });
+	defer allocator.free(missing);
+	try std.testing.expect(!indexUsable(allocator, missing));
+
+	// Present but empty — the case that must not be mistaken for usable, since
+	// falling back to it would silently return no results.
+	const empty = try std.fs.path.join(allocator, &.{ root, "empty.sqlite3" });
+	defer allocator.free(empty);
+	{
+		const db = try storage.openFileWithVec(allocator, empty);
+		defer storage.close(db);
+		var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+		defer schema_result.deinit(allocator);
+	}
+	try std.testing.expect(!indexUsable(allocator, empty));
+
+	// Populated.
+	const populated = try std.fs.path.join(allocator, &.{ root, "populated.sqlite3" });
+	defer allocator.free(populated);
+	{
+		const db = try storage.openFileWithVec(allocator, populated);
+		defer storage.close(db);
+		var schema_result = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+		defer schema_result.deinit(allocator);
+		var symbol = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "src/main.zig"),
+			.name = try allocator.dupe(u8, "main"),
+			.signature = try allocator.dupe(u8, "pub fn main() void"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer symbol.deinit(allocator);
+		_ = try storage.insertSymbol(db, symbol);
+	}
+	try std.testing.expect(indexUsable(allocator, populated));
+}
