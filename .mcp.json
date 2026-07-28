@@ -2,7 +2,7 @@
   "mcpServers": {
     "codescan": {
       "type": "stdio",
-      "command": "/Users/pmarreck/Documents-CloudManaged/codescan/zig-out/bin/codescan",
+      "command": "codescan",
       "args": [
         "mcp-serve"
       ],

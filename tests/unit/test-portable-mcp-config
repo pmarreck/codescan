@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# The committed .mcp.json is shared by every machine that clones this repo, so
+# any absolute path in it is wrong everywhere except the machine that wrote it.
+# This regression exists because the file shipped a macOS path
+# (/Users/pmarreck/Documents-CloudManaged/...) that made the MCP server fail with
+# ENOENT on Linux, silently removing codescan's own tools from the agent.
+#
+# Classifier over the whole set of servers, not a spot check: every command and
+# every argument of every configured server is examined.
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+config="$root/.mcp.json"
+
+failures=0
+
+fail() {
+	printf '%s\n' "$1" >&2
+	failures=$((failures + 1))
+}
+
+if [ ! -f "$config" ]; then
+	fail ".mcp.json is missing at $config"
+	exit 1
+fi
+
+if ! command -v jq >/dev/null 2>&1; then
+	printf 'SKIP portable .mcp.json (jq unavailable)\n'
+	exit 0
+fi
+
+if ! jq -e . "$config" >/dev/null 2>&1; then
+	fail ".mcp.json is not valid JSON"
+	exit 1
+fi
+
+server_count=$(jq -r '.mcpServers | length' "$config")
+if [ "$server_count" -eq 0 ]; then
+	fail ".mcp.json declares no MCP servers"
+fi
+
+# Every server must name a PATH-resolved command, never an absolute one.
+while IFS=$'\t' read -r name command; do
+	[ -n "$name" ] || continue
+	case "$command" in
+		/* | ~*)
+			fail "server '$name' uses an absolute command path: $command"
+			;;
+		[A-Za-z]:[\\/]*)
+			fail "server '$name' uses an absolute Windows command path: $command"
+			;;
+		'')
+			fail "server '$name' has an empty command"
+			;;
+	esac
+done < <(jq -r '.mcpServers | to_entries[] | "\(.key)\t\(.value.command // "")"' "$config")
+
+# No machine-specific home directory may appear anywhere in the file, including
+# args and env values.
+while IFS= read -r offending; do
+	[ -n "$offending" ] || continue
+	fail "machine-specific home directory in .mcp.json: $offending"
+done < <(grep -oE '(/Users/|/home/|C:\\Users\\)[^"]*' "$config")
+
+# The command must actually be resolvable, or the server cannot start at all.
+while IFS= read -r command; do
+	[ -n "$command" ] || continue
+	case "$command" in
+		/* | [A-Za-z]:[\\/]*) continue ;;
+	esac
+	if ! command -v "$command" >/dev/null 2>&1; then
+		fail "command '$command' is not resolvable on PATH"
+	fi
+done < <(jq -r '.mcpServers[].command // empty' "$config")
+
+if [ "$failures" -ne 0 ]; then
+	printf '%d .mcp.json portability problem(s)\n' "$failures" >&2
+	exit 1
+fi
+
+printf 'PASS .mcp.json is portable across machines\n'
+exit 0
