@@ -2,13 +2,15 @@
 
 ## 2026-07-27 — one way to reach the embedding server
 
-- [ ] Unite every embedding-server connection on the shared `Transport` so reachability cannot contradict the code that embeds.
+- [x] Unite every embedding-server connection on the shared `Transport` so reachability cannot contradict the code that embeds. (completed 2026-07-28 08:51 EDT)
   Curiosity poke: `codescan init` embedded happily against `http://localhost:11434` and `codescan watcher start` called the same URL unreachable 18 seconds later. Ollama binds `127.0.0.1` only; `localhost` resolves to `::1` first on dual-stack hosts. `std.http.Client` goes through `HostName.connect`, which races every resolved address (Happy Eyeballs) and wins on IPv4 — but `canConnectToEmbeddingServer` hand-rolled `IpAddress.resolve` + `connect`, got the single `::1` answer, and was refused in ~1ms (the reported 13ms total). The bug was a *direct consequence of there being a second implementation*; the fix is deletion, not repair.
   Second defect in the same code: a bare TCP connect only proves "something is listening", so it would green-light any unrelated process holding the port. Reachability now means "a server answered HTTP", with 401/404 counted as reachable.
   Watch: `serverReachable` has no timeout, so a firewall that DROPs (rather than refuses) can stall watcher start. The old probe had the same exposure, so this is not a regression — but it is now the single place to fix it.
-- [ ] Stop `watcher start` reporting success when the daemon is about to die, by checking model availability in preflight.
+- [x] Stop `watcher start` reporting success when the daemon is about to die, by checking model availability in preflight. (completed 2026-07-28 08:51 EDT)
   Curiosity poke: found only after the reachability fix above unmasked it — the preflight had been rejecting every start, so the daemon never got far enough to die. `spawn()` returning success only proves fork/exec worked; the daemon then runs with stdin/stdout/stderr closed, so its real error ("model not found") went nowhere and `watcher status` just said "No watcher running". `preflight` existed precisely to catch this class and already had `ensureModelAvailable` available to it — it simply never called it.
   Deliberate non-failure: `error.ModelLoading` (present but cold) must NOT block startup; the daemon loads on first embed. Blocking there would trade a silent failure for a false alarm. OpenAI-dialect servers expose no inventory, so absence of proof is never treated as proof of absence.
+- [ ] `watcher start` immediately followed by `watcher status` reports "No watcher running" for a moment, because the daemon writes its pidfile after the parent returns. Benign race, but it reads exactly like the silent-death failure above and cost real diagnosis time.
+  Curiosity poke: have the parent wait for the pidfile to appear (bounded, no sleep-polling in tests) before printing success, so "Started" means "started". Careful not to reintroduce a hang if the daemon never writes one.
 - [ ] Operational: never hand-start `ollama serve`. One instance only — Peter's fork as the systemd service on 11434, store `/var/lib/ollama/models`. `~/.ollama` is a dead 2023 store; seeing zephyr/mistral/everythinglm in `/api/tags` means you are on the wrong instance. Stock ollama returns HTTP 501 for Jina (no last-token pooling), which is why the fork exists. A second instance fails silently — it serves the wrong store and locks the real service out of the port.
 
 ## 2026-07-24 — lexical match quality
