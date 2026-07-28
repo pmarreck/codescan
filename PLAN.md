@@ -25,7 +25,12 @@
   Defect fixed in the same change: adding the tier made `config show` misleading, since printing only the project file would let a user conclude their global settings were not applied. It now labels both tiers and states the precedence.
   Follow-up worth considering: `config show` prints the two files rather than the effective merged values, so a key set in both is shown twice with no indication which won.
 - [ ] Implement the self-retiring watcher (idle-timeout after last successful index commit, never mid-index).
-  Decisions from Peter (2026-07-28 12:40 EDT): global config tier applies to **all** settings, not just watcher keys; "never retire" IS required — accept `0` or the literal `never`; a never-indexed project times from **watcher start**, so it still eventually retires.
+  Decisions from Peter (2026-07-28 12:40 EDT): global config tier applies to **all** settings (done); "never retire" IS required — accept `0` or the literal `never`; a never-indexed project times from **watcher start**, so it still eventually retires.
+  - [x] Pure policy: `shouldRetire` over an injected clock reading, plus `parseIdleLimit`. (completed 2026-07-28 13:52 EDT)
+    Curiosity poke: no sleeps and no real clock anywhere — the caller supplies `now_ns`, so boundary cases are exact. Cases pinned: an in-progress index dominates every other input; a null limit never retires (the systemd restart-loop case); idleness resets on each commit; a never-indexed project times from watcher start; and a marker **ahead of now** (clock skew, restored backup, file from another machine) keeps the watcher alive rather than letting an unsigned subtraction wrap and retire instantly. `parseIdleLimit` rejects typos rather than defaulting — a bad value must not silently become either "never" or "immediately". Mutations confirmed both parser branches bite.
+  - [ ] Integrate into `watchLoop`/`watchLoopPolling` with the in-progress flag set around the actual index call, not the human-facing progress file.
+  - [ ] Teardown: clear pidfile, close db, flush progress, and log the reason via syslog — a silent disappearance would be the same false-success shape as 2e82fe17.
+  - [ ] Live acceptance: short idle limit, touch a file, confirm it indexes then retires and cleans its pidfile.
   Curiosity poke: introducing a global tier changes effective config for every existing project the moment the file exists, so precedence needs its own set-level tests (project overrides global, CLI overrides both, absent file is not an empty file).
 
 ## 2026-07-27 — one way to reach the embedding server

@@ -139,6 +139,10 @@ pub const Config = struct {
 	lsp_overrides: std.ArrayListUnmanaged(LspOverride) = .empty,
 	http_host: ?[]const u8 = null,
 	http_port: ?u16 = null,
+	/// How long a watcher may sit idle before retiring, as written in the
+	/// config (e.g. "1d", "12h", "never"). Kept verbatim so an invalid value
+	/// fails loudly where it is used rather than silently defaulting.
+	watcher_idle_timeout: ?[]const u8 = null,
 
 	pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
 		if (self.root_path) |value| allocator.free(value);
@@ -159,6 +163,7 @@ pub const Config = struct {
 		if (self.search_symbol_kind) |value| allocator.free(value);
 		if (self.primary_lang) |value| allocator.free(value);
 		if (self.http_host) |value| allocator.free(value);
+		if (self.watcher_idle_timeout) |value| allocator.free(value);
 		for (self.ignore_global.items) |pattern| allocator.free(pattern);
 		self.ignore_global.deinit(allocator);
 		for (self.always_include.items) |pattern| allocator.free(pattern);
@@ -450,6 +455,11 @@ pub fn parseText(allocator: std.mem.Allocator, text: []const u8) !Config {
 			} else {
 				return error.InvalidValue;
 			}
+			continue;
+		}
+
+		if (std.mem.eql(u8, key, "watcher_idle_timeout")) {
+			config.watcher_idle_timeout = try allocator.dupe(u8, value);
 			continue;
 		}
 

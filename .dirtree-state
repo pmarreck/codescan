@@ -123,6 +123,7 @@ annotate=[
 	src/plugins/zig/mod.zig = Zig plugin metadata (.zig) and native-AST extractor registration
 	src/preflight.zig = Watcher-start preflight: server reachability, embedding-model availability, and index schema consistency, all decided in the parent because the daemon's stdio is closed
 	src/progress.zig = Watcher progress file kept as a symlink into TMPDIR for low disk wear; codescan status reads it to report watcher activity
+	src/retirement.zig = Pure watcher-retirement policy: shouldRetire over an injected clock reading, plus idle-limit duration parsing where 0/never disable retirement
 	src/scan.zig = Git-aware source discovery, ignore classification, and extensionless shebang detection with one Git candidate-list subprocess
 	src/search.zig = Vector, lexical, regex, and hybrid retrieval with bound FTS queries, confidence, and field-level provenance.
 	src/search_service.zig = Transport-neutral search application service owning filter, weight, option, execution, and result lifetimes.
