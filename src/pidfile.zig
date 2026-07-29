@@ -261,3 +261,89 @@ test "tryAcquirePid succeeds when stale PID in file and overwrites with current 
 	try std.testing.expectEqual(@as(PidType, std.c.getpid()), stored);
 	try std.testing.expect(stored != 99999999);
 }
+
+/// Outcome of waiting for a freshly spawned daemon to claim its pidfile.
+pub const StartupWait = enum {
+	claimed,
+	gave_up,
+};
+
+/// Waits for a spawned daemon to claim its pidfile, so that reporting "Started"
+/// means it actually started.
+///
+/// `spawn` succeeding proves only that fork/exec worked; the daemon runs with
+/// its stdio closed, so a parent that prints success immediately produces a
+/// window where `watch status` truthfully answers "No watcher running". That
+/// window reads exactly like a daemon that died silently, and has cost real
+/// diagnosis time.
+///
+/// Bounded on purpose: a daemon that never claims must make the parent give up
+/// rather than hang, so the fix for a confusing message cannot become a wedge.
+/// The probe and tick are injected so the policy is tested without elapsed time.
+pub fn awaitClaim(
+	ctx: *anyopaque,
+	probe: *const fn (ctx: *anyopaque) bool,
+	tick: *const fn (ctx: *anyopaque) void,
+	max_ticks: usize,
+) StartupWait {
+	// Probe before the first wait: a daemon quick enough to have claimed
+	// already must not be made to wait for it.
+	if (probe(ctx)) return .claimed;
+	var ticks: usize = 0;
+	while (ticks < max_ticks) : (ticks += 1) {
+		tick(ctx);
+		if (probe(ctx)) return .claimed;
+	}
+	return .gave_up;
+}
+
+const FakeDaemon = struct {
+	claims_after: usize,
+	probes: usize = 0,
+	ticks: usize = 0,
+
+	fn probeFn(ctx: *anyopaque) bool {
+		const self: *FakeDaemon = @ptrCast(@alignCast(ctx));
+		defer self.probes += 1;
+		return self.probes >= self.claims_after;
+	}
+
+	fn tickFn(ctx: *anyopaque) void {
+		const self: *FakeDaemon = @ptrCast(@alignCast(ctx));
+		self.ticks += 1;
+	}
+};
+
+test "awaitClaim returns immediately when the pidfile is already there" {
+	var daemon = FakeDaemon{ .claims_after = 0 };
+	try std.testing.expectEqual(StartupWait.claimed, awaitClaim(&daemon, FakeDaemon.probeFn, FakeDaemon.tickFn, 50));
+	// No waiting at all for a daemon that beat us to it.
+	try std.testing.expectEqual(@as(usize, 0), daemon.ticks);
+}
+
+test "awaitClaim waits only as long as the daemon needs" {
+	var daemon = FakeDaemon{ .claims_after = 3 };
+	try std.testing.expectEqual(StartupWait.claimed, awaitClaim(&daemon, FakeDaemon.probeFn, FakeDaemon.tickFn, 50));
+	try std.testing.expectEqual(@as(usize, 3), daemon.ticks);
+}
+
+test "awaitClaim gives up rather than hanging when the daemon never claims" {
+	// The case that matters: a daemon that dies before claiming must not wedge
+	// the parent. Waiting forever would trade a confusing message for a hang.
+	var daemon = FakeDaemon{ .claims_after = std.math.maxInt(usize) };
+	try std.testing.expectEqual(StartupWait.gave_up, awaitClaim(&daemon, FakeDaemon.probeFn, FakeDaemon.tickFn, 7));
+	try std.testing.expectEqual(@as(usize, 7), daemon.ticks);
+}
+
+test "awaitClaim with no budget still probes once" {
+	// A zero budget must mean "check and report", never "skip the check" or
+	// "loop forever".
+	var ready = FakeDaemon{ .claims_after = 0 };
+	try std.testing.expectEqual(StartupWait.claimed, awaitClaim(&ready, FakeDaemon.probeFn, FakeDaemon.tickFn, 0));
+	try std.testing.expectEqual(@as(usize, 0), ready.ticks);
+
+	var never = FakeDaemon{ .claims_after = std.math.maxInt(usize) };
+	try std.testing.expectEqual(StartupWait.gave_up, awaitClaim(&never, FakeDaemon.probeFn, FakeDaemon.tickFn, 0));
+	try std.testing.expectEqual(@as(usize, 0), never.ticks);
+	try std.testing.expectEqual(@as(usize, 1), never.probes);
+}

@@ -1535,7 +1535,30 @@ fn maybeStartWatcher(
 		return;
 	};
 
-	// Don't wait — let it run in background (init adopts on parent exit)
+	// `spawn` succeeding only proves fork/exec worked. The daemon claims its
+	// pidfile a moment later, and until it does, `codescan watch status`
+	// truthfully answers "No watcher running" — which reads exactly like a
+	// daemon that died silently. Wait for the claim so "Started" means started.
+	const claim_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
+	var claim_ctx = PidClaimProbe{ .allocator = allocator, .codescan_dir = claim_dir };
+	const claimed = pidfile.awaitClaim(
+		&claim_ctx,
+		PidClaimProbe.probe,
+		PidClaimProbe.tick,
+		watcher_claim_attempts,
+	);
+
+	if (claimed == .gave_up) {
+		// Bounded on purpose: never trade a confusing message for a hang. Say
+		// what is actually known rather than claiming success.
+		_ = stderr.print(
+			"warning: watcher was started but has not claimed its pidfile yet; check 'codescan watch status'\n",
+			.{},
+		) catch {};
+		_ = stderr.flush() catch {};
+		return;
+	}
+
 	if (comptime builtin.os.tag == .windows) {
 		_ = stderr.print("note: Started background watcher\n", .{}) catch {};
 	} else {
@@ -1543,6 +1566,29 @@ fn maybeStartWatcher(
 	}
 	_ = stderr.flush() catch {};
 }
+
+/// How long `watch start` waits for the daemon to claim its pidfile, as
+/// attempts of `watcher_claim_poll_ns` each. Generous enough for a cold start,
+/// bounded so a daemon that dies cannot wedge the parent.
+const watcher_claim_attempts: usize = 100;
+const watcher_claim_poll_ns: u64 = 20 * std.time.ns_per_ms;
+
+/// Adapts the pidfile check and a short sleep to `pidfile.awaitClaim`, keeping
+/// the wait policy itself free of I/O.
+const PidClaimProbe = struct {
+	allocator: std.mem.Allocator,
+	codescan_dir: []const u8,
+
+	fn probe(ctx: *anyopaque) bool {
+		const self: *PidClaimProbe = @ptrCast(@alignCast(ctx));
+		return pidfile.isWatcherRunning(self.allocator, self.codescan_dir);
+	}
+
+	fn tick(ctx: *anyopaque) void {
+		_ = ctx;
+		io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(watcher_claim_poll_ns), .awake) catch {};
+	}
+};
 
 fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
 	return findRepoRootUntil(allocator, start_path, null);
