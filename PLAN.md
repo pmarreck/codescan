@@ -1,6 +1,15 @@
 # Plan
 
-## 2026-07-28 — hexagonal split: update lifecycle
+## 2026-07-30 — embedding-server probe bounds
+
+- [~] Bound `serverReachable` at 10s, warning to stderr above 3s. **Warning done; the 10s bound is BLOCKED and must not be believed done.**
+  Peter asked for 10s with a >3s warning (2026-07-30 15:16 EDT). The warning ships and works. The timeout does not, and the reason is worth recording:
+  **`std.http.Client.ConnectTcpOptions.timeout` is declared but never read in Zig 0.16** — `timeout` appears exactly once in `Client.zig`, at its own declaration on line 1442. Passing it compiles, reads as correct, and silently does nothing. An implementation was written against it and empirically disproved: a probe to the non-routable `10.255.255.1` still hung past 40s. That is the "reports success while doing nothing" class this project treats as first-order, so the inert machinery was removed rather than shipped; `HttpRequest.connect_timeout_ns` remains as documented-advisory so a transport that CAN enforce it has somewhere to read from.
+  Second finding from the same experiment: `preflight` never calls `serverReachable` at all — it calls `ensureModelAvailable`. So `watch start`'s hang is on the model check, and a bound on the reachability probe alone would not have fixed the reported symptom even if it worked. Any real fix must bound every embedding-server call, which argues for enforcing it once in the transport rather than per call site.
+  Options for a real bound, none free: socket-level `SO_RCVTIMEO`/`SO_SNDTIMEO` (no access through `std.http.Client`), a watchdog thread (teardown hazards with a detached thread using a transport the caller may deinit), or waiting for upstream Zig to implement the field.
+- [ ] Make `server.zig` `parseAddress` configurable and IPv6-compatible; no hardcoded `localhost -> 127.0.0.1`. (Peter, 2026-07-30 15:16 EDT — NOT STARTED.)
+  Curiosity poke: this is a **bind**, not a connect, so it decides who can reach `codescan serve`. Binding `::` is not equivalent to `127.0.0.1`; dual-stack behavior differs by platform and by `net.ipv6.bindv6only`. Needs tests as a classifier over the host set (`localhost`, `127.0.0.1`, `::1`, `::`, `0.0.0.0`, a hostname, an invalid string), not one example.
+
 
 - [ ] Move update database preparation/rebuild policy and freshness reconciliation out of the CLI adapter.
   Curiosity poke: the two-phase open (inspect first, probe the live embedder's real dimension, only then recreate) is the invariant that must survive — never destroy an index before proving the replacement embedder produces the expected vector width.

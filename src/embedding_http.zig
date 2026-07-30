@@ -6,6 +6,14 @@ pub const HttpRequest = struct {
 	url: []const u8,
 	headers: []const std.http.Header,
 	body: []const u8,
+	/// Requested bound on the TCP connect phase, in nanoseconds.
+	///
+	/// ADVISORY ONLY today: `StdHttpTransport` cannot enforce it, because
+	/// `std.http.Client`'s `timeout` option is declared but never read in Zig
+	/// 0.16. The field exists so callers can state the intent and so a
+	/// transport that CAN enforce it (a future client, or a test double) has
+	/// somewhere to read it from. Do not treat a call as bounded.
+	connect_timeout_ns: ?u64 = null,
 };
 
 pub const HttpResponse = struct {
@@ -99,6 +107,16 @@ pub fn embed(
 /// transport-level failure (refused, DNS failure, timeout) means unreachable.
 /// A bare TCP connect could not make that distinction and would green-light any
 /// unrelated process holding the port.
+/// How long a reachability probe may spend connecting before it is treated as
+/// unreachable. A firewall that DROPs rather than refuses would otherwise stall
+/// `watcher start` indefinitely.
+pub const reachability_connect_timeout_ns: u64 = 10 * std.time.ns_per_s;
+
+/// A probe slower than this is reported even when it eventually succeeds. A
+/// reachable-but-sluggish embedding server makes every later operation slow, so
+/// it is worth saying so once rather than leaving it to be rediscovered.
+pub const reachability_slow_warn_ns: u64 = 3 * std.time.ns_per_s;
+
 pub fn serverReachable(
 	allocator: std.mem.Allocator,
 	transport: Transport,
@@ -113,15 +131,43 @@ pub fn serverReachable(
 		.{ .name = "Connection", .value = "close" },
 	};
 
+	const io = io_singleton.getOrInit();
+	const started = std.Io.Clock.awake.now(io);
+
 	const response = transport.send(transport.ctx, allocator, .{
 		.method = "GET",
 		.url = url,
 		.headers = &headers,
 		.body = "",
-	}) catch return false;
+		.connect_timeout_ns = reachability_connect_timeout_ns,
+	}) catch {
+		reportSlowProbe(base_url, started);
+		return false;
+	};
 	allocator.free(response.body);
+	reportSlowProbe(base_url, started);
 	return true;
 }
+
+/// Warns when a reachability probe took long enough to be worth mentioning.
+/// Silent in test builds, where stderr is asserted on.
+fn reportSlowProbe(base_url: []const u8, started: std.Io.Timestamp) void {
+	if (@import("builtin").is_test) return;
+	const io = io_singleton.getOrInit();
+	const elapsed = started.durationTo(std.Io.Clock.awake.now(io)).nanoseconds;
+	if (elapsed <= 0) return;
+	const elapsed_ns: u64 = @intCast(elapsed);
+	if (elapsed_ns < reachability_slow_warn_ns) return;
+
+	var buf: [256]u8 = undefined;
+	var writer = io_singleton.stderrWriter(&buf);
+	_ = writer.interface.print(
+		"warning: embedding server at {s} took {d:.1}s to answer a reachability probe\n",
+		.{ base_url, @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(std.time.ns_per_s)) },
+	) catch {};
+	_ = writer.interface.flush() catch {};
+}
+
 
 /// Cheapest GET that proves a server is answering, per dialect.
 fn buildReachabilityUrl(allocator: std.mem.Allocator, base_url: []const u8, dialect: ApiDialect) ![]u8 {
@@ -373,11 +419,19 @@ pub const StdHttpTransport = struct {
 		return .{ .ctx = self, .send = send };
 	}
 
-	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
+			fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
 		const self: *StdHttpTransport = @ptrCast(@alignCast(ctx));
 		const uri = try std.Uri.parse(req.url);
 
 		const method = try parseMethod(req.method);
+		// NOTE: `req.connect_timeout_ns` is deliberately NOT honored here yet.
+		// `std.http.Client.ConnectTcpOptions` declares a `timeout` field, but in
+		// Zig 0.16 that field is never read — it appears exactly once in
+		// Client.zig, at its own declaration. Passing it compiles, looks
+		// correct, and does nothing. Bounding the connect for real needs either
+		// socket-level SO_RCVTIMEO/SO_SNDTIMEO (no access through this API) or a
+		// watchdog. Until then the field is documented as advisory rather than
+		// silently pretending to enforce a bound.
 		var request = try self.client.request(method, uri, .{
 			.extra_headers = req.headers,
 		});
@@ -398,6 +452,8 @@ pub const StdHttpTransport = struct {
 
 		return .{ .status = @intFromEnum(response.head.status), .body = body };
 	}
+
+
 };
 
 fn parseMethod(value: []const u8) !std.http.Method {
