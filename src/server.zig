@@ -133,7 +133,8 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		var sb: [4096]u8 = undefined;
 		var sw = io_singleton.stderrWriter(&sb);
 		const stderr = &sw.interface;
-		_ = stderr.print("codescan serve: listening on http://{s}:{d}/\n", .{ settings.http_host, settings.http_port }) catch {};
+		var host_buf: [64]u8 = undefined;
+		_ = stderr.print("codescan serve: listening on http://{s}:{d}/\n", .{ urlHost(&host_buf, settings.http_host), settings.http_port }) catch {};
 		_ = stderr.flush() catch {};
 	}
 
@@ -862,12 +863,78 @@ fn stripQuery(target: []const u8) []const u8 {
 }
 
 
+/// Resolves a bind host to an address, with no special-cased hostnames.
+///
+/// This is a BIND, not a connect: the family chosen here decides which clients
+/// can reach the server. `localhost` used to be rewritten to `127.0.0.1`, which
+/// silently made `codescan serve --host localhost` unreachable to IPv6 clients
+/// no matter how the machine's own resolver was configured. Hostnames now go
+/// through resolution like any other, so the answer follows the host's own
+/// configuration instead of a hardcoded guess.
+///
+/// IPv6 literals are accepted with or without the bracket form (`::1` and
+/// `[::1]`), because a host copied out of a URL carries the brackets.
 fn parseAddress(host: []const u8, port: u16) !std.Io.net.IpAddress {
-	if (std.mem.eql(u8, host, "localhost")) {
-		return std.Io.net.IpAddress.parse("127.0.0.1", port);
-	}
-	return std.Io.net.IpAddress.parse(host, port);
+	const trimmed = stripAddressBrackets(host);
+	if (trimmed.len == 0) return error.InvalidBindHost;
+
+	// A literal means exactly itself; never resolve it.
+	if (std.Io.net.IpAddress.parse(trimmed, port)) |literal| {
+		return literal;
+	} else |_| {}
+
+	return std.Io.net.IpAddress.resolve(io_singleton.getOrInit(), trimmed, port);
 }
+
+/// Removes one surrounding `[...]` pair from an IPv6 literal. Anything else is
+/// returned untouched, so a hostname is never mangled.
+fn stripAddressBrackets(host: []const u8) []const u8 {
+	if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
+		return host[1 .. host.len - 1];
+	}
+	return host;
+}
+
+test "stripAddressBrackets only unwraps a full bracket pair" {
+	try std.testing.expectEqualStrings("::1", stripAddressBrackets("[::1]"));
+	try std.testing.expectEqualStrings("::", stripAddressBrackets("[::]"));
+	// Untouched: hostnames, bare literals, and malformed brackets must not be
+	// silently rewritten into something that binds somewhere else.
+	try std.testing.expectEqualStrings("::1", stripAddressBrackets("::1"));
+	try std.testing.expectEqualStrings("localhost", stripAddressBrackets("localhost"));
+	try std.testing.expectEqualStrings("127.0.0.1", stripAddressBrackets("127.0.0.1"));
+	try std.testing.expectEqualStrings("[::1", stripAddressBrackets("[::1"));
+	try std.testing.expectEqualStrings("::1]", stripAddressBrackets("::1]"));
+	// An empty pair unwraps to empty, which parseAddress then rejects rather
+	// than treating as a wildcard bind.
+	try std.testing.expectEqualStrings("", stripAddressBrackets("[]"));
+}
+
+test "parseAddress binds literals to exactly the family requested" {
+	// Classified over the whole host set rather than one example, because the
+	// bug being fixed was one host silently binding to a different family.
+	const v4 = try parseAddress("127.0.0.1", 8080);
+	try std.testing.expect(v4 == .ip4);
+
+	const any4 = try parseAddress("0.0.0.0", 8080);
+	try std.testing.expect(any4 == .ip4);
+
+	// The case the hardcode broke: an IPv6 loopback must stay IPv6.
+	const v6 = try parseAddress("::1", 8080);
+	try std.testing.expect(v6 == .ip6);
+
+	const v6_bracketed = try parseAddress("[::1]", 8080);
+	try std.testing.expect(v6_bracketed == .ip6);
+
+	const any6 = try parseAddress("::", 8080);
+	try std.testing.expect(any6 == .ip6);
+
+	// An empty host is rejected rather than defaulted to a wildcard bind, which
+	// would expose the server far more widely than asked.
+	try std.testing.expectError(error.InvalidBindHost, parseAddress("", 8080));
+	try std.testing.expectError(error.InvalidBindHost, parseAddress("[]", 8080));
+}
+
 
 pub const SearchRequest = struct {
 	query: []const u8,
@@ -1673,4 +1740,25 @@ test "handleRequest responds to POST /find-symbol with include_body" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "200 OK") != null);
 	// With include_body, the response should contain the function body
 	try std.testing.expect(std.mem.indexOf(u8, response, "return 42") != null);
+}
+
+/// Renders a bind host for use inside a URL. IPv6 literals must be bracketed or
+/// the result is not a valid URL — `http://::1:8080/` is unparseable, and a
+/// user cannot copy it into a browser or curl.
+fn urlHost(buf: []u8, host: []const u8) []const u8 {
+	if (std.mem.indexOfScalar(u8, host, ':') == null) return host;
+	if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') return host;
+	return std.fmt.bufPrint(buf, "[{s}]", .{host}) catch host;
+}
+
+test "urlHost brackets IPv6 literals and leaves everything else alone" {
+	var buf: [64]u8 = undefined;
+	try std.testing.expectEqualStrings("[::1]", urlHost(&buf, "::1"));
+	try std.testing.expectEqualStrings("[::]", urlHost(&buf, "::"));
+	// Already bracketed input must not be double-wrapped.
+	try std.testing.expectEqualStrings("[::1]", urlHost(&buf, "[::1]"));
+	// No colon means no brackets: IPv4 and hostnames are untouched.
+	try std.testing.expectEqualStrings("127.0.0.1", urlHost(&buf, "127.0.0.1"));
+	try std.testing.expectEqualStrings("localhost", urlHost(&buf, "localhost"));
+	try std.testing.expectEqualStrings("0.0.0.0", urlHost(&buf, "0.0.0.0"));
 }
