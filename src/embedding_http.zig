@@ -6,14 +6,12 @@ pub const HttpRequest = struct {
 	url: []const u8,
 	headers: []const std.http.Header,
 	body: []const u8,
-	/// Requested bound on the TCP connect phase, in nanoseconds.
+	/// Requested bound on the complete HTTP exchange, in nanoseconds.
 	///
-	/// ADVISORY ONLY today: `StdHttpTransport` cannot enforce it, because
-	/// `std.http.Client`'s `timeout` option is declared but never read in Zig
-	/// 0.16. The field exists so callers can state the intent and so a
-	/// transport that CAN enforce it (a future client, or a test double) has
-	/// somewhere to read it from. Do not treat a call as bounded.
-	connect_timeout_ns: ?u64 = null,
+	/// A deadline is opt-in because an embedding request may legitimately wait
+	/// for a cold model to load. Preflight GETs use this to avoid wedging a CLI
+	/// command on a TCP-DROP target; embedding POSTs deliberately leave it null.
+	deadline_ns: ?u64 = null,
 };
 
 pub const HttpResponse = struct {
@@ -107,10 +105,10 @@ pub fn embed(
 /// transport-level failure (refused, DNS failure, timeout) means unreachable.
 /// A bare TCP connect could not make that distinction and would green-light any
 /// unrelated process holding the port.
-/// How long a reachability probe may spend connecting before it is treated as
-/// unreachable. A firewall that DROPs rather than refuses would otherwise stall
-/// `watcher start` indefinitely.
-pub const reachability_connect_timeout_ns: u64 = 10 * std.time.ns_per_s;
+/// How long a reachability probe may wait for a complete HTTP reply before it
+/// is treated as unreachable. A firewall that DROPs rather than refuses would
+/// otherwise stall `watcher start` indefinitely.
+pub const reachability_deadline_ns: u64 = 10 * std.time.ns_per_s;
 
 /// A probe slower than this is reported even when it eventually succeeds. A
 /// reachable-but-sluggish embedding server makes every later operation slow, so
@@ -139,7 +137,7 @@ pub fn serverReachable(
 		.url = url,
 		.headers = &headers,
 		.body = "",
-		.connect_timeout_ns = reachability_connect_timeout_ns,
+		.deadline_ns = reachability_deadline_ns,
 	}) catch {
 		reportSlowProbe(base_url, started);
 		return false;
@@ -251,6 +249,7 @@ pub fn ensureModelAvailable(
 			.url = url,
 			.headers = &headers,
 			.body = "",
+			.deadline_ns = reachability_deadline_ns,
 		});
 		defer allocator.free(response.body);
 
@@ -286,6 +285,7 @@ pub fn isModelLoaded(
 		.url = url,
 		.headers = &headers,
 		.body = "",
+		.deadline_ns = reachability_deadline_ns,
 	});
 	defer allocator.free(response.body);
 
@@ -419,19 +419,19 @@ pub const StdHttpTransport = struct {
 		return .{ .ctx = self, .send = send };
 	}
 
-			fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
+	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
+		const self: *StdHttpTransport = @ptrCast(@alignCast(ctx));
+		if (req.deadline_ns) |deadline_ns| {
+			return sendWithDeadline(allocator, .{ .ctx = self, .send = sendOnce }, req, deadline_ns);
+		}
+		return sendOnce(ctx, allocator, req);
+	}
+
+	fn sendOnce(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
 		const self: *StdHttpTransport = @ptrCast(@alignCast(ctx));
 		const uri = try std.Uri.parse(req.url);
 
 		const method = try parseMethod(req.method);
-		// NOTE: `req.connect_timeout_ns` is deliberately NOT honored here yet.
-		// `std.http.Client.ConnectTcpOptions` declares a `timeout` field, but in
-		// Zig 0.16 that field is never read — it appears exactly once in
-		// Client.zig, at its own declaration. Passing it compiles, looks
-		// correct, and does nothing. Bounding the connect for real needs either
-		// socket-level SO_RCVTIMEO/SO_SNDTIMEO (no access through this API) or a
-		// watchdog. Until then the field is documented as advisory rather than
-		// silently pretending to enforce a bound.
 		var request = try self.client.request(method, uri, .{
 			.extra_headers = req.headers,
 		});
@@ -466,6 +466,62 @@ fn readAllAlloc(allocator: std.mem.Allocator, reader: *std.Io.Reader, max_size: 
 	return reader.allocRemaining(allocator, .limited(max_size));
 }
 
+const DeadlineTask = struct {
+	allocator: std.mem.Allocator,
+	transport: Transport,
+	request: HttpRequest,
+	completed: *std.atomic.Value(u32),
+
+	fn run(task: DeadlineTask) !HttpResponse {
+		const io = io_singleton.getOrInit();
+		defer {
+			task.completed.store(1, .release);
+			io.futexWake(u32, &task.completed.raw, 1);
+		}
+		return task.transport.send(task.transport.ctx, task.allocator, task.request);
+	}
+};
+
+/// Sends one request in a cancellable I/O task and waits until its deadline.
+/// `Future.cancel` joins the task before this returns, so a deadline cannot
+/// leave a worker retaining the caller's request slices or transport state.
+fn sendWithDeadline(
+	allocator: std.mem.Allocator,
+	transport: Transport,
+	request: HttpRequest,
+	deadline_ns: u64,
+) !HttpResponse {
+	const io = io_singleton.getOrInit();
+	var completed: std.atomic.Value(u32) = .init(0);
+	var future = try std.Io.concurrent(io, DeadlineTask.run, .{.{
+		.allocator = allocator,
+		.transport = transport,
+		.request = request,
+		.completed = &completed,
+	}});
+	const deadline = std.Io.Clock.Timestamp.now(io, .awake).addDuration(.{
+		.raw = .fromNanoseconds(deadline_ns),
+		.clock = .awake,
+	});
+
+	while (completed.load(.acquire) == 0) {
+		io.futexWaitTimeout(u32, &completed.raw, 0, .{ .deadline = deadline }) catch |err| switch (err) {
+			error.Canceled => {
+				const result = future.cancel(io);
+				if (result) |response| allocator.free(response.body) else |_| {}
+				return error.Canceled;
+			},
+		};
+		if (completed.load(.acquire) != 0) break;
+		if (std.Io.Clock.Timestamp.now(io, .awake).compare(.gte, deadline)) {
+			const result = future.cancel(io);
+			if (result) |response| allocator.free(response.body) else |_| {}
+			return error.Timeout;
+		}
+	}
+	return future.await(io);
+}
+
 /// A mock transport for unit tests — returns canned responses based on URL path.
 pub const MockTransportCtx = struct {	tags_body: []const u8,
 	ps_body: []const u8,
@@ -476,6 +532,8 @@ pub const MockTransportCtx = struct {	tags_body: []const u8,
 	tags_count: usize = 0,
 	ps_count: usize = 0,
 	embed_count: usize = 0,
+	tags_deadline_ns: ?u64 = null,
+	ps_deadline_ns: ?u64 = null,
 
 	pub fn send(ctx_ptr: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {		const self: *MockTransportCtx = @ptrCast(@alignCast(ctx_ptr));
 		for (req.headers) |h| {
@@ -487,10 +545,12 @@ pub const MockTransportCtx = struct {	tags_body: []const u8,
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/tags")) {
 			self.tags_count += 1;
+			self.tags_deadline_ns = req.deadline_ns;
 			return .{ .status = 200, .body = try allocator.dupe(u8, self.tags_body) };
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/ps")) {
 			self.ps_count += 1;
+			self.ps_deadline_ns = req.deadline_ns;
 			return .{ .status = 200, .body = try allocator.dupe(u8, self.ps_body) };
 		}
 		if (std.mem.endsWith(u8, req.url, "/api/embed")) {
@@ -541,6 +601,63 @@ fn respondOnce(server: *std.Io.net.Server) void {
 	var w = stream.writer(io, &out);
 	_ = w.interface.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}") catch {};
 	_ = w.interface.flush() catch {};
+}
+
+/// A transport that parks at a real cancellation point. The deadline test uses
+/// it to prove the caller joins the request task, rather than merely abandoning
+/// a worker that might still reference the transport after return.
+const CancelAwareTransport = struct {
+	entered: std.atomic.Value(u32) = .init(0),
+	observed_cancel: std.atomic.Value(u32) = .init(0),
+	finished: std.atomic.Value(u32) = .init(0),
+	gate: std.atomic.Value(u32) = .init(0),
+
+	fn send(ctx: *anyopaque, _: std.mem.Allocator, _: HttpRequest) !HttpResponse {
+		const self: *CancelAwareTransport = @ptrCast(@alignCast(ctx));
+		self.entered.store(1, .release);
+		defer self.finished.store(1, .release);
+
+		const io = io_singleton.getOrInit();
+		while (self.gate.load(.acquire) == 0) {
+			io.futexWait(u32, &self.gate.raw, 0) catch |err| switch (err) {
+				error.Canceled => {
+					self.observed_cancel.store(1, .release);
+					return error.Canceled;
+				},
+			};
+			io.checkCancel() catch |err| switch (err) {
+				error.Canceled => {
+					self.observed_cancel.store(1, .release);
+					return error.Canceled;
+				},
+			};
+		}
+		return error.UnexpectedSuccess;
+	}
+
+	fn transport(self: *CancelAwareTransport) Transport {
+		return .{ .ctx = self, .send = send };
+	}
+};
+
+test "sendWithDeadline cancels and joins a blocked transport" {
+	const allocator = std.testing.allocator;
+	var blocked = CancelAwareTransport{};
+
+	try std.testing.expectError(error.Timeout, sendWithDeadline(
+		allocator,
+		blocked.transport(),
+		.{
+			.method = "GET",
+			.url = "http://example.invalid/",
+			.headers = &.{},
+			.body = "",
+		},
+		0,
+	));
+	try std.testing.expectEqual(@as(u32, 1), blocked.entered.load(.acquire));
+	try std.testing.expectEqual(@as(u32, 1), blocked.observed_cancel.load(.acquire));
+	try std.testing.expectEqual(@as(u32, 1), blocked.finished.load(.acquire));
 }
 
 /// Transport stub that yields one caller-chosen outcome, so reachability can be
@@ -924,6 +1041,25 @@ test "ensureModelAvailable returns ModelLoading when in tags but not ps" {
 		error.ModelLoading,
 		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama),
 	);
+}
+
+test "ensureModelAvailable bounds both model-inventory requests" {
+	const allocator = std.testing.allocator;
+	var mock = MockTransportCtx{
+		.tags_body =
+			\\{"models":[{"name":"bge-large"}]}
+		,
+		.ps_body =
+			\\{"models":[]}
+		,
+	};
+
+	try std.testing.expectError(
+		error.ModelLoading,
+		ensureModelAvailable(allocator, mock.transport(), "http://localhost:11434", "bge-large", .ollama),
+	);
+	try std.testing.expectEqual(reachability_deadline_ns, mock.tags_deadline_ns.?);
+	try std.testing.expectEqual(reachability_deadline_ns, mock.ps_deadline_ns.?);
 }
 
 test "buildPsUrl handles trailing slash" {
