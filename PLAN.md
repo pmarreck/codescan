@@ -2,6 +2,13 @@
 
 ## 2026-07-30 — embedding-server probe bounds
 
+- [x] Restore the full five-target CLI build contract before shipping the bounded-preflight work. (completed 2026-08-04 13:50 EDT)
+  The Windows red build first exposed POSIX-only `localtime_r` and `tm_zone` in `writeLocalTime`. The new conversion uses Windows `localtime_s` or POSIX `localtime_r`, and standard `strftime("%Z")` supplies a zone only when it is valid UTF-8. A deterministic rendering test covers both present and absent zones.
+  The repaired first error exposed a second one: `std.posix.pid_t` is opaque on Windows, even though the Unix-only watcher-list command returns an unsupported-platform error before using it. `WatcherInfo` and `LsofEntry` now use the project numeric PID type, so all callers compile. The two focused tests, `./test`, and `./build` pass. ReleaseFast builds pass for macOS ARM64, Linux ARM64/x86_64, and Windows ARM64/x86_64.
+  Curiosity poke: cross-compilation proves source and linkage only. Run the normal Windows status command on a Windows host when one is available to observe local timezone rendering and the unsupported watcher-management message.
+- [ ] Retire the abandoned Jujutsu cheatsheet in its own commit, then push the repaired fleet and watch the exact head commit in Mechatron Prime. (Peter, 2026-08-04)
+  `jj_cheatsheet.md` is an accepted deletion, not an accidental dirty change. Keep it separate from the portability repair; submit both commits in one push so it does not create a second CI run.
+
 - [~] Bound startup preflight metadata calls at 10s, warning to stderr above 3s. **Implemented and proved on Linux; native macOS/Windows acceptance remains.**
   Peter asked for a 10s limit with a >3s warning (2026-07-30 15:16 EDT). `std.http.Client.ConnectTcpOptions.timeout` remains inert in Zig 0.16, and directly forwarding it reaches a `TODO implement netConnectIp* with timeout` panic. That patch remains disqualified.
   `HttpRequest.deadline_ns` now means a whole-request deadline. `StdHttpTransport` runs an opted-in request in `std.Io.concurrent`, waits on an owned completion word, and calls `Future.cancel` on expiry. `cancel` joins the task before return, so it cannot retain the request slices, allocator, or transport after its caller deinitializes them. Reachability plus `/api/tags` and `/api/ps` carry the 10s deadline. Embedding POSTs deliberately do not: a cold model may take minutes to load.

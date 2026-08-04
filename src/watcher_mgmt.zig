@@ -4,7 +4,10 @@ const builtin = @import("builtin");
 const pidfile = @import("pidfile.zig");
 
 pub const WatcherInfo = struct {
-	pid: std.posix.pid_t,
+	// `std.posix.pid_t` is an opaque pointer on Windows even though this
+	// Unix-only listing cannot run there. Keep the value numeric so callers
+	// compile while reporting the unsupported operation.
+	pid: pidfile.PidType,
 	cpu_pct: []const u8, // kept as string for display
 	elapsed: []const u8,
 	root: []const u8,
@@ -38,7 +41,7 @@ pub fn parseWatcherLine(allocator: std.mem.Allocator, line: []const u8) !?Watche
 	const cpu_str = it.next() orelse return null;
 	const elapsed_str = it.next() orelse return null;
 
-	const pid = std.fmt.parseInt(std.posix.pid_t, pid_str, 10) catch return null;
+	const pid = std.fmt.parseInt(pidfile.PidType, pid_str, 10) catch return null;
 
 	// Extract root path: everything after "watch --root "
 	const root_start = root_marker.? + "watch --root ".len;
@@ -74,7 +77,7 @@ pub fn parseLsofCwds(allocator: std.mem.Allocator, output: []const u8) !std.Arra
 		var it = std.mem.tokenizeAny(u8, line, " \t");
 		_ = it.next() orelse continue; // COMMAND
 		const pid_str = it.next() orelse continue; // PID
-		const pid = std.fmt.parseInt(std.posix.pid_t, pid_str, 10) catch continue;
+		const pid = std.fmt.parseInt(pidfile.PidType, pid_str, 10) catch continue;
 		// Skip to the last field (NAME = cwd path)
 		// Fields: USER, FD, TYPE, DEVICE, SIZE/OFF, NODE, NAME
 		_ = it.next() orelse continue; // USER
@@ -95,7 +98,7 @@ pub fn parseLsofCwds(allocator: std.mem.Allocator, output: []const u8) !std.Arra
 }
 
 pub const LsofEntry = struct {
-	pid: std.posix.pid_t,
+	pid: pidfile.PidType,
 	path: []const u8,
 
 	pub fn deinit(self: LsofEntry, allocator: std.mem.Allocator) void {
@@ -104,7 +107,7 @@ pub const LsofEntry = struct {
 };
 
 /// Check if a watcher's root has any active sessions (non-watcher processes with cwd under root).
-pub fn hasActiveSessions(watcher_pid: std.posix.pid_t, watcher_root: []const u8, cwds: []const LsofEntry) bool {
+pub fn hasActiveSessions(watcher_pid: pidfile.PidType, watcher_root: []const u8, cwds: []const LsofEntry) bool {
 	for (cwds) |entry| {
 		if (entry.pid == watcher_pid) continue; // skip the watcher itself
 		// Check if the cwd is the root or under the root
@@ -165,9 +168,12 @@ pub fn markActiveWatchers(watchers: []WatcherInfo, cwds: []const LsofEntry) void
 
 /// Stop a watcher by sending SIGTERM. Returns `error.WatcherNotSupportedOnPlatform`
 /// on Windows and `error.SignalFailed` if `kill(2)` returned nonzero.
-pub fn stopWatcher(pid: std.posix.pid_t) StopError!void {
-	if (comptime builtin.os.tag == .windows) return error.WatcherNotSupportedOnPlatform;
-	if (std.c.kill(pid, std.posix.SIG.TERM) != 0) return error.SignalFailed;
+pub fn stopWatcher(pid: pidfile.PidType) StopError!void {
+	if (comptime builtin.os.tag == .windows) {
+		return error.WatcherNotSupportedOnPlatform;
+	} else {
+		if (std.c.kill(pid, std.posix.SIG.TERM) != 0) return error.SignalFailed;
+	}
 }
 
 fn runCommand(allocator: std.mem.Allocator, argv: []const []const u8) ![]u8 {

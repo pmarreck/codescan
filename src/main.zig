@@ -6809,30 +6809,93 @@ fn writeLocalTime(writer: *std.Io.Writer, epoch_secs: i64) !void {
 	const c_time = @cImport(@cInclude("time.h"));
 	const time_val: c_time.time_t = @intCast(epoch_secs);
 	var local: c_time.struct_tm = undefined;
-	const result = c_time.localtime_r(&time_val, &local);
-	if (result == null) return;
+	const converted = if (comptime builtin.os.tag == .windows)
+		c_time.localtime_s(&local, &time_val) == 0
+	else
+		c_time.localtime_r(&time_val, &local) != null;
+	if (!converted) return;
 
-	// Format: " (2026-02-17 12:55:00 EST)"
+	var timezone_buf: [64]u8 = undefined;
+	const timezone_len = c_time.strftime(timezone_buf[0..].ptr, timezone_buf.len, "%Z", &local);
+	const timezone: ?[]const u8 = if (timezone_len > 0 and std.unicode.utf8ValidateSlice(timezone_buf[0..timezone_len]))
+		timezone_buf[0..timezone_len]
+	else
+		null;
+
+	try writeLocalTimeParts(writer, .{
+		.year = @as(i32, local.tm_year) + 1900,
+		.month = @as(u32, @intCast(local.tm_mon)) + 1,
+		.day = @intCast(local.tm_mday),
+		.hour = @intCast(local.tm_hour),
+		.minute = @intCast(local.tm_min),
+		.second = @intCast(local.tm_sec),
+		.timezone = timezone,
+	});
+}
+
+const LocalTimeParts = struct {
+	year: i32,
+	month: u32,
+	day: u32,
+	hour: u32,
+	minute: u32,
+	second: u32,
+	timezone: ?[]const u8 = null,
+};
+
+/// Renders a local timestamp after platform code has converted the epoch.
+/// Keeping rendering independent from C time structs makes its text contract deterministic.
+fn writeLocalTimeParts(writer: *std.Io.Writer, parts: LocalTimeParts) !void {
 	try writer.writeAll(" (");
 	try writer.print("{d}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}", .{
-		@as(i32, local.tm_year) + 1900,
-		@as(u32, @intCast(local.tm_mon)) + 1,
-		@as(u32, @intCast(local.tm_mday)),
-		@as(u32, @intCast(local.tm_hour)),
-		@as(u32, @intCast(local.tm_min)),
-		@as(u32, @intCast(local.tm_sec)),
+		parts.year,
+		parts.month,
+		parts.day,
+		parts.hour,
+		parts.minute,
+		parts.second,
 	});
 
-	// Append timezone abbreviation if available
-	const tz: ?[*:0]const u8 = local.tm_zone;
-	if (tz) |tz_ptr| {
-		const tz_str = std.mem.span(tz_ptr);
-		if (tz_str.len > 0) {
-			try writer.print(" {s}", .{tz_str});
+	if (parts.timezone) |timezone| {
+		if (timezone.len > 0) {
+			try writer.print(" {s}", .{timezone});
 		}
 	}
 
 	try writer.writeAll(")");
+}
+
+test "writeLocalTimeParts renders date fields with an optional timezone" {
+	const allocator = std.testing.allocator;
+
+	var with_zone: std.Io.Writer.Allocating = .init(allocator);
+	defer with_zone.deinit();
+	try writeLocalTimeParts(&with_zone.writer, .{
+		.year = 2026,
+		.month = 2,
+		.day = 17,
+		.hour = 12,
+		.minute = 55,
+		.second = 0,
+		.timezone = "EST",
+	});
+	const zoned = try with_zone.toOwnedSlice();
+	defer allocator.free(zoned);
+	try std.testing.expectEqualStrings(" (2026-02-17 12:55:00 EST)", zoned);
+
+	var without_zone: std.Io.Writer.Allocating = .init(allocator);
+	defer without_zone.deinit();
+	try writeLocalTimeParts(&without_zone.writer, .{
+		.year = 2026,
+		.month = 2,
+		.day = 17,
+		.hour = 12,
+		.minute = 55,
+		.second = 0,
+	});
+	const unzoned = try without_zone.toOwnedSlice();
+	defer allocator.free(unzoned);
+	try std.testing.expectEqualStrings(" (2026-02-17 12:55:00)", unzoned);
 }
 
 fn writeHumanSize(writer: *std.Io.Writer, size: u64) !void {
