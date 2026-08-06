@@ -10,6 +10,7 @@ BIN="$ROOT/zig-out/bin/codescan"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 MODEL_NAME="${OLLAMA_MODEL:-jina-code-embeddings:1.5b}"
 MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1536}"
+OLLAMA_PROBE_TIMEOUT_SECONDS="${CODESCAN_OLLAMA_PROBE_TIMEOUT_SECONDS:-2}"
 
 out=
 err=
@@ -83,13 +84,21 @@ reset_repo() {
 }
 
 require_ollama() {
-	capture curl -fsS "$OLLAMA_URL/api/tags"
+	capture curl --connect-timeout 1 --max-time "$OLLAMA_PROBE_TIMEOUT_SECONDS" -fsS "$OLLAMA_URL/api/tags"
 	if [ "$rc" -ne 0 ]; then
-		printf '%s' "$err" >&2
-		fail "Ollama not reachable at $OLLAMA_URL (ensure server is running)"
+		if [ "${CODESCAN_REQUIRE_LIVE_OLLAMA:-0}" = 1 ]; then
+			printf '%s' "$err" >&2
+			fail "Ollama not reachable at $OLLAMA_URL (ensure server is running)"
+		fi
+		printf '%s\n' "integration skipped: Ollama not reachable at $OLLAMA_URL"
+		return 1
 	fi
 	if ! printf '%s' "$out" | rg -q "\"name\":\"$MODEL_NAME"; then
-		fail "Ollama model '$MODEL_NAME' not found (run: ollama pull $MODEL_NAME)"
+		if [ "${CODESCAN_REQUIRE_LIVE_OLLAMA:-0}" = 1 ]; then
+			fail "Ollama model '$MODEL_NAME' not found (run: ollama pull $MODEL_NAME)"
+		fi
+		printf '%s\n' "integration skipped: Ollama model '$MODEL_NAME' is unavailable"
+		return 1
 	fi
 }
 
@@ -221,7 +230,9 @@ main() {
 	require_tool git
 	require_tool curl
 
-	require_ollama
+	if ! require_ollama; then
+		return 0
+	fi
 	build_codescan
 
 	DOCS_DIR="$(mktemp -d "$TMPDIR/codescan-docs.XXXXXX")"

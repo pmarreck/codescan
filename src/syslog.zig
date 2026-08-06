@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_singleton = @import("io_singleton.zig");
 
 pub const LOG_PID: c_int = 0x01;
@@ -18,19 +19,28 @@ extern "c" fn closelog() void;
 
 var initialized: bool = false;
 
+/// Windows has no syslog ABI. Watcher failures are persisted by the watcher
+/// itself, while Unix-family targets additionally send messages to the OS log.
+pub fn usesNativeSystemLog(os_tag: std.Target.Os.Tag) bool {
+	return os_tag != .windows;
+}
+
 pub fn init(ident: [*:0]const u8) void {
-    openlog(ident, LOG_PID | LOG_NDELAY, LOG_DAEMON);
-    initialized = true;
+	if (comptime !usesNativeSystemLog(builtin.os.tag)) return;
+	openlog(ident, LOG_PID | LOG_NDELAY, LOG_DAEMON);
+	initialized = true;
 }
 
 pub fn deinit() void {
-    if (!initialized) return;
-    closelog();
-    initialized = false;
+	if (comptime !usesNativeSystemLog(builtin.os.tag)) return;
+	if (!initialized) return;
+	closelog();
+	initialized = false;
 }
 
 pub fn log(priority: c_int, message: []const u8) void {
-    if (!initialized) return;
+	if (comptime !usesNativeSystemLog(builtin.os.tag)) return;
+	if (!initialized) return;
     var buf: [1024]u8 = undefined;
     const copy_len = @min(message.len, buf.len - 1);
     @memcpy(buf[0..copy_len], message[0..copy_len]);
@@ -39,7 +49,8 @@ pub fn log(priority: c_int, message: []const u8) void {
 }
 
 pub fn logWithRoot(priority: c_int, root: []const u8, message: []const u8) void {
-    if (!initialized) return;
+	if (comptime !usesNativeSystemLog(builtin.os.tag)) return;
+	if (!initialized) return;
     var buf: [1024]u8 = undefined;
     // Format: "<root>: <message>" truncated with "..." if overflow.
     const suffix = "...";
@@ -97,7 +108,13 @@ test "logWithRoot truncates messages longer than 1024 bytes with ellipsis" {
     var buf: [2048]u8 = undefined;
     for (&buf) |*b| b.* = 'x';
     logWithRoot(LOG_NOTICE, "/tmp/fake-root", &buf);
-    // Implicit assertion: did not panic/segfault on >1024-byte input.
+	// Implicit assertion: did not panic/segfault on >1024-byte input.
+}
+
+test "native system logging excludes Windows" {
+	try std.testing.expect(!usesNativeSystemLog(.windows));
+	try std.testing.expect(usesNativeSystemLog(.linux));
+	try std.testing.expect(usesNativeSystemLog(.macos));
 }
 
 test "syslog delivers to OS log (gated: CODESCAN_RUN_SYSLOG_TESTS=1)" {

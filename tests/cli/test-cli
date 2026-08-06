@@ -56,6 +56,14 @@ main() {
 		fail "mk_test_db failed"
 	fi
 
+	# A bad log duration is a CLI usage error. Keep stdout available for log
+	# records so shell callers do not have to strip a diagnostic from their data.
+	capture "$BIN" log --root "$DB_DIR" --since 0h
+	[ "$rc" -eq 64 ] || fail "invalid log duration did not exit with usage status"
+	[ -z "$out" ] || fail "invalid log duration wrote its diagnostic to stdout"
+	printf '%s' "$err" | rg -q "invalid --since '0h'" || \
+		fail "invalid log duration did not explain the accepted shorthand"
+
 	fresh_root="$DB_DIR/fresh-search"
 	mkdir -p "$fresh_root/.git"
 	printf '%s\n' \

@@ -12,6 +12,18 @@ pub const Options = struct {
 
 pub const Platform = enum { macos, linux, unsupported };
 
+/// Owns the Linux-only normalized `--since` argument while retaining borrowed
+/// option strings for every other platform argument.
+pub const Argv = struct {
+    items: []const []const u8,
+    owned_since: ?[]u8 = null,
+
+    pub fn deinit(self: Argv, allocator: std.mem.Allocator) void {
+        allocator.free(self.items);
+        if (self.owned_since) |since| allocator.free(since);
+    }
+};
+
 pub fn currentPlatform() Platform {
     return switch (builtin.os.tag) {
         .macos => .macos,
@@ -20,15 +32,17 @@ pub fn currentPlatform() Platform {
     };
 }
 
-/// Build argv for the platform log tool. Caller owns the outer slice; inner
-/// slices are either literals or borrowed from `opts`.
+/// Build argv for the platform log tool. Linux receives a journalctl-compatible
+/// form of the documented shorthand duration, while macOS receives it unchanged.
 pub fn buildArgv(
     allocator: std.mem.Allocator,
     platform: Platform,
     opts: Options,
-) ![]const []const u8 {
+) !Argv {
     var list = @as(std.ArrayListUnmanaged([]const u8), .empty);
     errdefer list.deinit(allocator);
+    var owned_since: ?[]u8 = null;
+    errdefer if (owned_since) |since| allocator.free(since);
 
     switch (platform) {
         .macos => {
@@ -49,18 +63,41 @@ pub fn buildArgv(
             }
         },
         .linux => {
+            owned_since = try normalizeLinuxSince(allocator, opts.since);
             try list.append(allocator, "journalctl");
             try list.append(allocator, "-t");
             try list.append(allocator, "codescan");
             try list.append(allocator, "--since");
-            try list.append(allocator, opts.since);
+            try list.append(allocator, owned_since.?);
             try list.append(allocator, "--no-pager");
             if (opts.follow) try list.append(allocator, "--follow");
         },
         .unsupported => return error.UnsupportedPlatform,
     }
 
-    return list.toOwnedSlice(allocator);
+    return .{
+        .items = try list.toOwnedSlice(allocator),
+        .owned_since = owned_since,
+    };
+}
+
+/// Converts the public `30m` / `2h` duration grammar to the grammar accepted
+/// by Linux journald. Rejecting non-positive and malformed inputs keeps a typo
+/// from silently expanding the requested log window.
+fn normalizeLinuxSince(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
+    if (text.len < 2) return error.InvalidDuration;
+
+    const amount = std.fmt.parseInt(u64, text[0 .. text.len - 1], 10) catch return error.InvalidDuration;
+    if (amount == 0) return error.InvalidDuration;
+
+    const unit = switch (text[text.len - 1]) {
+        's' => if (amount == 1) "second" else "seconds",
+        'm' => if (amount == 1) "minute" else "minutes",
+        'h' => if (amount == 1) "hour" else "hours",
+        'd' => if (amount == 1) "day" else "days",
+        else => return error.InvalidDuration,
+    };
+    return std.fmt.allocPrint(allocator, "{d} {s} ago", .{ amount, unit });
 }
 
 /// Filter raw log output: if `root` is set, keep only lines whose content
@@ -106,8 +143,9 @@ pub fn filterOutput(
 
 test "buildArgv macos without follow" {
     const allocator = std.testing.allocator;
-    const argv = try buildArgv(allocator, .macos, .{ .since = "30m" });
-    defer allocator.free(argv);
+    const command = try buildArgv(allocator, .macos, .{ .since = "30m" });
+    defer command.deinit(allocator);
+    const argv = command.items;
     try std.testing.expectEqualStrings("log", argv[0]);
     try std.testing.expectEqualStrings("show", argv[1]);
     try std.testing.expectEqualStrings("--predicate", argv[2]);
@@ -118,20 +156,49 @@ test "buildArgv macos without follow" {
 
 test "buildArgv macos with follow uses stream" {
     const allocator = std.testing.allocator;
-    const argv = try buildArgv(allocator, .macos, .{ .follow = true });
-    defer allocator.free(argv);
+    const command = try buildArgv(allocator, .macos, .{ .follow = true });
+    defer command.deinit(allocator);
+    const argv = command.items;
     try std.testing.expectEqualStrings("stream", argv[1]);
 }
 
 test "buildArgv linux uses journalctl -t codescan" {
     const allocator = std.testing.allocator;
-    const argv = try buildArgv(allocator, .linux, .{ .since = "10m" });
-    defer allocator.free(argv);
+    const command = try buildArgv(allocator, .linux, .{ .since = "10m" });
+    defer command.deinit(allocator);
+    const argv = command.items;
     try std.testing.expectEqualStrings("journalctl", argv[0]);
     try std.testing.expectEqualStrings("-t", argv[1]);
     try std.testing.expectEqualStrings("codescan", argv[2]);
     try std.testing.expectEqualStrings("--since", argv[3]);
-    try std.testing.expectEqualStrings("10m", argv[4]);
+    try std.testing.expectEqualStrings("10 minutes ago", argv[4]);
+}
+
+test "normalizeLinuxSince accepts every documented duration unit" {
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { input: []const u8, want: []const u8 }{
+        .{ .input = "30s", .want = "30 seconds ago" },
+        .{ .input = "1m", .want = "1 minute ago" },
+        .{ .input = "15m", .want = "15 minutes ago" },
+        .{ .input = "1h", .want = "1 hour ago" },
+        .{ .input = "2h", .want = "2 hours ago" },
+        .{ .input = "1d", .want = "1 day ago" },
+        .{ .input = "3d", .want = "3 days ago" },
+    };
+
+    for (cases) |case| {
+        const actual = try normalizeLinuxSince(allocator, case.input);
+        defer allocator.free(actual);
+        try std.testing.expectEqualStrings(case.want, actual);
+    }
+}
+
+test "normalizeLinuxSince rejects malformed, zero, and overflowing durations" {
+    const allocator = std.testing.allocator;
+    const invalid = [_][]const u8{ "", "2", "0h", "-1h", "1w", "1.5h", "999999999999999999999999999999999h" };
+    for (invalid) |text| {
+        try std.testing.expectError(error.InvalidDuration, normalizeLinuxSince(allocator, text));
+    }
 }
 
 test "buildArgv returns error for unsupported platform" {
@@ -205,10 +272,10 @@ pub fn run(
     const platform = currentPlatform();
     if (platform == .unsupported) return error.UnsupportedPlatform;
 
-    const argv = try buildArgv(allocator, platform, opts);
-    defer allocator.free(argv);
+    const command = try buildArgv(allocator, platform, opts);
+    defer command.deinit(allocator);
 
-    const raw = try (runner orelse realRunner)(allocator, argv);
+    const raw = try (runner orelse realRunner)(allocator, command.items);
     defer allocator.free(raw);
 
     const effective_root: ?[]const u8 = if (opts.all) null else opts.root;

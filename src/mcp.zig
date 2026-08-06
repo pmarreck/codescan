@@ -706,8 +706,10 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.limit = limit_arg,
 		};
 
-		const log_output = log_cmd.run(allocator, opts, null) catch |err|
-			return toolError("MCP logs: run failed: {}\n", .{err});
+		const log_output = log_cmd.run(allocator, opts, null) catch |err| switch (err) {
+			error.InvalidDuration => return toolError("MCP logs: invalid since '{s}'; use a positive duration such as 30m, 2h, or 1d\n", .{since_arg}),
+			else => return toolError("MCP logs: run failed: {}\n", .{err}),
+		};
 		defer allocator.free(log_output);
 
 		try out.writer.writeAll(log_output);

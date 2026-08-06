@@ -460,7 +460,17 @@ pub fn main(init: std.process.Init) !void {
 				.limit = parsed.log_limit,
 			};
 
-			const log_output = try log_cmd.run(allocator, opts, null);
+			const log_output = log_cmd.run(allocator, opts, null) catch |err| switch (err) {
+				error.InvalidDuration => {
+					var stderr_buf: [512]u8 = undefined;
+					var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
+					const stderr = &stderr_writer.interface;
+					try stderr.print("error: invalid --since '{s}'; use a positive duration such as 30m, 2h, or 1d\n", .{parsed.log_since});
+					try stderr.flush();
+					std.process.exit(64);
+				},
+				else => return err,
+			};
 			defer allocator.free(log_output);
 			try stdout.writeAll(log_output);
 			try stdout.flush();
@@ -3279,6 +3289,11 @@ fn runWatch(
 				try stdout.print("Watcher running (PID {d})\n", .{pid_val});
 			} else {
 				try stdout.print("No watcher running\n", .{});
+				if (watcher.failureRecordExists(allocator, codescan_dir)) {
+					const failure_path = try watcher.failureLogPath(allocator, codescan_dir);
+					defer allocator.free(failure_path);
+					try stdout.print("Last watcher failure: {s}\n", .{failure_path});
+				}
 			}
 			try stdout.flush();
 		},
@@ -3403,6 +3418,7 @@ fn runWatch(
 		.run => {
 			syslog.init("codescan");
 			defer syslog.deinit();
+			errdefer |err| recordDaemonFailure(allocator, codescan_dir, settings.root_path, err);
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
@@ -3442,7 +3458,7 @@ fn runWatch(
 				}
 				_ = se.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
 				_ = se.flush() catch {};
-				std.process.exit(1);
+				return error.EmbeddingSchemaMismatch;
 			}
 
 			var embedder_adapter = embedding.HttpEmbedder{
@@ -3517,10 +3533,45 @@ fn runWatch(
 				&g_stop_flag,
 			) catch |err| switch (err) {
 				error.WatcherAlreadyRunning => return, // message already printed
-				else => return err,
+				else => return @as(anyerror!void, err),
 			};
 		},
 	}
+}
+
+/// Persists a daemon-only error and mirrors it into the system log. The
+/// background child has closed standard streams, so its error return must not
+/// be allowed to disappear with the process.
+fn recordDaemonFailure(
+	allocator: std.mem.Allocator,
+	codescan_dir: []const u8,
+	root_path: []const u8,
+	err: anyerror,
+) void {
+	var message_buf: [512]u8 = undefined;
+	const message = std.fmt.bufPrint(
+		&message_buf,
+		"watcher daemon failed: {s}",
+		.{@errorName(err)},
+	) catch "watcher daemon failed";
+	watcher.writeFailureRecord(allocator, codescan_dir, root_path, message) catch {};
+	syslog.logWithRoot(syslog.LOG_ERR, root_path, message);
+}
+
+test "recordDaemonFailure preserves a post-fork watcher error" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const codescan_dir = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".codescan", allocator);
+	defer allocator.free(codescan_dir);
+
+	recordDaemonFailure(allocator, codescan_dir, "/project", error.ConnectionRefused);
+
+	const saved = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), ".codescan/watcher-error.log", allocator, .limited(1024));
+	defer allocator.free(saved);
+	try std.testing.expect(std.mem.indexOf(u8, saved, "watcher daemon failed: ConnectionRefused") != null);
 }
 
 pub fn runSymbols(
@@ -5880,6 +5931,9 @@ const usage_watch =
     \\Options:
     \\  --interval <ms>          Poll interval in milliseconds (default 2000)
     \\
+    \\Background failures are saved in .codescan/watcher-error.log. `watch status`
+    \\prints that path when the watcher is stopped; OS-log startup records include its PID.
+    \\
     \\Examples:
     \\  codescan watch
     \\  codescan watch start --interval 5000
@@ -6869,7 +6923,7 @@ fn writeLocalTime(writer: *std.Io.Writer, epoch_secs: i64) !void {
 	const time_val: c_time.time_t = @intCast(epoch_secs);
 	var local: c_time.struct_tm = undefined;
 	const converted = if (comptime builtin.os.tag == .windows)
-		c_time.localtime_s(&local, &time_val) == 0
+		c_time._localtime64_s(&local, @ptrCast(&time_val)) == 0
 	else
 		c_time.localtime_r(&time_val, &local) != null;
 	if (!converted) return;

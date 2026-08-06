@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const io_singleton = @import("io_singleton.zig");
 const indexer = @import("indexer.zig");
 const index_service = @import("index_service.zig");
@@ -10,6 +11,56 @@ const fs_watch = @import("fs_watch.zig");
 const progress = @import("progress.zig");
 const syslog = @import("syslog.zig");
 const retirement = @import("retirement.zig");
+
+pub const failure_log_filename = "watcher-error.log";
+
+/// Returns the project-local path that contains the most recent daemon failure.
+pub fn failureLogPath(allocator: std.mem.Allocator, codescan_dir: []const u8) ![]u8 {
+	return std.fs.path.join(allocator, &.{ codescan_dir, failure_log_filename });
+}
+
+/// Reports whether the project has a retained daemon-failure record.
+pub fn failureRecordExists(allocator: std.mem.Allocator, codescan_dir: []const u8) bool {
+	const log_path = failureLogPath(allocator, codescan_dir) catch return false;
+	defer allocator.free(log_path);
+	std.Io.Dir.cwd().access(io_singleton.getOrInit(), log_path, .{}) catch return false;
+	return true;
+}
+
+/// Replaces the project's last daemon-failure record with a bounded message.
+/// A separate single-record file keeps a stopped background watcher diagnosable
+/// without letting repeated failures grow project state without limit.
+pub fn writeFailureRecord(
+	allocator: std.mem.Allocator,
+	codescan_dir: []const u8,
+	root_path: []const u8,
+	reason: []const u8,
+) !void {
+	const log_path = try failureLogPath(allocator, codescan_dir);
+	defer allocator.free(log_path);
+
+	var record_buf: [4096]u8 = undefined;
+	const project = root_path[0..@min(root_path.len, 1024)];
+	const detail = reason[0..@min(reason.len, 2800)];
+	const record = try std.fmt.bufPrint(
+		&record_buf,
+		"watcher failure\nproject: {s}\nreason: {s}\n",
+		.{ project, detail },
+	);
+	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), log_path, .{ .truncate = true });
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), record);
+}
+
+/// Formats a system-log startup event with the process identifier that owns
+/// the watcher, allowing the event to be matched to status and a PID file.
+fn startedMessage(buf: []u8, backend: []const u8) []const u8 {
+	const pid: i64 = if (comptime builtin.os.tag == .windows)
+		@intCast(std.os.windows.GetCurrentProcessId())
+	else
+		@intCast(std.c.getpid());
+	return std.fmt.bufPrint(buf, "watcher started ({s}, PID {d})", .{ backend, pid }) catch "watcher started";
+}
 
 pub const WatchOptions = struct {
 	interval_ms: u64 = 2000,
@@ -142,7 +193,8 @@ pub fn watchLoop(
 
 	_ = stderr.print("Watching {s} (native events, Ctrl-C to stop)\n", .{root_path}) catch {};
 	_ = stderr.flush() catch {};
-	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher started (native events)");
+	var start_buf: [128]u8 = undefined;
+	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, startedMessage(&start_buf, "native events"));
 
 	// Set up progress file (symlink to TMPDIR)
 	const progress_path = progress.setup(allocator, options.codescan_dir orelse ".");
@@ -202,6 +254,9 @@ pub fn watchLoop(
 			_ = stderr.flush() catch {};
 			var msg_buf_w: [256]u8 = undefined;
 			const msg_w = std.fmt.bufPrint(&msg_buf_w, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			if (options.codescan_dir) |dir| {
+				writeFailureRecord(allocator, dir, root_path, msg_w) catch {};
+			}
 			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_w);
 			if (consecutive_errors >= max_consecutive_errors) {
 				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
@@ -247,7 +302,8 @@ fn watchLoopPolling(
 		options.interval_ms,
 	}) catch {};
 	_ = stderr.flush() catch {};
-	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher started (polling)");
+	var start_buf: [128]u8 = undefined;
+	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, startedMessage(&start_buf, "polling"));
 
 	// Set up progress file (symlink to TMPDIR)
 	const progress_path_poll = progress.setup(allocator, options.codescan_dir orelse ".");
@@ -307,6 +363,9 @@ fn watchLoopPolling(
 			_ = stderr.flush() catch {};
 			var msg_buf_p: [256]u8 = undefined;
 			const msg_p = std.fmt.bufPrint(&msg_buf_p, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			if (options.codescan_dir) |dir| {
+				writeFailureRecord(allocator, dir, root_path, msg_p) catch {};
+			}
 			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_p);
 			if (consecutive_errors >= max_consecutive_errors) {
 				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
@@ -430,6 +489,33 @@ test "printChangeSummary shows up to date" {
 	try std.testing.expect(std.mem.indexOf(u8, text, "Up to date") != null);
 }
 
+test "writeFailureRecord replaces the prior daemon failure in the project state" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	const codescan_dir = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".codescan", allocator);
+	defer allocator.free(codescan_dir);
+
+	try writeFailureRecord(allocator, codescan_dir, "/project", "first failure");
+	try writeFailureRecord(allocator, codescan_dir, "/project", "second failure");
+
+	const saved = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), ".codescan/watcher-error.log", allocator, .limited(1024));
+	defer allocator.free(saved);
+	try std.testing.expect(std.mem.indexOf(u8, saved, "second failure") != null);
+	try std.testing.expect(std.mem.indexOf(u8, saved, "first failure") == null);
+	try std.testing.expect(std.mem.indexOf(u8, saved, "project: /project") != null);
+	try std.testing.expect(failureRecordExists(allocator, codescan_dir));
+}
+
+test "startedMessage reports the watcher PID" {
+	var buf: [256]u8 = undefined;
+	const message = startedMessage(&buf, "native events");
+	try std.testing.expect(std.mem.indexOf(u8, message, "watcher started") != null);
+	try std.testing.expect(std.mem.indexOf(u8, message, "PID ") != null);
+}
+
 test "watcher source contains syslog calls at all error paths" {
     // An exact count, deliberately: adding or removing a log call should
     // require saying so out loud rather than passing unnoticed. A watcher that
@@ -447,4 +533,3 @@ test "watcher source contains syslog calls at all error paths" {
     }
     try std.testing.expectEqual(@as(usize, 9), count);
 }
-
