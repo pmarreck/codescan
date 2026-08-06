@@ -2,6 +2,13 @@
 
 ## 2026-07-30 — embedding-server probe bounds
 
+
+- [x] Degrade gracefully when the inference server is inaccessible. (completed 2026-08-05 22:02 EDT)
+  Searches against an existing index, read/write/edit operations, and non-embedding inspection commands must remain available. Indexing and any other path that needs fresh embeddings must fail with an actionable message. MCP callers need structured error text that tells the agent its user can start or repair the inference server.
+  Searches preflight the actual provider and its Ollama model, preserving a populated index by switching to lexical mode. A missing or empty index is a clear failure instead of a misleading zero-result search. CLI, HTTP, and MCP index/update requests reject before database recreation; MCP’s JSON-RPC error tells the caller to start or repair the embedding server. JSON search output carries `inference_unavailable`, `inference_url`, and recovery guidance.
+  Query embeddings can still fail after a successful availability request, so `search_service` maps that transport error to `EmbeddingUnavailable` and reruns the existing index lexically. The classifier and fallback have independent deterministic tests.
+  Live acceptance against Peter’s stopped Ollama at `127.0.0.1:11434`: CLI and MCP each returned a pre-indexed symbol with unavailable-inference metadata; normal CLI and MCP index calls refused and left the SQLite index byte-identical. `zig build test -Doptimize=Debug` and `tests/cli/test-cli` passed. HTTP and broad integration scripts deliberately require a running Ollama model, so they remain deferred until the service returns.
+
 - [x] Restore the full five-target CLI build contract before shipping the bounded-preflight work. (completed 2026-08-04 13:50 EDT)
   The Windows red build first exposed POSIX-only `localtime_r` and `tm_zone` in `writeLocalTime`. The new conversion uses Windows `localtime_s` or POSIX `localtime_r`, and standard `strftime("%Z")` supplies a zone only when it is valid UTF-8. A deterministic rendering test covers both present and absent zones.
   The repaired first error exposed a second one: `std.posix.pid_t` is opaque on Windows, even though the Unix-only watcher-list command returns an unsupported-platform error before using it. `WatcherInfo` and `LsofEntry` now use the project numeric PID type, so all callers compile. The two focused tests, `./test`, and `./build` pass. ReleaseFast builds pass for macOS ARM64, Linux ARM64/x86_64, and Windows ARM64/x86_64.

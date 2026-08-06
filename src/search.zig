@@ -233,7 +233,7 @@ fn gatherCandidates(
 	}
 
 	const inputs = [_][]const u8{ query };
-	const embeddings = try embedder.embed(embedder.ctx, allocator, &inputs);
+	const embeddings = embedder.embed(embedder.ctx, allocator, &inputs) catch return error.EmbeddingUnavailable;
 	defer embedder.free(embedder.ctx, allocator, embeddings);
 	if (embeddings.len != 1) return error.InvalidEmbeddingCount;
 
@@ -3216,6 +3216,33 @@ const FakeEmbedder = struct {
 		allocator.free(embeddings);
 	}
 };
+
+const UnavailableEmbedder = struct {
+	pub fn embedder(self: *UnavailableEmbedder) embedding.Embedder {
+		return .{ .ctx = self, .embed = embed, .free = free };
+	}
+
+	fn embed(_: *anyopaque, _: std.mem.Allocator, _: []const []const u8) ![][]f32 {
+		return error.ConnectionRefused;
+	}
+
+	fn free(_: *anyopaque, _: std.mem.Allocator, _: [][]f32) void {}
+};
+
+test "search classifies a query embedding transport failure as unavailable" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var unavailable = UnavailableEmbedder{};
+	try std.testing.expectError(error.EmbeddingUnavailable, search(
+		allocator,
+		db,
+		unavailable.embedder(),
+		"query",
+		.{ .mode = .vector },
+	));
+}
 
 test "RRF hybrid fusion produces rank-based compromise ordering" {
 	// Three symbols with disagreeing vector and lexical rankings:

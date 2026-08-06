@@ -30,6 +30,18 @@ fn toolError(comptime fmt: []const u8, args: anytype) error{ToolFailed} {
 	return error.ToolFailed;
 }
 
+/// Preserve an actionable tool failure for the JSON-RPC caller as well as
+/// logging it for the MCP server operator.
+fn toolErrorDetail(
+	allocator: std.mem.Allocator,
+	err_detail: *?[]u8,
+	comptime fmt: []const u8,
+	args: anytype,
+) error{ToolFailed} {
+	err_detail.* = std.fmt.allocPrint(allocator, fmt, args) catch return error.ToolFailed;
+	return toolError(fmt ++ "\n", args);
+}
+
 pub const Settings = struct {
 	root_path: []const u8,
 	db_path: []const u8,
@@ -395,13 +407,22 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP search: query is required when no filters are provided\n", .{});
 		}
 
-		const freshness_result = main.ensureSearchFreshness(
+		var freshness_result = main.ensureSearchFreshness(
 			allocator,
 			updateSettings(settings),
 			plugin.defaultRegistry(),
 			regex_flag or settings.search_mode == .lexical,
-		) catch |err|
+		) catch |err| {
+			if (err == error.EmbeddingUnavailable) {
+				return toolErrorDetail(
+					allocator,
+					err_detail,
+					"MCP search: inference server unavailable. No usable existing index is available, so codescan cannot index new code. Start or repair the embedding server, then retry",
+					.{},
+				);
+			}
 			return toolError("MCP search: pre-search update failed and no usable index exists: {}\n", .{err});
+		};
 
 		// Regex search: skip vector/FTS entirely
 		if (regex_flag) {
@@ -489,13 +510,20 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		else
 			mcp_settings.search_mode;
 		if (!storage.isIndexPopulated(db)) {
-			embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.embedding_url, mcp_settings.embedding_model, mcp_settings.embedding_dialect) catch |err| {
-				if (err != error.ModelLoading) {
-					// ModelNotFound or connection error — fall back to lexical
-					effective_search_mode = .lexical;
-				}
-				// ModelLoading: model exists, embed() will trigger loading — proceed
-			};
+			if (!embedding_http.inferenceAvailable(
+				allocator,
+				http_client.transport(),
+				mcp_settings.embedding_url,
+				mcp_settings.embedding_model,
+				mcp_settings.embedding_dialect,
+			)) {
+				return toolErrorDetail(
+					allocator,
+					err_detail,
+					"MCP search: inference server unavailable. No usable existing index is available, so codescan cannot index new code. Start or repair the embedding server, then retry",
+					.{},
+				);
+			}
 			var embedder_for_index = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
 				.base_url = mcp_settings.embedding_url,
@@ -523,14 +551,16 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			}) catch |err|
 				return toolError("MCP search: auto-index failed for root '{s}': {}\n", .{ mcp_settings.root_path, err });
 		} else {
-			if (effective_search_mode != .lexical) {
-				embedding_http.ensureModelAvailable(allocator, http_client.transport(), mcp_settings.embedding_url, mcp_settings.embedding_model, mcp_settings.embedding_dialect) catch |err| {
-					if (err != error.ModelLoading) {
-						// ModelNotFound or connection error — fall back to lexical
-						effective_search_mode = .lexical;
-					}
-					// ModelLoading: model exists, embed() will trigger loading — proceed
-				};
+			if (effective_search_mode != .lexical and !embedding_http.inferenceAvailable(
+				allocator,
+				http_client.transport(),
+				mcp_settings.embedding_url,
+				mcp_settings.embedding_model,
+				mcp_settings.embedding_dialect,
+			)) {
+				effective_search_mode = .lexical;
+				freshness_result.inference_unavailable = true;
+				freshness_result.inference_url = mcp_settings.embedding_url;
 			}
 		}
 
@@ -542,7 +572,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			.auth_header = mcp_settings.embedding_auth_header,
 		};
 
-		var execution = search_service.execute(allocator, db, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
+		var execution = search_service.executeWithInferenceFallback(allocator, db, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
 			.query = query,
 			.top_n = mcp_settings.search_top_n,
 			.mode = effective_search_mode,
@@ -565,7 +595,11 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		}) catch |err|
 			return toolError("MCP search: search failed for query '{s}': {}\n", .{ query, err });
 		defer execution.deinit();
-		const sr = execution.result;
+		if (execution.used_lexical_fallback) {
+			freshness_result.inference_unavailable = true;
+			freshness_result.inference_url = mcp_settings.embedding_url;
+		}
+		const sr = execution.execution.result;
 
 		output.writeResults(allocator, &out.writer, .json, sr.results, .{
 			.show_comments = false,
@@ -579,7 +613,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		// Append diagnostics when no results and multiple filters active
 		if (sr.results.len == 0) {
 			const diagnostics = @import("diagnostics.zig");
-			const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, execution.options) catch null;
+			const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, execution.execution.options) catch null;
 			const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
 			if (has_diag) {
 				const d = diag.?;
@@ -590,33 +624,26 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			}
 		}
 	} else if (std.mem.eql(u8, name, "index")) {
+		var http_client = embedding_http.StdHttpTransport.init(allocator);
+		defer http_client.deinit();
+		if (!embedding_http.inferenceAvailable(
+			allocator,
+			http_client.transport(),
+			settings.embedding_url,
+			settings.embedding_model,
+			settings.embedding_dialect,
+		)) {
+			return toolErrorDetail(
+				allocator,
+				err_detail,
+				"MCP index: inference server unavailable. Codescan left the existing index unchanged. Start or repair the embedding server, then retry",
+				.{},
+			);
+		}
 		try io_singleton.ensureParentDir(settings.db_path);
 		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch |err|
 			return toolError("MCP index: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
 		defer storage.close(db);
-
-		var http_client = embedding_http.StdHttpTransport.init(allocator);
-		defer http_client.deinit();
-		embedding_http.ensureModelAvailable(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect) catch |err| {
-			switch (err) {
-				error.ModelLoading => {
-					// Model exists but not loaded — embed() will trigger loading. Log and proceed.
-					var sb: [4096]u8 = undefined;
-					var sw = io_singleton.stderrWriter(&sb);
-					const se = &sw.interface;
-					_ = se.print("MCP index: model '{s}' is loading into memory. This may take a moment...\n", .{settings.embedding_model}) catch {};
-					_ = se.flush() catch {};
-				},
-				error.ModelNotFound => {
-					try out.writer.print("error: Ollama model '{s}' not found. Run: ollama pull {s}", .{ settings.embedding_model, settings.embedding_model });
-					return out.toOwnedSlice();
-				},
-				else => {
-					try out.writer.print("error: Ollama model '{s}' not available: {}", .{ settings.embedding_model, err });
-					return out.toOwnedSlice();
-				},
-			}
-		};
 
 		var embedder_adapter = embedding.HttpEmbedder{
 			.transport = http_client.transport(),
@@ -907,7 +934,7 @@ const tools_list_json =
 	\\{"tools":[
 	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"ignore_case":{"type":"boolean","description":"Case-insensitive matching (applies to regex search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
 	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"ignore_case":{"type":"boolean","description":"Case-insensitive matching"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
-	\\{"name":"index","description":"Index or reindex a repository for semantic search","inputSchema":{"type":"object","properties":{}}},
+	\\{"name":"index","description":"Index or reindex a repository for semantic search (requires the embedding server)","inputSchema":{"type":"object","properties":{}}},
 	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
 	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
 	\\{"name":"insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
@@ -1152,24 +1179,41 @@ test "handleToolsCall dispatches symbols and config" {
 	try std.testing.expect(std.mem.indexOf(u8, config_response, "embedding_url") != null);
 }
 
-test "handleToolsCall dispatches index gracefully without Ollama" {
+test "MCP index preserves the existing index and explains an unavailable inference server" {
 	const allocator = std.testing.allocator;
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
 	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "hello.zig", .data = "pub fn greet() void {}\n" });
 	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
 	defer allocator.free(root_path);
 
 	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
 	defer allocator.free(db_path);
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+		var symbol = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "hello.zig"),
+			.name = try allocator.dupe(u8, "preserved_symbol"),
+			.signature = try allocator.dupe(u8, "pub fn preserved_symbol() void"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer symbol.deinit(allocator);
+		_ = try storage.insertSymbol(db, symbol);
+	}
 
 	const test_settings: Settings = .{
 		.root_path = root_path,
 		.db_path = db_path,
-		// Use a port that won't have Ollama running
-		.embedding_url = "http://localhost:19999",
+		.embedding_url = "http://127.0.0.1:1",
 		.embedding_model = "bge-large",
+		.embedding_dim = 2,
 	};
 
 	const index_params_str = "{\"name\":\"index\",\"arguments\":{}}";
@@ -1179,12 +1223,12 @@ test "handleToolsCall dispatches index gracefully without Ollama" {
 	const index_response = try handleToolsCall(allocator, .{ .integer = 1 }, index_parsed.value, test_settings);
 	defer allocator.free(index_response);
 
-	// Should dispatch to index and return a response (error about Ollama is fine)
-	try std.testing.expect(index_response.len > 0);
-	// Either successful index or Ollama unavailable error — both prove correct dispatch
-	const has_status = std.mem.indexOf(u8, index_response, "status") != null;
-	const has_error = std.mem.indexOf(u8, index_response, "error") != null;
-	try std.testing.expect(has_status or has_error);
+	try std.testing.expect(std.mem.indexOf(u8, index_response, "inference server unavailable") != null);
+	try std.testing.expect(std.mem.indexOf(u8, index_response, "Start or repair") != null);
+
+	const db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(db);
+	try std.testing.expect(storage.isIndexPopulated(db));
 }
 
 test "MCP protocol compliance: full handshake with string IDs" {
@@ -1443,6 +1487,55 @@ test "MCP search applies language filters from settings" {
 	// The response should contain the Zig symbol but NOT the Python one
 	try std.testing.expect(std.mem.indexOf(u8, response, "hello_zig") != null);
 	try std.testing.expect(std.mem.indexOf(u8, response, "hello_python") == null);
+}
+
+test "MCP search reports inference fallback while returning an existing index" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "offline.zig",
+		.data = "pub fn existingOfflineSymbol() void {}\n",
+	});
+	const root_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root_path);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root_path});
+	defer allocator.free(db_path);
+
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+		var symbol = model.Symbol{
+			.language = try allocator.dupe(u8, "zig"),
+			.file_path = try allocator.dupe(u8, "offline.zig"),
+			.name = try allocator.dupe(u8, "existingOfflineSymbol"),
+			.signature = try allocator.dupe(u8, "pub fn existingOfflineSymbol() void"),
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		};
+		defer symbol.deinit(allocator);
+		_ = try storage.insertSymbol(db, symbol);
+	}
+
+	const params_str = "{\"name\":\"search\",\"arguments\":{\"query\":\"existingOfflineSymbol\"}}";
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
+	defer parsed.deinit();
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, parsed.value, .{
+		.root_path = root_path,
+		.db_path = db_path,
+		.embedding_dim = 2,
+		.embedding_url = "http://127.0.0.1:1",
+		.embedding_model = "bge-large",
+	});
+	defer allocator.free(response);
+
+	try std.testing.expect(std.mem.indexOf(u8, response, "existingOfflineSymbol") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "inference_unavailable") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "Start or repair the server") != null);
 }
 
 test "getArgInt parses integer and string arguments" {

@@ -43,6 +43,18 @@ pub const Execution = struct {
 	}
 };
 
+/// Preserves a useful existing index when the query embedding request loses
+/// its provider after an earlier availability check.
+pub const FallbackExecution = struct {
+	execution: Execution,
+	used_lexical_fallback: bool = false,
+
+	pub fn deinit(self: *FallbackExecution) void {
+		self.execution.deinit();
+		self.* = undefined;
+	}
+};
+
 /// Converts adapter-neutral search policy into the domain search options used
 /// by every transport, keeping weight and filter semantics in one place.
 fn resolveOptions(
@@ -118,6 +130,27 @@ pub fn execute(
 		.options = options,
 		.result = result,
 	};
+}
+
+/// Runs the requested search and, only when an embedding request becomes
+/// unavailable, repeats it lexically without mutating the existing index.
+pub fn executeWithInferenceFallback(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	registry: plugin.Registry,
+	embedder: embedding.Embedder,
+	request: Request,
+) !FallbackExecution {
+	const execution = execute(allocator, db, registry, embedder, request) catch |err| {
+		if (err != error.EmbeddingUnavailable or request.mode == .lexical) return err;
+		var lexical_request = request;
+		lexical_request.mode = .lexical;
+		return .{
+			.execution = try execute(allocator, db, registry, embedder, lexical_request),
+			.used_lexical_fallback = true,
+		};
+	};
+	return .{ .execution = execution };
 }
 
 test "resolveOptions maps application policy and resolved filters" {
@@ -217,4 +250,61 @@ test "execute owns filter resolution and returns searchable results" {
 	try std.testing.expectEqualStrings("rollbackDelete", execution.result.results[0].symbol.name);
 	try std.testing.expectEqual(@as(usize, 1), execution.options.allowed_langs.len);
 	try std.testing.expectEqualStrings("zig", execution.options.allowed_langs[0]);
+}
+
+test "executeWithInferenceFallback returns lexical results after an embedding failure" {
+	const RefusedEmbedder = struct {
+		fn embedder(self: *@This()) embedding.Embedder {
+			return .{ .ctx = self, .embed = embed, .free = free };
+		}
+
+		fn embed(_: *anyopaque, _: std.mem.Allocator, _: []const []const u8) ![][]f32 {
+			return error.ConnectionRefused;
+		}
+
+		fn free(_: *anyopaque, _: std.mem.Allocator, _: [][]f32) void {}
+	};
+
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+
+	var symbol = model.Symbol{
+		.language = try allocator.dupe(u8, "zig"),
+		.file_path = try allocator.dupe(u8, "src/storage.zig"),
+		.name = try allocator.dupe(u8, "offlineSearch"),
+		.signature = try allocator.dupe(u8, "fn offlineSearch() void"),
+		.doc_comment = try allocator.dupe(u8, ""),
+		.start_line = 1,
+		.end_line = 1,
+	};
+	defer symbol.deinit(allocator);
+	_ = try storage.insertSymbol(db, symbol);
+
+	var refused = RefusedEmbedder{};
+	var execution = try executeWithInferenceFallback(
+		allocator,
+		db,
+		plugin.defaultRegistry(),
+		refused.embedder(),
+		.{
+			.query = "offlineSearch",
+			.top_n = 5,
+			.mode = .hybrid,
+			.fusion = .weighted_sum,
+			.rrf_k = 60,
+			.fts_mode = .broad,
+			.weight_vector = 0.5,
+			.weight_lexical = 0.5,
+			.min_score = 0,
+		},
+	);
+	defer execution.deinit();
+
+	try std.testing.expect(execution.used_lexical_fallback);
+	try std.testing.expectEqual(search.SearchMode.lexical, execution.execution.options.mode);
+	try std.testing.expectEqual(@as(usize, 1), execution.execution.result.results.len);
+	try std.testing.expectEqualStrings("offlineSearch", execution.execution.result.results[0].symbol.name);
 }

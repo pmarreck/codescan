@@ -147,6 +147,26 @@ pub fn serverReachable(
 	return true;
 }
 
+/// Reports whether this transport can currently create embeddings with the
+/// configured provider. A responding server is insufficient for Ollama: the
+/// requested model must also be installed. A cold model is still usable because
+/// its first embedding request loads it.
+pub fn inferenceAvailable(
+	allocator: std.mem.Allocator,
+	transport: Transport,
+	base_url: []const u8,
+	model_name: []const u8,
+	dialect: ApiDialect,
+) bool {
+	if (!serverReachable(allocator, transport, base_url, dialect)) return false;
+	if (dialect == .openai) return true;
+
+	ensureModelAvailable(allocator, transport, base_url, model_name, dialect) catch |err| {
+		return err == error.ModelLoading;
+	};
+	return true;
+}
+
 /// Warns when a reachability probe took long enough to be worth mentioning.
 /// Silent in test builds, where stderr is asserted on.
 fn reportSlowProbe(base_url: []const u8, started: std.Io.Timestamp) void {
@@ -726,6 +746,47 @@ test "serverReachable probes a dialect-appropriate endpoint" {
 	var openai = OutcomeTransport{ .status = 200, .fail_with = null };
 	_ = serverReachable(allocator, openai.transport(), "http://localhost:8080/", .openai);
 	try std.testing.expectEqualStrings("http://localhost:8080/v1/models", openai.lastUrl());
+}
+
+test "inferenceAvailable requires a reachable server and a usable Ollama model" {
+	const allocator = std.testing.allocator;
+
+	var ready = MockTransportCtx{
+		.tags_body =
+			\\{"models":[{"name":"bge-large"}]}
+		,
+		.ps_body =
+			\\{"models":[{"name":"bge-large"}]}
+		,
+	};
+	try std.testing.expect(inferenceAvailable(
+		allocator,
+		ready.transport(),
+		"http://localhost:11434",
+		"bge-large",
+		.ollama,
+	));
+
+	var missing_model = MockTransportCtx{
+		.tags_body = "{\"models\":[]}",
+		.ps_body = "{\"models\":[]}",
+	};
+	try std.testing.expect(!inferenceAvailable(
+		allocator,
+		missing_model.transport(),
+		"http://localhost:11434",
+		"bge-large",
+		.ollama,
+	));
+
+	var refused = OutcomeTransport{ .status = null, .fail_with = error.ConnectionRefused };
+	try std.testing.expect(!inferenceAvailable(
+		allocator,
+		refused.transport(),
+		"http://localhost:11434",
+		"bge-large",
+		.ollama,
+	));
 }
 
 test "serverReachable agrees with the embedding path for an IPv4-only server addressed as localhost" {

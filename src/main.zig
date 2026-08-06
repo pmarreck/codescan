@@ -2405,10 +2405,6 @@ fn runIndex(
 	stdout: *std.Io.Writer,
 ) !void {
 	checkTmpSpace();
-	try io_singleton.ensureParentDir(settings.db_path);
-	const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-	defer storage.close(db);
-
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 	var use_null_embedder = false;
@@ -2419,6 +2415,12 @@ fn runIndex(
 			std.process.exit(1);
 		};
 	}
+	// A full index replaces the database. Do not create or truncate it until an
+	// embedding provider has been accepted, unless the caller deliberately
+	// requested lexical-only indexing.
+	try io_singleton.ensureParentDir(settings.db_path);
+	const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+	defer storage.close(db);
 	var embedder_adapter = embedding.HttpEmbedder{
 		.transport = http_client.transport(),
 		.base_url = settings.embedding_url,
@@ -2816,6 +2818,7 @@ const SearchFreshnessContext = struct {
 	settings: UpdateSettings,
 	registry: plugin.Registry,
 	lexical_only: bool,
+	inference_unavailable: bool = false,
 
 	fn adapter(self: *SearchFreshnessContext, watcher_running: bool) freshness.Adapter {
 		return .{
@@ -2828,6 +2831,20 @@ const SearchFreshnessContext = struct {
 
 	fn reconcile(context: *anyopaque) !void {
 		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
+		if (!self.lexical_only) {
+			var http_client = embedding_http.StdHttpTransport.init(self.allocator);
+			defer http_client.deinit();
+			if (!embedding_http.inferenceAvailable(
+				self.allocator,
+				http_client.transport(),
+				self.settings.embedding_url,
+				self.settings.embedding_model,
+				self.settings.embedding_dialect,
+			)) {
+				self.inference_unavailable = true;
+				return error.EmbeddingUnavailable;
+			}
+		}
 		try runUpdateWithInvocation(
 			self.allocator,
 			self.settings,
@@ -2849,6 +2866,8 @@ pub const SearchFreshness = struct {
 	outcome: freshness.Outcome,
 	elapsed_ns: u64,
 	watcher_advisory: ?freshness.WatcherAdvisory,
+	inference_unavailable: bool = false,
+	inference_url: ?[]const u8 = null,
 
 	pub fn outputMetadata(self: SearchFreshness) output.FreshnessMetadata {
 		return .{
@@ -2859,6 +2878,8 @@ pub const SearchFreshness = struct {
 				@as(f64, @floatFromInt(self.elapsed_ns)) /
 					@as(f64, @floatFromInt(std.time.ns_per_s)),
 			.watcher_recommended = self.watcher_advisory != null,
+			.inference_unavailable = self.inference_unavailable,
+			.inference_url = self.inference_url,
 		};
 	}
 };
@@ -2897,6 +2918,8 @@ pub fn ensureSearchFreshness(
 		.outcome = outcome,
 		.elapsed_ns = elapsed_ns,
 		.watcher_advisory = watcher_advisory,
+		.inference_unavailable = context.inference_unavailable,
+		.inference_url = if (context.inference_unavailable) settings.embedding_url else null,
 	};
 }
 
@@ -2916,7 +2939,7 @@ fn runSearch(
 	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
-	const freshness_result = ensureSearchFreshness(
+	var freshness_result = ensureSearchFreshness(
 		allocator,
 		updateSettings(settings),
 		registry,
@@ -2929,14 +2952,21 @@ fn runSearch(
 		_ = stderr.flush() catch {};
 		return err;
 	};
-	const effective_search_mode = if (freshness_result.outcome == .stale)
+	var effective_search_mode = if (freshness_result.outcome == .stale)
 		search.SearchMode.lexical
 	else
 		settings.search_mode;
 	if (freshness_result.outcome == .stale) {
-		_ = stderr.writeAll(
-			"warning: pre-search index update failed; searching the existing index in lexical mode (results may be stale).\n",
-		) catch {};
+		if (freshness_result.inference_unavailable) {
+			_ = stderr.print(
+				"warning: embedding server unavailable at {s}; searching the existing index in lexical mode (results may be stale).\n",
+				.{settings.embedding_url},
+			) catch {};
+		} else {
+			_ = stderr.writeAll(
+				"warning: pre-search index update failed; searching the existing index in lexical mode (results may be stale).\n",
+			) catch {};
+		}
 		_ = stderr.flush() catch {};
 	}
 	if (freshness_result.watcher_advisory) |advisory| {
@@ -3015,8 +3045,28 @@ fn runSearch(
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
 
-	if (effective_search_mode != .lexical) {
-		try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+	if (effective_search_mode != .lexical and !embedding_http.inferenceAvailable(
+		allocator,
+		http_client.transport(),
+		settings.embedding_url,
+		settings.embedding_model,
+		settings.embedding_dialect,
+	)) {
+		effective_search_mode = .lexical;
+		freshness_result.inference_unavailable = true;
+		freshness_result.inference_url = settings.embedding_url;
+		_ = stderr.print(
+			"warning: embedding server unavailable at {s}; searching the existing index in lexical mode (results may be stale).\n",
+			.{settings.embedding_url},
+		) catch {};
+		_ = stderr.flush() catch {};
+	}
+	if (freshness_result.inference_unavailable and !storage.isIndexPopulated(db)) {
+		_ = stderr.writeAll(
+			"error: embedding server unavailable and no usable existing index is available. Start or repair the server, then run codescan index.\n",
+		) catch {};
+		_ = stderr.flush() catch {};
+		return error.EmbeddingUnavailable;
 	}
 
 	var embedder_adapter = embedding.HttpEmbedder{
@@ -3037,7 +3087,7 @@ fn runSearch(
 		try path_filters.append(allocator, f);
 	}
 
-	var execution = try search_service.execute(
+	var execution = try search_service.executeWithInferenceFallback(
 		allocator,
 		db,
 		registry,
@@ -3066,22 +3116,31 @@ fn runSearch(
 		},
 	);
 	defer execution.deinit();
-	const sr = execution.result;
+	if (execution.used_lexical_fallback) {
+		freshness_result.inference_unavailable = true;
+		freshness_result.inference_url = settings.embedding_url;
+		_ = stderr.print(
+			"warning: embedding server became unavailable at {s}; searching the existing index in lexical mode (results may be stale).\n",
+			.{settings.embedding_url},
+		) catch {};
+		_ = stderr.flush() catch {};
+	}
+	const sr = execution.execution.result;
 
 	if (sr.results.len == 0) {
 		const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
 		// Show per-filter diagnostic counts when 2+ filter dimensions were active
-		const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, execution.options) catch null;
+		const diag = diagnostics.countDiagnostics(allocator, db, embedder_adapter.embedder(), query, execution.execution.options) catch null;
 		const has_diag = diag != null and (diag.?.query_only != null or diag.?.kind_only != null or diag.?.lang_only != null);
 		if (has_diag) {
 			const d = diag.?;
 			// Build a short description of active filters for the note header
-			const kind_str = if (execution.options.allowed_symbol_kinds.len > 0) execution.options.allowed_symbol_kinds[0] else "";
+			const kind_str = if (execution.execution.options.allowed_symbol_kinds.len > 0) execution.execution.options.allowed_symbol_kinds[0] else "";
 			// Only name a language the caller actually asked for. The implicit
 			// default spans every code language, so printing allowed_langs[0]
 			// would invent a filter and misdirect the reader.
-			const lang_str = if (execution.options.allowed_langs.len > 0 and !execution.options.langs_are_default)
-				execution.options.allowed_langs[0]
+			const lang_str = if (execution.execution.options.allowed_langs.len > 0 and !execution.execution.options.langs_are_default)
+				execution.execution.options.allowed_langs[0]
 			else
 				"";
 			if (kind_str.len > 0 and lang_str.len > 0) {
@@ -3341,10 +3400,13 @@ fn runWatch(
 				try stdout.flush();
 			}
 		},
-	.run => {
-		syslog.init("codescan");
-		defer syslog.deinit();
-		try io_singleton.ensureParentDir(settings.db_path);
+		.run => {
+			syslog.init("codescan");
+			defer syslog.deinit();
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
+			defer http_client.deinit();
+			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			try io_singleton.ensureParentDir(settings.db_path);
 			// Open existing DB or create new one (don't destroy existing index)
 			var db = try storage.openFileWithVec(allocator, settings.db_path);
 			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
@@ -3383,9 +3445,6 @@ fn runWatch(
 				std.process.exit(1);
 			}
 
-			var http_client = embedding_http.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
-			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
 			var embedder_adapter = embedding.HttpEmbedder{
 				.transport = http_client.transport(),
 				.base_url = settings.embedding_url,

@@ -253,7 +253,7 @@ fn handleRequest(
 		var parsed = try parseSearchRequest(allocator, body);
 		defer parsed.deinit(allocator);
 		const requested_mode = parsed.mode orelse settings.search_mode;
-		const freshness_result = main.ensureSearchFreshness(
+		var freshness_result = main.ensureSearchFreshness(
 			allocator,
 			updateSettings(settings),
 			plugin.defaultRegistry(),
@@ -265,10 +265,36 @@ fn handleRequest(
 			);
 			return;
 		};
+		var effective_search_mode = if (freshness_result.outcome == .stale)
+			search.SearchMode.lexical
+		else
+			requested_mode;
+		if (effective_search_mode != .lexical) {
+			var availability_client = embedding_http.StdHttpTransport.init(allocator);
+			defer availability_client.deinit();
+			if (!embedding_http.inferenceAvailable(
+				allocator,
+				availability_client.transport(),
+				settings.embedding_url,
+				settings.embedding_model,
+				settings.embedding_dialect,
+			)) {
+				effective_search_mode = .lexical;
+				freshness_result.inference_unavailable = true;
+				freshness_result.inference_url = settings.embedding_url;
+			}
+		}
+		if (freshness_result.inference_unavailable and !storage.isIndexPopulated(db)) {
+			try req.respond(
+				"{\"error\":\"inference server unavailable and no usable existing index is available. Start or repair the embedding server, then retry.\"}\n",
+				.{ .status = .service_unavailable },
+			);
+			return;
+		}
 
 		const top_n = parsed.top_n orelse settings.search_top_n;
 		const request_has_weight_override = parsed.weight_vector != null or parsed.weight_lexical != null;
-		var execution = try search_service.execute(
+		var execution = try search_service.executeWithInferenceFallback(
 			allocator,
 			db,
 			plugin.defaultRegistry(),
@@ -276,7 +302,7 @@ fn handleRequest(
 			.{
 			.query = parsed.query,
 			.top_n = top_n,
-			.mode = if (freshness_result.outcome == .stale) .lexical else requested_mode,
+			.mode = effective_search_mode,
 			.fusion = parsed.fusion orelse settings.search_fusion,
 			.rrf_k = parsed.rrf_k orelse settings.search_rrf_k,
 			.fts_mode = parsed.fts_mode orelse settings.search_fts_mode,
@@ -295,7 +321,11 @@ fn handleRequest(
 			.search_weights = settings.search_weights,
 		});
 		defer execution.deinit();
-		const sr = execution.result;
+		if (execution.used_lexical_fallback) {
+			freshness_result.inference_unavailable = true;
+			freshness_result.inference_url = settings.embedding_url;
+		}
+		const sr = execution.execution.result;
 
 		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
@@ -318,6 +348,22 @@ fn handleRequest(
 		defer allocator.free(body);
 		var parsed = try parseIndexRequest(allocator, body);
 		defer parsed.deinit(allocator);
+
+		var availability_client = embedding_http.StdHttpTransport.init(allocator);
+		defer availability_client.deinit();
+		if (!embedding_http.inferenceAvailable(
+			allocator,
+			availability_client.transport(),
+			settings.embedding_url,
+			settings.embedding_model,
+			settings.embedding_dialect,
+		)) {
+			try req.respond(
+				"{\"error\":\"inference server unavailable; codescan cannot index new code. Start or repair the embedding server, then retry.\"}\n",
+				.{ .status = .service_unavailable },
+			);
+			return;
+		}
 
 		// Routed through the application service so the HTTP surface cannot
 		// drift from the CLI on filter, ignore, batching, or dimension
@@ -1182,6 +1228,32 @@ test "parseIndexRequest reads fields" {
 	try std.testing.expectEqualStrings("zig", req.ext.?);
 	try std.testing.expectEqualStrings("code", req.type.?);
 	try std.testing.expectEqual(true, req.include_node_modules.?);
+}
+
+test "HTTP index refuses an unavailable inference server before indexing" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "bge-large" });
+
+	var fake = FakeEmbedder{};
+	var settings = testSettings();
+	settings.embedding_url = "http://127.0.0.1:1";
+
+	const request_bytes =
+		"POST /index HTTP/1.1\r\n" ++
+		"Host: localhost\r\n" ++
+		"Content-Length: 2\r\n\r\n{}";
+	var reader = std.Io.Reader.fixed(request_bytes);
+	var out_buf: [512]u8 = undefined;
+	var writer = std.Io.Writer.fixed(&out_buf);
+	var http_server = std.http.Server.init(&reader, &writer);
+	var req = try http_server.receiveHead();
+	try handleRequest(allocator, &req, db, fake.embedder(), settings);
+
+	const response = std.Io.Writer.buffered(&writer);
+	try std.testing.expect(std.mem.indexOf(u8, response, "503 Service Unavailable") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "inference server unavailable") != null);
 }
 
 test "handleRequest responds to /health" {

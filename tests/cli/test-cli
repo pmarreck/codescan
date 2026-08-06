@@ -69,6 +69,35 @@ main() {
 	[ "$(printf '%s' "$out" | jq -r '.freshness')" = reconciled ] || fail "fresh search omitted reconciled metadata"
 	[ ! -e "$fresh_root/.codescan/watcher.pid" ] || fail "fresh search implicitly started a watcher"
 
+	offline_root="$DB_DIR/offline-inference"
+	mkdir -p "$offline_root/.git"
+	printf '%s\n' 'pub fn indexedBeforeOutage() void {}' > "$offline_root/offline.zig"
+	capture "$BIN" index --root "$offline_root" --lexical-only --ollama-url http://127.0.0.1:1
+	[ "$rc" -eq 0 ] || fail "lexical-only index failed: $err"
+	offline_db="$offline_root/.codescan/index.sqlite3"
+	cmp_backup="$DB_DIR/offline-before.sqlite3"
+	cp "$offline_db" "$cmp_backup"
+
+	# A normal search retains its usable index when the embedding service goes
+	# away, reports the fallback in JSON for agents, and never tries to index.
+	capture "$BIN" search indexedBeforeOutage --root "$offline_root" --ollama-url http://127.0.0.1:1 --json
+	[ "$rc" -eq 0 ] || fail "search did not degrade to the existing lexical index: $err"
+	printf '%s' "$out" | jq -e '.results[] | select(.name == "indexedBeforeOutage")' >/dev/null || \
+		fail "offline search omitted the existing indexed symbol"
+	[ "$(printf '%s' "$out" | jq -r '.inference_unavailable')" = true ] || \
+		fail "offline search omitted inference_unavailable metadata"
+	printf '%s' "$out" | jq -r '.inference_help' | rg -q 'Start or repair the server' || \
+		fail "offline search omitted the recovery instruction for agents"
+
+	# A normal index requires embeddings. It must fail before opening the database
+	# in recreate mode, leaving the usable prior index byte-for-byte unchanged.
+	capture "$BIN" index --root "$offline_root" --ollama-url http://127.0.0.1:1
+	[ "$rc" -ne 0 ] || fail "semantic index unexpectedly succeeded without inference"
+	printf '%s' "$err" | rg -q 'Embedding server unreachable' || \
+		fail "offline semantic index did not explain the unavailable server"
+	cmp -s "$cmp_backup" "$offline_db" || \
+		fail "offline semantic index changed the existing database"
+
 	mv "$fresh_root/fresh.zig" "$fresh_root/fresh.zig.off"
 	capture "$BIN" search freshSearchValue --root "$fresh_root" --mode lexical --json
 	[ "$rc" -eq 0 ] || fail "fresh search failed after deleting the indexed source"

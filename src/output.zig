@@ -18,6 +18,8 @@ pub const FreshnessMetadata = struct {
 	outcome: freshness_mod.Outcome,
 	update_seconds: ?f64 = null,
 	watcher_recommended: bool = false,
+	inference_unavailable: bool = false,
+	inference_url: ?[]const u8 = null,
 };
 
 pub fn writeResults(
@@ -128,6 +130,9 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		update_seconds: ?f64,
 		watcher_recommended: bool,
 		watcher_help: ?[]const u8,
+		inference_unavailable: bool,
+		inference_url: ?[]const u8,
+		inference_help: ?[]const u8,
 		results: []const JsonResult,
 	};
 
@@ -170,6 +175,15 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		.watcher_recommended = if (options.freshness) |value| value.watcher_recommended else false,
 		.watcher_help = if (options.freshness) |value|
 			if (value.watcher_recommended) "codescan help watch" else null
+		else
+			null,
+		.inference_unavailable = if (options.freshness) |value| value.inference_unavailable else false,
+		.inference_url = if (options.freshness) |value| value.inference_url else null,
+		.inference_help = if (options.freshness) |value|
+			if (value.inference_unavailable)
+				"Embedding server unavailable. Results use the existing index in lexical mode and may be stale. Start or repair the server, then run codescan update."
+			else
+				null
 		else
 			null,
 		.results = rows,
@@ -661,6 +675,8 @@ test "json output exposes result-set confidence evidence and lexical sources" {
 			.outcome = .reconciled,
 			.update_seconds = 1.25,
 			.watcher_recommended = true,
+			.inference_unavailable = true,
+			.inference_url = "http://127.0.0.1:11434",
 		},
 	});
 	const payload = try out.toOwnedSlice();
@@ -674,6 +690,12 @@ test "json output exposes result-set confidence evidence and lexical sources" {
 	try std.testing.expectApproxEqAbs(@as(f64, 1.25), root.get("update_seconds").?.float, 0.001);
 	try std.testing.expect(root.get("watcher_recommended").?.bool);
 	try std.testing.expectEqualStrings("codescan help watch", root.get("watcher_help").?.string);
+	try std.testing.expect(root.get("inference_unavailable").?.bool);
+	try std.testing.expectEqualStrings("http://127.0.0.1:11434", root.get("inference_url").?.string);
+	try std.testing.expectEqualStrings(
+		"Embedding server unavailable. Results use the existing index in lexical mode and may be stale. Start or repair the server, then run codescan update.",
+		root.get("inference_help").?.string,
+	);
 	const results = root.get("results").?.array.items;
 	try std.testing.expectEqualStrings("weak", results[0].object.get("evidence").?.string);
 	try std.testing.expectEqualStrings("strong", results[1].object.get("evidence").?.string);
