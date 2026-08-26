@@ -1,5 +1,20 @@
 # Plan
 
+## 2026-08-26 — incoming Lean 4 field report
+
+- [x] Preserve the project’s tab indentation and determine whether Zig 0.16’s formatter can be configured for tabs. Avoid whole-file formatting churn in the meantime. (completed 2026-08-26 18:35 EDT)
+  Zig 0.16 exposes no indentation-style option and canonicalizes spaces. The touched Zig lines use tabs; a separate conversion remains pending so it cannot obscure functional work.
+- [ ] Evaluate `reformat_spaces_to_tabs` against a clean, passing revision, prove it is whitespace-only, and if so apply it in its own formatting commit. (Peter, 2026-08-26 18:19 EDT)
+  Curiosity poke: tab stops, embedded alignment, and non-source formats may make a mechanically whitespace-only change render differently or upset language-specific formatters.
+- [ ] Restore the documented `./build_all` five-target fleet gate, then make its target matrix a maintained, testable project contract. (discovered 2026-08-26 18:23 EDT)
+  Curiosity poke: Nix package outputs cover host systems only; the script must keep Windows targets explicit and must not silently substitute x86_64 macOS for the supported Windows builds.
+- [x] Reproduce and add first-class Lean symbol extraction for namespace-qualified `def` declarations, so symbol-directed edits can target them. (completed 2026-08-26 18:35 EDT)
+  `namespace` nodes participate in the symbol tree, dotted Lean suffixes normalize `/` hierarchy separators, and explicit relative `--file` paths now resolve from `--root`. Fresh-binary acceptance against `random` found both reported names.
+- [x] Make whole-file `replace_content` safe for regexes that also match the terminal empty suffix, or add an explicit whole-file mode. (completed 2026-08-26 18:35 EDT)
+  The terminal empty PCRE2 match after a nonempty whole-file match is ignored for validation and substitution; ordinary multi-match protection remains unchanged.
+- [x] Report semantic-index pending paths separately from watcher absence when the watcher is active. (completed 2026-08-26 18:35 EDT)
+  CLI stderr shows the exact observed path count; JSON search responses from CLI, HTTP, and MCP carry `semantic_index_pending_paths`. The read-only count uses the incremental indexer’s discovery, filtering, metadata, deletion, and incomplete-vector rules.
+
 ## 2026-07-30 — embedding-server probe bounds
 
 - [x] Repair the Windows linker assumptions and reverify the final ReleaseFast five-target fleet. (completed 2026-08-06 11:15 EDT)

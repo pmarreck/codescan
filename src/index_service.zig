@@ -96,6 +96,20 @@ pub fn execute(
 	};
 }
 
+/// Reports the semantic-index work an incremental pass would perform without
+/// mutating the index. Adapters use this only while a watcher owns updates.
+pub fn pendingPathCounts(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	registry: plugin.Registry,
+	request: Request,
+) !indexer.PendingPathCounts {
+	var filter_lists = try filters.buildIndexFilters(allocator, request.index_ext, request.index_type);
+	defer filter_lists.deinit(allocator);
+	const options = resolveOptions(request, filter_lists.exts.items, filter_lists.kinds.items);
+	return indexer.pendingPathCounts(allocator, db, request.root_path, registry, options);
+}
+
 test "resolveOptions maps application indexing policy and resolved filters" {
 	const request = Request{
 		.root_path = "src",
@@ -169,4 +183,42 @@ test "execute owns full and incremental index dispatch" {
 	);
 	try std.testing.expectEqual(@as(usize, 1), incremental.incremental.new_files);
 	try std.testing.expectEqual(@as(usize, 1), incremental.incremental.unchanged_files);
+}
+
+test "pendingPathCounts owns index filter resolution" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "first.zig",
+		.data = "pub fn first() void {}\n",
+	});
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	const request = Request{
+		.root_path = root,
+		.embedding_dim = 2,
+		.embedding_model = "test-model",
+		.batch_size = 2,
+		.max_file_size = 4096,
+		.index_ext = "zig",
+		.require_embeddings = false,
+	};
+	_ = try execute(allocator, db, plugin.defaultRegistry(), embedding.NullEmbedder.embedder(), request);
+
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "second.zig",
+		.data = "pub fn second() void {}\n",
+	});
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "notes.md",
+		.data = "not in this semantic index\n",
+	});
+
+	const pending = try pendingPathCounts(allocator, db, plugin.defaultRegistry(), request);
+	try std.testing.expectEqual(@as(usize, 1), pending.new_files);
+	try std.testing.expectEqual(@as(usize, 1), pending.total());
 }

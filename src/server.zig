@@ -269,6 +269,14 @@ fn handleRequest(
 			search.SearchMode.lexical
 		else
 			requested_mode;
+		if (freshness_result.outcome == .watcher_active) {
+			freshness_result.semantic_index_pending_paths = main.semanticIndexPendingPathCount(
+				allocator,
+				db,
+				updateSettings(settings),
+				plugin.defaultRegistry(),
+			) catch null;
+		}
 		if (effective_search_mode != .lexical) {
 			var availability_client = embedding_http.StdHttpTransport.init(allocator);
 			defer availability_client.deinit();

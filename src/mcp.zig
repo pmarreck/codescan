@@ -500,6 +500,14 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			const msg = msg_writer.buffered();
 			return toolError("{s}", .{msg});
 		}
+		if (freshness_result.outcome == .watcher_active) {
+			freshness_result.semantic_index_pending_paths = main.semanticIndexPendingPathCount(
+				allocator,
+				db,
+				updateSettings(mcp_settings),
+				plugin.defaultRegistry(),
+			) catch null;
+		}
 
 		var http_client = embedding_http.StdHttpTransport.init(allocator);
 		defer http_client.deinit();

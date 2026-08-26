@@ -2876,6 +2876,7 @@ pub const SearchFreshness = struct {
 	outcome: freshness.Outcome,
 	elapsed_ns: u64,
 	watcher_advisory: ?freshness.WatcherAdvisory,
+	semantic_index_pending_paths: ?usize = null,
 	inference_unavailable: bool = false,
 	inference_url: ?[]const u8 = null,
 
@@ -2888,11 +2889,38 @@ pub const SearchFreshness = struct {
 				@as(f64, @floatFromInt(self.elapsed_ns)) /
 					@as(f64, @floatFromInt(std.time.ns_per_s)),
 			.watcher_recommended = self.watcher_advisory != null,
+			.semantic_index_pending_paths = self.semantic_index_pending_paths,
 			.inference_unavailable = self.inference_unavailable,
 			.inference_url = self.inference_url,
 		};
 	}
 };
+
+/// Counts paths that a semantic incremental update would still reconcile.
+/// This is intentionally read-only so an active watcher remains the sole
+/// writer of the project index.
+pub fn semanticIndexPendingPathCount(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	settings: UpdateSettings,
+	registry: plugin.Registry,
+) !usize {
+	const pending = try index_service.pendingPathCounts(allocator, db, registry, .{
+		.root_path = settings.root_path,
+		.embedding_dim = settings.embedding_dim,
+		.embedding_model = settings.embedding_model,
+		.batch_size = settings.batch_size,
+		.max_file_size = settings.max_file_size,
+		.index_ext = settings.index_ext,
+		.index_type = settings.index_type,
+		.ignore_global = settings.ignore_global,
+		.ignore_per_language = settings.ignore_lang,
+		.include_node_modules = settings.include_node_modules,
+		.always_include = settings.always_include,
+		.require_embeddings = true,
+	});
+	return pending.total();
+}
 
 /// Reconciles on demand when no watcher owns freshness for this project.
 pub fn ensureSearchFreshness(
@@ -2949,9 +2977,10 @@ fn runSearch(
 	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
 
+	const freshness_settings = updateSettings(settings);
 	var freshness_result = ensureSearchFreshness(
 		allocator,
-		updateSettings(settings),
+		freshness_settings,
 		registry,
 		parsed.regex_search or settings.search_mode == .lexical,
 	) catch |err| {
@@ -3016,6 +3045,18 @@ fn runSearch(
 		_ = stderr.print("Run 'codescan index' to rebuild the index with the current model.\n", .{}) catch {};
 		_ = stderr.flush() catch {};
 		std.process.exit(1);
+	}
+	if (freshness_result.outcome == .watcher_active and !parsed.regex_search) {
+		freshness_result.semantic_index_pending_paths = semanticIndexPendingPathCount(
+			allocator,
+			db,
+			freshness_settings,
+			registry,
+		) catch null;
+		if (freshness_result.semantic_index_pending_paths) |pending_paths| {
+			output.writeSemanticIndexPendingNote(stderr, pending_paths) catch {};
+			_ = stderr.flush() catch {};
+		}
 	}
 
 	// Regex search: skip vector/FTS entirely
@@ -3613,7 +3654,12 @@ pub fn runSymbols(
 	var first_file = true;
 	var any_found = false;
 	for (file_list) |file_path| {
-		const source = readFileContents(allocator, file_path) catch continue;
+		const rooted_file_path: ?[]const u8 = if (files.len > 0 and !std.fs.path.isAbsolute(file_path))
+			try std.fs.path.join(allocator, &.{ root_path orelse ".", file_path })
+		else
+			null;
+		defer if (rooted_file_path) |path| allocator.free(path);
+		const source = readFileContents(allocator, rooted_file_path orelse file_path) catch continue;
 		defer allocator.free(source);
 
 		const ext = std.fs.path.extension(file_path);
@@ -3716,6 +3762,35 @@ pub fn runSymbols(
 			try writer.print("No symbols matching '{s}' found\n", .{pattern.?});
 		}
 	}
+}
+
+test "runSymbols resolves explicit relative files from the supplied root" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "lean/Randoml");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "lean/Randoml/Fixed.lean",
+		.data = "namespace Randoml.Fixed\ndef toIntTrunc : Nat := 0\nend Randoml.Fixed\n",
+	});
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const files = [_][]const u8{"lean/Randoml/Fixed.lean"};
+
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runSymbols(
+		allocator,
+		&files,
+		"Randoml.Fixed.toIntTrunc",
+		false,
+		.human,
+		&out.writer,
+		root,
+	);
+	const rendered = try out.toOwnedSlice();
+	defer allocator.free(rendered);
+	try std.testing.expect(std.mem.indexOf(u8, rendered, "Randoml.Fixed/toIntTrunc") != null);
 }
 
 fn findAndPrintMatch(
@@ -4712,12 +4787,16 @@ pub fn runReplaceContentMultiFile(
 			};
 			defer re.deinit();
 
-			var match_count: usize = 0;
+			var match_positions = @as(std.ArrayListUnmanaged(pcre2.Match), .empty);
+			defer match_positions.deinit(allocator);
 			var offset: usize = 0;
 			while (re.findPosition(source, offset)) |m| {
-				match_count += 1;
+				try match_positions.append(allocator, m);
 				offset = if (m.end > m.start) m.end else m.start + 1;
 			}
+			const redundant_terminal_empty_match = hasRedundantTerminalWholeFileMatch(match_positions.items, source.len);
+			if (redundant_terminal_empty_match) match_positions.items.len -= 1;
+			const match_count = match_positions.items.len;
 			if (match_count == 0) {
 				allocator.free(abs_path);
 				allocator.free(source);
@@ -4729,7 +4808,7 @@ pub fn runReplaceContentMultiFile(
 				allocator.free(source);
 				return;
 			}
-			const result = re.substituteOwned(allocator, source, repl, replace_all_flag) catch {
+			const result = re.substituteOwned(allocator, source, repl, replace_all_flag and !redundant_terminal_empty_match) catch {
 				allocator.free(abs_path);
 				allocator.free(source);
 				continue;
@@ -4867,6 +4946,17 @@ pub fn runReplaceContentMultiFile(
 	}
 }
 
+/// PCRE2 reports an empty match after a nonempty `.*` match that already
+/// consumed the entire file. For content replacement that terminal suffix is
+/// not a second occurrence and must not duplicate a whole-file replacement.
+fn hasRedundantTerminalWholeFileMatch(matches: []const pcre2.Match, source_len: usize) bool {
+	if (source_len == 0 or matches.len != 2) return false;
+	const whole_file = matches[0];
+	const terminal_empty = matches[1];
+	return whole_file.start == 0 and whole_file.end == source_len and
+		terminal_empty.start == source_len and terminal_empty.end == source_len;
+}
+
 pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, needle: []const u8, regex_mode: bool, replace_all_flag: bool, input_text: []const u8, version: ?[]const u8, writer: *std.Io.Writer) !void {
 	// Strip trailing newline from replacement (stdin usually adds one)
 	const repl = if (input_text.len > 0 and input_text[input_text.len - 1] == '\n')
@@ -4889,14 +4979,12 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 		defer re.deinit();
 
 		// Count matches for validation
-		var match_count: usize = 0;
 		var match_positions = @as(std.ArrayListUnmanaged(pcre2.Match), .empty);
 		defer match_positions.deinit(allocator);
 		{
 			var offset: usize = 0;
 			while (re.findPosition(source, offset)) |m| {
 				try match_positions.append(allocator, m);
-				match_count += 1;
 				if (m.end > offset) {
 					offset = m.end;
 				} else {
@@ -4904,6 +4992,10 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 				}
 			}
 		}
+
+		const redundant_terminal_empty_match = hasRedundantTerminalWholeFileMatch(match_positions.items, source.len);
+		if (redundant_terminal_empty_match) match_positions.items.len -= 1;
+		const match_count = match_positions.items.len;
 
 		if (match_count == 0) {
 			try writer.print("error: no match found for '{s}' in {s}\n", .{ needle, file_path });
@@ -4915,7 +5007,7 @@ pub fn runReplaceContent(allocator: std.mem.Allocator, file_path: []const u8, ne
 		}
 
 		// Perform substitution
-		const result = re.substituteOwned(allocator, source, repl, replace_all_flag) catch {
+		const result = re.substituteOwned(allocator, source, repl, replace_all_flag and !redundant_terminal_empty_match) catch {
 			try writer.print("error: substitution failed\n", .{});
 			return;
 		};
@@ -5443,12 +5535,28 @@ fn matchesNamePath(pattern: []const u8, name_path: []const u8, name: []const u8)
 	if (pattern[0] == '/') {
 		return std.mem.eql(u8, pattern[1..], name_path);
 	}
+	// A bare symbol name always selects the leaf, even when it contains dots.
+	if (std.mem.eql(u8, pattern, name)) return true;
 	// Relative path: contains "/"
 	if (std.mem.indexOf(u8, pattern, "/") != null) {
 		return std.mem.endsWith(u8, name_path, pattern);
 	}
-	// Simple name: matches the symbol's own name
-	return std.mem.eql(u8, pattern, name);
+	// Lean's namespace-qualified names conventionally use dots. SymbolTree
+	// preserves a dotted namespace segment and uses '/' only for nesting, so
+	// accept a dotted suffix by treating those hierarchy separators as dots.
+	if (std.mem.indexOfScalar(u8, pattern, '.') != null and std.mem.indexOfScalar(u8, name_path, '/') != null) {
+		return matchesDottedNamePathSuffix(pattern, name_path);
+	}
+	return false;
+}
+
+fn matchesDottedNamePathSuffix(pattern: []const u8, name_path: []const u8) bool {
+	if (pattern.len > name_path.len) return false;
+	const suffix = name_path[name_path.len - pattern.len ..];
+	for (pattern, suffix) |pattern_byte, path_byte| {
+		if (pattern_byte != if (path_byte == '/') '.' else path_byte) return false;
+	}
+	return true;
 }
 
 fn formatSymbolsWithHashes(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer, depth: usize) !void {
@@ -8400,6 +8508,59 @@ test "runReplaceContent errors when no version provided" {
 	try std.testing.expectEqualStrings(content, after);
 }
 
+test "runReplaceContent treats a whole-file regex terminal suffix as one match" {
+	const allocator = std.testing.allocator;
+	const cases = .{
+		.{ false, "Replaced 1 occurrence" },
+		.{ true, "Replaced 1 occurrence" },
+	};
+
+	inline for (cases, 0..) |case, index| {
+		var tmp = std.testing.tmpDir(.{});
+		defer tmp.cleanup();
+		const source = "first line\nsecond line\n";
+		const file_name = comptime std.fmt.comptimePrint("whole-file-{d}.txt", .{index});
+		try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = file_name, .data = source });
+		const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), file_name, allocator);
+		defer allocator.free(abs_path);
+		const version = (try hashline.computeFileVersion(allocator, source)).?;
+
+		var out: std.Io.Writer.Allocating = .init(allocator);
+		defer out.deinit();
+		try runReplaceContent(allocator, abs_path, "(?s).*", true, case[0], "replacement\n", &version, &out.writer);
+		const output_text = try out.toOwnedSlice();
+		defer allocator.free(output_text);
+		try std.testing.expect(std.mem.indexOf(u8, output_text, case[1]) != null);
+
+		const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), file_name, allocator, .limited(8192));
+		defer allocator.free(after);
+		try std.testing.expectEqualStrings("replacement", after);
+	}
+}
+
+test "runReplaceContent retains the multi-match guard for ordinary regexes" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const source = "alpha alpha\n";
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "ordinary.txt", .data = source });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "ordinary.txt", allocator);
+	defer allocator.free(abs_path);
+	const version = (try hashline.computeFileVersion(allocator, source)).?;
+
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runReplaceContent(allocator, abs_path, "alpha", true, false, "beta\n", &version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: found 2 matches; use --all") != null);
+
+	const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "ordinary.txt", allocator, .limited(8192));
+	defer allocator.free(after);
+	try std.testing.expectEqualStrings(source, after);
+}
+
 test "runReplaceSymbol rejects stale version" {
 	const allocator = std.testing.allocator;
 
@@ -8556,6 +8717,55 @@ test "runInsertAfter rejects stale version" {
 	defer allocator.free(output_text);
 
 	try std.testing.expect(std.mem.indexOf(u8, output_text, "error: file modified since last read") != null);
+}
+
+test "runInsertAfter finds a Lean definition by qualified namespace path" {
+	const allocator = std.testing.allocator;
+
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const content =
+		"namespace Randoml.Fixed\n" ++
+		"def toIntTrunc (value : Nat) : Nat := value\n" ++
+		"end Randoml.Fixed\n";
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "Fixed.lean", .data = content });
+	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "Fixed.lean", allocator);
+	defer allocator.free(abs_path);
+	const version = (try hashline.computeFileVersion(allocator, content)).?;
+
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	try runInsertAfter(allocator, abs_path, "Randoml.Fixed.toIntTrunc", "def inserted : Nat := 0", &version, &out.writer);
+	const output_text = try out.toOwnedSlice();
+	defer allocator.free(output_text);
+	try std.testing.expect(std.mem.indexOf(u8, output_text, "Inserted after Randoml.Fixed.toIntTrunc") != null);
+
+	const after = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), "Fixed.lean", allocator, .limited(8192));
+	defer allocator.free(after);
+	try std.testing.expectEqualStrings(
+		"namespace Randoml.Fixed\n" ++
+			"def toIntTrunc (value : Nat) : Nat := value\n" ++
+			"def inserted : Nat := 0\n" ++
+			"end Randoml.Fixed\n",
+		after,
+	);
+}
+
+test "matchesNamePath accepts Lean dotted qualification as a classifier" {
+	const cases = .{
+		.{ "toIntTrunc", "Randoml.Fixed/toIntTrunc", "toIntTrunc", true },
+		.{ "Randoml.Fixed/toIntTrunc", "Randoml.Fixed/toIntTrunc", "toIntTrunc", true },
+		.{ "Randoml.Fixed.toIntTrunc", "Randoml.Fixed/toIntTrunc", "toIntTrunc", true },
+		.{ "Fixed.toIntTrunc", "Randoml.Fixed/toIntTrunc", "toIntTrunc", true },
+		.{ "Randoml.Fixed.Value.zero", "Randoml.Fixed/Value.zero", "Value.zero", true },
+		.{ "Randoml.Fixed.missing", "Randoml.Fixed/toIntTrunc", "toIntTrunc", false },
+		.{ "RandomlX.Fixed.toIntTrunc", "Randoml.Fixed/toIntTrunc", "toIntTrunc", false },
+		.{ "Randoml.Fixed.toIntTrunc.extra", "Randoml.Fixed/toIntTrunc", "toIntTrunc", false },
+	};
+
+	inline for (cases) |case| {
+		try std.testing.expectEqual(case[3], matchesNamePath(case[0], case[1], case[2]));
+	}
 }
 
 test "runInsertBefore rejects stale version" {

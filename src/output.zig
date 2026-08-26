@@ -18,6 +18,7 @@ pub const FreshnessMetadata = struct {
 	outcome: freshness_mod.Outcome,
 	update_seconds: ?f64 = null,
 	watcher_recommended: bool = false,
+	semantic_index_pending_paths: ?usize = null,
 	inference_unavailable: bool = false,
 	inference_url: ?[]const u8 = null,
 };
@@ -130,6 +131,7 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 		update_seconds: ?f64,
 		watcher_recommended: bool,
 		watcher_help: ?[]const u8,
+		semantic_index_pending_paths: ?usize,
 		inference_unavailable: bool,
 		inference_url: ?[]const u8,
 		inference_help: ?[]const u8,
@@ -177,6 +179,7 @@ fn writeJson(allocator: std.mem.Allocator, writer: *std.Io.Writer, results: []co
 			if (value.watcher_recommended) "codescan help watch" else null
 		else
 			null,
+		.semantic_index_pending_paths = if (options.freshness) |value| value.semantic_index_pending_paths else null,
 		.inference_unavailable = if (options.freshness) |value| value.inference_unavailable else false,
 		.inference_url = if (options.freshness) |value| value.inference_url else null,
 		.inference_help = if (options.freshness) |value|
@@ -202,6 +205,14 @@ pub fn writeConfidenceNote(writer: *std.Io.Writer, results: []const search.Resul
 		),
 		.none, .strong => {},
 	}
+}
+
+/// Renders an active watcher's observed semantic-index backlog for stderr.
+pub fn writeSemanticIndexPendingNote(writer: *std.Io.Writer, pending_paths: usize) !void {
+	try writer.print(
+		"note: watcher is active; semantic index has {d} pending path{s}.\n",
+		.{ pending_paths, if (pending_paths == 1) "" else "s" },
+	);
 }
 
 /// Renders the discovery phase from explicit state so timing and I/O remain
@@ -672,9 +683,8 @@ test "json output exposes result-set confidence evidence and lexical sources" {
 	defer out.deinit();
 	try writeResults(allocator, &out.writer, .json, &.{ weak, comment }, .{
 		.freshness = .{
-			.outcome = .reconciled,
-			.update_seconds = 1.25,
-			.watcher_recommended = true,
+			.outcome = .watcher_active,
+			.semantic_index_pending_paths = 3,
 			.inference_unavailable = true,
 			.inference_url = "http://127.0.0.1:11434",
 		},
@@ -686,10 +696,11 @@ test "json output exposes result-set confidence evidence and lexical sources" {
 	defer parsed.deinit();
 	const root = parsed.value.object;
 	try std.testing.expectEqualStrings("mixed", root.get("confidence").?.string);
-	try std.testing.expectEqualStrings("reconciled", root.get("freshness").?.string);
-	try std.testing.expectApproxEqAbs(@as(f64, 1.25), root.get("update_seconds").?.float, 0.001);
-	try std.testing.expect(root.get("watcher_recommended").?.bool);
-	try std.testing.expectEqualStrings("codescan help watch", root.get("watcher_help").?.string);
+	try std.testing.expectEqualStrings("watcher_active", root.get("freshness").?.string);
+	try std.testing.expect(root.get("update_seconds").? == .null);
+	try std.testing.expect(!root.get("watcher_recommended").?.bool);
+	try std.testing.expect(root.get("watcher_help").? == .null);
+	try std.testing.expectEqual(@as(i64, 3), root.get("semantic_index_pending_paths").?.integer);
 	try std.testing.expect(root.get("inference_unavailable").?.bool);
 	try std.testing.expectEqualStrings("http://127.0.0.1:11434", root.get("inference_url").?.string);
 	try std.testing.expectEqualStrings(
@@ -746,4 +757,20 @@ test "confidence note warns for mixed and weak result sets without hiding hits" 
 	const strong_payload = try strong_out.toOwnedSlice();
 	defer std.testing.allocator.free(strong_payload);
 	try std.testing.expectEqual(@as(usize, 0), strong_payload.len);
+}
+
+test "semantic-index pending note identifies the exact active-watcher backlog" {
+	const allocator = std.testing.allocator;
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+
+	try writeSemanticIndexPendingNote(&out.writer, 1);
+	try writeSemanticIndexPendingNote(&out.writer, 3);
+	const rendered = try out.toOwnedSlice();
+	defer allocator.free(rendered);
+	try std.testing.expectEqualStrings(
+		"note: watcher is active; semantic index has 1 pending path.\n" ++
+			"note: watcher is active; semantic index has 3 pending paths.\n",
+		rendered,
+	);
 }

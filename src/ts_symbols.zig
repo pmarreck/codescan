@@ -383,6 +383,7 @@ const nim_mappings = [_]SymbolMapping{
 
 // ── Lean ──
 const lean_mappings = [_]SymbolMapping{
+	.{ .node_type = "namespace", .kind = .module, .name_field = .name },
     .{ .node_type = "def", .kind = .function, .name_field = .first_identifier },
     .{ .node_type = "theorem", .kind = .function, .name_field = .first_identifier },
     .{ .node_type = "structure", .kind = .struct_decl, .name_field = .first_identifier },

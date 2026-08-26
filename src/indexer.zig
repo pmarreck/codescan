@@ -317,6 +317,119 @@ pub const IncrementalStats = struct {
     symbols: usize,
 };
 
+/// A read-only snapshot of paths an incremental semantic index pass would
+/// need to reconcile. Each path belongs to one category so `total` is an
+/// exact count of distinct pending paths.
+pub const PendingPathCounts = struct {
+	new_files: usize = 0,
+	modified_files: usize = 0,
+	deleted_files: usize = 0,
+	incomplete_files: usize = 0,
+
+	pub fn total(self: PendingPathCounts) usize {
+		return self.new_files + self.modified_files + self.deleted_files + self.incomplete_files;
+	}
+};
+
+const IndexedFileMetadata = struct {
+	mtime: i64,
+	size: i64,
+};
+
+fn metadataMatches(previous: IndexedFileMetadata, current_mtime: i64, current_size: i64) bool {
+	return previous.mtime == current_mtime and previous.size == current_size;
+}
+
+/// Counts pending semantic-index paths without changing the database or the
+/// filesystem. This deliberately shares the incremental indexer's discovery,
+/// filtering, and metadata comparison rules.
+pub fn pendingPathCounts(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	root_path: []const u8,
+	registry: plugin.Registry,
+	options: Options,
+) !PendingPathCounts {
+	const files = try scan.findFilesWithProgress(
+		allocator,
+		root_path,
+		registry,
+		options.ignore,
+		null,
+	);
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+
+	const indexed = try storage.getAllIndexedFiles(db, allocator);
+	defer {
+		for (indexed) |item| allocator.free(item.file_path);
+		allocator.free(indexed);
+	}
+
+	var incomplete_set = std.StringHashMap(void).init(allocator);
+	defer incomplete_set.deinit();
+	var counts = PendingPathCounts{};
+	if (options.require_embeddings) {
+		const incomplete = try storage.getIncompleteIndexedFiles(db, allocator);
+		defer {
+			for (incomplete) |path| allocator.free(path);
+			allocator.free(incomplete);
+		}
+		for (incomplete) |path| {
+			try incomplete_set.put(path, {});
+			counts.incomplete_files += 1;
+		}
+	}
+
+	var indexed_map = std.StringHashMap(IndexedFileMetadata).init(allocator);
+	defer indexed_map.deinit();
+	for (indexed) |item| {
+		try indexed_map.put(item.file_path, .{ .mtime = item.mtime_ns, .size = item.size });
+	}
+
+	var current_set = std.StringHashMap(void).init(allocator);
+	defer current_set.deinit();
+	for (files) |path| {
+		try current_set.put(path, {});
+	}
+
+	for (indexed) |item| {
+		if (!current_set.contains(item.file_path) and !incomplete_set.contains(item.file_path)) {
+			counts.deleted_files += 1;
+		}
+	}
+
+	var root_dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{});
+	defer root_dir.close(io_singleton.getOrInit());
+	for (files) |rel_path| {
+		const extractor = scan.findExtractor(root_dir, registry, rel_path) orelse continue;
+		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
+		if (!extAllowed(rel_path, options.allowed_exts)) continue;
+		if (incomplete_set.contains(rel_path)) continue;
+
+		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
+		defer allocator.free(full_path);
+		const file = std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), full_path, .{}) catch continue;
+		defer file.close(io_singleton.getOrInit());
+		const stat = try file.stat(io_singleton.getOrInit());
+		if (options.max_file_size > 0 and stat.size > options.max_file_size) continue;
+
+		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
+		const current_size: i64 = @intCast(stat.size);
+		if (indexed_map.get(rel_path)) |previous| {
+			if (!metadataMatches(previous, current_mtime, current_size)) {
+				counts.modified_files += 1;
+			}
+		} else {
+			counts.new_files += 1;
+		}
+	}
+
+	return counts;
+}
+
 pub fn indexIncremental(
     allocator: std.mem.Allocator,
     db: storage.Db,
@@ -372,8 +485,7 @@ pub fn indexIncremental(
     }
 
     // Build lookup map of previously indexed files (mtime + size for change detection)
-    const MtimeAndSize = struct { mtime: i64, size: i64 };
-    var indexed_map = std.StringHashMap(MtimeAndSize).init(allocator);
+    var indexed_map = std.StringHashMap(IndexedFileMetadata).init(allocator);
     defer indexed_map.deinit();
     for (indexed) |item| {
         try indexed_map.put(item.file_path, .{ .mtime = item.mtime_ns, .size = item.size });
@@ -457,7 +569,7 @@ pub fn indexIncremental(
 
         // Check if file is unchanged (both mtime and size must match to catch same-second edits)
         if (indexed_map.get(rel_path)) |prev| {
-            if (prev.mtime == current_mtime and prev.size == current_size) {
+            if (metadataMatches(prev, current_mtime, current_size)) {
                 stats.unchanged_files += 1;
                 continue;
             }
@@ -1697,6 +1809,43 @@ test "indexIncremental indexes new files and skips unchanged" {
         @as(i96, 123_456_789_000),
         marker_after_noop.mtime.nanoseconds,
     );
+}
+
+test "pendingPathCounts matches the incremental classifier without modifying the index" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/changed.zig", .data = "pub fn changed() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/deleted.zig", .data = "pub fn deleted() void {}\n" });
+
+	const allocator = std.testing.allocator;
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+
+	var fake = FakeEmbedder{};
+	const options = Options{
+		.embedding_dim = 2,
+		.batch_size = 2,
+		.allowed_exts = &.{".zig"},
+	};
+	_ = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), options);
+
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/changed.zig", .data = "pub fn changed() void { _ = 12345; }\n" });
+	try tmp.dir.deleteFile(io_singleton.getOrInit(), "src/deleted.zig");
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/new.zig", .data = "pub fn newFile() void {}\n" });
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "README.md", .data = "ignored by the index filter\n" });
+
+	const pending = try pendingPathCounts(allocator, db, root, plugin.defaultRegistry(), options);
+	try std.testing.expectEqual(@as(usize, 1), pending.new_files);
+	try std.testing.expectEqual(@as(usize, 1), pending.modified_files);
+	try std.testing.expectEqual(@as(usize, 1), pending.deleted_files);
+	try std.testing.expectEqual(@as(usize, 0), pending.incomplete_files);
+	try std.testing.expectEqual(@as(usize, 3), pending.total());
+	try std.testing.expectEqual(@as(i64, 2), try storage.countDistinctFiles(db, allocator));
 }
 
 test "indexIncremental indexes extensionless scripts classified by shebang" {
