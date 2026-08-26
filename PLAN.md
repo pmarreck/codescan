@@ -6,8 +6,8 @@
   Zig 0.16 exposes no indentation-style option and canonicalizes spaces. The touched Zig lines use tabs; a separate conversion remains pending so it cannot obscure functional work.
 - [x] Evaluate `reformat_spaces_to_tabs` against a clean, passing revision, prove it is whitespace-only, and if so apply it in its own formatting commit. (completed 2026-08-26 18:38 EDT)
   Its own test suite passed. Output-only diffs showed that Markdown would change rendering, so conversion covered 102 tracked Zig files plus `build`; `git diff --ignore-all-space`, `git diff --check`, `./test`, and every supported cross target passed.
-- [ ] Restore the documented `./build_all` five-target fleet gate, then make its target matrix a maintained, testable project contract. (discovered 2026-08-26 18:23 EDT)
-  Curiosity poke: Nix package outputs cover host systems only; the script must keep Windows targets explicit and must not silently substitute x86_64 macOS for the supported Windows builds.
+- [x] Restore the documented `./build_all` five-target fleet gate, then make its target matrix a maintained, testable project contract. (completed 2026-08-26 18:42 EDT)
+  It builds macOS ARM64, Linux ARM64/x86_64, and Windows ARM64/x86_64 before the final native `./build`. The suite checks the exact target set and executable contract, while `./build_all` itself passed and left a native executable in `zig-out/bin`.
 - [x] Reproduce and add first-class Lean symbol extraction for namespace-qualified `def` declarations, so symbol-directed edits can target them. (completed 2026-08-26 18:35 EDT)
   `namespace` nodes participate in the symbol tree, dotted Lean suffixes normalize `/` hierarchy separators, and explicit relative `--file` paths now resolve from `--root`. Fresh-binary acceptance against `random` found both reported names.
 - [x] Make whole-file `replace_content` safe for regexes that also match the terminal empty suffix, or add an explicit whole-file mode. (completed 2026-08-26 18:35 EDT)

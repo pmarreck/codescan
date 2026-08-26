@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -u
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+script="$root/build_all"
+failed=0
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	failed=1
+}
+
+if [ ! -x "$script" ]; then
+	fail "build_all must be an executable project entrypoint"
+	exit "$failed"
+fi
+
+for target in \
+	"aarch64-macos" \
+	"aarch64-linux-musl" \
+	"x86_64-linux-musl" \
+	"aarch64-windows-gnu" \
+	"x86_64-windows-gnu"
+do
+	if ! rg -Fq -- "\"$target\"" "$script"; then
+		fail "build_all is missing $target"
+	fi
+done
+
+if ! rg -Fq -- 'zig build "-Dtarget=$target"' "$script"; then
+	fail "build_all must pass each target to Zig"
+fi
+
+if rg -Fq -- "x86_64-macos" "$script"; then
+	fail "build_all must not restore the retired x86_64 macOS target"
+fi
+
+if ! rg -Fq -- "./build" "$script"; then
+	fail "build_all must finish with the native ./build artifact"
+fi
+
+exit "$failed"

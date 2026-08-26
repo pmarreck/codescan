@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -u
+
+run() {
+	"$@" || {
+		echo "FAILED: $*" >&2
+		exit 1
+	}
+}
+
+if [ "$#" -ne 0 ]; then
+	echo "usage: ./build_all" >&2
+	exit 64
+fi
+
+for target in \
+	"aarch64-macos" \
+	"aarch64-linux-musl" \
+	"x86_64-linux-musl" \
+	"aarch64-windows-gnu" \
+	"x86_64-windows-gnu"
+do
+	run nix develop -c zig build "-Dtarget=$target"
+done
+
+# Run native last so zig-out/bin contains a binary for this machine.
+run ./build
