@@ -4,8 +4,8 @@
 
 - [x] Preserve the project’s tab indentation and determine whether Zig 0.16’s formatter can be configured for tabs. Avoid whole-file formatting churn in the meantime. (completed 2026-08-26 18:35 EDT)
   Zig 0.16 exposes no indentation-style option and canonicalizes spaces. The touched Zig lines use tabs; a separate conversion remains pending so it cannot obscure functional work.
-- [ ] Evaluate `reformat_spaces_to_tabs` against a clean, passing revision, prove it is whitespace-only, and if so apply it in its own formatting commit. (Peter, 2026-08-26 18:19 EDT)
-  Curiosity poke: tab stops, embedded alignment, and non-source formats may make a mechanically whitespace-only change render differently or upset language-specific formatters.
+- [x] Evaluate `reformat_spaces_to_tabs` against a clean, passing revision, prove it is whitespace-only, and if so apply it in its own formatting commit. (completed 2026-08-26 18:38 EDT)
+  Its own test suite passed. Output-only diffs showed that Markdown would change rendering, so conversion covered 102 tracked Zig files plus `build`; `git diff --ignore-all-space`, `git diff --check`, `./test`, and every supported cross target passed.
 - [ ] Restore the documented `./build_all` five-target fleet gate, then make its target matrix a maintained, testable project contract. (discovered 2026-08-26 18:23 EDT)
   Curiosity poke: Nix package outputs cover host systems only; the script must keep Windows targets explicit and must not silently substitute x86_64 macOS for the supported Windows builds.
 - [x] Reproduce and add first-class Lean symbol extraction for namespace-qualified `def` declarations, so symbol-directed edits can target them. (completed 2026-08-26 18:35 EDT)

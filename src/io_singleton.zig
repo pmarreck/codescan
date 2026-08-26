@@ -19,15 +19,15 @@ var current_env_map: ?*std.process.Environ.Map = null;
 
 /// Set during main() and from tests. Must be called before any get().
 pub fn set(io: std.Io) void {
-    current_io = io;
+	current_io = io;
 }
 
 pub fn setEnvMap(env_map: ?*std.process.Environ.Map) void {
-    current_env_map = env_map;
+	current_env_map = env_map;
 }
 
 pub fn getEnvMap() ?*std.process.Environ.Map {
-    return current_env_map;
+	return current_env_map;
 }
 
 /// Lazy default: returns the set env map, or initializes one from the
@@ -43,17 +43,17 @@ pub fn getEnvMap() ?*std.process.Environ.Map {
 /// the long-lived map as a leak).
 var _fallback_env_map: ?std.process.Environ.Map = null;
 pub fn getEnvMapOrInit(_: std.mem.Allocator) *std.process.Environ.Map {
-    if (current_env_map) |em| return em;
-    if (_fallback_env_map == null) {
-        const persist_alloc = std.heap.page_allocator;
-        if (@import("builtin").is_test) {
-            _fallback_env_map = std.testing.environ.createMap(persist_alloc) catch std.process.Environ.Map.init(persist_alloc);
-        } else {
-            _fallback_env_map = std.process.Environ.Map.init(persist_alloc);
-        }
-    }
-    current_env_map = &_fallback_env_map.?;
-    return current_env_map.?;
+	if (current_env_map) |em| return em;
+	if (_fallback_env_map == null) {
+		const persist_alloc = std.heap.page_allocator;
+		if (@import("builtin").is_test) {
+			_fallback_env_map = std.testing.environ.createMap(persist_alloc) catch std.process.Environ.Map.init(persist_alloc);
+		} else {
+			_fallback_env_map = std.process.Environ.Map.init(persist_alloc);
+		}
+	}
+	current_env_map = &_fallback_env_map.?;
+	return current_env_map.?;
 }
 
 /// Lazy default: returns the set io, or constructs a real `Io.Threaded`
@@ -75,33 +75,33 @@ pub fn getEnvMapOrInit(_: std.mem.Allocator) *std.process.Environ.Map {
 /// underflows `busy_count` in `Threaded.zig:1799`.
 var _fallback_threaded: ?std.Io.Threaded = null;
 pub fn getOrInit() std.Io {
-    if (current_io) |io| return io;
-    if (_fallback_threaded == null) {
-        _fallback_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
-    }
-    current_io = _fallback_threaded.?.io();
-    return current_io.?;
+	if (current_io) |io| return io;
+	if (_fallback_threaded == null) {
+		_fallback_threaded = std.Io.Threaded.init(std.heap.page_allocator, .{});
+	}
+	current_io = _fallback_threaded.?.io();
+	return current_io.?;
 }
 
 /// Shim for 0.15-style io_singleton.readToEndAlloc(file, alloc, max).
 /// Internally builds a buffered reader and uses allocRemaining.
 pub fn readToEndAlloc(file: std.Io.File, allocator: std.mem.Allocator, max: usize) ![]u8 {
-    const io = getOrInit();
-    var buf: [4096]u8 = undefined;
-    var r = file.reader(io, &buf);
-    return r.interface.allocRemaining(allocator, .limited(max));
+	const io = getOrInit();
+	var buf: [4096]u8 = undefined;
+	var r = file.reader(io, &buf);
+	return r.interface.allocRemaining(allocator, .limited(max));
 }
 
 /// Shim for 0.15-style io_singleton.getEnvVarOwned(alloc, name).
 /// Returns owned slice or `error.EnvironmentVariableNotFound`.
 pub const GetEnvVarError = error{ EnvironmentVariableNotFound } || std.mem.Allocator.Error;
 pub fn getEnvVarOwned(allocator: std.mem.Allocator, name: []const u8) GetEnvVarError![]u8 {
-    // Production main() always calls setEnvMap() early. Tests that touch this
-    // path without setting an env map get a lazy empty map back so they see
-    // EnvironmentVariableNotFound for everything (matching "no env var set").
-    const env_map = getEnvMapOrInit(allocator);
-    const v = env_map.get(name) orelse return error.EnvironmentVariableNotFound;
-    return try allocator.dupe(u8, v);
+	// Production main() always calls setEnvMap() early. Tests that touch this
+	// path without setting an env map get a lazy empty map back so they see
+	// EnvironmentVariableNotFound for everything (matching "no env var set").
+	const env_map = getEnvMapOrInit(allocator);
+	const v = env_map.get(name) orelse return error.EnvironmentVariableNotFound;
+	return try allocator.dupe(u8, v);
 }
 
 
@@ -115,23 +115,23 @@ pub const STDERR_BUF_SIZE: usize = 4096;
 ///   var w = io_singleton.stderrWriter(&buf);
 ///   const stderr = &w.interface;
 pub fn stderrWriter(buf: []u8) std.Io.File.Writer {
-    return std.Io.File.stderr().writer(getOrInit(), buf);
+	return std.Io.File.stderr().writer(getOrInit(), buf);
 }
 
 /// Create the parent directory of `path` if it doesn't exist.
 /// No-op when `path` has no directory component.
 pub fn ensureParentDir(path: []const u8) !void {
-    const dir = std.fs.path.dirname(path) orelse return;
-    try std.Io.Dir.cwd().createDirPath(getOrInit(), dir);
+	const dir = std.fs.path.dirname(path) orelse return;
+	try std.Io.Dir.cwd().createDirPath(getOrInit(), dir);
 }
 
 /// Look up env var `key`; return its owned value, or an owned copy of
 /// `fallback` if the variable is unset. Caller owns the returned slice.
 pub fn envOrDefault(allocator: std.mem.Allocator, key: []const u8, fallback: []const u8) ![]u8 {
-    return getEnvVarOwned(allocator, key) catch |err| switch (err) {
-        error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
-        else => return err,
-    };
+	return getEnvVarOwned(allocator, key) catch |err| switch (err) {
+		error.EnvironmentVariableNotFound => return allocator.dupe(u8, fallback),
+		else => return err,
+	};
 }
 
 

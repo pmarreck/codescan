@@ -16,18 +16,18 @@ pub fn extract(
 		symbols.deinit(allocator);
 	}
 
-    const frontmatter = parseLeadingFrontmatter(lines.items);
-    const content_start = if (frontmatter) |metadata| metadata.end_line_index + 1 else 0;
-    if (frontmatter) |metadata| {
-        try emitFrontmatter(allocator, file_path, metadata, &symbols);
-    }
+	const frontmatter = parseLeadingFrontmatter(lines.items);
+	const content_start = if (frontmatter) |metadata| metadata.end_line_index + 1 else 0;
+	if (frontmatter) |metadata| {
+		try emitFrontmatter(allocator, file_path, metadata, &symbols);
+	}
 
-    var section_start: usize = content_start;
+	var section_start: usize = content_start;
 	var section_heading: ?[]const u8 = null;
 	var section_lines = @as(std.ArrayListUnmanaged([]const u8), .empty);
 	defer section_lines.deinit(allocator);
 
-    for (lines.items[content_start..], content_start..) |line, idx| {
+	for (lines.items[content_start..], content_start..) |line, idx| {
 		if (isHeading(line)) {
 			if (section_lines.items.len > 0) {
 				try emitSection(allocator, file_path, section_heading, section_start, section_lines.items, &symbols);
@@ -47,149 +47,149 @@ pub fn extract(
 }
 
 const Frontmatter = struct {
-    end_line_index: usize,
-    description: ?[]const u8,
-    tags: ?FrontmatterTags,
+	end_line_index: usize,
+	description: ?[]const u8,
+	tags: ?FrontmatterTags,
 };
 
 const FrontmatterTags = union(enum) {
-    scalar: []const u8,
-    block: []const []const u8,
+	scalar: []const u8,
+	block: []const []const u8,
 };
 
 /// Recognizes only a complete leading YAML fence and the two memory-recall
 /// fields Codescan weights. Unfinished metadata remains ordinary searchable text.
 fn parseLeadingFrontmatter(lines: []const []const u8) ?Frontmatter {
-    if (lines.len < 2 or !std.mem.eql(u8, std.mem.trim(u8, lines[0], "\r"), "---")) return null;
-    var description: ?[]const u8 = null;
-    var scalar_tags: ?[]const u8 = null;
-    var block_tags_start: ?usize = null;
-    var block_tags_end: ?usize = null;
-    var reading_block_tags = false;
-    for (lines[1..], 1..) |line, index| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (std.mem.eql(u8, trimmed, "---")) {
-            const tags: ?FrontmatterTags = if (scalar_tags) |value|
-                .{ .scalar = value }
-            else if (block_tags_start) |start|
-                if (block_tags_end) |end| .{ .block = lines[start..end] } else null
-            else
-                null;
-            return .{
-                .end_line_index = index,
-                .description = description,
-                .tags = tags,
-            };
-        }
-        if (reading_block_tags) {
-            if (std.mem.startsWith(u8, trimmed, "-")) {
-                if (block_tags_start == null) block_tags_start = index;
-                block_tags_end = index + 1;
-                continue;
-            }
-            if (trimmed.len == 0) continue;
-            reading_block_tags = false;
-        }
-        if (frontmatterValue(trimmed, "description")) |value| {
-            description = unquoteYamlScalar(value);
-        } else if (frontmatterValue(trimmed, "tags")) |value| {
-            if (value.len == 0) {
-                reading_block_tags = true;
-            } else {
-                scalar_tags = value;
-            }
-        }
-    }
-    return null;
+	if (lines.len < 2 or !std.mem.eql(u8, std.mem.trim(u8, lines[0], "\r"), "---")) return null;
+	var description: ?[]const u8 = null;
+	var scalar_tags: ?[]const u8 = null;
+	var block_tags_start: ?usize = null;
+	var block_tags_end: ?usize = null;
+	var reading_block_tags = false;
+	for (lines[1..], 1..) |line, index| {
+		const trimmed = std.mem.trim(u8, line, " \t\r");
+		if (std.mem.eql(u8, trimmed, "---")) {
+			const tags: ?FrontmatterTags = if (scalar_tags) |value|
+				.{ .scalar = value }
+			else if (block_tags_start) |start|
+				if (block_tags_end) |end| .{ .block = lines[start..end] } else null
+			else
+				null;
+			return .{
+				.end_line_index = index,
+				.description = description,
+				.tags = tags,
+			};
+		}
+		if (reading_block_tags) {
+			if (std.mem.startsWith(u8, trimmed, "-")) {
+				if (block_tags_start == null) block_tags_start = index;
+				block_tags_end = index + 1;
+				continue;
+			}
+			if (trimmed.len == 0) continue;
+			reading_block_tags = false;
+		}
+		if (frontmatterValue(trimmed, "description")) |value| {
+			description = unquoteYamlScalar(value);
+		} else if (frontmatterValue(trimmed, "tags")) |value| {
+			if (value.len == 0) {
+				reading_block_tags = true;
+			} else {
+				scalar_tags = value;
+			}
+		}
+	}
+	return null;
 }
 
 fn frontmatterValue(line: []const u8, key: []const u8) ?[]const u8 {
-    if (!std.mem.startsWith(u8, line, key) or line.len <= key.len or line[key.len] != ':') return null;
-    return std.mem.trim(u8, line[key.len + 1 ..], " \t\r");
+	if (!std.mem.startsWith(u8, line, key) or line.len <= key.len or line[key.len] != ':') return null;
+	return std.mem.trim(u8, line[key.len + 1 ..], " \t\r");
 }
 
 fn unquoteYamlScalar(value: []const u8) []const u8 {
-    if (value.len >= 2 and
-        ((value[0] == '"' and value[value.len - 1] == '"') or
-            (value[0] == '\'' and value[value.len - 1] == '\'')))
-    {
-        return value[1 .. value.len - 1];
-    }
-    return value;
+	if (value.len >= 2 and
+		((value[0] == '"' and value[value.len - 1] == '"') or
+			(value[0] == '\'' and value[value.len - 1] == '\'')))
+	{
+		return value[1 .. value.len - 1];
+	}
+	return value;
 }
 
 fn normalizeInlineFrontmatterTags(allocator: std.mem.Allocator, raw: []const u8) ![]u8 {
-    var value = std.mem.trim(u8, raw, " \t\r");
-    if (value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']') {
-        value = value[1 .. value.len - 1];
-    }
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    var tags = std.mem.splitScalar(u8, value, ',');
-    var wrote_one = false;
-    while (tags.next()) |raw_tag| {
-        const tag = unquoteYamlScalar(std.mem.trim(u8, raw_tag, " \t\r"));
-        if (tag.len == 0) continue;
-        if (wrote_one) try out.writer.writeByte(' ');
-        try out.writer.writeAll(tag);
-        wrote_one = true;
-    }
-    return out.toOwnedSlice();
+	var value = std.mem.trim(u8, raw, " \t\r");
+	if (value.len >= 2 and value[0] == '[' and value[value.len - 1] == ']') {
+		value = value[1 .. value.len - 1];
+	}
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	var tags = std.mem.splitScalar(u8, value, ',');
+	var wrote_one = false;
+	while (tags.next()) |raw_tag| {
+		const tag = unquoteYamlScalar(std.mem.trim(u8, raw_tag, " \t\r"));
+		if (tag.len == 0) continue;
+		if (wrote_one) try out.writer.writeByte(' ');
+		try out.writer.writeAll(tag);
+		wrote_one = true;
+	}
+	return out.toOwnedSlice();
 }
 
 fn normalizeBlockFrontmatterTags(
-    allocator: std.mem.Allocator,
-    lines: []const []const u8,
+	allocator: std.mem.Allocator,
+	lines: []const []const u8,
 ) ![]u8 {
-    var out: std.Io.Writer.Allocating = .init(allocator);
-    defer out.deinit();
-    var wrote_one = false;
-    for (lines) |line| {
-        const trimmed = std.mem.trim(u8, line, " \t\r");
-        if (!std.mem.startsWith(u8, trimmed, "-")) continue;
-        const tag = unquoteYamlScalar(std.mem.trim(u8, trimmed[1..], " \t\r"));
-        if (tag.len == 0) continue;
-        if (wrote_one) try out.writer.writeByte(' ');
-        try out.writer.writeAll(tag);
-        wrote_one = true;
-    }
-    return out.toOwnedSlice();
+	var out: std.Io.Writer.Allocating = .init(allocator);
+	defer out.deinit();
+	var wrote_one = false;
+	for (lines) |line| {
+		const trimmed = std.mem.trim(u8, line, " \t\r");
+		if (!std.mem.startsWith(u8, trimmed, "-")) continue;
+		const tag = unquoteYamlScalar(std.mem.trim(u8, trimmed[1..], " \t\r"));
+		if (tag.len == 0) continue;
+		if (wrote_one) try out.writer.writeByte(' ');
+		try out.writer.writeAll(tag);
+		wrote_one = true;
+	}
+	return out.toOwnedSlice();
 }
 
 fn emitFrontmatter(
-    allocator: std.mem.Allocator,
-    file_path: []const u8,
-    metadata: Frontmatter,
-    out: *std.ArrayListUnmanaged(model.Symbol),
+	allocator: std.mem.Allocator,
+	file_path: []const u8,
+	metadata: Frontmatter,
+	out: *std.ArrayListUnmanaged(model.Symbol),
 ) !void {
-    if (metadata.description == null and metadata.tags == null) return;
-    const tags = if (metadata.tags) |raw| switch (raw) {
-        .scalar => |value| try normalizeInlineFrontmatterTags(allocator, value),
-        .block => |lines| try normalizeBlockFrontmatterTags(allocator, lines),
-    } else null;
-    errdefer if (tags) |value| allocator.free(value);
-    const signature_source = metadata.description orelse "frontmatter tags";
-    const language = try allocator.dupe(u8, "markdown");
-    errdefer allocator.free(language);
-    const owned_path = try allocator.dupe(u8, file_path);
-    errdefer allocator.free(owned_path);
-    const name = try allocator.dupe(u8, std.fs.path.basename(file_path));
-    errdefer allocator.free(name);
-    const signature = try allocator.dupe(u8, signature_source);
-    errdefer allocator.free(signature);
-    const symbol_kind = try allocator.dupe(u8, "frontmatter");
-    errdefer allocator.free(symbol_kind);
-    const symbol = model.Symbol{
-        .language = language,
-        .file_path = owned_path,
-        .name = name,
-        .signature = signature,
-        .doc_comment = tags,
-        .symbol_kind = symbol_kind,
-        .start_line = 1,
-        .end_line = metadata.end_line_index + 1,
-    };
-    try out.append(allocator, symbol);
+	if (metadata.description == null and metadata.tags == null) return;
+	const tags = if (metadata.tags) |raw| switch (raw) {
+		.scalar => |value| try normalizeInlineFrontmatterTags(allocator, value),
+		.block => |lines| try normalizeBlockFrontmatterTags(allocator, lines),
+	} else null;
+	errdefer if (tags) |value| allocator.free(value);
+	const signature_source = metadata.description orelse "frontmatter tags";
+	const language = try allocator.dupe(u8, "markdown");
+	errdefer allocator.free(language);
+	const owned_path = try allocator.dupe(u8, file_path);
+	errdefer allocator.free(owned_path);
+	const name = try allocator.dupe(u8, std.fs.path.basename(file_path));
+	errdefer allocator.free(name);
+	const signature = try allocator.dupe(u8, signature_source);
+	errdefer allocator.free(signature);
+	const symbol_kind = try allocator.dupe(u8, "frontmatter");
+	errdefer allocator.free(symbol_kind);
+	const symbol = model.Symbol{
+		.language = language,
+		.file_path = owned_path,
+		.name = name,
+		.signature = signature,
+		.doc_comment = tags,
+		.symbol_kind = symbol_kind,
+		.start_line = 1,
+		.end_line = metadata.end_line_index + 1,
+	};
+	try out.append(allocator, symbol);
 }
 
 fn emitSection(
@@ -313,76 +313,76 @@ test "extract uses file basename when no heading" {
 }
 
 test "extract emits leading frontmatter once as structured metadata" {
-    const allocator = std.testing.allocator;
-    const source =
-        "---\n" ++
-        "description: \"Git-backed Nix flakes exclude untracked inputs.\"\n" ++
-        "datetime: 2026-07-23T14:00:00-04:00\n" ++
-        "tags: [nix, flakes, untracked-files]\n" ++
-        "---\n" ++
-        "# Recovery\n" ++
-        "Stage referenced files before building.\n";
+	const allocator = std.testing.allocator;
+	const source =
+		"---\n" ++
+		"description: \"Git-backed Nix flakes exclude untracked inputs.\"\n" ++
+		"datetime: 2026-07-23T14:00:00-04:00\n" ++
+		"tags: [nix, flakes, untracked-files]\n" ++
+		"---\n" ++
+		"# Recovery\n" ++
+		"Stage referenced files before building.\n";
 
-    const symbols = try extract(allocator, "MEMORIES/nix.frontmatter.md", source);
-    defer {
-        for (symbols) |*sym| sym.deinit(allocator);
-        allocator.free(symbols);
-    }
+	const symbols = try extract(allocator, "MEMORIES/nix.frontmatter.md", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
 
-    try std.testing.expectEqual(@as(usize, 2), symbols.len);
-    const metadata_kind = symbols[0].symbol_kind orelse return error.TestExpectedEqual;
-    try std.testing.expectEqualStrings("frontmatter", metadata_kind);
-    try std.testing.expectEqualStrings("nix.frontmatter.md", symbols[0].name);
-    try std.testing.expectEqualStrings(
-        "Git-backed Nix flakes exclude untracked inputs.",
-        symbols[0].signature,
-    );
-    try std.testing.expectEqualStrings("nix flakes untracked-files", symbols[0].doc_comment.?);
-    try std.testing.expectEqual(@as(usize, 1), symbols[0].start_line);
-    try std.testing.expectEqual(@as(usize, 5), symbols[0].end_line);
+	try std.testing.expectEqual(@as(usize, 2), symbols.len);
+	const metadata_kind = symbols[0].symbol_kind orelse return error.TestExpectedEqual;
+	try std.testing.expectEqualStrings("frontmatter", metadata_kind);
+	try std.testing.expectEqualStrings("nix.frontmatter.md", symbols[0].name);
+	try std.testing.expectEqualStrings(
+		"Git-backed Nix flakes exclude untracked inputs.",
+		symbols[0].signature,
+	);
+	try std.testing.expectEqualStrings("nix flakes untracked-files", symbols[0].doc_comment.?);
+	try std.testing.expectEqual(@as(usize, 1), symbols[0].start_line);
+	try std.testing.expectEqual(@as(usize, 5), symbols[0].end_line);
 
-    try std.testing.expectEqualStrings("Recovery", symbols[1].name);
-    try std.testing.expectEqual(@as(usize, 6), symbols[1].start_line);
-    try std.testing.expect(std.mem.indexOf(u8, symbols[1].doc_comment.?, "description:") == null);
+	try std.testing.expectEqualStrings("Recovery", symbols[1].name);
+	try std.testing.expectEqual(@as(usize, 6), symbols[1].start_line);
+	try std.testing.expect(std.mem.indexOf(u8, symbols[1].doc_comment.?, "description:") == null);
 }
 
 test "extract normalizes block-list frontmatter tags" {
-    const allocator = std.testing.allocator;
-    const source =
-        "---\n" ++
-        "tags:\n" ++
-        "  - type/cheatsheet\n" ++
-        "  - area/dev-tools\n" ++
-        "created: 2026-02-03\n" ++
-        "---\n" ++
-        "# Zig API Reference\n";
+	const allocator = std.testing.allocator;
+	const source =
+		"---\n" ++
+		"tags:\n" ++
+		"  - type/cheatsheet\n" ++
+		"  - area/dev-tools\n" ++
+		"created: 2026-02-03\n" ++
+		"---\n" ++
+		"# Zig API Reference\n";
 
-    const symbols = try extract(allocator, "ZIG_RECENT_API_CHANGES.md", source);
-    defer {
-        for (symbols) |*sym| sym.deinit(allocator);
-        allocator.free(symbols);
-    }
+	const symbols = try extract(allocator, "ZIG_RECENT_API_CHANGES.md", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
 
-    try std.testing.expectEqual(@as(usize, 2), symbols.len);
-    try std.testing.expectEqualStrings(
-        "type/cheatsheet area/dev-tools",
-        symbols[0].doc_comment.?,
-    );
+	try std.testing.expectEqual(@as(usize, 2), symbols.len);
+	try std.testing.expectEqualStrings(
+		"type/cheatsheet area/dev-tools",
+		symbols[0].doc_comment.?,
+	);
 }
 
 test "extract leaves unterminated frontmatter searchable as ordinary markdown" {
-    const allocator = std.testing.allocator;
-    const source =
-        "---\n" ++
-        "description: still being written\n";
+	const allocator = std.testing.allocator;
+	const source =
+		"---\n" ++
+		"description: still being written\n";
 
-    const symbols = try extract(allocator, "draft.frontmatter.md", source);
-    defer {
-        for (symbols) |*sym| sym.deinit(allocator);
-        allocator.free(symbols);
-    }
+	const symbols = try extract(allocator, "draft.frontmatter.md", source);
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
 
-    try std.testing.expectEqual(@as(usize, 1), symbols.len);
-    try std.testing.expect(symbols[0].symbol_kind == null);
-    try std.testing.expect(std.mem.indexOf(u8, symbols[0].doc_comment.?, "still being written") != null);
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expect(symbols[0].symbol_kind == null);
+	try std.testing.expect(std.mem.indexOf(u8, symbols[0].doc_comment.?, "still being written") != null);
 }
