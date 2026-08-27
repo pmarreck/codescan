@@ -1,5 +1,18 @@
 # Plan
 
+## 2026-08-27 — watcher immediately stops in rarz
+
+- [x] Reproduce `codescan watcher start` reporting a PID then immediately becoming stopped; make the daemon’s terminal reason visible and prevent the false-success path. (completed 2026-08-27 13:45 EDT)
+  The stale `rarz` PID belonged to a child killed outside its own error/signal cleanup. A launcher now waits for a first-pass readiness marker, prints retained post-fork errors, and distinguishes a still-initializing watcher from failure. A live tmux acceptance started PID 943738, verified its own POSIX session, closed the launching test terminal, and still observed the watcher running.
+- [x] Surface an immediate watcher-child failure to the originating CLI, and retain the same actionable reason for an MCP-driven launch where that adapter can observe it. (completed 2026-08-27 13:45 EDT)
+  Post-fork failures are retained in `.codescan/watcher-error.log`, echoed to the waiting CLI, and name the embedding URL/model for HTTP failures. There is currently no MCP watcher-start tool; MCP callers can observe the durable stopped/failure state instead of losing closed child stderr.
+- [x] Retry a watcher’s initial incremental pass a small, bounded number of times after transient embedding transport/HTTP failures. (completed 2026-08-27 13:45 EDT)
+  Initial HTTP/refused/reset/timeout failures retry after 250ms then 500ms. The classifier rejects terminal errors, is deterministic, and logs each retry to stderr and the system log.
+- [x] Detach only the internally spawned watcher from its launching terminal/session, so a verified child survives its launcher while a user-run foreground `codescan watch` remains attached. (completed 2026-08-27 13:45 EDT)
+  The launcher passes an internal, watch-only `--daemon` marker. macOS/Linux daemon children call `setsid()` through the existing retained-failure path; Windows retains its independent spawned-process behavior and the five-target build compiles it. Ordinary `codescan watch` remains foreground.
+- [x] Keep the CLI suite’s intentional unavailable-inference assertion non-interactive when `./test` runs from a terminal. (completed 2026-08-27 13:45 EDT)
+  The test redirects only the intentional failed semantic-index invocation to `/dev/null`; its EOF chooses the existing failure path. Focused CLI acceptance passed from tmux, then the complete suite passed from the same interactive terminal.
+
 ## 2026-08-26 — incoming Lean 4 field report
 
 - [x] Preserve the project’s tab indentation and determine whether Zig 0.16’s formatter can be configured for tabs. Avoid whole-file formatting churn in the meantime. (completed 2026-08-26 18:35 EDT)

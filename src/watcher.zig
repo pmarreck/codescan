@@ -13,6 +13,26 @@ const syslog = @import("syslog.zig");
 const retirement = @import("retirement.zig");
 
 pub const failure_log_filename = "watcher-error.log";
+pub const startup_ready_filename = "watcher-ready";
+
+/// A watcher owns its PID before it has completed its first incremental pass.
+/// The launcher must wait for this state, rather than confusing a claimed PID
+/// with an initialized watcher.
+pub const StartupState = enum {
+	pending,
+	ready,
+	failed,
+};
+
+pub fn startupState(pid_claimed: bool, ready_marker: bool, failure_record: bool) StartupState {
+	if (failure_record) return .failed;
+	// Windows watchers intentionally have no PID file. A marker is written only
+	// after initialization succeeds, and the launcher clears stale markers before
+	// it spawns, so it is the portable readiness authority.
+	if (ready_marker) return .ready;
+	_ = pid_claimed;
+	return .pending;
+}
 
 /// Returns the project-local path that contains the most recent daemon failure.
 pub fn failureLogPath(allocator: std.mem.Allocator, codescan_dir: []const u8) ![]u8 {
@@ -25,6 +45,42 @@ pub fn failureRecordExists(allocator: std.mem.Allocator, codescan_dir: []const u
 	defer allocator.free(log_path);
 	std.Io.Dir.cwd().access(io_singleton.getOrInit(), log_path, .{}) catch return false;
 	return true;
+}
+
+/// Removes a previous daemon failure before a new watcher attempt. A stale
+/// record must not be reported as the new child's startup result.
+pub fn removeFailureRecord(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
+	const log_path = failureLogPath(allocator, codescan_dir) catch return;
+	defer allocator.free(log_path);
+	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), log_path) catch {};
+}
+
+fn startupReadyPath(allocator: std.mem.Allocator, codescan_dir: []const u8) ![]u8 {
+	return std.fs.path.join(allocator, &.{ codescan_dir, startup_ready_filename });
+}
+
+/// Reports whether this watcher completed initialization after claiming its PID.
+pub fn startupReadyExists(allocator: std.mem.Allocator, codescan_dir: []const u8) bool {
+	const path = startupReadyPath(allocator, codescan_dir) catch return false;
+	defer allocator.free(path);
+	std.Io.Dir.cwd().access(io_singleton.getOrInit(), path, .{}) catch return false;
+	return true;
+}
+
+/// Marks a watcher ready only after its first incremental pass succeeded.
+pub fn writeStartupReady(allocator: std.mem.Allocator, codescan_dir: []const u8) !void {
+	const path = try startupReadyPath(allocator, codescan_dir);
+	defer allocator.free(path);
+	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), path, .{ .truncate = true });
+	defer file.close(io_singleton.getOrInit());
+	try file.writeStreamingAll(io_singleton.getOrInit(), "ready\n");
+}
+
+/// Removes the ready signal when a watcher exits or before a new attempt.
+pub fn removeStartupReady(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
+	const path = startupReadyPath(allocator, codescan_dir) catch return;
+	defer allocator.free(path);
+	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), path) catch {};
 }
 
 /// Replaces the project's last daemon-failure record with a bounded message.
@@ -127,6 +183,74 @@ const RetirementTracker = struct {
 	}
 };
 
+const initial_retry_base_delay_ns: u64 = 250 * std.time.ns_per_ms;
+
+/// Returns the next bounded exponential delay after a transient first-pass
+/// failure. Null means the error is terminal or the retry budget is spent.
+fn initialRetryDelay(err: anyerror, failed_attempts: usize) ?u64 {
+	const transient = switch (err) {
+		error.HttpStatus,
+		error.ConnectionRefused,
+		error.ConnectionResetByPeer,
+		error.Timeout,
+		=> true,
+		else => false,
+	};
+	if (!transient) return null;
+	return switch (failed_attempts) {
+		0 => initial_retry_base_delay_ns,
+		1 => 2 * initial_retry_base_delay_ns,
+		else => null,
+	};
+}
+
+/// Gives a transiently busy embedding server two chances to recover before a
+/// watcher declares startup failure. The retry policy stays here, separate from
+/// the index service's pure application operation.
+fn executeInitialIncrementalWithRetry(
+	allocator: std.mem.Allocator,
+	db: storage.Db,
+	root_path: []const u8,
+	registry: plugin.Registry,
+	embedder: embedding.Embedder,
+	options: WatchOptions,
+	tracker: *RetirementTracker,
+	stderr: *std.Io.Writer,
+) !indexer.IncrementalStats {
+	var failed_attempts: usize = 0;
+	while (true) {
+		tracker.beginIndex();
+		const stats = (index_service.execute(
+			allocator,
+			db,
+			registry,
+			embedder,
+			options.index_request,
+		) catch |err| {
+			tracker.abandonIndex();
+			const delay_ns = initialRetryDelay(err, failed_attempts) orelse return err;
+			failed_attempts += 1;
+			const delay_ms = delay_ns / std.time.ns_per_ms;
+			_ = stderr.print(
+				"watcher: initial index error: {s}; retrying in {d}ms ({d}/2)\n",
+				.{ @errorName(err), delay_ms, failed_attempts },
+			) catch {};
+			_ = stderr.flush() catch {};
+			var message_buf: [256]u8 = undefined;
+			const message = std.fmt.bufPrint(
+				&message_buf,
+				"initial index error: {s}; retrying in {d}ms ({d}/2)",
+				.{ @errorName(err), delay_ms, failed_attempts },
+			) catch "initial index error; retrying";
+			syslog.logWithRoot(syslog.LOG_WARNING, root_path, message);
+			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(delay_ns), .awake) catch {};
+			continue;
+		}).incremental;
+		tracker.endIndex(stats);
+		return stats;
+	}
+}
+
 /// Announces retirement on both the terminal and the system log. A watcher that
 /// simply vanished would be indistinguishable from one that crashed, which is
 /// the same false-success shape as a daemon that dies with its stdio closed.
@@ -178,8 +302,10 @@ pub fn watchLoop(
 			},
 			else => {}, // Non-critical: proceed without pidfile
 		};
+		removeStartupReady(allocator, dir);
 	}
 	defer if (options.codescan_dir) |dir| pidfile.removePid(allocator, dir);
+	defer if (options.codescan_dir) |dir| removeStartupReady(allocator, dir);
 
 	// Try native watcher; fall back to polling on failure
 	var native_watcher = fs_watch.FsWatch.init(allocator) catch {
@@ -208,20 +334,19 @@ pub fn watchLoop(
 	// Initial full incremental pass
 	var tracker = RetirementTracker.init(options);
 	progress.write(progress_path, "indexing...");
-	tracker.beginIndex();
-	const initial = (index_service.execute(
+	const initial = try executeInitialIncrementalWithRetry(
 		allocator,
 		db,
+		root_path,
 		registry,
 		embedder,
-		options.index_request,
-	) catch |err| {
-		tracker.abandonIndex();
-		return err;
-	}).incremental;
-	tracker.endIndex(initial);
+		options,
+		&tracker,
+		stderr,
+	);
 	progress.write(progress_path, "idle");
 	printChangeSummary(stderr, initial);
+	if (options.codescan_dir) |dir| try writeStartupReady(allocator, dir);
 
 	const max_consecutive_errors = 5;
 	var consecutive_errors: u32 = 0;
@@ -317,20 +442,19 @@ fn watchLoopPolling(
 	// Initial full incremental pass
 	var tracker = RetirementTracker.init(options);
 	progress.write(progress_path_poll, "indexing...");
-	tracker.beginIndex();
-	const initial = (index_service.execute(
+	const initial = try executeInitialIncrementalWithRetry(
 		allocator,
 		db,
+		root_path,
 		registry,
 		embedder,
-		options.index_request,
-	) catch |err| {
-		tracker.abandonIndex();
-		return err;
-	}).incremental;
-	tracker.endIndex(initial);
+		options,
+		&tracker,
+		stderr,
+	);
 	progress.write(progress_path_poll, "idle");
 	printChangeSummary(stderr, initial);
+	if (options.codescan_dir) |dir| try writeStartupReady(allocator, dir);
 
 	const max_consecutive_errors = 5;
 	var consecutive_errors: u32 = 0;
@@ -509,6 +633,43 @@ test "writeFailureRecord replaces the prior daemon failure in the project state"
 	try std.testing.expect(failureRecordExists(allocator, codescan_dir));
 }
 
+test "startupState does not mistake a claimed PID for a ready watcher" {
+	const cases = [_]struct {
+		pid_claimed: bool,
+		ready_marker: bool,
+		failure_record: bool,
+		want: StartupState,
+	}{
+		.{ .pid_claimed = false, .ready_marker = false, .failure_record = false, .want = .pending },
+		.{ .pid_claimed = true, .ready_marker = false, .failure_record = false, .want = .pending },
+		.{ .pid_claimed = false, .ready_marker = true, .failure_record = false, .want = .ready },
+		.{ .pid_claimed = true, .ready_marker = true, .failure_record = false, .want = .ready },
+		.{ .pid_claimed = true, .ready_marker = false, .failure_record = true, .want = .failed },
+		.{ .pid_claimed = true, .ready_marker = true, .failure_record = true, .want = .failed },
+	};
+
+	for (cases) |case| {
+		try std.testing.expectEqual(case.want, startupState(case.pid_claimed, case.ready_marker, case.failure_record));
+	}
+}
+
+test "initialRetryDelay backs off only transient startup failures" {
+	const cases = [_]struct {
+		err: anyerror,
+		failed_attempts: usize,
+		want: ?u64,
+	}{
+		.{ .err = error.HttpStatus, .failed_attempts = 0, .want = 250 * std.time.ns_per_ms },
+		.{ .err = error.ConnectionRefused, .failed_attempts = 1, .want = 500 * std.time.ns_per_ms },
+		.{ .err = error.Timeout, .failed_attempts = 2, .want = null },
+		.{ .err = error.OutOfMemory, .failed_attempts = 0, .want = null },
+	};
+
+	for (cases) |case| {
+		try std.testing.expectEqual(case.want, initialRetryDelay(case.err, case.failed_attempts));
+	}
+}
+
 test "startedMessage reports the watcher PID" {
 	var buf: [256]u8 = undefined;
 	const message = startedMessage(&buf, "native events");
@@ -522,8 +683,9 @@ test "watcher source contains syslog calls at all error paths" {
     // stops without leaving a reason in the system log is indistinguishable
     // from one that crashed.
     //
-    // 9 = start (native, polling), config-changed stop (x2), index error (x2),
-    // too-many-errors stop (x2), and retirement (shared by both loops).
+	// 10 = start (native, polling), initial retry, config-changed stop (x2),
+	// index error (x2), too-many-errors stop (x2), and retirement (shared by
+	// both loops).
     const src = @embedFile("watcher.zig");
     var count: usize = 0;
     var i: usize = 0;
@@ -531,5 +693,5 @@ test "watcher source contains syslog calls at all error paths" {
     while (std.mem.indexOfPos(u8, src, i, needle)) |pos| : (i = pos + 1) {
         count += 1;
     }
-    try std.testing.expectEqual(@as(usize, 9), count);
+	try std.testing.expectEqual(@as(usize, 10), count);
 }

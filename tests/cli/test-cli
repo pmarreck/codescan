@@ -99,7 +99,8 @@ main() {
 
 	# A normal index requires embeddings. It must fail before opening the database
 	# in recreate mode, leaving the usable prior index byte-for-byte unchanged.
-	capture "$BIN" index --root "$offline_root" --ollama-url http://127.0.0.1:1
+	capture bash -c 'exec "$@" < /dev/null' _ \
+		"$BIN" index --root "$offline_root" --ollama-url http://127.0.0.1:1
 	[ "$rc" -ne 0 ] || fail "semantic index unexpectedly succeeded without inference"
 	printf '%s' "$err" | rg -q 'Embedding server unreachable' || \
 		fail "offline semantic index did not explain the unavailable server"

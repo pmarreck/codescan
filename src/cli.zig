@@ -159,6 +159,9 @@ pub const Parsed = struct {
 	staged: bool,
 	watch_interval: u64,
 	watch_action: WatchAction,
+	// Internal marker supplied only by `maybeStartWatcher`; it keeps ordinary
+	// `codescan watch` attached to the invoking terminal.
+	watch_daemon: bool,
 	force: bool,
 	// mcp-install subcommand fields
 	mcp_claude: bool,
@@ -281,6 +284,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.staged = false,
 		.watch_interval = 2000,
 		.watch_action = .run,
+		.watch_daemon = false,
 		.force = false,
 		.mcp_claude = false,
 		.mcp_codex = false,
@@ -890,6 +894,15 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 				return error.MissingValue;
 			}
 			parsed.watch_interval = std.fmt.parseInt(u64, args[i], 10) catch return error.InvalidNumber;
+			i += 1;
+			continue;
+		}
+		if (std.mem.eql(u8, arg, "--daemon")) {
+			if (parsed.command != .watch) {
+				last_err_context = arg;
+				return error.UnknownFlag;
+			}
+			parsed.watch_daemon = true;
 			i += 1;
 			continue;
 		}
@@ -1740,6 +1753,23 @@ test "parse accepts global no-progress before or after the command" {
     defer after.deinit(std.testing.allocator);
     try std.testing.expectEqual(CommandTag.index, after.command);
     try std.testing.expect(after.no_progress);
+}
+
+test "parse marks only the internal watcher daemon invocation" {
+	const daemon_args = [_][]const u8{ "codescan", "watch", "--daemon", "--root", "/project" };
+	var daemon = try parse(std.testing.allocator, &daemon_args);
+	defer daemon.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.watch, daemon.command);
+	try std.testing.expectEqual(WatchAction.run, daemon.watch_action);
+	try std.testing.expect(daemon.watch_daemon);
+
+	const foreground_args = [_][]const u8{ "codescan", "watch", "--root", "/project" };
+	var foreground = try parse(std.testing.allocator, &foreground_args);
+	defer foreground.deinit(std.testing.allocator);
+	try std.testing.expect(!foreground.watch_daemon);
+
+	const non_watch_args = [_][]const u8{ "codescan", "index", "--daemon" };
+	try std.testing.expectError(error.UnknownFlag, parse(std.testing.allocator, &non_watch_args));
 }
 
 test "parse accepts root before or after every project-root command" {

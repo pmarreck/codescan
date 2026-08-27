@@ -1453,25 +1453,28 @@ fn checkEmbeddingPreflight(
 	) catch null;
 }
 
-/// Spawns `codescan watch` in the background if not already running.
+/// Spawns `codescan watch` in the background if not already running. Returns
+/// false only when an explicit startup attempt fails.
 fn maybeStartWatcher(
 	allocator: std.mem.Allocator,
 	settings: Settings,
 	stderr: *std.Io.Writer,
 	reason: freshness.WatcherStartReason,
-) void {
-	if (!freshness.shouldStartWatcher(reason)) return;
+) bool {
+	if (!freshness.shouldStartWatcher(reason)) return true;
 
 	// Derive the .codescan dir from db_path (parent of index.sqlite3)
-	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse return;
+	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse return false;
 
 	// Check if watcher is already running
 	if (pidfile.isWatcherRunning(allocator, codescan_dir)) {
-		return;
+		return true;
 	}
 
 	// Clean up stale PID file if it exists (process is dead)
 	pidfile.removePid(allocator, codescan_dir);
+	watcher.removeStartupReady(allocator, codescan_dir);
+	watcher.removeFailureRecord(allocator, codescan_dir);
 
 	// Preflight checks — the daemon would otherwise die silently because its
 	// stdin/stdout/stderr are all .close, so any startup error vanishes.
@@ -1516,21 +1519,22 @@ fn maybeStartWatcher(
 			) catch "failed to start watcher: embedding model not installed",
 		};
 		syslog.logWithRoot(syslog.LOG_ERR, settings.root_path, msg);
-		return;
+		return false;
 	}
 
 	// Find our own binary
 	const self_exe = std.process.executablePathAlloc(io_singleton.getOrInit(), allocator) catch |err| {
 		_ = stderr.print("note: could not find codescan binary to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
-		return;
+		return false;
 	};
 	defer allocator.free(self_exe);
 
-	// Spawn: codescan watch --root <path>
+	// Spawn an internal daemon child. The marker is deliberately omitted from
+	// public help: an interactive `codescan watch` remains foreground.
 	const io_spawn = io_singleton.getOrInit();
 	const child = std.process.spawn(io_spawn, .{
-		.argv = &.{ self_exe, "watch", "--root", settings.root_path },
+		.argv = &.{ self_exe, "watch", "--daemon", "--root", settings.root_path },
 		.stdin = .close,
 		.stdout = .close,
 		.stderr = .close,
@@ -1542,31 +1546,35 @@ fn maybeStartWatcher(
 		var msg_buf: [256]u8 = undefined;
 		const msg = std.fmt.bufPrint(&msg_buf, "failed to start watcher: {s}", .{@errorName(err)}) catch "failed to start watcher";
 		syslog.logWithRoot(syslog.LOG_ERR, settings.root_path, msg);
-		return;
+		return false;
 	};
 
-	// `spawn` succeeding only proves fork/exec worked. The daemon claims its
-	// pidfile a moment later, and until it does, `codescan watch status`
-	// truthfully answers "No watcher running" — which reads exactly like a
-	// daemon that died silently. Wait for the claim so "Started" means started.
-	const claim_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-	var claim_ctx = PidClaimProbe{ .allocator = allocator, .codescan_dir = claim_dir };
-	const claimed = pidfile.awaitClaim(
-		&claim_ctx,
-		PidClaimProbe.probe,
-		PidClaimProbe.tick,
-		watcher_claim_attempts,
-	);
+	// A PID proves only that the child entered watchLoop. The watcher must also
+	// complete its first incremental pass before the parent says it started.
+	var startup_ctx = WatcherStartupProbe{ .allocator = allocator, .codescan_dir = codescan_dir };
+	var startup_state: watcher.StartupState = .pending;
+	var remaining = watcher_start_attempts;
+	while (true) {
+		startup_state = WatcherStartupProbe.probe(&startup_ctx);
+		if (startup_state != .pending or remaining == 0) break;
+		remaining -= 1;
+		WatcherStartupProbe.tick(&startup_ctx);
+	}
 
-	if (claimed == .gave_up) {
-		// Bounded on purpose: never trade a confusing message for a hang. Say
-		// what is actually known rather than claiming success.
-		_ = stderr.print(
-			"warning: watcher was started but has not claimed its pidfile yet; check 'codescan watch status'\n",
-			.{},
-		) catch {};
-		_ = stderr.flush() catch {};
-		return;
+	switch (startup_state) {
+		.ready => {},
+		.failed => {
+			reportWatcherStartupFailure(allocator, codescan_dir, stderr);
+			return false;
+		},
+		.pending => {
+			_ = stderr.print(
+				"note: Watcher is still initializing (PID {d}); check 'codescan watch status' and .codescan/watcher-error.log\n",
+				.{child.id orelse 0},
+			) catch {};
+			_ = stderr.flush() catch {};
+			return true;
+		},
 	}
 
 	if (comptime builtin.os.tag == .windows) {
@@ -1575,30 +1583,51 @@ fn maybeStartWatcher(
 		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id orelse 0}) catch {};
 	}
 	_ = stderr.flush() catch {};
+	return true;
 }
 
-/// How long `watch start` waits for the daemon to claim its pidfile, as
-/// attempts of `watcher_claim_poll_ns` each. Generous enough for a cold start,
-/// bounded so a daemon that dies cannot wedge the parent.
-const watcher_claim_attempts: usize = 100;
-const watcher_claim_poll_ns: u64 = 20 * std.time.ns_per_ms;
+/// Startup stays bounded, but waits long enough to observe a child error from
+/// its initial incremental pass instead of reporting a PID as false success.
+const watcher_start_attempts: usize = 500;
+const watcher_start_poll_ns: u64 = 20 * std.time.ns_per_ms;
 
-/// Adapts the pidfile check and a short sleep to `pidfile.awaitClaim`, keeping
-/// the wait policy itself free of I/O.
-const PidClaimProbe = struct {
+const WatcherStartupProbe = struct {
 	allocator: std.mem.Allocator,
 	codescan_dir: []const u8,
 
-	fn probe(ctx: *anyopaque) bool {
-		const self: *PidClaimProbe = @ptrCast(@alignCast(ctx));
-		return pidfile.isWatcherRunning(self.allocator, self.codescan_dir);
+	fn probe(self: *WatcherStartupProbe) watcher.StartupState {
+		return watcher.startupState(
+			pidfile.isWatcherRunning(self.allocator, self.codescan_dir),
+			watcher.startupReadyExists(self.allocator, self.codescan_dir),
+			watcher.failureRecordExists(self.allocator, self.codescan_dir),
+		);
 	}
 
-	fn tick(ctx: *anyopaque) void {
-		_ = ctx;
-		io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(watcher_claim_poll_ns), .awake) catch {};
+	fn tick(_: *WatcherStartupProbe) void {
+		io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(watcher_start_poll_ns), .awake) catch {};
 	}
 };
+
+/// Prints the daemon's retained reason to the command that launched it. The
+/// project log remains available for failures that happen after startup.
+fn reportWatcherStartupFailure(
+	allocator: std.mem.Allocator,
+	codescan_dir: []const u8,
+	writer: *std.Io.Writer,
+) void {
+	const failure_path = watcher.failureLogPath(allocator, codescan_dir) catch {
+		_ = writer.writeAll("error: watcher failed during startup; no failure record could be read\n") catch {};
+		return;
+	};
+	defer allocator.free(failure_path);
+	const record = std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), failure_path, allocator, .limited(4096)) catch {
+		_ = writer.print("error: watcher failed during startup; see {s}\n", .{failure_path}) catch {};
+		return;
+	};
+	defer allocator.free(record);
+	_ = writer.print("error: watcher failed during startup:\n{s}", .{record}) catch {};
+	_ = writer.flush() catch {};
+}
 
 fn findRepoRoot(allocator: std.mem.Allocator, start_path: []const u8) !?[]u8 {
 	return findRepoRootUntil(allocator, start_path, null);
@@ -2402,7 +2431,7 @@ fn runInit(
 	}
 	try stdout.flush();
 	// Start background watcher
-	maybeStartWatcher(allocator, resolved_settings, stderr, .index_completed);
+	_ = maybeStartWatcher(allocator, resolved_settings, stderr, .index_completed);
 }
 
 /// Run a full index of the repository: scan, extract, embed, and store.
@@ -3306,7 +3335,9 @@ fn runWatch(
 				}
 				try stdout.flush();
 			} else {
-				maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command);
+				if (!maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command)) {
+					std.process.exit(1);
+				}
 			}
 		},
 		.restart => {
@@ -3322,7 +3353,9 @@ fn runWatch(
 					io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
 					pidfile.removePid(allocator, codescan_dir);
 				}
-				maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command);
+				if (!maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command)) {
+					std.process.exit(1);
+				}
 			}
 		},
 		.status => {
@@ -3459,7 +3492,16 @@ fn runWatch(
 		.run => {
 			syslog.init("codescan");
 			defer syslog.deinit();
-			errdefer |err| recordDaemonFailure(allocator, codescan_dir, settings.root_path, err);
+			var daemon_failure_buf: [512]u8 = undefined;
+			errdefer |err| recordDaemonFailure(
+				allocator,
+				codescan_dir,
+				settings.root_path,
+				watcherDaemonFailureReason(&daemon_failure_buf, settings.embedding_url, settings.embedding_model, err),
+			);
+			if (parsed.watch_daemon and comptime builtin.os.tag != .windows) {
+				if (std.c.setsid() == -1) return error.WatcherSessionDetachFailed;
+			}
 			var http_client = embedding_http.StdHttpTransport.init(allocator);
 			defer http_client.deinit();
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
@@ -3587,16 +3629,31 @@ fn recordDaemonFailure(
 	allocator: std.mem.Allocator,
 	codescan_dir: []const u8,
 	root_path: []const u8,
-	err: anyerror,
+	reason: []const u8,
 ) void {
-	var message_buf: [512]u8 = undefined;
-	const message = std.fmt.bufPrint(
-		&message_buf,
-		"watcher daemon failed: {s}",
-		.{@errorName(err)},
-	) catch "watcher daemon failed";
-	watcher.writeFailureRecord(allocator, codescan_dir, root_path, message) catch {};
-	syslog.logWithRoot(syslog.LOG_ERR, root_path, message);
+	watcher.writeFailureRecord(allocator, codescan_dir, root_path, reason) catch {};
+	syslog.logWithRoot(syslog.LOG_ERR, root_path, reason);
+}
+
+fn watcherDaemonFailureReason(
+	buf: []u8,
+	embedding_url: []const u8,
+	embedding_model: []const u8,
+	err: anyerror,
+) []const u8 {
+	return switch (err) {
+		error.HttpStatus => std.fmt.bufPrint(
+			buf,
+			"embedding server at {s} rejected an HTTP request while initializing model '{s}'",
+			.{ embedding_url, embedding_model },
+		) catch "embedding server rejected an HTTP request while initializing the watcher",
+		error.Unauthorized => std.fmt.bufPrint(
+			buf,
+			"embedding server at {s} rejected the credentials while initializing model '{s}'",
+			.{ embedding_url, embedding_model },
+		) catch "embedding server rejected credentials while initializing the watcher",
+		else => std.fmt.bufPrint(buf, "watcher daemon failed: {s}", .{@errorName(err)}) catch "watcher daemon failed",
+	};
 }
 
 test "recordDaemonFailure preserves a post-fork watcher error" {
@@ -3608,11 +3665,24 @@ test "recordDaemonFailure preserves a post-fork watcher error" {
 	const codescan_dir = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".codescan", allocator);
 	defer allocator.free(codescan_dir);
 
-	recordDaemonFailure(allocator, codescan_dir, "/project", error.ConnectionRefused);
+	recordDaemonFailure(allocator, codescan_dir, "/project", "watcher daemon failed: ConnectionRefused");
 
 	const saved = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), ".codescan/watcher-error.log", allocator, .limited(1024));
 	defer allocator.free(saved);
 	try std.testing.expect(std.mem.indexOf(u8, saved, "watcher daemon failed: ConnectionRefused") != null);
+}
+
+test "watcher HTTP startup failure identifies the embedding endpoint and model" {
+	var buf: [512]u8 = undefined;
+	const reason = watcherDaemonFailureReason(
+		&buf,
+		"http://127.0.0.1:11434",
+		"jina-code-embeddings:1.5b",
+		error.HttpStatus,
+	);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "http://127.0.0.1:11434") != null);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "jina-code-embeddings:1.5b") != null);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "HTTP") != null);
 }
 
 pub fn runSymbols(
