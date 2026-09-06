@@ -1,5 +1,10 @@
 # Plan
 
+## 2026-09-06 — agents cannot start codescan MCP
+
+- [x] Process the authoritative inbox reports, reproduce the MCP startup failure, and make startup diagnostics actionable for agent hosts. (completed 2026-09-06 15:17 EDT)
+  Root cause: `mcp-install` registered the bare `codescan` command, which app-style agent hosts could not resolve. It now records the running executable's absolute path; black-box CLI coverage proves the registered argv cannot depend on the installer's `PATH`. Codex and Claude user registrations were force-refreshed, and an `initialize` handshake passed with only `/usr/bin:/bin` on `PATH`.
+
 ## 2026-08-27 — watcher immediately stops in rarz
 
 - [x] Reproduce `codescan watcher start` reporting a PID then immediately becoming stopped; make the daemon’s terminal reason visible and prevent the false-success path. (completed 2026-08-27 13:45 EDT)

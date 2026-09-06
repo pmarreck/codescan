@@ -298,10 +298,17 @@ FAKEEOF
 	[ "$rc" -eq 0 ] || { printf '%s' "$err" >&2; fail "mcp-install failed against unregistered agents"; }
 	printf '%s' "$out" | rg -q 'Claude Code: registered' || fail "mcp-install did not register Claude"
 	printf '%s' "$out" | rg -q 'Codex: registered' || fail "mcp-install did not register Codex"
-	rg -q -- 'claude mcp add codescan --scope user -- codescan mcp-serve' "$fake_log" \
-		|| fail "Claude was not registered at user scope with the expected argv"
-	rg -q -- 'codex mcp add codescan -- codescan mcp-serve' "$fake_log" \
-		|| fail "Codex was not registered with the expected argv"
+	# An MCP host commonly has a different PATH from the shell that runs this
+	# installer. Record the executable itself, so its later launch cannot depend
+	# on either host inheriting this shell's project-specific PATH.
+	server_command="$(readlink -f "$BIN")"
+	rg -F -q -- "claude mcp add codescan --scope user -- $server_command mcp-serve" "$fake_log" \
+		|| fail "Claude was not registered with an absolute server command"
+	rg -F -q -- "codex mcp add codescan -- $server_command mcp-serve" "$fake_log" \
+		|| fail "Codex was not registered with an absolute server command"
+	if rg -F -q -- ' -- codescan mcp-serve' "$fake_log"; then
+		fail "mcp-install registered a PATH-dependent server command"
+	fi
 	# Codex has no scope concept; leaking the flag would be rejected by the real CLI.
 	if rg -q -- 'codex mcp add codescan --scope' "$fake_log"; then
 		fail "Codex registration leaked a --scope flag"

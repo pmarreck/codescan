@@ -6729,7 +6729,8 @@ fn runMcpInstall(
 ) !void {
 	_ = root_path;
 	const server_name = "codescan";
-	const server_command = "codescan";
+	const server_command = try std.process.executablePathAlloc(io_singleton.getOrInit(), allocator);
+	defer allocator.free(server_command);
 	const server_args = [_][]const u8{"mcp-serve"};
 
 	// Naming no agent means "every agent you actually have"; naming one or both
@@ -6743,17 +6744,6 @@ fn runMcpInstall(
 	var stderr_buf: [4096]u8 = undefined;
 	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const se = &stderr_writer.interface;
-
-	// The registration points at a PATH-resolved `codescan`, so a shell that
-	// cannot find it would produce a server that fails to start. Say so rather
-	// than register something known-broken and report success.
-	if (!commandOnPath(allocator, server_command)) {
-		_ = se.print(
-			"warning: '{s}' is not on PATH; the registration will be written but the server will fail to start until it is.\n",
-			.{server_command},
-		) catch {};
-		_ = se.flush() catch {};
-	}
 
 	var installed: usize = 0;
 	var skipped: usize = 0;
@@ -6873,23 +6863,6 @@ fn printArgv(writer: *std.Io.Writer, argv: []const []const u8) !void {
 	}
 	try writer.writeAll("\n");
 }
-
-/// Whether a bare command name resolves on PATH, used to warn before writing a
-/// registration that would not start.
-fn commandOnPath(allocator: std.mem.Allocator, name: []const u8) bool {
-	const io = io_singleton.getOrInit();
-	const env_map = io_singleton.getEnvMapOrInit(allocator);
-	const path_value = env_map.get("PATH") orelse return false;
-	var it = std.mem.tokenizeScalar(u8, path_value, ':');
-	while (it.next()) |dir| {
-		var buf: [std.fs.max_path_bytes]u8 = undefined;
-		const candidate = std.fmt.bufPrint(&buf, "{s}/{s}", .{ dir, name }) catch continue;
-		std.Io.Dir.accessAbsolute(io, candidate, .{}) catch continue;
-		return true;
-	}
-	return false;
-}
-
 
 pub fn runStatus(
 	allocator: std.mem.Allocator,
