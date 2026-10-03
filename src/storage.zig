@@ -80,6 +80,53 @@ pub fn openFileWithVecRecreate(allocator: std.mem.Allocator, path: []const u8) !
 	return openFileWithVec(allocator, path);
 }
 
+/// Runs SQLite's built-in integrity check without changing the database.
+/// The returned message is normally "ok"; callers own it and must free it.
+pub fn checkIntegrity(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+	const path_z = try allocator.dupeZ(u8, path);
+	defer allocator.free(path_z);
+
+	var db_opt: ?Db = null;
+	if (c.sqlite3_open_v2(path_z, &db_opt, c.SQLITE_OPEN_READONLY, null) != c.SQLITE_OK) {
+		if (db_opt) |db| close(db);
+		return error.OpenFailed;
+	}
+	const db = db_opt orelse return error.OpenFailed;
+	defer close(db);
+
+	const sql: [:0]const u8 = "PRAGMA integrity_check;\x00";
+	var stmt: ?*c.sqlite3_stmt = null;
+	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) return error.IntegrityCheckFailed;
+	defer _ = c.sqlite3_finalize(stmt.?);
+
+	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) return error.IntegrityCheckFailed;
+	const text = c.sqlite3_column_text(stmt.?, 0) orelse return error.IntegrityCheckFailed;
+	const len: usize = @intCast(c.sqlite3_column_bytes(stmt.?, 0));
+	return allocator.dupe(u8, text[0..len]);
+}
+
+test "checkIntegrity accepts a valid database and rejects invalid database bytes" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const valid_path = try std.fs.path.join(allocator, &.{ root, "valid.sqlite3" });
+	defer allocator.free(valid_path);
+	const db = try openFileWithVec(allocator, valid_path);
+	close(db);
+
+	const valid_result = try checkIntegrity(allocator, valid_path);
+	defer allocator.free(valid_result);
+	try std.testing.expectEqualStrings("ok", valid_result);
+
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "invalid.sqlite3", .data = "not a SQLite database" });
+	const invalid_path = try std.fs.path.join(allocator, &.{ root, "invalid.sqlite3" });
+	defer allocator.free(invalid_path);
+	try std.testing.expectError(error.IntegrityCheckFailed, checkIntegrity(allocator, invalid_path));
+}
+
 fn deleteFileIfExists(path: []const u8) !void {
 	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), path) catch |err| switch (err) {
 		error.FileNotFound => {},

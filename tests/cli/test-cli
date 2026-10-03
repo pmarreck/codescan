@@ -107,6 +107,43 @@ main() {
 	cmp -s "$cmp_backup" "$offline_db" || \
 		fail "offline semantic index changed the existing database"
 
+	# Doctor must be a real diagnostic command, not a search fallback. A stopped
+	# watcher is informational, while an unavailable inference server remains a
+	# failed check and causes a non-zero exit.
+	doctor_root="$DB_DIR/doctor"
+	mkdir -p "$doctor_root/.git" "$doctor_root/.codescan"
+	printf '%s\n' \
+		'embedding_url=http://127.0.0.1:1' \
+		'embedding_model=test-model' \
+		'embedding_api=ollama' \
+		> "$doctor_root/.codescan/config.ini"
+	capture "$ROOT/zig-out/bin/mk-test-db" --db "$doctor_root/.codescan/index.sqlite3"
+	[ "$rc" -eq 0 ] || fail "mk-test-db could not create the doctor fixture: $err"
+	capture "$BIN" doctor --root "$doctor_root" --json
+	[ "$rc" -ne 0 ] || fail "doctor unexpectedly accepted an unavailable inference server"
+	printf '%s' "$out" | jq -e '.ok == false' >/dev/null || fail "doctor did not report a failed health result"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Settings" and .status == "pass")' >/dev/null || \
+		fail "doctor did not validate settings"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Database" and .status == "pass")' >/dev/null || \
+		fail "doctor did not validate SQLite integrity"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Inference" and .status == "fail")' >/dev/null || \
+		fail "doctor did not report unavailable inference"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Watcher" and .status == "note" and .message == "stopped")' >/dev/null || \
+		fail "doctor treated a stopped watcher as a failure"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Permissions" and .status == "pass")' >/dev/null || \
+		fail "doctor did not validate project-state permissions"
+	printf '%s' "$err" | rg -q "assuming 'search'" && fail "doctor fell back to search"
+
+	invalid_doctor_root="$DB_DIR/doctor-invalid-settings"
+	mkdir -p "$invalid_doctor_root/.git" "$invalid_doctor_root/.codescan"
+	printf '%s\n' 'embedding_dim=not-a-number' > "$invalid_doctor_root/.codescan/config.ini"
+	capture "$BIN" doctor --root "$invalid_doctor_root" --json
+	[ "$rc" -ne 0 ] || fail "doctor accepted malformed settings"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Settings" and .status == "fail")' >/dev/null || \
+		fail "doctor did not report malformed settings"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Inference" and .status == "skipped")' >/dev/null || \
+		fail "doctor tried inference after malformed settings"
+
 	mv "$fresh_root/fresh.zig" "$fresh_root/fresh.zig.off"
 	capture "$BIN" search freshSearchValue --root "$fresh_root" --mode lexical --json
 	[ "$rc" -eq 0 ] || fail "fresh search failed after deleting the indexed source"
@@ -157,6 +194,11 @@ main() {
 	fi
 	printf '%s' "$out" | rg -q '^Usage: codescan search' || fail "help search did not print focused usage"
 
+	capture "$BIN" help doctor
+	[ "$rc" -eq 0 ] || fail "help doctor failed"
+	printf '%s' "$out" | rg -q '^Usage: codescan doctor' || fail "help doctor did not print focused usage"
+	printf '%s' "$out" | rg -q 'stopped watcher' || fail "doctor help did not explain stopped watcher status"
+
 	capture "$BIN" search --help
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
@@ -205,6 +247,11 @@ main() {
 	[ "$rc" -ne 0 ] || fail "OpenAI-compatible provider accepted a missing API key"
 	printf '%s' "$err" | rg -q 'CODESCAN_EMBEDDING_SERVER_API_KEY' || \
 		fail "missing API key error did not explain the environment-variable remedy"
+	capture env -u CODESCAN_EMBEDDING_SERVER_API_KEY \
+		"$BIN" doctor --root "$auth_root" --json
+	[ "$rc" -ne 0 ] || fail "doctor accepted a missing OpenAI-compatible API key"
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Inference" and .status == "fail" and (.message | contains("API key")))' >/dev/null || \
+		fail "doctor did not explain the missing OpenAI-compatible API key"
 
 	boundary_root="$DB_DIR/root-boundary"
 	mkdir -p "$boundary_root/workspace/.codescan"

@@ -1161,24 +1161,45 @@ fn isTransientHttpError(err: anyerror) bool {
 	};
 }
 
+const embedding_retry_delays_ns = [_]u64{
+	100 * std.time.ns_per_ms,
+	200 * std.time.ns_per_ms,
+	400 * std.time.ns_per_ms,
+	800 * std.time.ns_per_ms,
+};
+
+fn retryDelayNs(attempt: usize) ?u64 {
+	if (attempt == 0 or attempt > embedding_retry_delays_ns.len) return null;
+	return embedding_retry_delays_ns[attempt - 1];
+}
+
+fn sleepBeforeEmbeddingRetry(delay_ns: u64) void {
+	io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((delay_ns)), .awake) catch {};
+}
+
 fn embedWithRetry(
 	allocator: std.mem.Allocator,
 	embedder: embedding.Embedder,
 	inputs: []const []const u8,
 ) ![][]f32 {
-	const max_attempts: usize = 3;
+	return embedWithRetryUsingSleeper(allocator, embedder, inputs, sleepBeforeEmbeddingRetry);
+}
+
+fn embedWithRetryUsingSleeper(
+	allocator: std.mem.Allocator,
+	embedder: embedding.Embedder,
+	inputs: []const []const u8,
+	sleeper: *const fn (delay_ns: u64) void,
+) ![][]f32 {
 	var attempt: usize = 0;
 	while (true) {
 		attempt += 1;
 		if (embedder.embed(embedder.ctx, allocator, inputs)) |embeddings| {
 			return embeddings;
 		} else |err| {
-			if (attempt >= max_attempts or !isTransientHttpError(err)) return err;
-			const delay_ns: u64 = switch (attempt) {
-				1 => 100 * std.time.ns_per_ms,
-				else => 500 * std.time.ns_per_ms,
-			};
-			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((delay_ns)), .awake) catch {};
+			if (!isTransientHttpError(err)) return err;
+			const delay_ns = retryDelayNs(attempt) orelse return err;
+			sleeper(delay_ns);
 		}
 	}
 }
@@ -2284,6 +2305,28 @@ const FlakyEmbedder = struct {
 		allocator.free(embeddings);
 	}
 };
+
+test "embedWithRetry survives four transient WriteFailed responses" {
+	const allocator = std.testing.allocator;
+	var flaky = FlakyEmbedder{ .fail_remaining = 4, .fail_error = error.WriteFailed };
+	const embedder = flaky.embedder();
+	const inputs = [_][]const u8{"watcher startup retry regression"};
+	const embeddings = try embedWithRetryUsingSleeper(allocator, embedder, &inputs, struct {
+		fn sleep(_: u64) void {}
+	}.sleep);
+	defer embedder.free(embedder.ctx, allocator, embeddings);
+
+	try std.testing.expectEqual(@as(usize, 1), embeddings.len);
+	try std.testing.expectEqual(@as(usize, 5), flaky.call_count);
+}
+
+test "embedding retry delays are bounded exponential backoff" {
+	try std.testing.expectEqual(@as(?u64, 100 * std.time.ns_per_ms), retryDelayNs(1));
+	try std.testing.expectEqual(@as(?u64, 200 * std.time.ns_per_ms), retryDelayNs(2));
+	try std.testing.expectEqual(@as(?u64, 400 * std.time.ns_per_ms), retryDelayNs(3));
+	try std.testing.expectEqual(@as(?u64, 800 * std.time.ns_per_ms), retryDelayNs(4));
+	try std.testing.expectEqual(@as(?u64, null), retryDelayNs(5));
+}
 
 test "indexAll retries flushBatch on HttpConnectionClosing" {
 	var tmp = std.testing.tmpDir(.{});

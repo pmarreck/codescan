@@ -29,6 +29,7 @@ const progress_mod = @import("progress.zig");
 const fs_watch = @import("fs_watch.zig");
 const weights = @import("weights.zig");
 const diagnostics = @import("diagnostics.zig");
+const doctor = @import("doctor.zig");
 const syslog = @import("syslog.zig");
 const setup_model_text = @import("setup_model_text.zig");
 const preflight = @import("preflight.zig");
@@ -197,6 +198,15 @@ pub fn main(init: std.process.Init) !void {
 		if (discovered_root) |root| {
 			config_root = root;
 		}
+	}
+
+	// Doctor deliberately validates configuration itself so a malformed setting
+	// becomes a reported check rather than preventing diagnostics from starting.
+	if (parsed.command == .doctor) {
+		const healthy = try runDoctor(allocator, config_root, parsed, stdout);
+		try stdout.flush();
+		if (!healthy) std.process.exit(1);
+		return;
 	}
 
 	var cfg = try loadConfig(allocator, config_root);
@@ -441,6 +451,7 @@ pub fn main(init: std.process.Init) !void {
 			try runStatus(allocator, settings.db_path, settings.root_path, parsed.output, stdout);
 			try stdout.flush();
 		},
+		.doctor => unreachable,
 		.log => {
 			const log_cmd = @import("log_cmd.zig");
 			const platform = log_cmd.currentPlatform();
@@ -3652,6 +3663,11 @@ fn watcherDaemonFailureReason(
 			"embedding server at {s} rejected the credentials while initializing model '{s}'",
 			.{ embedding_url, embedding_model },
 		) catch "embedding server rejected credentials while initializing the watcher",
+		error.WriteFailed => std.fmt.bufPrint(
+			buf,
+			"embedding request to {s} for model '{s}' failed after retrying the connection; run 'codescan doctor' to verify the server and project state",
+			.{ embedding_url, embedding_model },
+		) catch "embedding request failed after retrying the connection; run 'codescan doctor'",
 		else => std.fmt.bufPrint(buf, "watcher daemon failed: {s}", .{@errorName(err)}) catch "watcher daemon failed",
 	};
 }
@@ -3683,6 +3699,19 @@ test "watcher HTTP startup failure identifies the embedding endpoint and model" 
 	try std.testing.expect(std.mem.indexOf(u8, reason, "http://127.0.0.1:11434") != null);
 	try std.testing.expect(std.mem.indexOf(u8, reason, "jina-code-embeddings:1.5b") != null);
 	try std.testing.expect(std.mem.indexOf(u8, reason, "HTTP") != null);
+}
+
+test "watcher transient write failure identifies the embedding endpoint and retry exhaustion" {
+	var buf: [512]u8 = undefined;
+	const reason = watcherDaemonFailureReason(
+		&buf,
+		"http://127.0.0.1:11434",
+		"jina-code-embeddings:1.5b",
+		error.WriteFailed,
+	);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "http://127.0.0.1:11434") != null);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "jina-code-embeddings:1.5b") != null);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "retry") != null);
 }
 
 pub fn runSymbols(
@@ -5741,6 +5770,7 @@ const usage =
     \\  serve                     Start HTTP API server
     \\  mcp-serve                 Start MCP server
     \\  status                    Show index & watcher status
+    \\  doctor                    Check configuration, index, inference, watcher, and permissions
     \\  clean                     Remove all codescan data
     \\  log                       Read recent watcher logs from the system log
     \\
@@ -6176,6 +6206,16 @@ const usage_status =
     \\
     \\Show index and watcher status: file count, index age,
     \\watcher state (running/stopped), and database location.
+    \\
+;
+
+const usage_doctor =
+    \\Usage: codescan doctor [--json]
+    \\
+    \\Check settings syntax, SQLite integrity, inference-model availability,
+    \\watcher state, and project-state permissions.
+    \\
+    \\A stopped watcher is reported as a note and does not make doctor fail.
     \\
 ;
 
@@ -6864,6 +6904,120 @@ fn printArgv(writer: *std.Io.Writer, argv: []const []const u8) !void {
 	try writer.writeAll("\n");
 }
 
+/// Reports configuration, database, inference, watcher, and project-state
+/// access without changing project data. A stopped watcher is informational:
+/// users may intentionally run codescan on demand.
+fn runDoctor(
+	allocator: std.mem.Allocator,
+	root_path: []const u8,
+	parsed: cli.Parsed,
+	writer: *std.Io.Writer,
+) !bool {
+	var report = doctor.Report.init(allocator);
+	defer report.deinit();
+
+	var settings_ok = true;
+	var cfg: config.Config = loadConfig(allocator, root_path) catch |err| blk: {
+		settings_ok = false;
+		try report.addFmt(.fail, "Settings", "could not parse configuration: {s}", .{@errorName(err)});
+		break :blk .{};
+	};
+	defer cfg.deinit(allocator);
+
+	var search_weights: weights.Table = loadWeights(allocator, root_path) catch |err| blk: {
+		settings_ok = false;
+		try report.addFmt(.fail, "Settings", "could not parse .codescan/weights.toml: {s}", .{@errorName(err)});
+		break :blk .{};
+	};
+	defer search_weights.deinit(allocator);
+
+	var settings: ?Settings = null;
+	defer if (settings) |*value| value.deinit(allocator);
+	if (settings_ok) {
+		const resolved: ?Settings = resolveSettings(allocator, parsed, cfg, root_path) catch |err| blk: {
+			settings_ok = false;
+			try report.addFmt(.fail, "Settings", "could not resolve configuration: {s}", .{@errorName(err)});
+			break :blk null;
+		};
+		if (resolved) |value| {
+			var configured = value;
+			configured.search_weights = &search_weights;
+			settings = configured;
+			try report.add(.pass, "Settings", "configuration and weights syntax are valid");
+		}
+	}
+	if (!settings_ok) {
+		try report.add(.skipped, "Inference", "skipped because settings are invalid");
+	}
+
+	var fallback_db_path: ?[]u8 = null;
+	defer if (fallback_db_path) |path| allocator.free(path);
+	const db_path: []const u8 = if (settings) |value|
+		value.db_path
+	else blk: {
+		fallback_db_path = try std.fs.path.join(allocator, &.{ root_path, ".codescan", "index.sqlite3" });
+		break :blk fallback_db_path.?;
+	};
+	const state_dir = std.fs.path.dirname(db_path) orelse root_path;
+
+	if (storage.checkIntegrity(allocator, db_path)) |result| {
+		defer allocator.free(result);
+		if (std.mem.eql(u8, result, "ok")) {
+			try report.addFmt(.pass, "Database", "SQLite integrity check passed ({s})", .{db_path});
+		} else {
+			try report.addFmt(.fail, "Database", "SQLite integrity check reported: {s}", .{result});
+		}
+	} else |err| {
+		try report.addFmt(.fail, "Database", "could not verify {s}: {s}", .{ db_path, @errorName(err) });
+	}
+
+	if (settings) |value| {
+		if (value.embedding_dialect == .openai and value.embedding_auth_header == null) {
+			try report.add(.fail, "Inference", "embedding_api=openai requires an API key; set CODESCAN_EMBEDDING_SERVER_API_KEY or embedding_api_key");
+		} else {
+			var http = embedding_http.StdHttpTransport.init(allocator);
+			defer http.deinit();
+			const available = embedding_http.inferenceAvailable(
+				allocator,
+				http.transport(),
+				value.embedding_url,
+				value.embedding_model,
+				value.embedding_dialect,
+			);
+			if (available) {
+				try report.addFmt(.pass, "Inference", "model '{s}' is available at {s}", .{ value.embedding_model, value.embedding_url });
+			} else {
+				try report.addFmt(.fail, "Inference", "model '{s}' is unavailable at {s}", .{ value.embedding_model, value.embedding_url });
+			}
+		}
+	}
+
+	if (pidfile.readAndCheckPid(allocator, state_dir) catch null) |pid| {
+		try report.addFmt(.pass, "Watcher", "running (PID {d})", .{pid});
+	} else {
+		try report.add(.note, "Watcher", "stopped");
+	}
+
+	const root_access = hasDoctorAccess(root_path, .{ .read = true, .execute = true });
+	const state_access = hasDoctorAccess(state_dir, .{ .read = true, .write = true, .execute = true });
+	const db_access = if (hasDoctorAccess(db_path, .{})) hasDoctorAccess(db_path, .{ .read = true, .write = true }) else true;
+	if (root_access and state_access and db_access) {
+		try report.addFmt(.pass, "Permissions", "read and write access is available for {s}", .{state_dir});
+	} else {
+		try report.addFmt(.fail, "Permissions", "need read/execute access to {s} and read/write access to {s}", .{ root_path, state_dir });
+	}
+
+	const rendered = try doctor.render(allocator, root_path, report.checks.items, parsed.output);
+	defer allocator.free(rendered);
+	try writer.writeAll(rendered);
+	return !doctor.hasFailures(report.checks.items);
+}
+
+fn hasDoctorAccess(path: []const u8, options: std.Io.Dir.AccessOptions) bool {
+	std.Io.Dir.cwd().access(io_singleton.getOrInit(), path, options) catch return false;
+	return true;
+}
+
 pub fn runStatus(
 	allocator: std.mem.Allocator,
 	db_path: []const u8,
@@ -7201,6 +7355,7 @@ fn usageForTopic(topic: []const u8) []const u8 {
     if (std.mem.eql(u8, topic, "mcp-serve")) return usage_mcp_serve;
     if (std.mem.eql(u8, topic, "mcp-install")) return usage_mcp_install;
     if (std.mem.eql(u8, topic, "status")) return usage_status;
+	if (std.mem.eql(u8, topic, "doctor")) return usage_doctor;
     if (std.mem.eql(u8, topic, "clean") or std.mem.eql(u8, topic, "clear")) return usage_clean;
     if (std.mem.eql(u8, topic, "init")) return usage_init;
     if (std.mem.eql(u8, topic, "hashlines")) return usage_hashlines;

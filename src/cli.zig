@@ -43,6 +43,7 @@ pub const CommandTag = enum {
 	mcp_install,
 	clean,
 	status,
+	doctor,
 	setup_model,
 	log,
 	root,
@@ -374,6 +375,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			.{ .names = &.{ "mcp-serve" }, .tag = .mcp_serve, .help_topic = "mcp-serve" },
 			.{ .names = &.{ "mcp-install" }, .tag = .mcp_install, .help_topic = "mcp-install" },
 			.{ .names = &.{ "status" }, .tag = .status, .help_topic = "status" },
+			.{ .names = &.{ "doctor" }, .tag = .doctor, .help_topic = "doctor" },
 			.{ .names = &.{ "setup-model" }, .tag = .setup_model, .help_topic = "setup-model" },
 			.{ .names = &.{ "log" }, .tag = .log, .help_topic = "log" },
 			.{ .names = &.{ "root" }, .tag = .root, .help_topic = "root" },
@@ -1528,6 +1530,15 @@ test "parse status --json" {
 	var parsed = try parse(std.testing.allocator, &args);
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.status, parsed.command);
+	try std.testing.expectEqual(OutputFormat.json, parsed.output);
+}
+
+test "parse doctor command without falling back to search" {
+	const args = [_][]const u8{ "codescan", "doctor", "--json" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.doctor, parsed.command);
+	try std.testing.expect(!parsed.assumed_search);
 	try std.testing.expectEqual(OutputFormat.json, parsed.output);
 }
 
