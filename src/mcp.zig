@@ -632,6 +632,9 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			}
 		}
 	} else if (std.mem.eql(u8, name, "index")) {
+		_ = indexer.resolvePreparationWorkers(allocator) catch {
+			return toolErrorDetail(allocator, err_detail, "MCP index: CODESCAN_INDEX_WORKERS must be an integer from 1 through 64. The existing index was left unchanged", .{});
+		};
 		var http_client = embedding_http.StdHttpTransport.init(allocator);
 		defer http_client.deinit();
 		if (!embedding_http.inferenceAvailable(

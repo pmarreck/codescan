@@ -3,6 +3,7 @@ const model = @import("model.zig");
 const kind = @import("kind.zig");
 const extract_zig = @import("extract_zig.zig");
 const extract_elixir = @import("extract_elixir.zig");
+const extract_roc = @import("extract_roc.zig");
 const extract_c = @import("extract_c.zig");
 const extract_typescript = @import("extract_typescript.zig");
 const extract_rust = @import("extract_rust.zig");
@@ -54,6 +55,30 @@ const racket_plugin = @import("plugins/racket/mod.zig");
 const common_lisp_plugin = @import("plugins/common_lisp/mod.zig");
 const sml_plugin = @import("plugins/sml/mod.zig");
 const wat_plugin = @import("plugins/wat/mod.zig");
+
+test "Roc files select a code extractor and retain names and documentation" {
+	const registry = defaultRegistry();
+	const paths = [_][]const u8{ "main.roc", "src/Label.roc", "path with spaces/example.roc" };
+	for (paths) |path| {
+		const found = registry.find(path);
+		try std.testing.expect(found != null);
+		try std.testing.expectEqualStrings("roc", found.?.language);
+		try std.testing.expectEqual(kind.Kind.code, found.?.kind);
+	}
+	const allocator = std.testing.allocator;
+	const symbols = try registry.find("main.roc").?.extract(allocator, "main.roc", "## Adds numbers\nadd : I64, I64 -> I64\nadd = |a, b| a + b\n");
+	defer {
+		for (symbols) |*sym| sym.deinit(allocator);
+		allocator.free(symbols);
+	}
+	try std.testing.expectEqual(@as(usize, 1), symbols.len);
+	try std.testing.expectEqualStrings("add", symbols[0].name);
+	try std.testing.expectEqualStrings("Adds numbers", symbols[0].doc_comment.?);
+	try std.testing.expectEqualStrings("fn", symbols[0].symbol_kind.?);
+	try std.testing.expectEqualStrings("add : I64, I64 -> I64", symbols[0].signature);
+	try std.testing.expectEqual(@as(usize, 2), symbols[0].start_line);
+	try std.testing.expectEqual(@as(usize, 3), symbols[0].end_line);
+}
 
 pub const ExtractorFn = *const fn (
 	allocator: std.mem.Allocator,
@@ -128,6 +153,7 @@ pub const Registry = struct {
 pub fn defaultRegistry() Registry {
 	return .{
 		.extractors = &[_]Extractor{
+			.{ .language = "roc", .kind = .code, .extensions = &.{".roc"}, .ignore_patterns = &.{"**/.roc_cache/**"}, .extract = extract_roc.extract },
 			.{
 				.language = zig_plugin.language,
 				.kind = zig_plugin.kind,

@@ -65,6 +65,9 @@
 				grammar-wat = grammarSource "g-plane" "tree-sitter-wat"
 					"e3769473b2d90643d8af500b5cfc2f25a674888a"
 					"sha256-m0x3u1Uw/0ONxqiac5OvieyDYcYxkwvGbLrJOsTVoLg=";
+				grammar-roc = grammarSource "faldor20" "tree-sitter-roc"
+					"2760de95b87004ed537151f2467377a6ddafdef0"
+					"sha256-+J7PRYVD4J4mGJIvZnmSKuwGG/vdNkVPuEmCTq8mtwI=";
 
 				# One immutable root keeps build.zig independent of Nix's individual
 				# store paths while preserving exact source provenance in this flake.
@@ -80,6 +83,7 @@
 					{ name = "commonlisp"; path = "${grammar-commonlisp}/src"; }
 					{ name = "sml"; path = "${grammar-sml}/src"; }
 					{ name = "wat"; path = "${grammar-wat}/src"; }
+					{ name = "roc"; path = "${grammar-roc}/src"; }
 				];
 
 				# Create a directory matching Zig's package cache layout

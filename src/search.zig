@@ -4,6 +4,7 @@ const embedding = @import("embedding.zig");
 const model = @import("model.zig");
 const hashline = @import("hashline.zig");
 const simd = @import("simd.zig");
+const roc_signature = @import("roc_signature.zig");
 
 const sqlite = storage.sqlite;
 
@@ -303,6 +304,7 @@ pub fn search(
 		return browseSymbols(allocator, db, options);
 	}
 	if (options.top_n == 0) return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
+	if (roc_signature.Query.parse(query)) |signature| return searchRocSignature(allocator, db, signature, options);
 
 	var weight_vector = options.weight_vector;
 	var weight_lexical = options.weight_lexical;
@@ -500,6 +502,48 @@ pub fn search(
 	for (filtered.items[take..]) |*res| res.deinit(allocator);
 	filtered.deinit(allocator);
 	return .{ .results = out, .total_relevant = relevant };
+}
+
+fn searchRocSignature(allocator: std.mem.Allocator, db: storage.Db, query: roc_signature.Query, options: Options) !SearchResult {
+	var results: std.ArrayListUnmanaged(Result) = .empty;
+	errdefer {
+		for (results.items) |*res| res.deinit(allocator);
+		results.deinit(allocator);
+	}
+	if (options.comments_only or options.min_score > 1) return .{ .results = try results.toOwnedSlice(allocator), .total_relevant = 0 };
+	const sql = "SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, 0.0 FROM symbols WHERE lang = 'roc' ORDER BY file_path, start_line, id";
+	var stmt: ?*sqlite.sqlite3_stmt = null;
+	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlPrepareFailed;
+	defer _ = sqlite.sqlite3_finalize(stmt.?);
+	var total: usize = 0;
+	while (true) {
+		const rc = sqlite.sqlite3_step(stmt.?);
+		if (rc == sqlite.SQLITE_DONE) break;
+		if (rc != sqlite.SQLITE_ROW) return error.SqlStepFailed;
+		const name = sqlite.sqlite3_column_text(stmt.?, 7) orelse continue;
+		const signature = sqlite.sqlite3_column_text(stmt.?, 8) orelse continue;
+		if (!query.matches(std.mem.span(name), std.mem.span(signature))) continue;
+		var res = try readResultRow(allocator, stmt.?);
+		if (!matchesFilters(res.symbol, options)) {
+			res.deinit(allocator);
+			continue;
+		}
+		total += 1;
+		if (results.items.len >= options.top_n) {
+			res.deinit(allocator);
+			continue;
+		}
+		res.score = 1;
+		res.lexical = 1;
+		res.distance = std.math.inf(f32);
+		res.lexical_sources = .{ .name = true, .signature = true };
+		results.append(allocator, res) catch |err| {
+			res.deinit(allocator);
+			return err;
+		};
+	}
+	return .{ .results = try results.toOwnedSlice(allocator), .total_relevant = total };
 }
 
 fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options) !SearchResult {
@@ -1881,6 +1925,46 @@ test "lexicalScore counts tokens that appear only in body" {
 	// Stronger requirement: non-trivial, at least 0.2 to outrank pure floor.
 	const score = try testLexicalScore(allocator, "bash version", symbol, false);
 	try std.testing.expect(score >= 0.2);
+}
+
+test "Roc partial signature search classifies declarations without inference" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	const cases = [_]struct { name: []const u8, signature: []const u8, language: []const u8 = "roc", matches: bool }{
+		.{ .name = "ceil", .signature = "ceil : Dec -> Dec", .matches = true },
+		.{ .name = "Dec/ceil", .signature = "ceil :\n\tDec\n\t-> Dec", .matches = true },
+		.{ .name = "ceil", .signature = "ceil : (Dec -> Str), Dec -> Dec", .matches = true },
+		.{ .name = "ceil", .signature = "ceil : Dec => Dec", .matches = false },
+		.{ .name = "ceil", .signature = "ceil : Dec -> Str", .matches = false },
+		.{ .name = "ceil", .signature = "ceil : Dec -> List(Dec)", .matches = false },
+		.{ .name = "ceiling", .signature = "ceiling : Dec -> Dec", .matches = false },
+		.{ .name = "ceil", .signature = "ceil : Dec -> Dec", .language = "zig", .matches = false },
+	};
+	for (cases, 0..) |case, i| {
+		const path = try std.fmt.allocPrint(allocator, "{d}.roc", .{i});
+		defer allocator.free(path);
+		_ = try storage.insertSymbol(db, .{ .language = case.language, .file_path = path, .name = case.name, .signature = case.signature, .doc_comment = null, .start_line = 1, .end_line = 3 });
+	}
+	const none = embedding.NullEmbedder.embedder();
+	const result = try search(allocator, db, none, "ceil : -> Dec", .{ .top_n = 20 });
+	defer freeResults(allocator, result.results);
+	try std.testing.expectEqual(@as(usize, 3), result.total_relevant);
+	var found: [cases.len]bool = @splat(false);
+	for (result.results) |hit| {
+		const i = try std.fmt.parseInt(usize, std.fs.path.stem(hit.symbol.file_path), 10);
+		found[i] = true;
+		try std.testing.expectEqual(@as(f32, 1), hit.score);
+	}
+	for (cases, found) |case, matched| try std.testing.expectEqual(case.matches, matched);
+	const filtered = try search(allocator, db, none, "Dec.ceil : -> Dec", .{ .top_n = 1, .allowed_paths = &.{"1.roc"} });
+	defer freeResults(allocator, filtered.results);
+	try std.testing.expectEqual(@as(usize, 1), filtered.total_relevant);
+	try std.testing.expectEqualStrings("Dec/ceil", filtered.results[0].symbol.name);
+	const excluded = try search(allocator, db, none, "ceil : -> Dec", .{ .allowed_langs = &.{"zig"} });
+	defer freeResults(allocator, excluded.results);
+	try std.testing.expectEqual(@as(usize, 0), excluded.total_relevant);
 }
 
 test "search vector mode returns nearest symbol" {

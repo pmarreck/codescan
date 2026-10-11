@@ -12,8 +12,65 @@ const hashline = @import("hashline.zig");
 const last_index = @import("last_index.zig");
 const search_module = @import("search.zig");
 
+const RecordingExtractor = struct {
+	var mutex: std.Io.Mutex = .init;
+	var owner: std.Thread.Id = undefined;
+	var calls: usize = 0;
+	var off_thread_calls: usize = 0;
+	var fail: bool = false;
+
+	fn extract(allocator: std.mem.Allocator, path: []const u8, source: []const u8) ![]model.Symbol {
+		const io = io_singleton.getOrInit();
+		mutex.lockUncancelable(io);
+		calls += 1;
+		if (std.Thread.getCurrentId() != owner) off_thread_calls += 1;
+		const should_fail = fail;
+		mutex.unlock(io);
+		if (should_fail) return error.InjectedParseFailure;
+		return @import("extract_zig.zig").extract(allocator, path, source);
+	}
+};
+
+test "initial indexing prepares files on workers and joins them after failure" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io, .{ .sub_path = "a.work", .data = "/// A\npub fn first() void {}\n" });
+	try tmp.dir.writeFile(io, .{ .sub_path = "b.work", .data = "pub fn second() void {}\n" });
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	const registry = plugin.Registry{ .extractors = &.{.{ .language = "zig", .kind = .code, .extensions = &.{".work"}, .ignore_patterns = &.{}, .extract = RecordingExtractor.extract }} };
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	RecordingExtractor.owner = std.Thread.getCurrentId();
+	RecordingExtractor.calls = 0;
+	RecordingExtractor.off_thread_calls = 0;
+	RecordingExtractor.fail = false;
+	var fake = FakeEmbedder{};
+	const stats = try indexAll(allocator, db, root, registry, fake.embedder(), .{ .embedding_dim = 2, .batch_size = 1, .preparation_workers = 2 });
+	try std.testing.expectEqual(@as(usize, 2), stats.files);
+	try std.testing.expectEqual(@as(usize, 2), stats.symbols);
+	try std.testing.expectEqual(@as(usize, 2), RecordingExtractor.calls);
+	try std.testing.expectEqual(@as(usize, 2), RecordingExtractor.off_thread_calls);
+	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+	try std.testing.expectError(error.InvalidWorkerCount, indexAll(allocator, db, root, registry, fake.embedder(), .{ .embedding_dim = 2, .preparation_workers = 65 }));
+	try std.testing.expectEqual(@as(i64, 2), try storage.countRows(db, allocator, "symbols"));
+	RecordingExtractor.fail = true;
+	defer RecordingExtractor.fail = false;
+	try std.testing.expectError(error.InjectedParseFailure, indexAll(allocator, db, root, registry, fake.embedder(), .{ .embedding_dim = 2, .preparation_workers = 2 }));
+	// A returned failure has joined all extractors; this state is safe to reuse.
+	const calls_after_failure = RecordingExtractor.calls;
+	RecordingExtractor.fail = false;
+	_ = try indexAll(allocator, db, root, registry, fake.embedder(), .{ .embedding_dim = 2, .preparation_workers = 2 });
+	try std.testing.expectEqual(calls_after_failure + 2, RecordingExtractor.calls);
+}
+
 pub const Options = struct {
 	embedding_dim: usize,
+	/// Zero selects up to eight CPU workers; one retains bounded read-ahead.
+	preparation_workers: usize = 0,
 	embedding_model: []const u8 = "",
 	batch_size: usize = 16,
 	max_file_size: usize = 1024 * 1024,
@@ -35,6 +92,137 @@ pub const Stats = struct {
 };
 
 const EmbeddingChannel = enum { code, comment };
+
+pub fn resolvePreparationWorkers(allocator: std.mem.Allocator) !usize {
+	const env = io_singleton.getEnvMapOrInit(allocator);
+	const requested = if (env.get("CODESCAN_INDEX_WORKERS")) |value|
+		std.fmt.parseInt(usize, value, 10) catch return error.InvalidWorkerCount
+	else
+		@min(@as(usize, 8), std.Thread.getCpuCount() catch 1);
+	if (requested == 0 or requested > 64) return error.InvalidWorkerCount;
+	return requested;
+}
+
+const PreparedFile = struct {
+	kind: kind.Kind,
+	size: u64,
+	mtime: i64,
+	skipped: bool = false,
+	source: []const u8 = "",
+	symbols: []model.Symbol = &.{},
+	hashes: ?[]hashline.Hash = null,
+};
+
+/// Each slot owns one file arena until the ordered writer releases it. Workers
+/// never access SQLite, the embedder, the output writer, or the caller allocator.
+const PreparationPool = struct {
+	const Slot = struct {
+		thread: ?std.Thread = null,
+		ready: bool = false,
+		result: anyerror!?PreparedFile = null,
+	};
+	allocator: std.mem.Allocator,
+	io: std.Io,
+	root_dir: std.Io.Dir,
+	registry: plugin.Registry,
+	options: Options,
+	files: []const []const u8,
+	slots: []Slot,
+	mutex: std.Io.Mutex = .init,
+	changed: std.Io.Condition = .init,
+	stopping: bool = false,
+
+	fn init(allocator: std.mem.Allocator, root_dir: std.Io.Dir, registry: plugin.Registry, options: Options, files: []const []const u8) !*PreparationPool {
+		const io = io_singleton.getOrInit(); // Initialize the singleton before spawning.
+		const requested = if (options.preparation_workers != 0) options.preparation_workers else try resolvePreparationWorkers(allocator);
+		if (requested == 0 or requested > 64) return error.InvalidWorkerCount;
+		const self = try allocator.create(PreparationPool);
+		errdefer allocator.destroy(self);
+		const slots = try allocator.alloc(Slot, @min(requested, files.len));
+		@memset(slots, .{});
+		self.* = .{ .allocator = allocator, .io = io, .root_dir = root_dir, .registry = registry, .options = options, .files = files, .slots = slots };
+		errdefer {
+			self.stopAndJoin();
+			allocator.free(slots);
+		}
+		for (slots, 0..) |*slot, i| slot.thread = try std.Thread.spawn(.{}, worker, .{ self, i });
+		return self;
+	}
+
+	fn deinit(self: *PreparationPool) void {
+		self.stopAndJoin();
+		const allocator = self.allocator;
+		allocator.free(self.slots);
+		allocator.destroy(self);
+	}
+
+	fn stopAndJoin(self: *PreparationPool) void {
+		self.mutex.lockUncancelable(self.io);
+		self.stopping = true;
+		self.changed.broadcast(self.io);
+		self.mutex.unlock(self.io);
+		for (self.slots) |slot| if (slot.thread) |thread| thread.join();
+	}
+
+	fn take(self: *PreparationPool, index: usize) !?PreparedFile {
+		self.mutex.lockUncancelable(self.io);
+		defer self.mutex.unlock(self.io);
+		const slot = &self.slots[index % self.slots.len];
+		while (!slot.ready) self.changed.waitUncancelable(self.io, &self.mutex);
+		return slot.result;
+	}
+
+	fn release(self: *PreparationPool, index: usize) void {
+		self.mutex.lockUncancelable(self.io);
+		self.slots[index % self.slots.len].ready = false;
+		self.changed.broadcast(self.io);
+		self.mutex.unlock(self.io);
+	}
+
+	fn worker(self: *PreparationPool, slot_index: usize) void {
+		const slot = &self.slots[slot_index];
+		var index = slot_index;
+		while (index < self.files.len) : (index += self.slots.len) {
+			self.mutex.lockUncancelable(self.io);
+			const stopping = self.stopping;
+			self.mutex.unlock(self.io);
+			if (stopping) return;
+			var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+			defer arena.deinit();
+			const result = self.prepare(arena.allocator(), self.files[index]);
+			self.mutex.lockUncancelable(self.io);
+			defer self.mutex.unlock(self.io);
+			if (self.stopping) return;
+			slot.result = result;
+			slot.ready = true;
+			self.changed.broadcast(self.io);
+			while (slot.ready and !self.stopping) self.changed.waitUncancelable(self.io, &self.mutex);
+			if (self.stopping) return;
+		}
+	}
+
+	fn prepare(self: *PreparationPool, allocator: std.mem.Allocator, path: []const u8) !?PreparedFile {
+		const extractor = scan.findExtractor(self.root_dir, self.registry, path) orelse return null;
+		if (!kindAllowed(extractor.kind, self.options.allowed_kinds) or !extAllowed(path, self.options.allowed_exts)) return null;
+		const file = try self.root_dir.openFile(self.io, path, .{});
+		defer file.close(self.io);
+		const stat = try file.stat(self.io);
+		var out = PreparedFile{ .kind = extractor.kind, .size = stat.size, .mtime = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s)) };
+		if (self.options.max_file_size > 0 and stat.size > self.options.max_file_size) {
+			out.skipped = true;
+			return out;
+		}
+		out.source = io_singleton.readToEndAlloc(file, allocator, self.options.max_file_size) catch |err| {
+			if (err != error.FileTooBig) return err;
+			out.skipped = true;
+			return out;
+		};
+		out.symbols = try extractor.extract(allocator, path, out.source);
+		for (out.symbols) |*sym| try enrichSymbolMetadata(allocator, sym);
+		out.hashes = computeFileHashes(allocator, out.source) catch null;
+		return out;
+	}
+};
 
 const PendingFile = struct {
 	path: []const u8,
@@ -131,9 +319,6 @@ pub fn indexAll(
 ) !Stats {
 	if (options.batch_size == 0) return error.InvalidBatchSize;
 
-	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
-	try storage.resetIndex(db);
-
 	const debug = try debugEnabled(allocator);
 	const show_progress = options.show_progress and !debug;
 
@@ -174,12 +359,16 @@ pub fn indexAll(
 	}
 	var root_dir = try std.Io.Dir.cwd().openDir(io_singleton.getOrInit(), root_path, .{});
 	defer root_dir.close(io_singleton.getOrInit());
+	const preparation = try PreparationPool.init(allocator, root_dir, registry, options, files);
+	defer preparation.deinit();
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
+	try storage.resetIndex(db);
 	if (show_progress) {
 		printProgress(stderr, 0, files.len, false);
 	}
 	var progress_last: usize = 0;
 	const progress_step: usize = 1;
-	for (files) |rel_path| {
+	for (files, 0..) |rel_path, file_number| {
 		if (show_progress) {
 			progress_last += 1;
 			if (shouldEmitProgress(progress_last, files.len, progress_step)) {
@@ -189,17 +378,12 @@ pub fn indexAll(
 		if (debug) {
 			debugLog(stderr, "codescan: debug: scanning {s}\n", .{rel_path});
 		}
-		const extractor = scan.findExtractor(root_dir, registry, rel_path) orelse continue;
-		if (!kindAllowed(extractor.kind, options.allowed_kinds)) continue;
-		if (!extAllowed(rel_path, options.allowed_exts)) continue;
-		const full_path = try std.fs.path.join(allocator, &.{ root_path, rel_path });
-		defer allocator.free(full_path);
-
-		const file = try std.Io.Dir.cwd().openFile(io_singleton.getOrInit(), full_path, .{});
-		defer file.close(io_singleton.getOrInit());
-
-		const stat = try file.stat(io_singleton.getOrInit());
-		const size = stat.size;
+		const prepared = (try preparation.take(file_number)) orelse {
+			preparation.release(file_number);
+			continue;
+		};
+		defer preparation.release(file_number);
+		const size = prepared.size;
 		if (options.max_file_size > 0) {
 			if (show_progress) {
 				const warn_threshold: u64 = @intCast(options.max_file_size / 4);
@@ -208,31 +392,13 @@ pub fn indexAll(
 					warnLargeFile(stderr, rel_path, size, warn_threshold, options.max_file_size, skipping);
 				}
 			}
-			if (size > options.max_file_size) continue;
 		}
-
-		const source = io_singleton.readToEndAlloc(file, allocator, options.max_file_size) catch |err| {
-			if (err == error.FileTooBig) continue;
-			return err;
-		};
-		defer allocator.free(source);
-
+		if (prepared.skipped) continue;
+		const source = prepared.source;
 		stats.files += 1;
-
-		const symbols = try extractor.extract(allocator, rel_path, source);
-		defer {
-			for (symbols) |*sym| sym.deinit(allocator);
-			allocator.free(symbols);
-		}
-		for (symbols) |*sym| {
-			try enrichSymbolMetadata(allocator, sym);
-		}
-
-		// Compute chain hashes for this file's lines
-		const hashes = computeFileHashes(allocator, source) catch null;
-		defer if (hashes) |h| allocator.free(h);
-
-		const current_mtime: i64 = @intCast(@divFloor(stat.mtime.nanoseconds, std.time.ns_per_s));
+		const symbols = prepared.symbols;
+		const hashes = prepared.hashes;
+		const current_mtime = prepared.mtime;
 		const current_size: i64 = @intCast(size);
 		const file_index = try completion.beginFile(allocator, rel_path, current_mtime, current_size);
 
@@ -250,7 +416,7 @@ pub fn indexAll(
 			const rowid = try storage.insertSymbol(db, sym_with_hash);
 			stats.symbols += 1;
 
-			const text = try buildSymbolText(allocator, sym, extractor.kind);
+			const text = try buildSymbolText(allocator, sym, prepared.kind);
 			try batch_texts.append(allocator, text);
 			try batch_rowids.append(allocator, rowid);
 			try completion.queue(allocator, file_index, .code);

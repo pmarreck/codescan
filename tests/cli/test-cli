@@ -77,6 +77,35 @@ main() {
 	[ "$(printf '%s' "$out" | jq -r '.freshness')" = reconciled ] || fail "fresh search omitted reconciled metadata"
 	[ ! -e "$fresh_root/.codescan/watcher.pid" ] || fail "fresh search implicitly started a watcher"
 
+	roc_root="$DB_DIR/roc"
+	mkdir -p "$roc_root/.git"
+	printf '%s\n' \
+		'## Rounds up a decimal.' 'ceil :' $'\tDec' $'\t-> Dec' \
+		'ceil = |value| value' '' 'ceiling : Dec -> Str' 'ceiling = |value| "Dec"' \
+		> "$roc_root/Dec.roc"
+	capture "$BIN" index --root "$roc_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "Roc lexical index failed: $err"
+	cp "$roc_root/.codescan/index.sqlite3" "$DB_DIR/roc-before.sqlite3"
+	capture env CODESCAN_INDEX_WORKERS=0 "$BIN" index --root "$roc_root" --lexical-only
+	[ "$rc" -ne 0 ] || fail "initial indexing accepted an invalid worker count"
+	printf '%s' "$err" | rg -q 'CODESCAN_INDEX_WORKERS must be an integer from 1 through 64' || \
+		fail "invalid worker count omitted recovery guidance"
+	cmp -s "$DB_DIR/roc-before.sqlite3" "$roc_root/.codescan/index.sqlite3" || \
+		fail "invalid worker count destroyed the existing index"
+	capture "$BIN" search 'ceil : -> Dec' --root "$roc_root" --mode lexical --json
+	[ "$rc" -eq 0 ] || fail "Roc signature query failed: $err"
+	printf '%s' "$out" | jq -e '.results | length == 1 and .[0].name == "ceil" and .[0].language == "roc"' >/dev/null || \
+		fail "Roc partial signature query returned the wrong declarations: $out"
+	capture "$BIN" symbols ceil --file "$roc_root/Dec.roc" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Roc symbol lookup failed: $err"
+	printf '%s' "$out" | jq -e '.body | join("\n") | contains("ceil :") and contains("ceil =")' >/dev/null || \
+		fail "Roc symbol body omitted its annotation"
+	capture bash -c 'printf "%s\n" "ceil : Dec -> Dec" "ceil = |value| value + 1" | "$@"' _ \
+		"$BIN" replace-symbol ceil --file "$roc_root/Dec.roc"
+	[ "$rc" -eq 0 ] || fail "Roc symbol replacement failed: $err"
+	[ "$(rg -c '^ceil :' "$roc_root/Dec.roc")" -eq 1 ] || fail "Roc replacement left a stale annotation"
+	rg -q '^ceiling = ' "$roc_root/Dec.roc" || fail "Roc replacement removed a neighboring declaration"
+
 	offline_root="$DB_DIR/offline-inference"
 	mkdir -p "$offline_root/.git"
 	printf '%s\n' 'pub fn indexedBeforeOutage() void {}' > "$offline_root/offline.zig"

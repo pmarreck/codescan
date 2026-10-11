@@ -1581,18 +1581,14 @@ fn maybeStartWatcher(
 		.pending => {
 			_ = stderr.print(
 				"note: Watcher is still initializing (PID {d}); check 'codescan watch status' and .codescan/watcher-error.log\n",
-				.{child.id orelse 0},
+				.{spawnedProcessId(child.id)},
 			) catch {};
 			_ = stderr.flush() catch {};
 			return true;
 		},
 	}
 
-	if (comptime builtin.os.tag == .windows) {
-		_ = stderr.print("note: Started background watcher\n", .{}) catch {};
-	} else {
-		_ = stderr.print("note: Started background watcher (PID {d})\n", .{child.id orelse 0}) catch {};
-	}
+	_ = stderr.print("note: Started background watcher (PID {d})\n", .{spawnedProcessId(child.id)}) catch {};
 	_ = stderr.flush() catch {};
 	return true;
 }
@@ -1601,6 +1597,29 @@ fn maybeStartWatcher(
 /// its initial incremental pass instead of reporting a PID as false success.
 const watcher_start_attempts: usize = 500;
 const watcher_start_poll_ns: u64 = 20 * std.time.ns_per_ms;
+
+const WindowsProcess = struct {
+	extern "kernel32" fn GetProcessId(std.os.windows.HANDLE) callconv(.winapi) std.os.windows.DWORD;
+};
+
+fn spawnedProcessId(id: ?std.process.Child.Id) u32 {
+	const value = id orelse return 0;
+	if (comptime builtin.os.tag == .windows) return WindowsProcess.GetProcessId(value);
+	return @intCast(value);
+}
+
+test "spawnedProcessId reports numeric PIDs on every platform" {
+	try std.testing.expectEqual(@as(u32, 0), spawnedProcessId(null));
+	const current_id: std.process.Child.Id = if (comptime builtin.os.tag == .windows)
+		std.os.windows.GetCurrentProcess()
+	else
+		std.c.getpid();
+	const expected: u32 = if (comptime builtin.os.tag == .windows)
+		std.os.windows.GetCurrentProcessId()
+	else
+		@intCast(std.c.getpid());
+	try std.testing.expectEqual(expected, spawnedProcessId(current_id));
+}
 
 const WatcherStartupProbe = struct {
 	allocator: std.mem.Allocator,
@@ -2133,6 +2152,7 @@ fn runInit(
 	force: bool,
 	stdout: *std.Io.Writer,
 ) !void {
+	try validatePreparationWorkers(allocator);
 	var stderr_buf: [4096]u8 = undefined;
 	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 	const stderr = &stderr_writer.interface;
@@ -2445,6 +2465,16 @@ fn runInit(
 	_ = maybeStartWatcher(allocator, resolved_settings, stderr, .index_completed);
 }
 
+fn validatePreparationWorkers(allocator: std.mem.Allocator) !void {
+	_ = indexer.resolvePreparationWorkers(allocator) catch |err| {
+		var buf: [256]u8 = undefined;
+		var writer = io_singleton.stderrWriter(&buf);
+		try writer.interface.writeAll("error: CODESCAN_INDEX_WORKERS must be an integer from 1 through 64; the existing index was left unchanged.\n");
+		try writer.interface.flush();
+		return err;
+	};
+}
+
 /// Run a full index of the repository: scan, extract, embed, and store.
 /// Extracted from the `.index` switch arm of `pub fn main` (2026-06-01).
 fn runIndex(
@@ -2454,6 +2484,7 @@ fn runIndex(
 	lexical_only: bool,
 	stdout: *std.Io.Writer,
 ) !void {
+	try validatePreparationWorkers(allocator);
 	checkTmpSpace();
 	var http_client = embedding_http.StdHttpTransport.init(allocator);
 	defer http_client.deinit();
@@ -6325,7 +6356,7 @@ const usage_languages =
     \\  Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml,
     \\  Swift, LLVM IR, Clojure, Assembly, Fish, Nushell, PowerShell,
     \\  Tcl, Oil, F#, Elm, Gleam, Scheme, Racket, Common Lisp,
-    \\  Standard ML, WebAssembly Text (WAT/WAST)
+	\\  Standard ML, WebAssembly Text (WAT/WAST), Roc
     \\
     \\Indexing and search:
     \\  Any text file (Markdown, logs, plain text, etc.)
@@ -6338,7 +6369,7 @@ const usage_languages =
     \\  zig, c, typescript, rust, elixir, bash, lua, nix, nim, lean,
     \\  idris, haskell, go, ruby, erlang, ocaml, swift, llvm, clojure,
     \\  assembly, fish, nushell, powershell, tcl, oil, fsharp, elm,
-    \\  gleam, scheme, racket, common-lisp, sml, wat, markdown, text, log
+	\\  gleam, scheme, racket, common-lisp, sml, wat, roc, markdown, text, log
     \\
     \\Notes:
     \\  WAT line and nested block comments attach to symbols and inform

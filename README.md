@@ -13,7 +13,7 @@ Semantic code search for local repositories.
 - Symbol extraction: Zig, C/C++, TypeScript/JavaScript, Rust, Elixir, Bash,
   Lua, Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml, Swift,
   LLVM IR, Clojure, Assembly, Fish, Nushell, PowerShell, Tcl, Oil, F#,
-  Elm, Gleam, Scheme, Racket, Common Lisp, Standard ML, and WAT
+  Elm, Gleam, Scheme, Racket, Common Lisp, Standard ML, WAT, and Roc
 - LSP (references, rename): available where a language server is configured;
   run `codescan help lsp` for the current adapter list
 - Markdown/text/log indexing with semantic chunking
@@ -118,6 +118,44 @@ before the executable/shebang fallback.
 | Common Lisp | `.lisp`, `.lsp`, `.cl`, `.asd` | `tree-sitter-grammars/tree-sitter-commonlisp@3232350` | functions, macros, methods, generics, classes, structs, types, variables, constants, packages |
 | Standard ML | `.sml`, `.sig`, `.fun` | `MatthewFluet/tree-sitter-sml@fd4b495` | functions, values, datatypes, types, structures, signatures, functors |
 | WebAssembly Text | `.wat`, `.wast` | `g-plane/tree-sitter-wat@e376947` | modules, functions, globals, memories, tables, types, and named WAST actions/assertions |
+| Roc | `.roc` | `faldor20/tree-sitter-roc@2760de9` | functions, values, types, associated methods, and expectations |
+
+Roc annotations belong to their definitions, including multiline annotations,
+so symbol-directed replacement does not leave an old signature behind.
+Adjacent `##` and `#` comments supply documentation. Destructuring bindings
+do not receive individual named-symbol boundaries.
+
+Roc signature queries match declared types without inference. For example,
+`codescan search 'ceil : -> Dec'` finds `ceil` functions returning `Dec`,
+with any parameter types. `Dec.ceil : -> Dec` restricts the associated name;
+`ceil : Dec -> Dec` also checks the parameter types. Whitespace is ignored
+between type tokens, while `->` and `=>` remain distinct. This searches
+explicit Roc annotations, not inferred types or resolved type aliases.
+
+Initial indexing prepares files in parallel, using up to eight CPU workers
+by default. `CODESCAN_INDEX_WORKERS=1` selects one preparation worker; values
+from 1 through 64 override the default. Each worker holds at most one prepared
+file ahead of the ordered writer. SQLite writes and embedding requests remain
+serialized, so inference-server throughput can still limit total indexing speed.
+
+A Linux x86_64 ReleaseFast comparison on 2026-10-11 used 128 Roc files with
+64 annotated functions each (8,192 symbols, about 16 KB per file). The serial
+baseline had the same Roc grammar and extractor. Both ran lexical-only initial
+indexing, including process startup, discovery, and SQLite writes. Mean times
+from three fresh processes after one warmup process were:
+
+| CPU allocation | Serial wall | Parallel wall | Serial CPU | Parallel CPU |
+| --- | ---: | ---: | ---: | ---: |
+| 1 CPU | 1,480 ms | 1,546 ms | 1,460 ms | 1,525 ms |
+| 12 CPUs, up to 8 workers | 1,472 ms | 789 ms | 1,459 ms | 1,939 ms |
+
+Linux affinity constrained the allocations; wall time used `CLOCK_MONOTONIC`
+and CPU time used `wait4` user plus system time across child threads. The
+16/32/64/128-file sweep retained raw samples in external measurement history.
+Complete symbol rows matched in both directions, and file metadata matched.
+The work check rejected a fixture with a missing file. These are workload-specific
+observations, not an approved historical performance gate or a semantic-index
+speed claim.
 
 WAT `;;` line comments and nested `(; ... ;)` block comments immediately
 above a definition are attached to that symbol and embedded in the dedicated

@@ -57,6 +57,7 @@ pub fn build(b: *std.Build) void {
 	const ts_commonlisp = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_commonlisp", b.fmt("{s}/commonlisp", .{grammar_root}), false);
 	const ts_sml = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_sml", b.fmt("{s}/sml", .{grammar_root}), true);
 	const ts_wat = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_wat", b.fmt("{s}/wat", .{grammar_root}), true);
+	const ts_roc = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_roc", b.fmt("{s}/roc", .{grammar_root}), true);
 	const ts_langs = [_]*std.Build.Step.Compile{
 		tsc_lib,
 		ts_typescript,
@@ -88,6 +89,7 @@ pub fn build(b: *std.Build) void {
 		ts_commonlisp,
 		ts_sml,
 		ts_wat,
+		ts_roc,
 	};
 
 	const exe = b.addExecutable(.{

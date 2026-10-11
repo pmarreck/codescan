@@ -40,6 +40,7 @@ extern fn tree_sitter_scheme() *ts.TSLanguage;
 extern fn tree_sitter_commonlisp() *ts.TSLanguage;
 extern fn tree_sitter_sml() *ts.TSLanguage;
 extern fn tree_sitter_wat() *ts.TSLanguage;
+extern fn tree_sitter_roc() *ts.TSLanguage;
 
 // ─── Language Configurations ─────────────────────────────────────────
 
@@ -76,6 +77,7 @@ pub const Language = enum {
 	common_lisp,
 	sml,
 	wat,
+	roc,
 
 	pub fn tsLanguage(self: Language) *ts.TSLanguage {
 		return switch (self) {
@@ -110,6 +112,7 @@ pub const Language = enum {
 			.common_lisp => tree_sitter_commonlisp(),
 			.sml => tree_sitter_sml(),
 			.wat => tree_sitter_wat(),
+			.roc => tree_sitter_roc(),
 		};
 	}
 
@@ -145,6 +148,7 @@ pub const Language = enum {
 			.common_lisp => &[_]SymbolMapping{},
 			.sml => &sml_mappings,
 			.wat => &wat_mappings,
+			.roc => &.{}, // Roc annotations and definitions share one symbol span.
 		};
 	}
 
@@ -217,6 +221,7 @@ pub const Language = enum {
 			.{ "nim", .nim },
 			.{ "escript", .erlang },
 			.{ "ocaml", .ocaml },
+			.{ "roc", .roc },
 		};
 		inline for (map) |entry| {
 			if (std.mem.eql(u8, interpreter, entry[0])) return entry[1];
@@ -296,6 +301,7 @@ pub const Language = enum {
 			.{ ".fun", .sml },
 			.{ ".wat", .wat },
 			.{ ".wast", .wat },
+			.{ ".roc", .roc },
 		};
 		inline for (map) |entry| {
 			if (std.mem.eql(u8, ext, entry[0])) return entry[1];
@@ -571,6 +577,8 @@ pub fn extract(allocator: std.mem.Allocator, source: []const u8, lang: Language)
 			if (extractSchemeForm(source, node)) |sym| try flat.append(allocator, sym);
 		} else if (lang == .common_lisp) {
 			if (extractCommonLispForm(source, node)) |sym| try flat.append(allocator, sym);
+		} else if (lang == .roc) {
+			if (extractRocForm(source, node)) |sym| try flat.append(allocator, sym);
 		} else if (findMapping(lang_mappings, node_type)) |mapping| {
 			if (extractName(source, node, mapping.name_field)) |name| {
 				const start_point = ts.ts_node_start_point(node);
@@ -607,6 +615,46 @@ pub fn extract(allocator: std.mem.Allocator, source: []const u8, lang: Language)
 fn findMapping(lang_mappings: []const SymbolMapping, node_type: []const u8) ?SymbolMapping {
 	for (lang_mappings) |m| {
 		if (std.mem.eql(u8, m.node_type, node_type)) return m;
+	}
+	return null;
+}
+
+/// Keeps a Roc annotation and its binding together for indexing and safe edits.
+fn extractRocForm(source: []const u8, node: ts.TSNode) ?FlatSymbol {
+	if (!ts.ts_node_is_named(node)) return null;
+	const ty = std.mem.span(ts.ts_node_type(node));
+	if (std.mem.eql(u8, ty, "value_declaration") or std.mem.eql(u8, ty, "var_declaration")) {
+		const left = firstDirectChildOfType(node, "decl_left") orelse
+			ts.ts_node_child_by_field_name(node, "name", 4);
+		if (ts.ts_node_is_null(left)) return null;
+		const name = nodeText(source, left) orelse return null;
+		// Destructuring patterns are not single named definitions.
+		if (std.mem.indexOfAny(u8, name, " \t\r\n{}[](),") != null) return null;
+		const body = ts.ts_node_child_by_field_name(node, "body", 4);
+		const text = if (ts.ts_node_is_null(body)) "" else nodeText(source, body) orelse "";
+		var sym = flatSymbolFromNode(node, name, if (std.mem.startsWith(u8, text, "|")) .function else if (std.mem.eql(u8, ty, "var_declaration")) .variable else .constant);
+		var previous = ts.ts_node_prev_named_sibling(node);
+		while (!ts.ts_node_is_null(previous) and std.mem.endsWith(u8, std.mem.span(ts.ts_node_type(previous)), "comment")) {
+			previous = ts.ts_node_prev_named_sibling(previous);
+		}
+		if (!ts.ts_node_is_null(previous) and std.mem.eql(u8, std.mem.span(ts.ts_node_type(previous)), "annotation_type_def")) {
+			const annotation_name = firstDirectChildOfType(previous, "annotation_pre_colon") orelse return sym;
+			if (std.mem.eql(u8, nodeText(source, annotation_name) orelse "", name)) {
+				sym.start_byte = ts.ts_node_start_byte(previous);
+				sym.start_line = ts.ts_node_start_point(previous).row + 1;
+			}
+		}
+		return sym;
+	}
+	if (std.mem.eql(u8, ty, "alias_type_def") or std.mem.eql(u8, ty, "opaque_type_def") or std.mem.eql(u8, ty, "nominal_type_def")) {
+		const apply = firstDirectChildOfType(node, "apply_type") orelse return null;
+		const name_node = firstDirectChildOfType(apply, "concrete_type") orelse return null;
+		return flatSymbolFromNode(node, nodeText(source, name_node) orelse return null, .type_alias);
+	}
+	if (std.mem.eql(u8, ty, "expect")) {
+		const text = nodeText(source, node) orelse return null;
+		const end = std.mem.indexOfScalar(u8, text, '\n') orelse text.len;
+		return flatSymbolFromNode(node, text[0..end], .test_decl);
 	}
 	return null;
 }

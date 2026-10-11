@@ -19,6 +19,7 @@ const _extract_markdown = @import("extract_markdown.zig");
 const _extract_nim = @import("extract_nim.zig");
 const _extract_nix = @import("extract_nix.zig");
 const _extract_rust = @import("extract_rust.zig");
+const _extract_roc = @import("extract_roc.zig");
 const _extract_text = @import("extract_text.zig");
 const _extract_typescript = @import("extract_typescript.zig");
 const _extract_util = @import("extract_util.zig");
@@ -82,6 +83,7 @@ test {
 	_ = _extract_nim;
 	_ = _extract_nix;
 	_ = _extract_rust;
+	_ = _extract_roc;
 	_ = _extract_text;
 	_ = _extract_typescript;
 	_ = _extract_util;
