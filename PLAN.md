@@ -9,9 +9,10 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [x] Pass regression tests, the complete suite, and five-target ReleaseFast builds; update language documentation. (done 2026-10-12 11:27 EDT)
 - [x] Fix the existing macOS log-duration validation failure blocking the CLI suite. (done 2026-10-12 11:22 EDT)
 - [x] Use the configured temporary directory in the reindex-runner test; its hardcoded `/dev/shm` path fails on macOS. (done 2026-10-12 11:22 EDT)
-- [ ] Commit the passing Python support, push `yolo`, and verify the remote commit and CI result. (requested 2026-10-12)
+- [x] Commit the passing Python support, push `yolo`, and verify the remote commit: `357f6733`. (done 2026-10-12 11:29 EDT)
 
 Validation: `./test`, Debug aggregate unit tests, sandboxed `checks.aarch64-darwin.test`, and `./build_all` pass. Live HTTP/integration tests skip because local Ollama is unavailable. ReleaseFast is now the default, including the cross-build script.
+Publication checks use GitHub Actions and exact-commit Mechatron Prime CI.
 
 - [x] Add Roc discovery, structural extraction, documentation, and annotation-aware symbol edits. (done 2026-10-11 19:27 EDT)
 - [x] Measure and speed up initial indexing with bounded workers, ordered writes, and joined failure cleanup. (done 2026-10-11 19:27 EDT)
