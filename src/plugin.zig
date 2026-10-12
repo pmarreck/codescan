@@ -4,6 +4,8 @@ const kind = @import("kind.zig");
 const extract_zig = @import("extract_zig.zig");
 const extract_elixir = @import("extract_elixir.zig");
 const extract_roc = @import("extract_roc.zig");
+const extract_python = @import("extract_python.zig");
+const python_plugin = @import("plugins/python/mod.zig");
 const extract_c = @import("extract_c.zig");
 const extract_typescript = @import("extract_typescript.zig");
 const extract_rust = @import("extract_rust.zig");
@@ -55,6 +57,17 @@ const racket_plugin = @import("plugins/racket/mod.zig");
 const common_lisp_plugin = @import("plugins/common_lisp/mod.zig");
 const sml_plugin = @import("plugins/sml/mod.zig");
 const wat_plugin = @import("plugins/wat/mod.zig");
+
+test "Python registry classifies source and stubs without accepting generated files" {
+	const registry = defaultRegistry();
+	const paths = [_][]const u8{ "main.py", "types.pyi", "path with spaces/café.py", "cache.pyc", "cache.pyo", "notebook.ipynb", "script.py.txt" };
+	const accepted = [_]bool{ true, true, true, false, false, false, false };
+	for (paths, accepted) |path, expected| {
+		const found = registry.find(path);
+		try std.testing.expectEqual(expected, found != null and std.mem.eql(u8, found.?.language, "python"));
+	}
+	try std.testing.expectEqual(kind.Kind.code, registry.kindForLanguage("python").?);
+}
 
 test "Roc files select a code extractor and retain names and documentation" {
 	const registry = defaultRegistry();
@@ -153,6 +166,13 @@ pub const Registry = struct {
 pub fn defaultRegistry() Registry {
 	return .{
 		.extractors = &[_]Extractor{
+			.{
+				.language = python_plugin.language,
+				.kind = python_plugin.kind,
+				.extensions = python_plugin.extensions,
+				.ignore_patterns = python_plugin.ignore_patterns,
+				.extract = extract_python.extract,
+			},
 			.{ .language = "roc", .kind = .code, .extensions = &.{".roc"}, .ignore_patterns = &.{"**/.roc_cache/**"}, .extract = extract_roc.extract },
 			.{
 				.language = zig_plugin.language,

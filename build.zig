@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub fn build(b: *std.Build) void {
 	const target = b.standardTargetOptions(.{});
-	const optimize = b.standardOptimizeOption(.{});
+	const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default: ReleaseFast)") orelse .ReleaseFast;
 
 	const main_module = b.createModule(.{
 		.root_source_file = b.path("src/main.zig"),
@@ -58,6 +58,7 @@ pub fn build(b: *std.Build) void {
 	const ts_sml = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_sml", b.fmt("{s}/sml", .{grammar_root}), true);
 	const ts_wat = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_wat", b.fmt("{s}/wat", .{grammar_root}), true);
 	const ts_roc = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_roc", b.fmt("{s}/roc", .{grammar_root}), true);
+	const ts_python = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_python", b.fmt("{s}/python", .{grammar_root}), true);
 	const ts_langs = [_]*std.Build.Step.Compile{
 		tsc_lib,
 		ts_typescript,
@@ -90,6 +91,7 @@ pub fn build(b: *std.Build) void {
 		ts_sml,
 		ts_wat,
 		ts_roc,
+		ts_python,
 	};
 
 	const exe = b.addExecutable(.{

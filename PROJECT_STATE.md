@@ -78,6 +78,7 @@
   - Bash: `src/extract_bash.zig` (tree-sitter)
   - Lua: `src/extract_lua.zig` (tree-sitter)
   - Haskell: `src/extract_haskell.zig` (tree-sitter)
+  - Python: `src/extract_python.zig` (pinned tree-sitter-python; functions/classes, decorators, nested names, docstrings, and `.pyi` stubs)
   - Markdown: `src/extract_markdown.zig` (heading-based)
   - Text: `src/extract_text.zig` (paragraph/line/sentence)
   - Log: `src/extract_log.zig` (line-based)
@@ -88,7 +89,7 @@
   - Static init in `src/storage.zig` calls `sqlite3_vec_init` (no runtime extension loading).
 - SQLite amalgamation path is provided via `SQLITE_VEC_SQLITE_AMALGAMATION_DIR` (set in `flake.nix`).
 - tree-sitter runtime + tree-sitter-c grammar are vendored under `deps/` and built as static libs.
-- tree-sitter grammars for new languages are vendored under `deps/` (run `dirtree` to see per-path notes). `deps/tree-sitter-nim/src/scanner.c` includes a null-buffer guard for Zig's runtime checks.
+- New tree-sitter grammars are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`; older grammars remain under `deps/`. `deps/tree-sitter-nim/src/scanner.c` includes a null-buffer guard for Zig's runtime checks.
 - PCRE2 is required for glob matching and is built as a Zig dependency (`qaptoR-support/pcre2`).
 
 ## Known behaviors

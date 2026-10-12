@@ -3,7 +3,7 @@ set -u
 
 source "$HOME/dotfiles/bin/src/capture.bash"
 
-root="$(mktemp -d /dev/shm/codescan-reindex-test.XXXXXX)"
+root="$(mktemp -d "$TMPDIR/codescan-reindex-test.XXXXXX")" || exit 1
 fake_bin="$root/bin"
 log="$root/indexed-projects"
 failed=0

@@ -46,6 +46,7 @@ pub fn buildArgv(
 
 	switch (platform) {
 		.macos => {
+			_ = try parseDuration(opts.since);
 			if (opts.follow) {
 				try list.append(allocator, "log");
 				try list.append(allocator, "stream");
@@ -85,19 +86,29 @@ pub fn buildArgv(
 /// by Linux journald. Rejecting non-positive and malformed inputs keeps a typo
 /// from silently expanding the requested log window.
 fn normalizeLinuxSince(allocator: std.mem.Allocator, text: []const u8) ![]u8 {
-	if (text.len < 2) return error.InvalidDuration;
-
-	const amount = std.fmt.parseInt(u64, text[0 .. text.len - 1], 10) catch return error.InvalidDuration;
-	if (amount == 0) return error.InvalidDuration;
-
+	const amount = try parseDuration(text);
 	const unit = switch (text[text.len - 1]) {
 		's' => if (amount == 1) "second" else "seconds",
 		'm' => if (amount == 1) "minute" else "minutes",
 		'h' => if (amount == 1) "hour" else "hours",
 		'd' => if (amount == 1) "day" else "days",
-		else => return error.InvalidDuration,
+		else => unreachable,
 	};
 	return std.fmt.allocPrint(allocator, "{d} {s} ago", .{ amount, unit });
+}
+
+/// Validate the public duration grammar before either platform's log tool runs.
+fn parseDuration(text: []const u8) !u64 {
+	if (text.len < 2) return error.InvalidDuration;
+
+	const amount = std.fmt.parseInt(u64, text[0 .. text.len - 1], 10) catch return error.InvalidDuration;
+	if (amount == 0) return error.InvalidDuration;
+
+	switch (text[text.len - 1]) {
+		's', 'm', 'h', 'd' => {},
+		else => return error.InvalidDuration,
+	}
+	return amount;
 }
 
 /// Filter raw log output: if `root` is set, keep only lines whose content
@@ -160,6 +171,14 @@ test "buildArgv macos with follow uses stream" {
 	defer command.deinit(allocator);
 	const argv = command.items;
 	try std.testing.expectEqualStrings("stream", argv[1]);
+}
+
+test "buildArgv rejects invalid durations on both supported platforms" {
+	for ([_]Platform{ .macos, .linux }) |platform| {
+		for ([_][]const u8{ "", "0h", "-1h", "2", "2w", "1.5h" }) |since| {
+			try std.testing.expectError(error.InvalidDuration, buildArgv(std.testing.allocator, platform, .{ .since = since }));
+		}
+	}
 }
 
 test "buildArgv linux uses journalctl -t codescan" {

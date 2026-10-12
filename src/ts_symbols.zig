@@ -41,6 +41,7 @@ extern fn tree_sitter_commonlisp() *ts.TSLanguage;
 extern fn tree_sitter_sml() *ts.TSLanguage;
 extern fn tree_sitter_wat() *ts.TSLanguage;
 extern fn tree_sitter_roc() *ts.TSLanguage;
+extern fn tree_sitter_python() *ts.TSLanguage;
 
 // ─── Language Configurations ─────────────────────────────────────────
 
@@ -78,6 +79,7 @@ pub const Language = enum {
 	sml,
 	wat,
 	roc,
+	python,
 
 	pub fn tsLanguage(self: Language) *ts.TSLanguage {
 		return switch (self) {
@@ -113,6 +115,7 @@ pub const Language = enum {
 			.sml => tree_sitter_sml(),
 			.wat => tree_sitter_wat(),
 			.roc => tree_sitter_roc(),
+			.python => tree_sitter_python(),
 		};
 	}
 
@@ -149,6 +152,7 @@ pub const Language = enum {
 			.sml => &sml_mappings,
 			.wat => &wat_mappings,
 			.roc => &.{}, // Roc annotations and definitions share one symbol span.
+			.python => &python_mappings,
 		};
 	}
 
@@ -174,6 +178,7 @@ pub const Language = enum {
 			break :blk shebangBasename(nextShebangToken(rest));
 		} else name;
 
+		if (@import("plugins/python/mod.zig").isInterpreter(interpreter)) return .python;
 		const map = .{
 			.{ "bash", .bash },
 			.{ "sh", .bash },
@@ -302,6 +307,8 @@ pub const Language = enum {
 			.{ ".wat", .wat },
 			.{ ".wast", .wat },
 			.{ ".roc", .roc },
+			.{ ".py", .python },
+			.{ ".pyi", .python },
 		};
 		inline for (map) |entry| {
 			if (std.mem.eql(u8, ext, entry[0])) return entry[1];
@@ -535,6 +542,11 @@ const wat_mappings = [_]SymbolMapping{
 	.{ .node_type = "type_def", .kind = .type_alias, .name_field = .first_identifier },
 };
 
+const python_mappings = [_]SymbolMapping{
+	.{ .node_type = "function_definition", .kind = .function, .name_field = .name },
+	.{ .node_type = "class_definition", .kind = .class, .name_field = .name },
+};
+
 // ─── Extraction ──────────────────────────────────────────────────────
 
 /// Extract a hierarchical symbol tree from source using tree-sitter.
@@ -581,15 +593,25 @@ pub fn extract(allocator: std.mem.Allocator, source: []const u8, lang: Language)
 			if (extractRocForm(source, node)) |sym| try flat.append(allocator, sym);
 		} else if (findMapping(lang_mappings, node_type)) |mapping| {
 			if (extractName(source, node, mapping.name_field)) |name| {
-				const start_point = ts.ts_node_start_point(node);
-				const end_point = ts.ts_node_end_point(node);
+				const parent = ts.ts_node_parent(node);
+				const span = if (lang == .python and !ts.ts_node_is_null(parent) and
+					std.mem.eql(u8, std.mem.span(ts.ts_node_type(parent)), "decorated_definition")) parent else node;
+				const start_point = ts.ts_node_start_point(span);
+				const end_point = ts.ts_node_end_point(span);
+				var start_byte: usize = ts.ts_node_start_byte(span);
+				if (lang == .python) {
+					// Include leading indentation so replacing a complete Python
+					// definition cannot double-indent its first line.
+					const line_start = if (std.mem.lastIndexOfScalar(u8, source[0..start_byte], '\n')) |pos| pos + 1 else 0;
+					if (std.mem.trim(u8, source[line_start..start_byte], " \t\r").len == 0) start_byte = line_start;
+				}
 				try flat.append(allocator, .{
 					.name = name,
 					.kind = mapping.kind,
 					.start_line = start_point.row + 1,
 					.end_line = end_point.row + 1,
-					.start_byte = ts.ts_node_start_byte(node),
-					.end_byte = ts.ts_node_end_byte(node),
+					.start_byte = start_byte,
+					.end_byte = ts.ts_node_end_byte(span),
 				});
 			}
 		}
@@ -1267,6 +1289,37 @@ test "language detection from extension" {
 	try std.testing.expect(Language.fromExtension(".xyz") == null);
 }
 
+test "Python symbol boundaries include decorators and preserve nested hierarchy" {
+	const allocator = std.testing.allocator;
+	const lang = Language.fromExtension(".py") orelse return error.TestExpectedEqual;
+	const source = "@dataclass\nclass Client:\n    @property\n    def name(self):\n        return 'café'\n\ndef next_symbol(): pass\n";
+	var tree = try extract(allocator, source, lang);
+	defer tree.deinit(allocator);
+	try std.testing.expectEqual(@as(usize, 2), tree.symbols.len);
+	try std.testing.expectEqualStrings("Client", tree.symbols[0].name);
+	try std.testing.expectEqual(@as(usize, 0), tree.symbols[0].start_byte);
+	try std.testing.expectEqual(@as(usize, 1), tree.symbols[0].start_line);
+	try std.testing.expectEqual(@as(usize, 1), tree.symbols[0].children.len);
+	const method = tree.symbols[0].children[0];
+	try std.testing.expectEqualStrings("name", method.name);
+	try std.testing.expectEqual(@as(usize, 3), method.start_line);
+	try std.testing.expectEqualStrings("    @property\n    def name(self):\n        return 'café'", source[method.start_byte..method.end_byte]);
+}
+
+test "Python detection classifies extensions and interpreter versions as sets" {
+	for ([_][]const u8{ ".py", ".pyi" }) |ext| {
+		const lang = Language.fromExtension(ext) orelse return error.TestExpectedEqual;
+		try std.testing.expectEqualStrings("python", @tagName(lang));
+	}
+	const accepted = [_][]const u8{ "#!/usr/bin/python\n", "#!/usr/bin/python3\n", "#!/usr/bin/env -S python3.13 -u\n", "#!/usr/bin/pypy3\n" };
+	for (accepted) |source| {
+		const lang = Language.fromShebang(source) orelse return error.TestExpectedEqual;
+		try std.testing.expectEqualStrings("python", @tagName(lang));
+	}
+	const rejected = [_][]const u8{ "#!/usr/bin/pythonista\n", "#!/usr/bin/python3-fake\n", "#!/usr/bin/python3.\n", "#!/usr/bin/scala\n" };
+	for (rejected) |source| try std.testing.expect(Language.fromShebang(source) == null);
+}
+
 test "language detection from shebang" {
 	// bash variants
 	try std.testing.expectEqual(Language.bash, Language.fromShebang("#!/bin/bash\nexit 0\n").?);
@@ -1292,7 +1345,7 @@ test "language detection from shebang" {
 	try std.testing.expect(Language.fromShebang("") == null);
 
 	// unknown interpreter
-	try std.testing.expect(Language.fromShebang("#!/usr/bin/env python3\nimport sys\n") == null);
+	try std.testing.expect(Language.fromShebang("#!/usr/bin/env scala\n") == null);
 }
 
 test "semantic symbol trees cover Lisp forms, native Oil, and WAT" {

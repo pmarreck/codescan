@@ -389,6 +389,7 @@ fn basename(path: []const u8) []const u8 {
 }
 
 fn shebangLanguage(name: []const u8) ?[]const u8 {
+	if (@import("plugins/python/mod.zig").isInterpreter(name)) return "python";
 	if (matchesInterpreter(name, &.{ "bash", "sh", "zsh", "dash", "ash", "ksh" })) return "bash";
 	if (std.mem.eql(u8, name, "lua") or std.mem.eql(u8, name, "luajit")) return "lua";
 	if (matchesInterpreter(name, &.{ "ruby", "irb" })) return "ruby";
@@ -646,7 +647,7 @@ test "findFiles classifies extensionless scripts from text executable shebangs" 
 	});
 	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
 		.sub_path = "unsupported_shebang",
-		.data = "#!/usr/bin/env python3\nprint('no')\n",
+		.data = "#!/usr/bin/env scala\nprintln(\"no\")\n",
 		.flags = executable,
 	});
 	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
@@ -734,6 +735,54 @@ test "findFiles respects ignores" {
 	}
 	try std.testing.expect(found_zig);
 	try std.testing.expect(found_ex);
+}
+
+test "Python discovery classifies sources, stubs, and scripts while excluding environments" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const allocator = std.testing.allocator;
+	const cases = [_]struct { path: []const u8, include: bool }{
+		.{ .path = "main.py", .include = true },
+		.{ .path = "package/api.pyi", .include = true },
+		.{ .path = "path with spaces/café.py", .include = true },
+		.{ .path = "tool", .include = true },
+		.{ .path = ".venv/lib/installed.py", .include = false },
+		.{ .path = "nested/venv/installed.pyi", .include = false },
+		.{ .path = "nested/__pycache__/generated.py", .include = false },
+		.{ .path = ".pytest_cache/generated.py", .include = false },
+		.{ .path = "nested/.mypy_cache/generated.py", .include = false },
+		.{ .path = ".ruff_cache/generated.py", .include = false },
+		.{ .path = ".tox/env/installed.py", .include = false },
+		.{ .path = ".nox/env/installed.py", .include = false },
+		.{ .path = "nested/site-packages/installed.py", .include = false },
+		.{ .path = "cache.pyc", .include = false },
+		.{ .path = "notebook.ipynb", .include = false },
+	};
+	for (cases) |case| {
+		if (std.fs.path.dirname(case.path)) |parent| try tmp.dir.createDirPath(io_singleton.getOrInit(), parent);
+		try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+			.sub_path = case.path,
+			.data = "#!/usr/bin/env python3.13\ndef discovered(): pass\n",
+			.flags = .{ .permissions = .executable_file },
+		});
+	}
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &.{}, .per_language = &.{}, .include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+	try std.testing.expectEqual(@as(usize, 4), files.len);
+	for (cases) |case| {
+		var found = false;
+		for (files) |path| if (std.mem.eql(u8, path, case.path)) {
+			found = true;
+		};
+		try std.testing.expectEqual(case.include, found);
+	}
 }
 
 test "findFiles ignores built-in paths" {

@@ -77,6 +77,55 @@ main() {
 	[ "$(printf '%s' "$out" | jq -r '.freshness')" = reconciled ] || fail "fresh search omitted reconciled metadata"
 	[ ! -e "$fresh_root/.codescan/watcher.pid" ] || fail "fresh search implicitly started a watcher"
 
+	python_root="$DB_DIR/python project"
+	mkdir -p "$python_root/.git" "$python_root/.venv" "$python_root/package"
+	python_file="$python_root/client with spaces.py"
+	printf '%s\n' \
+		'@registry.register' 'class Client:' \
+		'    """Manages quasar responses."""' \
+		'    @staticmethod' '    async def fetch(url: str) -> bytes:' \
+		'        """Fetches the nebula payload."""' \
+		'        return await read(url)' '' \
+		'def adjacent(): return 42' > "$python_file"
+	printf '%s\n' 'def parse(value: str) -> int: ...' > "$python_root/package/api.pyi"
+	printf '%s\n' '#!/usr/bin/env -S python3.13 -u' 'def script_entry(): pass' > "$python_root/tool"
+	chmod +x "$python_root/tool"
+	printf '%s\n' 'def excluded_dependency(): pass' > "$python_root/.venv/dependency.py"
+	capture "$BIN" index --root "$python_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "Python initial index failed: $err"
+	capture "$BIN" search --root "$python_root" --lang python --kind fn --mode lexical --json --top 50
+	[ "$rc" -eq 0 ] || fail "Python function browse failed: $err"
+	printf '%s' "$out" | jq -e '[.results[].name] | sort == ["Client/fetch", "adjacent", "parse", "script_entry"]' >/dev/null || \
+		fail "Python browse returned the wrong symbol set: $out"
+	capture "$BIN" search nebula --root "$python_root" --lang python --only-comments --mode lexical --json
+	[ "$rc" -eq 0 ] || fail "Python docstring search failed: $err"
+	printf '%s' "$out" | jq -e '.results | length == 1 and .[0].name == "Client/fetch"' >/dev/null || \
+		fail "Python docstring search omitted its method: $out"
+	capture "$BIN" symbols Client/fetch --file "$python_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Python symbol lookup failed: $err"
+	printf '%s' "$out" | jq -e '.body | join("\n") | contains("@staticmethod") and contains("async def fetch")' >/dev/null || \
+		fail "Python symbol body omitted its decorator: $out"
+	capture "$BIN" read-file "$python_file" --json
+	[ "$rc" -eq 0 ] || fail "Python version read failed: $err"
+	python_version="$(printf '%s' "$out" | jq -r '.version')"
+	capture bash -c 'printf "%s\n" "    @classmethod" "    def fetch(cls, url):" "        return b\"replacement\"" | "$@"' _ \
+		"$BIN" replace-symbol Client/fetch --file "$python_file" --version "$python_version"
+	[ "$rc" -eq 0 ] || fail "Python method replacement failed: $err"
+	if rg -q '@staticmethod|async def fetch' "$python_file"; then fail "Python replacement left a stale decorator or signature"; fi
+	rg -q '^    @classmethod$' "$python_file" || fail "Python replacement changed the method indentation"
+	rg -q '^@registry.register$' "$python_file" || fail "Python replacement removed its class decorator"
+	rg -q '^def adjacent' "$python_file" || fail "Python replacement removed its neighbor"
+	capture "$BIN" update --root "$python_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "Python incremental update failed: $err"
+	capture "$BIN" search replacement --root "$python_root" --lang python --mode lexical --json
+	[ "$rc" -eq 0 ] || fail "Python search after update failed: $err"
+	printf '%s' "$out" | jq -e '.results[] | select(.name == "Client/fetch")' >/dev/null || \
+		fail "Python update did not replace indexed method content: $out"
+	capture "$BIN" help languages
+	[ "$rc" -eq 0 ] || fail "language help failed"
+	printf '%s' "$out" | rg -q 'Python' || fail "language help omitted Python"
+	if printf '%s' "$out" | rg -q 'Python and Scala are intentionally unsupported'; then fail "language help still rejects Python"; fi
+
 	roc_root="$DB_DIR/roc"
 	mkdir -p "$roc_root/.git"
 	printf '%s\n' \
@@ -100,8 +149,11 @@ main() {
 	[ "$rc" -eq 0 ] || fail "Roc symbol lookup failed: $err"
 	printf '%s' "$out" | jq -e '.body | join("\n") | contains("ceil :") and contains("ceil =")' >/dev/null || \
 		fail "Roc symbol body omitted its annotation"
+	capture "$BIN" read-file "$roc_root/Dec.roc" --json
+	[ "$rc" -eq 0 ] || fail "Roc version read failed: $err"
+	roc_version="$(printf '%s' "$out" | jq -r '.version')"
 	capture bash -c 'printf "%s\n" "ceil : Dec -> Dec" "ceil = |value| value + 1" | "$@"' _ \
-		"$BIN" replace-symbol ceil --file "$roc_root/Dec.roc"
+		"$BIN" replace-symbol ceil --file "$roc_root/Dec.roc" --version "$roc_version"
 	[ "$rc" -eq 0 ] || fail "Roc symbol replacement failed: $err"
 	[ "$(rg -c '^ceil :' "$roc_root/Dec.roc")" -eq 1 ] || fail "Roc replacement left a stale annotation"
 	rg -q '^ceiling = ' "$roc_root/Dec.roc" || fail "Roc replacement removed a neighboring declaration"

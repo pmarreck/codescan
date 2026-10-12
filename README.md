@@ -89,7 +89,8 @@ Recognized interpreters include:
 - functional runtimes: `fsi`, `racket`/`raco`, Guile/Scheme variants,
   SBCL/CLISP/ECL, SML/PolyML, and Clojure/Babashka;
 - existing script runtimes: Lua/LuaJIT, Ruby/IRB, Node/Node.js/Deno/Bun,
-  Elixir/IEx, RunGHC/RunHaskell, Swift, Nim, Escript, and OCaml.
+  Elixir/IEx, RunGHC/RunHaskell, Swift, Nim, Escript, OCaml, and
+  Python/PyPy (including numeric versions such as `python3.13`).
 
 Direct paths, `/usr/bin/env`, and `env -S` forms are supported. Discovery,
 full indexing, incremental updates, and watcher-triggered reindexing share
@@ -119,6 +120,16 @@ before the executable/shebang fallback.
 | Standard ML | `.sml`, `.sig`, `.fun` | `MatthewFluet/tree-sitter-sml@fd4b495` | functions, values, datatypes, types, structures, signatures, functors |
 | WebAssembly Text | `.wat`, `.wast` | `g-plane/tree-sitter-wat@e376947` | modules, functions, globals, memories, tables, types, and named WAST actions/assertions |
 | Roc | `.roc` | `faldor20/tree-sitter-roc@2760de9` | functions, values, types, associated methods, and expectations |
+| Python | `.py`, `.pyi` | `tree-sitter/tree-sitter-python@d326e4c` (v0.25.0) | functions, async functions, classes, methods, and nested definitions |
+
+Python definitions retain multiline signatures and hierarchical names such as
+`Client/fetch`. Decorators belong to the definition's source span, so replacing
+a symbol removes its old decorators. Leading function/class docstrings supply
+searchable documentation; adjacent `#` comments are a fallback.
+Python source is parsed without executing it or requiring a Python installation.
+Virtualenvs, Python caches, and `site-packages` are excluded by default.
+Use `--lang python` to restrict search. Notebooks and compiled bytecode are
+outside this source-file support.
 
 Roc annotations belong to their definitions, including multiline annotations,
 so symbol-directed replacement does not leave an old signature behind.
@@ -174,8 +185,8 @@ explicit structural spans; other YSH-only constructs are currently indexed as
 searchable source but may not receive named-symbol boundaries.
 
 Clojure and OCaml were already supported; their executable forms now include
-Babashka/Clojure and OCaml shebangs. Python and Scala are intentionally outside
-codescan's supported-language policy.
+Babashka/Clojure and OCaml shebangs. Scala remains outside codescan's
+supported-language policy.
 
 ## Test
 

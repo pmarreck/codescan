@@ -6356,7 +6356,7 @@ const usage_languages =
     \\  Nix, Nim, Lean, Idris, Haskell, Go, Ruby, Erlang, OCaml,
     \\  Swift, LLVM IR, Clojure, Assembly, Fish, Nushell, PowerShell,
     \\  Tcl, Oil, F#, Elm, Gleam, Scheme, Racket, Common Lisp,
-	\\  Standard ML, WebAssembly Text (WAT/WAST), Roc
+	\\  Standard ML, WebAssembly Text (WAT/WAST), Roc, Python
     \\
     \\Indexing and search:
     \\  Any text file (Markdown, logs, plain text, etc.)
@@ -6369,11 +6369,12 @@ const usage_languages =
     \\  zig, c, typescript, rust, elixir, bash, lua, nix, nim, lean,
     \\  idris, haskell, go, ruby, erlang, ocaml, swift, llvm, clojure,
     \\  assembly, fish, nushell, powershell, tcl, oil, fsharp, elm,
-	\\  gleam, scheme, racket, common-lisp, sml, wat, roc, markdown, text, log
+	\\  gleam, scheme, racket, common-lisp, sml, wat, roc, python, markdown, text, log
     \\
     \\Notes:
     \\  WAT line and nested block comments attach to symbols and inform
-    \\  comment embeddings. Python and Scala are intentionally unsupported.
+    \\  comment embeddings. Python supports .py/.pyi, decorators, and docstrings.
+    \\  Scala is intentionally unsupported.
     \\  See README.md for extensions, grammar pins, and parser limitations.
     \\
 ;

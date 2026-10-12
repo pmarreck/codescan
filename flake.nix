@@ -68,6 +68,9 @@
 				grammar-roc = grammarSource "faldor20" "tree-sitter-roc"
 					"2760de95b87004ed537151f2467377a6ddafdef0"
 					"sha256-+J7PRYVD4J4mGJIvZnmSKuwGG/vdNkVPuEmCTq8mtwI=";
+				grammar-python = grammarSource "tree-sitter" "tree-sitter-python"
+					"d326e4cad262cf681656e130960e49dfc04c03ea"
+					"sha256-F5XH21PjPpbwYylgKdwD3MZ5o0amDt4xf/e5UikPcxY=";
 
 				# One immutable root keeps build.zig independent of Nix's individual
 				# store paths while preserving exact source provenance in this flake.
@@ -84,6 +87,7 @@
 					{ name = "sml"; path = "${grammar-sml}/src"; }
 					{ name = "wat"; path = "${grammar-wat}/src"; }
 					{ name = "roc"; path = "${grammar-roc}/src"; }
+					{ name = "python"; path = "${grammar-python}/src"; }
 				];
 
 				# Create a directory matching Zig's package cache layout
