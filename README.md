@@ -143,8 +143,10 @@ with any parameter types. `Dec.ceil : -> Dec` restricts the associated name;
 between type tokens, while `->` and `=>` remain distinct. This searches
 explicit Roc annotations, not inferred types or resolved type aliases.
 
-Initial indexing prepares files in parallel, using up to eight CPU workers
-by default. `CODESCAN_INDEX_WORKERS=1` selects one preparation worker; values
+Full indexing (`codescan init` and `codescan index`) prepares files in parallel,
+using up to eight CPU workers by default. Incremental preparation in
+`codescan update` and watcher events is still sequential.
+`CODESCAN_INDEX_WORKERS=1` selects one preparation worker; values
 from 1 through 64 override the default. Each worker holds at most one prepared
 file ahead of the ordered writer. SQLite writes and embedding requests remain
 serialized, so inference-server throughput can still limit total indexing speed.
@@ -296,6 +298,11 @@ directory and uses that as the root (otherwise it falls back to the current dire
 
 ### Fresh searches and opt-in watchers
 
+`codescan init` starts a background watcher after indexing succeeds and reports
+its PID. Startup failures are reported on stderr without discarding the index.
+If the embedding server is unavailable, initialization can still build a
+lexical-only index, but the watcher cannot start until the server is available.
+
 `codescan index` and `codescan update` never start a background process. Before
 an indexed search, codescan checks for a live project watcher:
 
@@ -325,8 +332,8 @@ than one second in an active Git repository (latest commit within seven days,
 or more than two changed/untracked paths), human output recommends an explicit
 watcher. Old repositories remain quiet during one-off archaeological searches.
 
-Enable watchers only for projects where near-zero search startup latency is
-worth a resident process:
+Use `watch start` to enable a watcher for an existing index, or `watch stop`
+to return to on-demand updates:
 
 ```bash
 cd ~/Code/my-active-project
@@ -753,9 +760,11 @@ mirror. Do not edit Ollama's content-addressed model blobs in place.
 ### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
 
 Set `embedding_api=openai` in `.codescan/config.ini` along with `embedding_url` and
-`embedding_api_key`. During init, a detected oMLX server is accepted only after
-an authenticated OpenAI-compatible embedding request succeeds; the returned
-dimension is then saved. See `codescan setup-model` for details.
+`embedding_api_key`. Initialization probes the configured API and URL first,
+then tries the default oMLX endpoint if needed. A detected server is accepted
+only after an authenticated OpenAI-compatible embedding request succeeds;
+the returned dimension is then saved. Recovery instructions follow the configured
+API. See `codescan setup-model` for details.
 
 For oMLX users wanting the jina model specifically, see [jina-code-embeddings on oMLX](docs/jina-code-embeddings-omlx.md) (requires interim patches until oMLX adds native Qwen2 embedding support).
 

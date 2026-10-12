@@ -14,6 +14,7 @@ pub const PreflightFailure = union(enum) {
 	model_unavailable: struct {
 		model: []const u8,
 		url: []const u8,
+		dialect: embedding_http.ApiDialect,
 	},
 	schema_mismatch: struct {
 		model_mismatch: bool,
@@ -57,6 +58,7 @@ pub fn checkModelAvailable(
 		error.ModelNotFound => return PreflightFailure{ .model_unavailable = .{
 			.model = model_name,
 			.url = base_url,
+			.dialect = dialect,
 		} },
 		// Anything else — cold model, transport hiccup, unparseable inventory —
 		// is ambiguous. Reachability is already proven by this point, so let the
@@ -125,9 +127,12 @@ pub fn formatActionable(failure: PreflightFailure, writer: *std.Io.Writer) !void
 			try writer.writeAll("  watcher NOT started.\n");
 		},
 		.model_unavailable => |s| {
-			try writer.print("error: embedding model '{s}' is not installed on {s}\n", .{ s.model, s.url });
+			try writer.print("error: embedding model '{s}' is not available at {s}\n", .{ s.model, s.url });
 			try writer.writeAll("  fix one of:\n");
-			try writer.print("    - ollama pull {s}\n", .{s.model});
+			switch (s.dialect) {
+				.ollama => try writer.print("    - ollama pull {s}\n", .{s.model}),
+				.openai => try writer.writeAll("    - install or enable the model in your oMLX / OpenAI-compatible server\n"),
+			}
 			try writer.writeAll("    - run 'codescan setup-model' to pick an installed model\n");
 			try writer.writeAll("  watcher NOT started.\n");
 		},
@@ -309,6 +314,7 @@ test "formatActionable for model_unavailable names the model and the pull comman
 	const failure = PreflightFailure{ .model_unavailable = .{
 		.model = "jina-code-embeddings:1.5b",
 		.url = "http://localhost:11434",
+		.dialect = .ollama,
 	} };
 	try formatActionable(failure, &aw.writer);
 
@@ -316,6 +322,23 @@ test "formatActionable for model_unavailable names the model and the pull comman
 	try std.testing.expect(std.mem.indexOf(u8, out, "jina-code-embeddings:1.5b") != null);
 	try std.testing.expect(std.mem.indexOf(u8, out, "ollama pull") != null);
 	// The whole point is to stop claiming success when nothing will run.
+	try std.testing.expect(std.mem.indexOf(u8, out, "watcher NOT started.") != null);
+}
+
+test "formatActionable for OpenAI-compatible model failure does not prescribe Ollama" {
+	var aw: std.Io.Writer.Allocating = .init(std.testing.allocator);
+	defer aw.deinit();
+	try formatActionable(.{ .model_unavailable = .{
+		.model = "test-model-mlx",
+		.url = "http://localhost:19000",
+		.dialect = .openai,
+	} }, &aw.writer);
+	const out = aw.written();
+	try std.testing.expect(std.mem.indexOf(u8, out, "test-model-mlx") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out, "http://localhost:19000") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out, "ollama") == null);
+	try std.testing.expect(std.mem.indexOf(u8, out, "OpenAI-compatible") != null);
+	try std.testing.expect(std.mem.indexOf(u8, out, "codescan setup-model") != null);
 	try std.testing.expect(std.mem.indexOf(u8, out, "watcher NOT started.") != null);
 }
 

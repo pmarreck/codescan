@@ -8,14 +8,15 @@ pub const Outcome = enum {
 
 pub const WatcherStartReason = enum {
 	explicit_watch_command,
+	initialization_completed,
 	index_completed,
 	update_completed,
 	search_auto_index_completed,
 };
 
-/// Keeps daemon lifecycle opt-in: indexing and searching never create watchers.
+/// Initialization starts a watcher; ordinary indexing and searching do not.
 pub fn shouldStartWatcher(reason: WatcherStartReason) bool {
-	return reason == .explicit_watch_command;
+	return reason == .explicit_watch_command or reason == .initialization_completed;
 }
 
 pub const WatcherAdvisory = struct {
@@ -185,12 +186,13 @@ test "failed reconciliation falls back only when an index is usable" {
 	try std.testing.expectEqual(@as(usize, 1), absent.reconcile_calls);
 }
 
-test "only an explicit watch command may start a watcher" {
+test "initialization and explicit watch commands may start watchers" {
 	const cases = [_]struct {
 		reason: WatcherStartReason,
 		allowed: bool,
 	}{
 		.{ .reason = .explicit_watch_command, .allowed = true },
+		.{ .reason = .initialization_completed, .allowed = true },
 		.{ .reason = .index_completed, .allowed = false },
 		.{ .reason = .update_completed, .allowed = false },
 		.{ .reason = .search_auto_index_completed, .allowed = false },

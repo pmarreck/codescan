@@ -1154,27 +1154,27 @@ const DetectedServer = struct {
     default_model: ?[]const u8 = null, // from oMLX /health response
 };
 
-/// Probes well-known embedding server ports and returns the first that responds.
-/// Tries Ollama on the configured URL first, then oMLX on :8000.
+/// Probes the configured API and URL first, then OpenAI-compatible on :8000.
 /// Returns null if no server responds.
 fn detectEmbeddingServer(
-    allocator: std.mem.Allocator,
-    transport: embedding_http.Transport,
-    configured_url: []const u8,
-    model_name: []const u8,
-    auth_header: ?[]const u8,
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	configured_url: []const u8,
+	configured_dialect: embedding_http.ApiDialect,
+	model_name: []const u8,
+	auth_header: ?[]const u8,
 ) ?DetectedServer {
-    // Try 1: Ollama at configured URL (default http://localhost:11434)
-    if (probeOllama(allocator, transport, configured_url, model_name)) |result| {
-        return result;
-    }
+	const configured = switch (configured_dialect) {
+		.ollama => probeOllama(allocator, transport, configured_url, model_name),
+		.openai => probeOpenAI(allocator, transport, configured_url, auth_header),
+	};
+	if (configured) |result| return result;
 
-    // Try 2: oMLX at http://localhost:8000 (OpenAI-compatible)
-    if (probeOpenAI(allocator, transport, "http://localhost:8000", auth_header)) |result| {
-        return result;
-    }
-
-    return null;
+	const fallback_url = "http://localhost:8000";
+	if (configured_dialect != .openai or !std.mem.eql(u8, configured_url, fallback_url)) {
+		return probeOpenAI(allocator, transport, fallback_url, auth_header);
+	}
+	return null;
 }
 
 fn probeOllama(
@@ -2225,7 +2225,7 @@ fn runInit(
 
 	try stderr.writeAll("  Detecting embedding provider and available model...\n");
 	try stderr.flush();
-	const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_auth_header);
+	const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_dialect, settings.embedding_model, settings.embedding_auth_header);
 	defer if (detected) |d| {
 		if (d.dialect == .openai) {
 			if (d.default_model) |model_name| allocator.free(model_name);
@@ -2462,7 +2462,7 @@ fn runInit(
 	}
 	try stdout.flush();
 	// Start background watcher
-	_ = maybeStartWatcher(allocator, resolved_settings, stderr, .index_completed);
+	_ = maybeStartWatcher(allocator, resolved_settings, stderr, .initialization_completed);
 }
 
 fn validatePreparationWorkers(allocator: std.mem.Allocator) !void {
@@ -7758,18 +7758,21 @@ pub fn runRegexSearch(
 // ── Test mocks for detectEmbeddingServer ─────────────────────────────────────
 
 const OpenAIFallbackMock = struct {
-    fn send(_: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
-        if (std.mem.endsWith(u8, req.url, "/health")) {
-            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"healthy\",\"default_model\":\"test-model-mlx\"}") };
-        }
-        if (std.mem.endsWith(u8, req.url, "/v1/models")) {
-            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"data\":[]}") };
-        }
-        return error.ConnectionRefused;
-    }
-    fn transport(self: *OpenAIFallbackMock) embedding_http.Transport {
-        return .{ .ctx = self, .send = send };
-    }
+	ollama_probes: usize = 0,
+	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
+		const self: *OpenAIFallbackMock = @ptrCast(@alignCast(ctx));
+		if (std.mem.endsWith(u8, req.url, "/api/tags")) self.ollama_probes += 1;
+		if (std.mem.endsWith(u8, req.url, "/health")) {
+			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"healthy\",\"default_model\":\"test-model-mlx\"}") };
+		}
+		if (std.mem.endsWith(u8, req.url, "/v1/models")) {
+			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"data\":[]}") };
+		}
+		return error.ConnectionRefused;
+	}
+	fn transport(self: *OpenAIFallbackMock) embedding_http.Transport {
+		return .{ .ctx = self, .send = send };
+	}
 };
 
 const AllFailMock = struct {
@@ -7795,6 +7798,7 @@ test "detectEmbeddingServer finds Ollama" {
         allocator,
         mock.transport(),
         "http://localhost:11434",
+		.ollama,
         "bge-large",
         null,
     );
@@ -7811,6 +7815,7 @@ test "detectEmbeddingServer finds oMLX when Ollama unavailable" {
         allocator,
         mock.transport(),
         "http://localhost:11434",
+		.ollama,
         "bge-large",
         null,
     );
@@ -7823,6 +7828,23 @@ test "detectEmbeddingServer finds oMLX when Ollama unavailable" {
     allocator.free(result.?.default_model.?);
 }
 
+test "detectEmbeddingServer respects the configured OpenAI-compatible URL" {
+	const allocator = std.testing.allocator;
+	var mock = OpenAIFallbackMock{};
+	const result = detectEmbeddingServer(
+		allocator,
+		mock.transport(),
+		"http://localhost:19000",
+		.openai,
+		"test-model-mlx",
+		null,
+	) orelse return error.TestUnexpectedResult;
+	defer if (result.default_model) |name| allocator.free(name);
+	try std.testing.expectEqualStrings("http://localhost:19000", result.url);
+	try std.testing.expectEqual(embedding_http.ApiDialect.openai, result.dialect);
+	try std.testing.expectEqual(@as(usize, 0), mock.ollama_probes);
+}
+
 test "detectEmbeddingServer returns null when nothing available" {
     const allocator = std.testing.allocator;
     var mock = AllFailMock{};
@@ -7830,6 +7852,7 @@ test "detectEmbeddingServer returns null when nothing available" {
         allocator,
         mock.transport(),
         "http://localhost:11434",
+		.ollama,
         "bge-large",
         null,
     );
@@ -7850,6 +7873,7 @@ test "detectEmbeddingServer Ollama up but model missing" {
         allocator,
         mock.transport(),
         "http://localhost:11434",
+		.ollama,
         "bge-large",
         null,
     );
