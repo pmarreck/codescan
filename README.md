@@ -853,6 +853,11 @@ codescan replace-content src/foo.zig "old text" --version k7m <<< "new text"
 
 ### Diagnosing watcher stops
 
+Watcher schema initialization errors leave the existing database file in place; the
+watcher does not automatically delete and recreate it. Startup failures are
+recorded in `.codescan/watcher-error.log`. Use `codescan doctor` to inspect the
+project state before choosing a repair or reindex.
+
 The background watcher logs its lifecycle and error events to the system log. If your watcher appears to have stopped unexpectedly, inspect recent logs with:
 
     codescan log --since 1h

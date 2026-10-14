@@ -55,6 +55,8 @@ main() {
 		printf '%s' "$err" >&2
 		fail "mk_test_db failed"
 	fi
+	cd "$DB_DIR" || fail "could not enter the private fixture directory"
+	[ "$PWD" -ef "$DB_DIR" ] || fail "CLI test commands must run in their private fixture directory, not the caller's index root"
 
 	# A bad log duration is a CLI usage error. Keep stdout available for log
 	# records so shell callers do not have to strip a diagnostic from their data.
@@ -344,11 +346,14 @@ main() {
 	printf '%s' "$out" | jq -e '.root == null' >/dev/null || \
 		fail "root boundary failure did not emit its JSON diagnostic"
 
-	# status --json: verify ISO8601 month matches epoch (regression: off-by-one)
-	# Insert a known timestamp: 2026-02-15 10:30:00 UTC = epoch 1771148200
-	# (February, not March)
-	sqlite3 "$DB" "INSERT OR REPLACE INTO indexed_files (file_path, mtime_ns, size, indexed_at) VALUES ('test.zig', 0, 100, 1771148200);"
-	capture "$BIN" status --db "$DB" --json
+	# Give the February timestamp its own fixture, independent of files indexed
+	# by earlier edit tests. This checks the ISO8601 off-by-one-month regression.
+	status_db="$DB_DIR/status.sqlite3"
+	capture "$ROOT/zig-out/bin/mk-test-db" --db "$status_db"
+	[ "$rc" -eq 0 ] || fail "status fixture creation failed: $err"
+	capture sqlite3 "$status_db" "INSERT INTO indexed_files (file_path, mtime_ns, size, indexed_at) VALUES ('test.zig', 0, 100, 1771148200);"
+	[ "$rc" -eq 0 ] || fail "status timestamp fixture failed: $err"
+	capture "$BIN" status --db "$status_db" --json
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "status --json failed"

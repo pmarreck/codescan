@@ -2,22 +2,23 @@
 
 Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains recoverable in Git; private operational context is retained outside the repository.
 
-## Current fixes
+## Watcher reliability
+
+- [x] Prevent watcher startup from recreating an existing database when schema initialization fails; prove index preservation with a failing regression first. (done 2026-10-14 16:17 EDT)
+- [x] Keep CLI integration commands in their private fixture directory so default-path edit reindexing cannot alter the checkout's index; prove the isolation guard fails first. (done 2026-10-14 16:17 EDT)
+- [ ] Reproduce and diagnose repeated watcher SQLite failures without deleting the database; distinguish contention and retain actionable operation/code/message diagnostics. (context: docs/plan_context/watcher_sqlite_failures.md)
+- [x] Pass focused regressions, available complete-suite checks, and five-target ReleaseFast builds for the watcher data-preservation fix; live-provider tests were excluded and existing FTS5/log-test skips remain. (done 2026-10-14 16:17 EDT)
+
+## Recent shipments
 
 - [x] Start the watcher after successful initialization; keep ordinary index/update/search commands non-spawning and report startup failures. (done 2026-10-12 12:51 EDT)
 - [x] Respect the configured embedding API and URL during initialization and use provider-specific model recovery instructions. (done 2026-10-12 12:51 EDT)
 - [x] Pass regression coverage, the complete suite, and five-target ReleaseFast builds for shipment; live-provider tests were excluded, and existing FTS5/log-test skips remain. (done 2026-10-12 13:03 EDT)
 
-## Recent shipments
-
-- [x] Pass regression tests, the complete suite, and five-target ReleaseFast builds; update language documentation. (done 2026-10-12 11:27 EDT)
-- [x] Use the configured temporary directory in the reindex-runner test; its hardcoded `/dev/shm` path fails on macOS. (done 2026-10-12 11:22 EDT)
-- [x] Commit the passing Python support, push `yolo`, and verify the remote commit: `357f6733`. (done 2026-10-12 11:29 EDT)
 
 ## After shipping
 
-- [ ] Extend signature queries to other typed languages after the Roc shipment.
-- [ ] Investigate repeated watcher `SqlStepFailed` without deleting the database; distinguish lock contention and retain actionable diagnostics.
+- [ ] Extend signature queries to other typed languages after selecting the next language; walking decision `codescan-signature-query-next-language` is pending.
 - [ ] Restore FTS5 coverage: the linked SQLite currently skips three full-text scoring regressions.
 
 ## Validation and performance

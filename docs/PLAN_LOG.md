@@ -21,3 +21,9 @@ Publication checks use GitHub Actions and exact-commit Mechatron Prime CI.
 - [x] [Recent shipments] Add Python indexing and symbol editing for `.py`, `.pyi`, and executable shebang scripts, with decorator/indentation boundaries, nested names, multiline signatures, and docstrings. (done 2026-10-12 11:22 EDT)
 - [x] [Recent shipments] Exclude Python environments and generated caches, with set-based discovery tests for root and nested paths. (done 2026-10-12 11:22 EDT)
 - [x] [Recent shipments] Fix the existing macOS log-duration validation failure blocking the CLI suite. (done 2026-10-12 11:22 EDT)
+
+## Retired 2026-10-14
+
+- [x] [Recent shipments] Pass regression tests, the complete suite, and five-target ReleaseFast builds; update language documentation. (done 2026-10-12 11:27 EDT)
+- [x] [Recent shipments] Use the configured temporary directory in the reindex-runner test; its hardcoded `/dev/shm` path fails on macOS. (done 2026-10-12 11:22 EDT)
+- [x] [Recent shipments] Commit the passing Python support, push `yolo`, and verify the remote commit: `357f6733`. (done 2026-10-12 11:29 EDT)

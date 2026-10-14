@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -u
+
+source "$HOME/dotfiles/bin/src/capture.bash"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+BIN="$ROOT/zig-out/bin/codescan"
+MK_DB="$ROOT/zig-out/bin/mk-test-db"
+out=
+err=
+rc=
+
+fail() {
+	printf 'error: %s\n' "$1" >&2
+	exit 1
+}
+
+for tool in sqlite3 rg; do
+	command -v "$tool" >/dev/null 2>&1 || fail "missing required tool: $tool"
+done
+if command -v timeout >/dev/null 2>&1; then
+	timeout_command=timeout
+elif command -v gtimeout >/dev/null 2>&1; then
+	timeout_command=gtimeout
+else
+	fail "missing required tool: timeout (or gtimeout)"
+fi
+[ -x "$BIN" ] && [ -x "$MK_DB" ] || fail "build the native CLI and fixture generator before this test"
+
+fixture_root="$(mktemp -d "$TMPDIR/codescan-watcher-schema.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture_root"' EXIT
+project="$fixture_root/project with spaces"
+mkdir -p "$project/.codescan" || fail "could not create the private project directory"
+db="$project/.codescan/index.sqlite3"
+capture "$MK_DB" --db "$db" --embedding-dim 2
+[ "$rc" -eq 0 ] || fail "fixture creation failed: $err"
+capture sqlite3 -readonly "$db" 'SELECT count(*) FROM symbols;'
+[ "$rc" -eq 0 ] && [ "$out" -gt 0 ] || fail "fixture must contain an existing index"
+before="$out"
+capture sqlite3 "$db" "CREATE TRIGGER reject_schema_write BEFORE INSERT ON meta BEGIN SELECT RAISE(ABORT, 'deliberate schema write failure'); END;"
+[ "$rc" -eq 0 ] || fail "could not install the schema-write rejection fixture: $err"
+printf '%s\n' \
+	'embedding_api = openai' \
+	'embedding_url = http://127.0.0.1:1' \
+	'embedding_dim = 2' \
+	'watcher_idle_timeout = invalid' > "$project/.codescan/config.ini"
+
+# OpenAI mode skips the Ollama inventory probe. The invalid idle setting is a
+# safety sentinel: legacy startup must exit before entering its watch loop if
+# it wrongly swallows the schema failure. Neither path contacts a provider.
+capture env CODESCAN_EMBEDDING_SERVER_API_KEY=not-a-real-api-key \
+	"$timeout_command" 10 "$BIN" watch --root "$project" --no-progress
+[ "$rc" -ne 0 ] || fail "watcher unexpectedly accepted a rejected schema write"
+[ "$rc" -ne 124 ] || fail "watcher did not stop at either deterministic failure boundary"
+printf '%s' "$err" | rg -q 'deliberate schema write failure' || fail "watcher stderr lost the SQLite rejection detail"
+capture sqlite3 -readonly "$db" 'SELECT count(*) FROM symbols;'
+[ "$rc" -eq 0 ] || fail "watcher left the original database unreadable: $err"
+[ "$out" = "$before" ] || fail "watcher replaced the existing index: expected $before symbols, found $out"
+capture sqlite3 -readonly "$db" "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='reject_schema_write';"
+[ "$rc" -eq 0 ] && [ "$out" = 1 ] || fail "watcher removed the original schema failure fixture"
+rg -q 'SqlStepFailed' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the original schema error"
+
+printf 'watcher schema-preservation regression passed\n'

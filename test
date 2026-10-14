@@ -30,6 +30,7 @@ run_case "single index entrypoint" ./tests/unit/test-single-index-entrypoint
 run_case "sequential project reindex runner" ./tests/unit/test-reindex-all-projects
 run_case "unit" nix develop -c ./tests/unit/test-unit
 run_case "cli" nix develop -c ./tests/cli/test-cli
+run_case "watcher schema preservation" nix develop -c ./tests/cli/test-watcher-schema-preservation
 run_case "http" nix develop -c ./tests/http/test-http
 run_case "integration" nix develop -c ./tests/integration/test-integration
 

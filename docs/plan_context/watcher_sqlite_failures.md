@@ -1,0 +1,26 @@
+# Watcher SQLite failures
+
+A reported watcher exhausted its consecutive-error budget with `index error: SqlStepFailed (5/5)`, then failed again immediately after restart with `watcher daemon failed: SqlStepFailed`. The report preserved the database, lock files, and watcher records. The underlying SQLite result code, message, and failing operation were absent, so lock contention is a hypothesis, not an established cause.
+
+The next bounded milestone is to reproduce the diagnostic gap in isolated fixtures and retain enough SQLite detail to distinguish contention from schema, constraint, or I/O failures. Existing indexes must remain intact. Inspect incident data read-only; do not delete, recreate, or repair a reported database to make startup pass.
+
+Inspection also found that watcher startup recreated its database after any schema-initialization error. That violated the preservation constraint even when the error was transient. The bounded data-preservation fix removes that fallback: initialization now closes its handle and returns the original error without deleting the database. The historical incident's root cause remains unknown.
+
+Validation must also keep CLI fixture commands outside the checkout's working directory. Otherwise default-path edit reindexing can add temporary fixture files to the checkout's own index. Add a failing working-directory guard, then run those commands from their private fixture directory before executing the full suite. Do not clean or rebuild the checkout's existing database as part of this test fix.
+
+Acceptance criteria:
+
+- Regression tests first demonstrate the missing distinction using controlled SQLite failures.
+- Durable watcher failures and startup diagnostics identify the failing operation and underlying SQLite code/message where available.
+- Busy/locked failures remain distinguishable from terminal failures; do not make every generic SQL error retryable.
+- Preserve existing bounded retry behavior unless evidence and tests establish a required change.
+- Pass the complete local test runner and five-target builds, reporting unavailable checks explicitly.
+- Keep one bounded build-budget reservation, process its validation phases promptly when admitted, and release it before CI monitoring; never leave an idle lease held.
+
+A passing fixture establishes the diagnostic behavior it covers. It does not establish the historical incident's root cause or prove that the affected watcher now starts.
+
+The existing native CLI reproduced the data-loss path in a private fixture: after a rejected schema write, the original 4-symbol index was replaced by an empty database. The persistent regression is `tests/cli/test-watcher-schema-preservation`. This RED evidence is separate from compiled verification of the fix and from the CLI isolation checks run with existing artifacts.
+
+The unit fixture covers a schema-definition conflict and retains symbol, vector, and indexed-file records. The CLI fixture covers a rejected metadata write and captures/asserts its SQLite stderr plus durable failure record. The distinct failure classes keep expected diagnostics at the real CLI boundary without emitting them from successful unit runs.
+
+The rebuilt native CLI passed the preservation regression, and the complete local runner passed its available checks. ReleaseFast cross-builds passed for macOS ARM64, Linux ARM64/x86-64, and Windows ARM64/x86-64. The live-provider HTTP/integration suites were excluded; existing FTS5 and log-test skips remain. These results cover index preservation and test isolation, not the broader diagnostic acceptance criteria above.

@@ -3340,6 +3340,25 @@ fn runSearch(
 	try stdout.flush();
 }
 
+const WatcherDatabase = struct {
+	db: storage.Db,
+	schema: storage.InitSchemaResult,
+
+	fn deinit(self: *WatcherDatabase, allocator: std.mem.Allocator) void {
+		self.schema.deinit(allocator);
+		storage.close(self.db);
+	}
+};
+
+/// Keeps schema failures from becoming unrequested index replacement. The
+/// caller owns successful opens; failed initialization closes only the handle.
+fn openWatcherDatabase(allocator: std.mem.Allocator, path: []const u8, schema: storage.Schema) !WatcherDatabase {
+	const db = try storage.openFileWithVec(allocator, path);
+	errdefer storage.close(db);
+	const schema_result = try storage.initSchema(allocator, db, schema);
+	return .{ .db = db, .schema = schema_result };
+}
+
 /// Manage the background watcher (start/stop/status/list/prune).
 /// Extracted from the `.watch` switch arm of `pub fn main` (2026-06-01).
 fn runWatch(
@@ -3549,21 +3568,10 @@ fn runWatch(
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
 			try io_singleton.ensureParentDir(settings.db_path);
 			// Open existing DB or create new one (don't destroy existing index)
-			var db = try storage.openFileWithVec(allocator, settings.db_path);
-			var schema_result: storage.InitSchemaResult = storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }) catch blk_retry: {
-				storage.close(db);
-				{
-					var sb2: [4096]u8 = undefined;
-					var sw2 = io_singleton.stderrWriter(&sb2);
-					const se2 = &sw2.interface;
-					_ = se2.print("\x1b[33mnote: Database corrupt or incompatible; recreating index.\x1b[0m\n", .{}) catch {};
-					_ = se2.flush() catch {};
-				}
-				db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-				break :blk_retry try storage.initSchema(allocator, db, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
-			};
-			defer storage.close(db);
-			defer schema_result.deinit(allocator);
+			var initialized = try openWatcherDatabase(allocator, settings.db_path, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
+			defer initialized.deinit(allocator);
+			const db = initialized.db;
+			const schema_result = initialized.schema;
 			if (schema_result.did_schema_upgrade) {
 				var sb: [4096]u8 = undefined;
 				var sw = io_singleton.stderrWriter(&sb);
@@ -7754,6 +7762,83 @@ pub fn runRegexSearch(
 }
 
 // writeJsonString is defined earlier in this file (takes s, writer)
+
+test "watcher schema failure preserves an existing index instead of recreating it" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const path = try std.fs.path.join(allocator, &.{ root, "index.sqlite3" });
+	defer allocator.free(path);
+	const schema = storage.Schema{ .embedding_dim = 2, .embedding_model = "fixture-model" };
+	{
+		const db = try storage.openFileWithVec(allocator, path);
+		defer storage.close(db);
+		var initialized = try storage.initSchema(allocator, db, schema);
+		defer initialized.deinit(allocator);
+		try std.testing.expectEqual(@as(c_int, storage.sqlite.SQLITE_OK), storage.sqlite.sqlite3_exec(
+			db,
+			"INSERT INTO symbols(lang, file_path, start_line, end_line, symbol_name) " ++
+				"VALUES ('zig', 'src/preserved.zig', 1, 1, 'preserved'); " ++
+				"INSERT INTO indexed_files(file_path, mtime_ns, size, indexed_at) " ++
+				"VALUES ('src/preserved.zig', 1, 2, 3); " ++
+				"DROP INDEX idx_symbols_unique; " ++
+				"CREATE TABLE idx_symbols_unique(value INTEGER);",
+			null,
+			null,
+			null,
+		));
+		try storage.insertEmbedding(db, allocator, 1, &.{ 0.25, 0.75 });
+	}
+
+	if (openWatcherDatabase(allocator, path, schema)) |opened| {
+		var unexpected = opened;
+		defer unexpected.deinit(allocator);
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(unexpected.db, allocator, "symbols"));
+		return error.TestExpectedSchemaFailure;
+	} else |err| {
+		try std.testing.expect(err == error.SqlError);
+	}
+
+	const retained = try storage.openFileWithVec(allocator, path);
+	defer storage.close(retained);
+	for ([_][]const u8{ "symbols", "embeddings", "indexed_files" }) |table| {
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(retained, allocator, table));
+	}
+}
+
+test "watcher database initialization accepts valid existing and missing indexes" {
+	const allocator = std.testing.allocator;
+	for ([_]bool{ true, false }) |already_exists| {
+		var tmp = std.testing.tmpDir(.{});
+		defer tmp.cleanup();
+		const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+		defer allocator.free(root);
+		const path = try std.fs.path.join(allocator, &.{ root, "index.sqlite3" });
+		defer allocator.free(path);
+		const schema = storage.Schema{ .embedding_dim = 2, .embedding_model = "fixture-model" };
+		if (already_exists) {
+			const db = try storage.openFileWithVec(allocator, path);
+			defer storage.close(db);
+			var initialized = try storage.initSchema(allocator, db, schema);
+			defer initialized.deinit(allocator);
+			try std.testing.expectEqual(@as(c_int, storage.sqlite.SQLITE_OK), storage.sqlite.sqlite3_exec(
+				db,
+				"INSERT INTO symbols(lang, file_path, start_line, end_line, symbol_name) " ++
+					"VALUES ('zig', 'src/preserved.zig', 1, 1, 'preserved');",
+				null,
+				null,
+				null,
+			));
+		}
+		var opened = try openWatcherDatabase(allocator, path, schema);
+		defer opened.deinit(allocator);
+		try std.testing.expectEqual(@as(i64, if (already_exists) 1 else 0), try storage.countRows(opened.db, allocator, "symbols"));
+		try std.testing.expect(!opened.schema.embedding_model_mismatch);
+		try std.testing.expect(!opened.schema.embedding_dim_mismatch);
+	}
+}
 
 // ── Test mocks for detectEmbeddingServer ─────────────────────────────────────
 
