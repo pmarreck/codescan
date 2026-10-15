@@ -24,6 +24,9 @@ run_case() {
 
 run_case "dev-shell cache preservation" ./tests/unit/test-dev-shell-cache
 run_case "five-target build contract" ./tests/unit/test-build-all-contract
+run_case "CI runner contract" nix develop -c ./tests/unit/test-ci-runner-contract
+run_case "CI native Mac architecture/publication" nix develop -c ./tests/unit/test-ci-architecture
+run_case "all-system flake evaluation" nix flake check --no-build --all-systems
 run_case "no committed oMLX keys" ./tests/unit/test-no-committed-secrets
 run_case "portable .mcp.json" ./tests/unit/test-portable-mcp-config
 run_case "single index entrypoint" ./tests/unit/test-single-index-entrypoint

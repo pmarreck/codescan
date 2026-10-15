@@ -1,0 +1,176 @@
+#!/usr/bin/env bash
+set -u
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/codescan-ci-architecture.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture_root"' EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	exit 1
+}
+
+# These adapters are inherited only by this test's child CI scripts. They
+# record requested operations and return controlled responses without compiling.
+uname() {
+	printf 'uname\t%s\n' "$*" >> "$CI_CASE_EVENTS"
+	case "${1-}" in
+		-s) printf '%s\n' "$CI_CASE_OS" ;;
+		-m) printf '%s\n' "$CI_CASE_ARCH" ;;
+		*) return 64 ;;
+	esac
+}
+
+file() {
+	printf 'file\t%s\n' "$*" >> "$CI_CASE_EVENTS"
+	if [ "$CI_CASE_FILE_RC" -ne 0 ]; then
+		printf 'fixture header inspection failed\n' >&2
+		return "$CI_CASE_FILE_RC"
+	fi
+	printf '%s\n' "$CI_CASE_FORMAT"
+}
+
+nix() {
+	[ "${1-}" = develop ] && [ "${2-}" = -c ] || return 64
+	shift 2
+	if [ "${1-}" != zig ]; then
+		"$@"
+		return "$?"
+	fi
+	printf 'build\t%s\n' "$*" >> "$CI_CASE_EVENTS"
+	if [ "$CI_CASE_BUILD_RC" -ne 0 ]; then
+		printf 'fixture compilation failed\n' >&2
+		return "$CI_CASE_BUILD_RC"
+	fi
+	mkdir -p zig-out/bin || return 1
+	{
+		printf '#!%s\n' "$BASH"
+		printf '%s\n' \
+			'printf "binary\t%s\n" "$*" >> "$CI_CASE_EVENTS"' \
+			'printf "fixture about\n"' \
+			'exit "$CI_CASE_BINARY_RC"'
+	} > zig-out/bin/codescan
+	chmod +x zig-out/bin/codescan
+}
+export -f uname file nix
+
+run_case() {
+	local name="$1" os="$2" arch="$3" format="$4" outcome="$5" target="$6"
+	local build_rc="${7:-0}" file_rc="${8:-0}" binary_rc="${9:-0}"
+	local case_dir="$fixture_root/$name/project with spaces"
+	mkdir -p "$case_dir/package dir" || fail "could not create case $name"
+	printf 'previous artifact\n' > "$case_dir/package dir/previous"
+	printf 'fixture README\n' > "$case_dir/README.md"
+	printf 'fixture license\n' > "$case_dir/LICENSE"
+	: > "$case_dir/events"
+	local rc
+	if (
+		cd "$case_dir" || exit 1
+		env CI_CASE_EVENTS="$case_dir/events" CI_CASE_OS="$os" CI_CASE_ARCH="$arch" \
+			CI_CASE_FORMAT="$format" CI_CASE_BUILD_RC="$build_rc" CI_CASE_FILE_RC="$file_rc" \
+			CI_CASE_BINARY_RC="$binary_rc" \
+			bash "$root/scripts/ci-build" "$target" 'package dir' artifact.tar.gz ''
+	) > "$case_dir/stdout" 2> "$case_dir/stderr"; then
+		rc=0
+	else
+		rc="$?"
+	fi
+	if [ "$outcome" = reject ]; then
+		[ "$rc" -ne 0 ] || fail "$name: CI published an invalid native Mac product"
+		[ -f "$case_dir/package dir/previous" ] || fail "$name: failed verification replaced the previous package"
+		[ ! -e "$case_dir/artifact.tar.gz" ] || fail "$name: failed verification published an archive"
+	else
+		if [ "$rc" -ne 0 ]; then
+			printf '%s\n' "$(<"$case_dir/stderr")" >&2
+			fail "$name: valid CI product was rejected"
+		fi
+		[ -x "$case_dir/package dir/codescan" ] && [ -f "$case_dir/artifact.tar.gz" ] || fail "$name: valid product was not published"
+	fi
+	case "$name" in
+		wrong-os|wrong-host-cpu)
+			[ -s "$case_dir/stderr" ] || fail "$name: runner rejection was silent"
+			[ "$(awk '$1 == "build" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "$name: invalid runner reached compilation"
+			;;
+		wrong-binary|header-tool-failure|build-failure)
+			[ "$(awk '$1 == "binary" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "$name: rejected artifact was executed"
+			;;
+		valid-mac)
+			[ "$(awk '$1 == "binary" && $2 == "--about" { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail "native Mac binary was not smoke-executed"
+			;;
+		binary-failure)
+			[ "$(awk '/^error:/ { n++ } END { print n+0 }' "$case_dir/stderr")" -gt 0 ] || fail "native smoke failure had no error diagnostic"
+			;;
+		linux-*)
+			[ "$(awk '$1 == "uname" || $1 == "file" || $1 == "binary" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "Linux cross-build unexpectedly required a native Mac runner"
+			;;
+	esac
+	if [ "$name" != wrong-os ] && [ "$name" != wrong-host-cpu ]; then
+		[ "$(awk -F '\t' -v expected="zig build -Doptimize=ReleaseFast -Dtarget=$target" '$1 == "build" && $2 == expected { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail "$name: CI changed its pinned target/profile build invocation"
+	fi
+}
+
+run_case wrong-os Linux arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos
+run_case wrong-host-cpu Darwin x86_64 'Mach-O 64-bit arm64 executable' reject aarch64-macos
+run_case wrong-binary Darwin arm64 'Mach-O 64-bit x86_64 executable' reject aarch64-macos
+run_case header-tool-failure Darwin arm64 '' reject aarch64-macos 0 9
+run_case binary-failure Darwin arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos 0 0 7
+run_case build-failure Darwin arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos 6
+run_case valid-mac Darwin arm64 'Mach-O 64-bit arm64 executable' accept aarch64-macos
+run_case linux-arm Linux x86_64 'ELF 64-bit LSB executable, ARM aarch64' accept aarch64-linux-musl
+run_case linux-x86 Linux x86_64 'ELF 64-bit LSB executable, x86-64' accept x86_64-linux-musl
+
+# Sweep the declared host domain as a set, not a few presence checks.
+source "$root/scripts/ci-verify-macos-arm64"
+allowed_runners=$'Darwin\tarm64'
+actual_runners=
+for os in Darwin Linux MINGW64_NT unknown; do
+	for arch in arm64 aarch64 x86_64 AMD64 unknown; do
+		if ci_native_macos_arm64 "$os" "$arch"; then
+			actual_runners+="${actual_runners:+$'\n'}$os"$'\t'"$arch"
+		fi
+	done
+done
+[ "$actual_runners" = "$allowed_runners" ] || fail "native Mac runner classifier accepted the wrong host set"
+
+for entry in \
+	'accept|Mach-O 64-bit arm64 executable' \
+	'accept|Mach-O 64-bit arm64 executable, flags:<PIE>' \
+	'accept|Mach-O 64-bit executable arm64' \
+	'accept|Mach-O 64-bit executable arm64, flags:<PIE>' \
+	'reject|Mach-O 64-bit arm64e executable' \
+	'reject|Mach-O 64-bit x86_64 executable' \
+	'reject|Mach-O universal binary with 2 architectures: x86_64 arm64' \
+	'reject|ELF 64-bit LSB executable, ARM aarch64' \
+	'reject|PE32+ executable (console) Aarch64, for MS Windows' \
+	'reject|data' \
+	'reject|'
+do
+	IFS='|' read -r outcome description <<< "$entry"
+	if ci_arm64_macho "$description"; then
+		[ "$outcome" = accept ] || fail "binary classifier accepted an unsupported format: $description"
+	else
+		[ "$outcome" = reject ] || fail "binary classifier rejected an ARM64 Mach-O format: $description"
+	fi
+done
+
+# libmagic supplies the header descriptions independently of the gate. The
+# 32-byte Mach-O headers differ only in their specified CPU type fields.
+for entry in \
+	'arm64|0c000001|accept' \
+	'x86_64|07000001|reject' \
+	'arm32|0c000000|reject' \
+	'ppc64|12000001|reject'
+do
+	IFS='|' read -r name cpu outcome <<< "$entry"
+	path="$fixture_root/$name.macho"
+	bytes="$(printf '%s' "$cpu" | sed 's/../\\x&/g')"
+	printf '%b' "\xcf\xfa\xed\xfe$bytes\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00" > "$path"
+	description="$(command file -b -- "$path")" || fail "real Mach-O header inspection failed"
+	if ci_arm64_macho "$description"; then
+		[ "$outcome" = accept ] || fail "real header classifier accepted $name"
+	else
+		[ "$outcome" = reject ] || fail "real header classifier rejected $name: $description"
+	fi
+done
+
+printf 'CI architecture/publication regressions passed\n'

@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -u
+
+ci_native_macos_arm64() {
+	[ "$1" = Darwin ] && [ "$2" = arm64 ]
+}
+
+ci_arm64_macho() {
+	case "$1" in
+		'Mach-O 64-bit arm64 executable'|'Mach-O 64-bit arm64 executable,'*|\
+		'Mach-O 64-bit executable arm64'|'Mach-O 64-bit executable arm64,'*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+ci_verify_macos_arm64() {
+	local os arch description artifact smoke_rc
+	os="$(uname -s)" || return 1
+	arch="$(uname -m)" || return 1
+	if ! ci_native_macos_arm64 "$os" "$arch"; then
+		printf 'error: native macOS ARM64 runner required; got %s/%s\n' "$os" "$arch" >&2
+		return 1
+	fi
+	printf 'CI runner: %s/%s\n' "$os" "$arch" >&2
+	[ "$#" -gt 0 ] || return 0
+	[ "$#" -eq 1 ] || return 64
+	artifact="$1"
+	if [ ! -x "$artifact" ]; then
+		printf 'error: native Mac executable is missing or not executable: %s\n' "$artifact" >&2
+		return 1
+	fi
+	description="$(file -b -- "$artifact")" || return 1
+	if ! ci_arm64_macho "$description"; then
+		printf 'error: ARM64 Mach-O executable required; got %s\n' "$description" >&2
+		return 1
+	fi
+	printf 'CI binary: %s\n' "$description" >&2
+	if "$artifact" --about; then
+		return 0
+	else
+		smoke_rc="$?"
+		printf 'error: native Mac executable failed --about (exit %s)\n' "$smoke_rc" >&2
+		return "$smoke_rc"
+	fi
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+	ci_verify_macos_arm64 "$@"
+fi

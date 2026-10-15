@@ -2,6 +2,12 @@
 
 Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains recoverable in Git; private operational context is retained outside the repository.
 
+## CI completion and maintenance
+
+- [ ] Retain the bounded read-only GitHub Actions watch for shipped watcher fix `3efd9f3a`; exact Mechatron Prime CI passed, and the old macOS job must not be canceled or retried solely because it is queued.
+- [x] Pin `macos-15` and require native ARM64 host/header/startup checks before packaging; prove regressions RED first and pass the complete native runner plus sandboxed Nix package/test builds in one budgeted job without changing targets or toolchain pins. (done 2026-10-14 20:41 EDT; source: https://github.com/actions/runner-images/issues/13518)
+- [ ] Push the validated macOS CI maintenance commit and verify its exact Mechatron Prime CI and GitHub Actions outcomes separately from the old queued run.
+
 ## Watcher reliability
 
 - [x] Prevent watcher startup from recreating an existing database when schema initialization fails; prove index preservation with a failing regression first. (done 2026-10-14 16:17 EDT)
@@ -11,7 +17,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Recent shipments
 
-- [x] Start the watcher after successful initialization; keep ordinary index/update/search commands non-spawning and report startup failures. (done 2026-10-12 12:51 EDT)
 - [x] Respect the configured embedding API and URL during initialization and use provider-specific model recovery instructions. (done 2026-10-12 12:51 EDT)
 - [x] Pass regression coverage, the complete suite, and five-target ReleaseFast builds for shipment; live-provider tests were excluded, and existing FTS5/log-test skips remain. (done 2026-10-12 13:03 EDT)
 

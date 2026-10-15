@@ -20,7 +20,11 @@ jobs:
 
       - name: Run tests
         shell: bash
-        run: nix develop -c zig build test-unit
+        run: |
+          nix flake check --no-build --all-systems
+          nix develop -c ./tests/unit/test-ci-runner-contract
+          nix develop -c ./tests/unit/test-ci-architecture
+          nix develop -c zig build test-unit
 
   build:
     needs: test
@@ -40,7 +44,7 @@ jobs:
             ext: ""
             artifact: codescan-linux-arm64.tar.gz
             pkgdir: codescan-linux-arm64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-macos
             archive: tar
             ext: ""

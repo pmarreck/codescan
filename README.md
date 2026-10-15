@@ -56,6 +56,11 @@ sandboxed build. This is deliberate: there is one reproducible dependency
 contract rather than an undocumented collection of host packages. Pre-built
 binaries remain self-contained and do not require Nix at runtime.
 
+macOS CI uses the `macos-15` ARM64 runner. Before packaging, it checks the
+actual runner architecture, inspects the executable's ARM64 Mach-O header,
+and runs `codescan --about`. These checks leave the pinned compiler and
+dependencies unchanged.
+
 ### Optional Git integration
 
 Codescan does not require Git and does not bundle it into the release binary.

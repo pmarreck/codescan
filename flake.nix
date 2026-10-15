@@ -140,14 +140,13 @@
 					};
 				};
 
-				# The check Garnix was missing: packages.default only COMPILES. This runs
-				# the (now hermetic — no live Ollama/OpenAI) test suite AND smoke-execs the
-				# binary, so a passing build can no longer hide broken or non-running code.
+				# Check the CI contracts, run hermetic unit tests, and smoke-execute
+				# the binary independently of the compilation-only package target.
 				checks.test = pkgs.stdenv.mkDerivation {
 					pname = "codescan-test";
 					version = "0.1.0";
 					src = ./.;
-					nativeBuildInputs = [ pkgs.zig_0_16 pkgs.git ];
+					nativeBuildInputs = [ pkgs.zig_0_16 pkgs.git pkgs.file ];
 					dontConfigure = true;
 					dontFixup = true;
 					buildPhase = ''
@@ -156,6 +155,9 @@
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
 						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
 						mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
+						patchShebangs scripts/ci-build scripts/ci-verify-macos-arm64 tests/unit/test-ci-runner-contract tests/unit/test-ci-architecture
+						bash ./tests/unit/test-ci-runner-contract
+						bash ./tests/unit/test-ci-architecture
 						# 1) actually RUN the suite (the part never wired into CI)
 						zig build test-unit --system ${zigPkgCache} --color off
 						# 2) smoke-EXECUTE the built binary (catches runtime/loader regressions)
@@ -173,6 +175,7 @@
 						zig_0_16
 						git
 						jq
+						file
 						sqlite
 						luajit
 						luajitPackages.cjson

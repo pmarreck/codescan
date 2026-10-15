@@ -5,8 +5,18 @@ TARGET="${1:?target}"
 PKGDIR="${2:?pkgdir}"
 ARCHIVE="${3:?archive}"
 EXT="${4:-}"
+ci_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ci_mac_verifier="$ci_script_dir/ci-verify-macos-arm64"
+
+if [ "$TARGET" = aarch64-macos ]; then
+	"$ci_mac_verifier"
+fi
 
 nix develop -c zig build -Doptimize=ReleaseFast -Dtarget="$TARGET"
+
+if [ "$TARGET" = aarch64-macos ]; then
+	nix develop -c "$ci_mac_verifier" "zig-out/bin/codescan${EXT}"
+fi
 
 rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"

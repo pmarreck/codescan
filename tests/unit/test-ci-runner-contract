@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -u
+
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+workflow="$root/.github/workflows/build.yml"
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	exit 1
+}
+
+# Compare every matrix row, including duplicate or unexpected rows.
+actual="$(awk '
+	/^  build:/ { in_build = 1; next }
+	in_build && /^  [^ ]/ { in_build = 0 }
+	in_build && $1 == "-" && $2 == "os:" { os = $3 }
+	in_build && $1 == "target:" { target = $2 }
+	in_build && $1 == "archive:" { archive = $2 }
+	in_build && $1 == "artifact:" { artifact = $2 }
+	in_build && $1 == "pkgdir:" { print os "\t" target "\t" archive "\t" artifact "\t" $2 }
+' "$workflow" | LC_ALL=C sort)"
+expected="$(printf '%s\n' \
+	$'ubuntu-latest\tx86_64-linux-musl\ttar\tcodescan-linux-x86_64.tar.gz\tcodescan-linux-x86_64' \
+	$'ubuntu-latest\taarch64-linux-musl\ttar\tcodescan-linux-arm64.tar.gz\tcodescan-linux-arm64' \
+	$'macos-15\taarch64-macos\ttar\tcodescan-macos-arm64.tar.gz\tcodescan-macos-arm64' | LC_ALL=C sort)"
+if [ "$actual" != "$expected" ]; then
+	printf '%s\n' "$actual" >&2
+	fail "CI runner/target/artifact matrix differs from the supported contract"
+fi
+
+actual_commands="$(awk '
+	/^      - name: Run tests$/ { in_tests = 1; next }
+	/^  build:/ { in_tests = 0 }
+	in_tests && $1 == "nix" { sub(/^[[:space:]]+/, ""); print }
+' "$workflow" | LC_ALL=C sort)"
+expected_commands="$(printf '%s\n' \
+	'nix flake check --no-build --all-systems' \
+	'nix develop -c ./tests/unit/test-ci-runner-contract' \
+	'nix develop -c ./tests/unit/test-ci-architecture' \
+	'nix develop -c zig build test-unit' | LC_ALL=C sort)"
+[ "$actual_commands" = "$expected_commands" ] || fail "GitHub test job must run the CI contracts and all-system flake evaluation before building artifacts"
+
+printf 'CI runner contract passed\n'
