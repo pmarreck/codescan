@@ -1,14 +1,12 @@
 # PLAN
 
-Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains recoverable in Git; private operational context is retained outside the repository.
+Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains recoverable in Git; private operational context is retained outside the repository. Execution pauses after the current shipment; resume only with renewed direction (2026-10-28).
 
 ## CI completion and maintenance
 
-- [ ] Verify the FTS prerequisite and real-socket cancellation shipments on exact-commit Mechatron Prime CI and GitHub Actions; FTS commit 591c07a8 is pushed and its GitHub test job passes.
+- [x] Verify the FTS prerequisite and real-socket cancellation shipments on exact-commit Mechatron Prime CI and GitHub Actions, including native macOS CLI smoke checks; all pass for 591c07a8 and b2d2ebd9. (done 2026-10-28 12:32 EDT)
 - [x] Repair the native macOS profiler-fixture failure without disabling checks; Mechatron Prime CI and GitHub Actions run 40638927693 pass, including native macOS ARM64 build/header/about execution. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/test_latency.md)
-- [x] Send the approved Nix tokenizer repair request through durable inbox and native delivery; the owning agent acknowledged acceptance and failing-first validation, with unsafe-path and staged/worktree controls retained. (done 2026-10-28 00:25 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [x] Verify the shared tokenizer repair in 9c935fb: the exact installed blob accepts escaped cache interpolation, rejects unsafe dependencies, and honors staged content in both disagreement directions inside a disposable consumer fixture. (done 2026-10-28 02:36 EDT; context: docs/plan_context/staged_dependency_parser.md)
-- [x] Verify the profiler-pin shipment on exact-commit Mechatron Prime CI and GitHub Actions run 40634162232, including native macOS ARM64 build/header/about execution. (done 2026-10-28 00:58 EDT; commit b7dc4595)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
@@ -38,17 +36,18 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [ ] Attribute and reduce the ReleaseSafe prepared runtime's 6.23-second lower bound, pin the shared profiling adapter, and separate Nix evaluation/setup from execution; retain safety checks and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Overlap unit execution with source-fixture preparation after a FIFO-barrier regression failed on the old runner; copy and lane failures remain checked, and fresh prepared runtime measured 4.51 seconds with unchanged exclusions. (done 2026-10-28 01:34 EDT; context: docs/plan_context/test_latency.md)
-	- [x] Pin the shared profiler and verify monotonic stamps inside the isolated runtime after a missing-tool regression failed; complete Nix and fresh host runners pass without recompiling the CLI or unit artifacts. (done 2026-10-28 00:46 EDT)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 	- [x] Bound the unit process independently and verify real held HTTP/TLS exchanges close and join on cancellation; the complete Linux Nix check passes 755 unit cases without changing cold-model request policy. (done 2026-10-28 03:15 EDT; context: docs/plan_context/request_deadlines.md)
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live index writes; do not infer a new all-project sweep.
-- [ ] Test standalone search-path restrictions over mixed candidate sets in every search mode, then cover the remaining inventoried discovery/search classifiers one bounded suite at a time. (context: docs/plan_context/filter_classifiers.md)
+- [ ] Cover the remaining inventoried discovery/search classifiers one bounded suite at a time, beginning with exact language/type intersections. (context: docs/plan_context/filter_classifiers.md)
+	- [x] Repair standalone path filtering after the vector regression returned four candidates instead of two; all 16 path-set/search-mode combinations and 756 unit cases pass in the complete Nix check and fresh confined host runner. (done 2026-10-28 12:33 EDT; context: docs/plan_context/filter_classifiers.md)
 
 ## Architecture and features
 
-- [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; inventory products, callers, profiles, and rollback before migration.
+- [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
+	- [x] Inventory the single Zig implementation, Nix profiles, five release targets, legacy publication/callers, exact test artifacts, and rollback boundary without moving live products. (done 2026-10-28 03:24 EDT; context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
 	- [ ] Consolidate legacy `build_all` into thin Nix-required `./build` scope flags/aliases and exact-product `./run`/`./test`; remove direct-build fallbacks and prepare compiled tests through Nix; add canonical-implementation selection only if multiple executable implementations exist.
 	- [ ] Publish verified commands in `bin/<PF>/` without runtime selector wrappers; preserve previous selections on failure, serialize publishers, retain runtime resources, support native Windows entrypoints, and coordinate PATH changes separately.

@@ -155,6 +155,7 @@ pub fn confidenceFor(results: []const Result) ResultSetConfidence {
 ///   - allowed_langs:    keep only matching languages
 ///   - allowed_exts:     keep only matching file extensions
 ///   - allowed_kinds:    keep only matching symbol kinds (fn/struct/etc.)
+///   - allowed_paths:    keep only matching path globs
 ///
 /// In-place: mutates `results` by deinit'ing dropped entries and replacing
 /// the list with the filtered subset. Extracted from `pub fn search` (2026-06-02).
@@ -181,7 +182,7 @@ fn filterCandidates(
 		results.* = filtered;
 	}
 
-	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0 or options.allowed_symbol_kinds.len > 0) {
+	if (options.allowed_langs.len > 0 or options.allowed_exts.len > 0 or options.allowed_symbol_kinds.len > 0 or options.allowed_paths.len > 0) {
 		var filtered = @as(std.ArrayListUnmanaged(Result), .empty);
 		errdefer {
 			for (filtered.items) |*res| res.deinit(allocator);
@@ -4183,6 +4184,70 @@ test "browse mode: path filter restricts results by file path" {
 
 	try std.testing.expectEqual(@as(usize, 1), sr.results.len);
 	try std.testing.expectEqualStrings("initDb", sr.results[0].symbol.name);
+}
+
+test "standalone path filters classify complete candidate sets in every search mode" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	try std.testing.expect(try ftsAvailable(db));
+	const paths = [_][]const u8{
+		"src/allowed/alpha.zig",
+		"src/allowed/beta.zig",
+		"src/allowedness/alpha.zig",
+		"tests/alpha.zig",
+	};
+	for (paths) |path| {
+		// The insert borrows these literals; SQLite owns the stored row.
+		const id = try storage.insertSymbol(db, .{
+			.language = "zig",
+			.file_path = path,
+			.name = "needle",
+			.signature = "pub fn needle() void",
+			.doc_comment = null,
+			.symbol_kind = "fn",
+			.start_line = 1,
+			.end_line = 1,
+		});
+		try storage.insertEmbedding(db, allocator, id, &.{ 1.0, 0.0 });
+	}
+	const cases = [_]struct { patterns: []const []const u8, expected: [paths.len]bool }{
+		.{ .patterns = &.{"src/allowed/*"}, .expected = .{ true, true, false, false } },
+		.{ .patterns = &.{ "src/allowed/*", "tests/*" }, .expected = .{ true, true, false, true } },
+		.{ .patterns = &.{"missing/*"}, .expected = .{ false, false, false, false } },
+		.{ .patterns = &.{"*"}, .expected = .{ true, true, true, true } },
+	};
+	const Invocation = enum { vector, hybrid, lexical, browse };
+	var fake = FakeEmbedder{ .vector = &.{ 1.0, 0.0 } };
+	for (std.enums.values(Invocation)) |invocation| {
+		for (cases) |case| {
+			const result = try search(allocator, db, fake.embedder(), if (invocation == .browse) "" else "needle", .{
+				.mode = switch (invocation) {
+					.vector => .vector,
+					.hybrid => .hybrid,
+					.lexical, .browse => .lexical,
+				},
+				.top_n = paths.len,
+				.score_dropoff = 0,
+				.allowed_paths = case.patterns,
+			});
+			defer freeResults(allocator, result.results);
+			var actual: [paths.len]bool = @splat(false);
+			for (result.results) |item| {
+				const index = found: {
+					for (paths, 0..) |path, i| {
+						if (std.mem.eql(u8, path, item.symbol.file_path)) break :found i;
+					}
+					return error.UnexpectedCandidate;
+				};
+				try std.testing.expect(!actual[index]);
+				actual[index] = true;
+			}
+			try std.testing.expectEqualSlices(bool, &case.expected, &actual);
+			try std.testing.expectEqual(result.results.len, result.total_relevant);
+		}
+	}
 }
 
 test "lexical source classifier reports every matching indexed field as a set" {
