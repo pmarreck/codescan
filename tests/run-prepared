@@ -3,14 +3,9 @@ set -u
 source "$(dirname "${BASH_SOURCE[0]}")/lib/capture.bash"
 source_root="$PWD"
 project="$TEST_WORKSPACE/project"
-mkdir -p "$project" || exit 1
 # Copy current tracked/staged source, never ignored live indexes or products.
-git -C "$source_root" ls-files -z > "$TMPDIR/source-paths" || exit 1
-tar -C "$source_root" --null -T "$TMPDIR/source-paths" -cf "$TMPDIR/source.tar" || exit 1
-tar -C "$project" -xf "$TMPDIR/source.tar" || exit 1
+bash "$source_root/tests/lib/copy-source" "$source_root" "$project" || exit 1
 cd "$project" || exit 1
-git init -q || exit 1
-git add . || exit 1
 export PATH="$(dirname "$CODESCAN_TEST_BIN"):$PATH"
 out= err= rc= failed=0
 run_case() {
@@ -26,9 +21,15 @@ run_case() {
 	else
 		printf 'FAIL %s (exit %s)\n%s\n%s\n' "$name" "$rc" "$out" "$err" >&2
 		failed=1
+		return 1
 	fi
 }
+# Unit fixtures and the other suites own disjoint scratch paths. Use two lanes.
+run_case 'unit' ./tests/unit/test-unit &
+unit_pid=$!
 run_case 'portable capture' ./tests/unit/test-capture
+run_case 'tracked source fixture' bash ./tests/unit/test-source-fixture
+run_case 'prepared runner orchestration' bash ./tests/unit/test-prepared-runner
 run_case 'five-target build contract' ./tests/unit/test-build-all-contract
 run_case 'Nix-required build adapter' ./tests/unit/test-build-nix
 run_case 'CI runner contract' ./tests/unit/test-ci-runner-contract
@@ -37,11 +38,11 @@ run_case 'no committed embedding keys' ./tests/unit/test-no-committed-secrets
 run_case 'portable MCP configuration' ./tests/unit/test-portable-mcp-config
 run_case 'single index entrypoint' ./tests/unit/test-single-index-entrypoint
 run_case 'sequential project reindex runner' ./tests/unit/test-reindex-all-projects
-run_case 'unit' ./tests/unit/test-unit
 run_case 'CLI about' ./tests/cli/test-about "$CODESCAN_TEST_BIN" "$CODESCAN_EXPECT_PF" "${CODESCAN_EXPECT_VARIANT:-}"
 run_case 'MCP offline session' ./tests/cli/test-mcp-offline
 run_case 'CLI' ./tests/cli/test-cli
 run_case 'watcher schema preservation' ./tests/cli/test-watcher-schema-preservation
 run_case 'HTTP' ./tests/http/test-http
 run_case 'integration' ./tests/integration/test-integration
+if ! wait "$unit_pid"; then failed=1; fi
 exit "$failed"

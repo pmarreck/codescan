@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -u
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-source-fixture.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL source fixture: %s\n' "$1" >&2; exit 1; }
+source_project="$fixture/source project"
+copy="$fixture/copied project"
+mkdir "$source_project" || fail setup
+git -C "$source_project" init -q || fail 'Git setup'
+printf 'ignored*\n' > "$source_project/.gitignore"
+printf 'ordinary marker\n' > "$source_project/source with spaces.zig"
+printf 'ignored marker\n' > "$source_project/ignored-tracked.zig"
+git -C "$source_project" add . || fail 'source inventory'
+git -C "$source_project" add --force ignored-tracked.zig || fail 'forced source inventory'
+printf 'private untracked marker\n' > "$source_project/untracked.zig"
+printf 'private ignored marker\n' > "$source_project/ignored-untracked.zig"
+bash "$root/tests/lib/copy-source" "$source_project" "$copy" > "$fixture/out" 2> "$fixture/err" || fail 'copy failed'
+git -C "$source_project" ls-files -z > "$fixture/expected" || fail 'expected inventory'
+git -C "$copy" ls-files -z > "$fixture/actual" || fail 'copied inventory'
+cmp -s "$fixture/expected" "$fixture/actual" || fail 'copy lost tracked paths or included untracked paths'
+for path in .gitignore 'source with spaces.zig' ignored-tracked.zig; do
+	cmp -s "$source_project/$path" "$copy/$path" || fail "content changed: $path"
+done
+[ ! -e "$copy/untracked.zig" ] && [ ! -e "$copy/ignored-untracked.zig" ] || fail 'private files copied'
+git -C "$copy" grep -lF 'marker' > "$fixture/matches" || fail 'copied content is not searchable'
+printf '%s\n' ignored-tracked.zig 'source with spaces.zig' > "$fixture/expected-matches"
+cmp -s "$fixture/expected-matches" "$fixture/matches" || fail 'Git search missed tracked content'
+if bash "$root/tests/lib/copy-source" "$source_project" "$copy" > "$fixture/out" 2> "$fixture/err"; then
+	fail 'copy overwrote an existing destination'
+fi
+printf 'Source fixture preserves tracked paths and searchable content\n'

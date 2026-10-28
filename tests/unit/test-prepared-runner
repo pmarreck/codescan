@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -u
+if [ "${1:-}" = --adapter ]; then
+	name="${2##*/}"
+	printf '%s\n' "$name" >> "$HARNESS_EVENTS"
+	case "$name" in
+		test-unit)
+			printf 'ready\n' > "$HARNESS_READY" || exit 1
+			read -r release < "$HARNESS_RELEASE" || exit 1
+			[ "$release" = go ] || exit 1
+			exit "$HARNESS_UNIT_RC" ;;
+		test-cli)
+			read -r ready < "$HARNESS_READY" || exit 1
+			[ "$ready" = ready ] || exit 1
+			printf 'go\n' > "$HARNESS_RELEASE" || exit 1
+			exit "$HARNESS_CLI_RC" ;;
+	esac
+	exit 0
+fi
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-prepared-runner.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL prepared runner: %s\n' "$1" >&2; exit 1; }
+source_project="$fixture/source"
+mkdir -p "$source_project/tests/lib" || fail setup
+cp "$root/tests/run-prepared" "$source_project/tests/run-prepared" || fail 'runner fixture'
+cp "$root/tests/lib/copy-source" "$root/tests/lib/capture.bash" "$source_project/tests/lib/" || fail 'adapter fixtures'
+export HARNESS_ADAPTER="$root/tests/unit/test-prepared-runner"
+run_case() {
+	shift
+	if [ "$1" = bash ]; then shift; fi
+	local adapter="$source_project/$1"
+	mkdir -p "$(dirname "$adapter")" || fail 'adapter directory'
+	printf '#!%s\nexec "$HARNESS_ADAPTER" --adapter "$0"\n' "$BASH" > "$adapter"
+	chmod +x "$adapter" || fail 'adapter permissions'
+}
+while IFS= read -r invocation; do eval "${invocation% &}"; done < <(sed -n '/^run_case /p' "$root/tests/run-prepared")
+git -C "$source_project" init -q || fail 'Git setup'
+git -C "$source_project" add . || fail 'tracked fixture'
+for scenario in pass unit-failure cli-failure both-failures; do
+	case_root="$fixture/$scenario"
+	mkdir -p "$case_root/workspace" || fail 'scenario setup'
+	export HARNESS_EVENTS="$case_root/events" HARNESS_READY="$case_root/ready" HARNESS_RELEASE="$case_root/release"
+	export HARNESS_UNIT_RC=0 HARNESS_CLI_RC=0
+	case "$scenario" in
+		unit-failure) HARNESS_UNIT_RC=7 ;;
+		cli-failure) HARNESS_CLI_RC=9 ;;
+		both-failures) HARNESS_UNIT_RC=7 HARNESS_CLI_RC=9 ;;
+	esac
+	mkfifo "$HARNESS_READY" "$HARNESS_RELEASE" || fail 'barrier setup'
+	if (cd "$source_project" && TEST_WORKSPACE="$case_root/workspace" timeout 10 bash ./tests/run-prepared) > "$case_root/out" 2> "$case_root/err"; then
+		rc=0
+	else rc="$?"; fi
+	expected=1
+	[ "$scenario" != pass ] || expected=0
+	[ "$rc" -eq "$expected" ] || fail "$scenario returned $rc, expected $expected (unit and CLI must overlap and both be awaited)"
+	for name in test-unit test-cli test-integration; do
+		[ "$(awk -v name="$name" '$0 == name { n++ } END { print n+0 }' "$HARNESS_EVENTS")" -eq 1 ] || fail "$scenario did not run $name exactly once"
+	done
+done
+printf 'Prepared runner overlaps independent suites and accumulates failures\n'

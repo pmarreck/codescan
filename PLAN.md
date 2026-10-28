@@ -8,9 +8,9 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [x] Ship the validated changes and verify exact-commit Mechatron Prime CI and GitHub Actions, including native macOS ARM64 execution; both services passed c97e9d2 and GitHub run 40621238947. (done 2026-10-27 22:46 EDT; commits 96d90c5 and c97e9d2)
 	- [x] Move source-closure validation to declared build inputs and require its positive/negative controls in CI and the complete runner; local and cold GitHub checks pass. (done 2026-10-27 22:46 EDT; commit c97e9d2)
 - [ ] Report the shared Nix tokenizer's escaped-interpolation false positive; blocked only on approval to contact the additional recipient. (context: docs/plan_context/staged_dependency_parser.md)
-- [x] Prepare exact test binaries through Nix once and run mutation tests in a qualified disposable boundary; the complete local runner passed executed checks, with four unit and two live-provider exclusions reported explicitly. (done 2026-10-27 21:12 EDT)
 - [x] Make Git-discovery prerequisites hard failures, inject process-aware test I/O, and force-add the deliberately ignored tracked fixture; all three regressions execute successfully in the full native and Nix runners. (done 2026-10-27 22:09 EDT)
-- [ ] Attribute and reduce the prepared runtime's remaining 9.54-second lower bound against the five-second budget; the five-second polling test delay is removed and available checks pass; measure fixture preparation and independent runtime suites separately. (context: docs/plan_context/test_latency.md)
+- [x] Attribute and reduce the prepared runtime from 13.43 to 4.02 seconds using a nonblocking polling test, exact lightweight source inventory, and two test lanes; available checks pass, while exclusions prevent a complete budget claim. (done 2026-10-27 23:04 EDT; context: docs/plan_context/test_latency.md)
+- [ ] Ship the test-runtime changes and verify exact-commit Mechatron Prime CI and GitHub Actions; the polling-test commit's fleet build is still running.
 
 ## Watcher reliability
 
@@ -29,6 +29,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
+- [ ] Pin the shared profiling adapter and separate Nix evaluation/setup from the complete runner's fresh execution; retain safety-enabled correctness coverage and explicit live-provider/optional exclusions before claiming budget compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
