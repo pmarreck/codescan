@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -u
+case "${1:-}" in
+	--guard)
+		shift
+		printf '%s\n' "$@" > "$HARNESS_GUARD_ARGS"
+		[ "$HARNESS_GUARD_RC" -eq 0 ] || exit "$HARNESS_GUARD_RC"
+		shift 2
+		exec "$@" ;;
+	--unit)
+		printf 'unit\n' >> "$HARNESS_UNIT_CALLS"
+		printf 'unit output\n'
+		printf 'unit diagnostic\n' >&2
+		exit "$HARNESS_UNIT_RC" ;;
+esac
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$root/tests/lib/capture.bash"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-unit-runner.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL unit runner: %s\n' "$1" >&2; exit 1; }
+mkdir -p "$fixture/bin" || fail setup
+export HARNESS_SELF="$root/tests/unit/test-unit-runner"
+printf '#!%s\nexec bash "$HARNESS_SELF" --guard "$@"\n' "$BASH" > "$fixture/bin/timeout"
+printf '#!%s\nexec bash "$HARNESS_SELF" --unit "$@"\n' "$BASH" > "$fixture/unit"
+chmod +x "$fixture/bin/timeout" "$fixture/unit" || fail 'adapter permissions'
+export HARNESS_GUARD_ARGS="$fixture/guard-args" HARNESS_UNIT_CALLS="$fixture/unit-calls"
+out= err= rc=
+for scenario in pass unit-failure guard-expired guard-killed; do
+	export HARNESS_GUARD_RC=0 HARNESS_UNIT_RC=0
+	expected=0
+	case "$scenario" in
+		unit-failure) HARNESS_UNIT_RC=7; expected=7 ;;
+		guard-expired) HARNESS_GUARD_RC=124; expected=124 ;;
+		guard-killed) HARNESS_GUARD_RC=137; expected=137 ;;
+	esac
+	: > "$HARNESS_GUARD_ARGS"
+	: > "$HARNESS_UNIT_CALLS"
+	capture env PATH="$fixture/bin:$PATH" CODESCAN_UNIT_TEST_BIN="$fixture/unit" bash "$root/tests/unit/test-unit"
+	[ "$rc" -eq "$expected" ] || fail "$scenario returned $rc, expected $expected"
+	[ "$(< "$HARNESS_GUARD_ARGS")" = "$(printf '%s\n' --kill-after=5 30 "$fixture/unit")" ] || fail "$scenario omitted or changed the outer hang guard"
+	if [ "$scenario" = guard-expired ] || [ "$scenario" = guard-killed ]; then
+		[ ! -s "$HARNESS_UNIT_CALLS" ] && [ -z "$out" ] && [ -z "$err" ] || fail 'expired guard ran the unit command'
+	else
+		[ "$(< "$HARNESS_UNIT_CALLS")" = unit ] || fail "$scenario did not execute units exactly once"
+		[ "$out" = 'unit output' ] && [ "$err" = 'unit diagnostic' ] || fail "$scenario changed captured output"
+	fi
+done
+printf 'Unit runner retains its hang guard and child exit status\n'

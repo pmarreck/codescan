@@ -1,0 +1,11 @@
+# Request cancellation qualification
+
+Preflight requests opt into a complete-exchange deadline. Embedding POSTs leave it unset because a cold model may need time to load. The cancellation tests do not choose a new POST deadline or retry policy.
+
+The unit executable now has a separate 30-second hang guard, with forced termination after another five seconds if necessary. This is a failure-containment bound, not an execution-budget increase. Its persistent adapter regression first failed because the previous wrapper omitted the guard. Success, child failure, timeout, and forced-kill controls now pass while preserving output and exit status. The complete Nix check and a fresh confined host run passed 754 unit cases before adding the network fixture; the optional OS-log skip and two live-provider exclusions were unchanged.
+
+The real-socket fixture binds an ephemeral loopback port and signals readiness after receiving HTTP request bytes or a TLS handshake record. It withholds an HTTP response head, offers an incomplete response body, or withholds the TLS handshake response. The coordinator then cancels the actual standard-library transport and requires both the request task to join and the peer to observe EOF or connection reset. No sleep, fixture-side shutdown, or complete reply releases the client first. Failed setup also releases the readiness wait, and its task result retains the error.
+
+The TLS fixture uses a fixed certificate-check time and an empty trust bundle. The peer never sends a certificate, so the test neither loads host trust state nor needs private certificates. Every request, peer task, listener, URL, and response body remains test-owned through task cleanup.
+
+The complete Linux Nix check passes 755 unit cases, including all three network modes, with the same optional unit skip and two live-provider exclusions. The network fixture characterizes an established connection whose peer withholds progress; it does not exercise dropped SYN packets, prove a particular response-body read was already blocked, reproduce the historical MCP delay, or establish native macOS/Windows cancellation. The existing zero-deadline transport regression separately checks timeout classification. Native platform qualification and the historical MCP reproducer remain open.

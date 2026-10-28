@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -u
 
-exec "${CODESCAN_UNIT_TEST_BIN:?prepare unit tests with ./test}"
+exec timeout --kill-after=5 30 "${CODESCAN_UNIT_TEST_BIN:?prepare unit tests with ./test}"

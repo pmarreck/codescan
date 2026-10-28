@@ -38,6 +38,7 @@ if ! cd "$project"; then
 fi
 run_case 'pinned profiling adapter' bash ./tests/unit/test-profiler-pin
 run_case 'portable capture' ./tests/unit/test-capture
+run_case 'unit process hang guard' bash ./tests/unit/test-unit-runner
 run_case 'tracked source fixture' bash ./tests/unit/test-source-fixture
 run_case 'prepared runner orchestration' bash ./tests/unit/test-prepared-runner
 run_case 'five-target build contract' ./tests/unit/test-build-all-contract
