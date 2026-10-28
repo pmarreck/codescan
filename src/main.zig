@@ -2709,7 +2709,7 @@ fn runUpdate(
 	lexical_only: bool,
 	stdout: *std.Io.Writer,
 ) !void {
-	return runUpdateWithInvocation(allocator, updateSettings(settings), registry, lexical_only, stdout, .explicit);
+	return runUpdateWithInvocation(allocator, updateSettings(settings), registry, lexical_only, stdout, .explicit, null);
 }
 
 fn runUpdateWithInvocation(
@@ -2719,6 +2719,7 @@ fn runUpdateWithInvocation(
 	lexical_only: bool,
 	stdout: ?*std.Io.Writer,
 	invocation: UpdateInvocation,
+	embedding_failure: ?*?anyerror,
 ) !void {
 	const invocation_started = std.Io.Clock.awake.now(io_singleton.getOrInit());
 	checkTmpSpace();
@@ -2752,6 +2753,7 @@ fn runUpdateWithInvocation(
 		.model = settings.embedding_model,
 		.dialect = settings.embedding_dialect,
 		.auth_header = settings.embedding_auth_header,
+		.error_capture = embedding_failure,
 	};
 	const active_embedder = if (use_null_embedder)
 		embedding.NullEmbedder.embedder()
@@ -2923,6 +2925,7 @@ const SearchFreshnessContext = struct {
 
 	fn reconcile(context: *anyopaque) !void {
 		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
+		self.inference_unavailable = false;
 		if (!self.lexical_only) {
 			var http_client = embedding_http.StdHttpTransport.init(self.allocator);
 			defer http_client.deinit();
@@ -2937,6 +2940,10 @@ const SearchFreshnessContext = struct {
 				return error.EmbeddingUnavailable;
 			}
 		}
+		var embedding_failure: ?anyerror = null;
+		defer if (embedding_failure) |err| {
+			if (err != error.OutOfMemory) self.inference_unavailable = true;
+		};
 		try runUpdateWithInvocation(
 			self.allocator,
 			self.settings,
@@ -2944,6 +2951,7 @@ const SearchFreshnessContext = struct {
 			self.lexical_only,
 			null,
 			.pre_search,
+			&embedding_failure,
 		);
 	}
 
