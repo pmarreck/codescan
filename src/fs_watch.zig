@@ -365,13 +365,13 @@ test "FsWatch wait returns timeout when no changes" {
 
 	try w.setWatchPaths(allocator, &.{dir_path});
 
-	const result = try w.wait(100);
+	const result = try w.wait(0);
 	try std.testing.expectEqual(FsWatch.WaitResult.timeout, result);
 }
 
 test "FsWatch wait detects file creation" {
 	const allocator = std.testing.allocator;
-	var w = FsWatch.init(allocator) catch return; // skip if unsupported
+	var w = try FsWatch.init(allocator);
 	defer w.deinit(allocator);
 
 	var tmp = std.testing.tmpDir(.{});
@@ -381,21 +381,10 @@ test "FsWatch wait detects file creation" {
 
 	try w.setWatchPaths(allocator, &.{dir_path});
 
-	// Create a file from another thread after a short delay
-	const handle = try std.Thread.spawn(.{}, struct {
-		fn run(dir: std.Io.Dir) void {
-			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds((50 * std.time.ns_per_ms)), .awake) catch {};
-			const f = dir.createFile(io_singleton.getOrInit(), "test_trigger.txt", .{}) catch return;
-			f.close(io_singleton.getOrInit());
-		}
-	}.run, .{tmp.dir});
-
-	const result = try w.wait(5000);
-	handle.join();
-
-	// On platforms with a real file-system watcher (macOS FSEvents, Linux fanotify)
-	// the change must be detected. Only the polling fallback may timeout.
-	if (FsWatch.Backend != PollingBackend) {
-		try std.testing.expectEqual(FsWatch.WaitResult.changed, result);
-	}
+	// Native events queue after registration; no sleeping producer is needed.
+	const file = try tmp.dir.createFile(io_singleton.getOrInit(), "test_trigger.txt", .{});
+	file.close(io_singleton.getOrInit());
+	const polling = FsWatch.Backend == PollingBackend;
+	const result = try w.wait(if (polling) 0 else 5000);
+	try std.testing.expectEqual(if (polling) FsWatch.WaitResult.timeout else FsWatch.WaitResult.changed, result);
 }

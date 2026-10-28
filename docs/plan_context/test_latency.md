@@ -1,0 +1,9 @@
+# Prepared test runtime
+
+The shared profiling engine recorded a 13.43-second prepared-runtime lower bound on October 27, 2026. A separate per-suite diagnostic attributed 7.66 seconds to the unit executable and 1.19 seconds to CLI tests. These observations had explicit live-provider exclusions and are diagnostic records, not approved performance baselines.
+
+A syscall trace identified a 5.001-second wait in the filesystem-watcher file-creation test. The polling backend always returns timeout, and the test accepted that result without asserting detection. It also delayed the producer thread by 50 milliseconds. The test now creates and closes the file synchronously after registration. Native backends must still report the event within their bounded wait; polling must immediately report timeout. Initialization failures now fail this test rather than silently returning. The no-change case uses a nonblocking wait.
+
+The rebuilt complete Nix check and fresh host `./test --prepared` passed all available checks: 747 unit cases passed, one optional OS-log case was skipped, and two live-provider suites were excluded. The shared profiler subsequently measured 9.54 seconds for the isolated prepared runtime and 20.90 seconds for the complete prepared invocation. The latter includes Nix evaluation and setup, so it is a mixed phase. No compilation occurred in the isolated runtime. Both measurements remain incomplete because of exclusions; neither establishes compliance with the five-second budget.
+
+Next, attribute source-fixture preparation and the remaining per-suite costs before changing orchestration. Keep independent suites isolated if introducing bounded concurrency. Preserve every required assertion, report exclusions, and retain total queue/setup/result latency. The CPU-vectorization checkpoint does not apply to the identified sleep; no CPU hot-path change is proposed.

@@ -34,6 +34,7 @@ annotate=[
 	docs/PLAN_LOG.md = Public-safe completed-work records
 	docs/jina-code-embeddings-ollama.md = Verified local Jina GGUF pooling-metadata patch, Ollama import, and acceptance procedure
 	docs/plan_context/staged_dependency_parser.md = Reproducer, scoped quoting workaround and pending shared parser regression request
+	docs/plan_context/test_latency.md = Measured test-runtime costs, removed polling delay, and remaining budget work
 	docs/plan_context/watcher_sqlite_failures.md = SQLite watcher failure evidence, constraints, and diagnostic acceptance criteria
 	fixtures/manifest.toml = Pinned fixture repositories used by the integration suite
 	flake.lock = Pinned Nix inputs for a reproducible dev shell
