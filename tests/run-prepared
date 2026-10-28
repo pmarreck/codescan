@@ -27,6 +27,7 @@ run_case() {
 # Unit fixtures and the other suites own disjoint scratch paths. Use two lanes.
 run_case 'unit' ./tests/unit/test-unit &
 unit_pid=$!
+run_case 'pinned profiling adapter' bash ./tests/unit/test-profiler-pin
 run_case 'portable capture' ./tests/unit/test-capture
 run_case 'tracked source fixture' bash ./tests/unit/test-source-fixture
 run_case 'prepared runner orchestration' bash ./tests/unit/test-prepared-runner

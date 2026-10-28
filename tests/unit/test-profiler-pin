@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -u
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
+fail() { printf 'FAIL pinned profiler: %s\n' "$1" >&2; exit 1; }
+profiler="$(command -v performance-profile)" || fail 'shared profiler missing from the pinned test environment'
+case "$profiler" in
+	/nix/store/*/bin/performance-profile) ;;
+	*) fail 'profiler must be provided by the immutable Nix package' ;;
+esac
+capture "$profiler" latency stamp
+[ "$rc" -eq 0 ] && [ -z "$err" ] || fail 'first monotonic stamp failed'
+[[ "$out" =~ ^[0-9]+$ ]] || fail 'stamp must be integer nanoseconds'
+first="$out"
+capture "$profiler" latency stamp
+[ "$rc" -eq 0 ] && [ -z "$err" ] || fail 'second monotonic stamp failed'
+[[ "$out" =~ ^[0-9]+$ ]] || fail 'second stamp must be integer nanoseconds'
+[ "$out" -ge "$first" ] || fail 'monotonic clock moved backward'
+printf 'Pinned shared profiler supplies monotonic stamps\n'

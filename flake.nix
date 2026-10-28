@@ -4,13 +4,15 @@
 	inputs = {
 		nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 		flake-utils.url = "github:numtide/flake-utils";
+		profiling.url = "github:pmarreck/performance_profiling/ecf713b81a74a51f76719bf9debc44fe23a0b331";
 	};
 
-	outputs = { self, nixpkgs, flake-utils }:
+	outputs = { self, nixpkgs, flake-utils, profiling }:
 		flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
 			let
 				pkgs = import nixpkgs { inherit system; };
-				runtimeTools = with pkgs; [ bash coreutils diffutils findutils git gnugrep gnused gawk gnutar gzip jq ripgrep sqlite curl file ];
+				profilingPackage = profiling.packages.${system}.default;
+				runtimeTools = (with pkgs; [ bash coreutils diffutils findutils git gnugrep gnused gawk gnutar gzip jq ripgrep sqlite curl file ]) ++ [ profilingPackage ];
 				nativePF = { x86_64-linux = "linux-amd64"; aarch64-linux = "linux-arm64"; aarch64-darwin = "macos-arm64"; }.${system};
 				nativeZigTarget = { x86_64-linux = "x86_64-linux-musl"; aarch64-linux = "aarch64-linux-musl"; aarch64-darwin = "aarch64-macos"; }.${system};
 				compiledSource = root: pkgs.lib.fileset.toSource {
@@ -249,7 +251,7 @@
 						sqlite
 						luajit
 						luajitPackages.cjson
-					] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.bubblewrap ];
+					] ++ [ profilingPackage ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.bubblewrap ];
 					shellHook = "
 						export CODESCAN_TEST_PATH=\"${pkgs.lib.makeBinPath runtimeTools}\"
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR=\"${sqlite-amalgamation}\"
