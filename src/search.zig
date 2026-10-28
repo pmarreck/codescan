@@ -2461,8 +2461,7 @@ test "hybrid merge preserves bm25 when symbol is in both vector and FTS candidat
 	// will return this row as candidate #1.
 	try storage.insertEmbedding(db, allocator, id, &[_]f32{ 1.0, 0.0 });
 
-	const has_fts = try ftsAvailable(db);
-	if (!has_fts) return error.SkipZigTest;
+	try std.testing.expect(try ftsAvailable(db));
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 1.0, 0.0 } };
 	const results = (try search(allocator, db, fake.embedder(), "BASH_VERSION", .{
@@ -2487,7 +2486,7 @@ test "hybrid scoring compares FTS word matches with fallback substrings on one s
 	defer storage.close(db);
 
 	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
-	if (!(ftsAvailable(db) catch false)) return error.SkipZigTest;
+	try std.testing.expect(try ftsAvailable(db));
 
 	var exact_word = model.Symbol{
 		.language = try allocator.dupe(u8, "markdown"),
@@ -2599,8 +2598,7 @@ test "search surfaces body-only multi-token match (BASH_VERSION regression)" {
 	try storage.insertEmbedding(db, allocator, id_a, &[_]f32{ 0.0, 0.0 });
 	try storage.insertEmbedding(db, allocator, id_b, &[_]f32{ 0.0, 0.0 });
 
-	const has_fts = try ftsAvailable(db);
-	if (!has_fts) return error.SkipZigTest;
+	try std.testing.expect(try ftsAvailable(db));
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
 	const results = (try search(allocator, db, fake.embedder(), "bash version", .{
@@ -3668,7 +3666,7 @@ test "ftsCandidates captures bm25 scores" {
 	const id1 = try storage.insertSymbol(db, sym1);
 	try storage.insertEmbedding(db, allocator, id1, &[_]f32{ 0.0, 0.0 });
 
-	if (!(ftsAvailable(db) catch false)) return; // skip if FTS not available
+	try std.testing.expect(try ftsAvailable(db));
 
 	const results = try ftsCandidates(allocator, db, "hash", 10, .broad);
 	defer freeResults(allocator, results);
@@ -3713,7 +3711,7 @@ test "bm25 normalization produces values in 0-1 range" {
 	const id2 = try storage.insertSymbol(db, sym2);
 	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
 
-	if (!(ftsAvailable(db) catch false)) return;
+	try std.testing.expect(try ftsAvailable(db));
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
 	const sr = try search(allocator, db, fake.embedder(), "hash", .{
@@ -3768,7 +3766,7 @@ test "bm25 column weights rank name match above doc_comment match" {
 	const id2 = try storage.insertSymbol(db, sym_doc);
 	try storage.insertEmbedding(db, allocator, id2, &[_]f32{ 0.0, 0.0 });
 
-	if (!(ftsAvailable(db) catch false)) return;
+	try std.testing.expect(try ftsAvailable(db));
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
 	const sr = try search(allocator, db, fake.embedder(), "hash", .{
@@ -3835,7 +3833,7 @@ test "bm25 body matches rank below name and doc_comment matches" {
 	const id3 = try storage.insertSymbol(db, sym_body);
 	try storage.insertEmbedding(db, allocator, id3, &[_]f32{ 0.0, 0.0 });
 
-	if (!(ftsAvailable(db) catch false)) return;
+	try std.testing.expect(try ftsAvailable(db));
 
 	var fake = FakeEmbedder{ .vector = &[_]f32{ 0.0, 0.0 } };
 	const sr = try search(allocator, db, fake.embedder(), "widget", .{

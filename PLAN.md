@@ -6,14 +6,14 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [x] Repair the native macOS profiler-fixture failure without disabling checks; Mechatron Prime CI and GitHub Actions run 40638927693 pass, including native macOS ARM64 build/header/about execution. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/test_latency.md)
 - [x] Send the approved Nix tokenizer repair request through durable inbox and native delivery; the owning agent acknowledged acceptance and failing-first validation, with unsafe-path and staged/worktree controls retained. (done 2026-10-28 00:25 EDT; context: docs/plan_context/staged_dependency_parser.md)
-- [ ] Verify the original escaped-interpolation pattern against the shared tokenizer repair in commit 9c935fb using a disposable consumer fixture and unsafe-path controls; the owning project reports 96 focused controls, 197 host files, and its Nix check passing. (context: docs/plan_context/staged_dependency_parser.md)
+- [x] Verify the shared tokenizer repair in 9c935fb: the exact installed blob accepts escaped cache interpolation, rejects unsafe dependencies, and honors staged content in both disagreement directions inside a disposable consumer fixture. (done 2026-10-28 02:36 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [x] Verify the profiler-pin shipment on exact-commit Mechatron Prime CI and GitHub Actions run 40634162232, including native macOS ARM64 build/header/about execution. (done 2026-10-28 00:58 EDT; commit b7dc4595)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
 
 - [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; live root/status calls respond, the watcher is stopped, and pre-search reconciliation is a candidate for the October 27 delay, not an established cause.
-	- [x] Preserve inference-unavailable advice after a reachable server rejects embeddings; the real MCP regression first failed on missing advice, then complete Nix/fresh host checks passed 754 unit cases and retained original rows, vector counts, and file access. (done 2026-10-28 02:24 EDT; context: docs/plan_context/inference_availability.md)
+	- [x] Preserve inference-unavailable advice after a reachable server rejects embeddings; complete Nix/fresh host checks pass 754 unit cases, and exact-commit Mechatron Prime CI plus GitHub Actions run 40644259465 pass, including native macOS CLI smoke checks. (done 2026-10-28 02:49 EDT; commit 28602f00; context: docs/plan_context/inference_availability.md)
 	- [ ] Decide whether failed incremental embedding should retain new lexical rows as pending work or roll them back; the private fixture grew from four symbols/four vectors to five/four while retaining working search and file reads. (context: docs/plan_context/inference_availability.md)
 - [x] Finish SQLite watcher diagnostics across controlled open/write/read/cursor failures while preserving the index and retry policy; complete Linux Nix/fresh host checks, five-target builds, and native macOS CLI smoke checks pass. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/watcher_sqlite_failures.md)
 	- [x] Preserve symbol-body preparation diagnostics after an authorizer regression reported expected 23, found 0; complete Nix and fresh host runners now pass 753 unit cases, with one optional skip and unchanged live-provider exclusions. (done 2026-10-28 01:00 EDT)
@@ -31,7 +31,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [ ] Add Zig signature-query matching and negative cases, then exercise the actual CLI against indexed Zig fixtures.
 	- [ ] Add Rust signature-query matching for functions/methods with type constraints and actual CLI coverage.
 	- [ ] Add TypeScript signature-query matching for typed functions/methods with actual CLI coverage.
-- [ ] Require FTS5 availability in behavioral regressions instead of silent early returns; current Nix artifacts execute the three formerly skipped scoring cases, and the pinned SQLite build already enables FTS5.
+- [x] Require FTS5 in all seven dependent scoring regressions instead of silently returning or skipping; the complete Nix check passes 754 unit cases with the pinned FTS5-enabled SQLite. (done 2026-10-28 03:04 EDT)
 
 ## Validation and performance
 
@@ -39,6 +39,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [x] Overlap unit execution with source-fixture preparation after a FIFO-barrier regression failed on the old runner; copy and lane failures remain checked, and fresh prepared runtime measured 4.51 seconds with unchanged exclusions. (done 2026-10-28 01:34 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Pin the shared profiler and verify monotonic stamps inside the isolated runtime after a missing-tool regression failed; complete Nix and fresh host runners pass without recompiling the CLI or unit artifacts. (done 2026-10-28 00:46 EDT)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
+	- [ ] Bound the unit process independently, then verify real held HTTP/TLS exchanges close and join on cancellation inside disposable loopback fixtures; preserve cold-model request policy.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live index writes; do not infer a new all-project sweep.
