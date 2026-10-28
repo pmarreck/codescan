@@ -40,6 +40,7 @@ annotate=[
 	fixtures/manifest.toml = Pinned fixture repositories used by the integration suite
 	flake.lock = Pinned Nix inputs for a reproducible dev shell
 	flake.nix = Nix flake providing the dev shell, packages, and checks used by both ./build and CI
+	patches/profiler-latency-debounce-fixture.patch = Seed a bounded prior notification state in the pinned profiler CLI fixture
 	patches/sqlite-vec-cleanup-callbacks.patch = Pinned sqlite-vec callback-type correction for ReleaseSafe vector insertion
 	reindex_all = Sequentially update direct-child Git projects with local Ollama Jina and percentage progress
 	scripts/ci-build = CI build and packaging wrapper, ReleaseFast per target

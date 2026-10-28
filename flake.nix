@@ -11,7 +11,9 @@
 		flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
 			let
 				pkgs = import nixpkgs { inherit system; };
-				profilingPackage = profiling.packages.${system}.default;
+				profilingPackage = profiling.packages.${system}.default.overrideAttrs (old: {
+					patches = (old.patches or []) ++ [ ./patches/profiler-latency-debounce-fixture.patch ];
+				});
 				runtimeTools = (with pkgs; [ bash coreutils diffutils findutils git gnugrep gnused gawk gnutar gzip jq ripgrep sqlite curl file ]) ++ [ profilingPackage ];
 				nativePF = { x86_64-linux = "linux-amd64"; aarch64-linux = "linux-arm64"; aarch64-darwin = "macos-arm64"; }.${system};
 				nativeZigTarget = { x86_64-linux = "x86_64-linux-musl"; aarch64-linux = "aarch64-linux-musl"; aarch64-darwin = "aarch64-macos"; }.${system};

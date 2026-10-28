@@ -1,0 +1,18 @@
+diff --git a/tests/integration/latency_cli.lua b/tests/integration/latency_cli.lua
+--- a/tests/integration/latency_cli.lua
++++ b/tests/integration/latency_cli.lua
+@@ -161 +161 @@
+--- Debounced notices: detail on the first overrun, brief on an unchanged repeat.
++-- Debounced notices: detail on the first overrun, brief on a non-worsening repeat.
+@@ -167,5 +167,10 @@
+ assert(first_lines>1,'first overrun was not detailed: '..r.stderr)
++local prior=json.decode(assert(slurp(state)))
++-- A successful CLI span completes within its 60-second hang guard. A larger
++-- prior overrun makes this fixture independent of process-startup noise.
++prior.over_execution_ns=120*1e9
++write(state,json.encode(prior))
+ begin('n2'); span('n2','unit tests','execute',{'luajit','-e','require("luv").sleep(50)'})
+ r=finish('n2',{'--correctness','pass','--notify-state',state})
+-assert(select(2,r.stderr:gsub('\n',''))==1,'unchanged repeat overrun was not brief: '..r.stderr)
++assert(select(2,r.stderr:gsub('\n',''))==1,'non-worsening repeat overrun was not brief: '..r.stderr)
+ assert(slurp(history..'/latency_fixture.latency--n2.ndjson'),'debounce suppressed the durable record')

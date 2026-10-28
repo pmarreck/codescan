@@ -3,9 +3,6 @@ set -u
 source "$(dirname "${BASH_SOURCE[0]}")/lib/capture.bash"
 source_root="$PWD"
 project="$TEST_WORKSPACE/project"
-# Copy current tracked/staged source, never ignored live indexes or products.
-bash "$source_root/tests/lib/copy-source" "$source_root" "$project" || exit 1
-cd "$project" || exit 1
 export PATH="$(dirname "$CODESCAN_TEST_BIN"):$PATH"
 out= err= rc= failed=0
 run_case() {
@@ -24,9 +21,21 @@ run_case() {
 		return 1
 	fi
 }
-# Unit fixtures and the other suites own disjoint scratch paths. Use two lanes.
-run_case 'unit' ./tests/unit/test-unit &
+# Units own private scratch and need no source copy. Keep at most two lanes.
+(
+	cd "$TEST_WORKSPACE" || exit 1
+	run_case 'unit' "$source_root/tests/unit/test-unit"
+) &
 unit_pid=$!
+# Copy current tracked/staged source, never ignored live indexes or products.
+if ! bash "$source_root/tests/lib/copy-source" "$source_root" "$project"; then
+	wait "$unit_pid"
+	exit 1
+fi
+if ! cd "$project"; then
+	wait "$unit_pid"
+	exit 1
+fi
 run_case 'pinned profiling adapter' bash ./tests/unit/test-profiler-pin
 run_case 'portable capture' ./tests/unit/test-capture
 run_case 'tracked source fixture' bash ./tests/unit/test-source-fixture
