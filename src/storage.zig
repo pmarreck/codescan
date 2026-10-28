@@ -137,6 +137,91 @@ test "SQLite busy diagnostics are connection-local and database open failures re
 	try std.testing.expect(inaccessible.message_len > 0);
 }
 
+const ReadFaultFixture = struct {
+	calls: usize = 0,
+	successful_calls: usize = 0,
+
+	fn read(context: ?*c.sqlite3_context, _: c_int, _: [*c]?*c.sqlite3_value) callconv(.c) void {
+		const self: *@This() = @ptrCast(@alignCast(c.sqlite3_user_data(context).?));
+		self.calls += 1;
+		if (self.calls <= self.successful_calls) {
+			c.sqlite3_result_int64(context, 1);
+		} else {
+			// Inject SQLite's extended read-error result through its real VM.
+			c.sqlite3_result_error_code(context, c.SQLITE_IOERR_READ);
+		}
+	}
+
+	fn install(self: *@This(), db: Db) !void {
+		try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_create_function_v2(db, "fault_read", 0, c.SQLITE_UTF8, self, read, null, null, null));
+	}
+};
+
+test "indexed file cursor retains a read failure after a successful row" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	var capture: ErrorCapture = .{};
+	try attachErrorCapture(db, &capture);
+	var fault: ReadFaultFixture = .{ .successful_calls = 1 };
+	try fault.install(db);
+	try exec(db, "CREATE VIEW indexed_files AS SELECT 'first.zig' file_path, fault_read() mtime_ns, 1 size " ++
+		"UNION ALL SELECT 'second.zig', fault_read(), 1;\x00");
+	try std.testing.expectError(error.SqlStepFailed, getAllIndexedFiles(db, allocator));
+	try std.testing.expectEqual(@as(usize, 2), fault.calls);
+	try exec(db, "SELECT 1;\x00");
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_IOERR), capture.code);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_IOERR_READ), capture.extended_code);
+	try std.testing.expectEqualStrings("getAllIndexedFiles: step", capture.operation[0..capture.operation_len]);
+	try std.testing.expect(capture.message_len > 0);
+}
+
+test "storage readers distinguish SQLite read failures from missing rows and retain diagnostics" {
+	const allocator = std.testing.allocator;
+	const Reader = enum { body, mtime, meta, count, file_count, language, stats, last_file, incomplete };
+	for (std.meta.tags(Reader)) |reader| {
+		const db = try openMemoryWithVec(allocator);
+		defer close(db);
+		var capture: ErrorCapture = .{};
+		try attachErrorCapture(db, &capture);
+		var fault: ReadFaultFixture = .{};
+		try fault.install(db);
+		try exec(db,
+			"CREATE VIEW symbols AS SELECT 1 id, fault_read() body, 'zig' lang, 'fixture.zig' file_path WHERE fault_read();" ++
+			"CREATE VIEW indexed_files AS SELECT 'fixture.zig' file_path, fault_read() mtime_ns, fault_read() indexed_at;" ++
+			"CREATE VIEW meta AS SELECT 'schema_version' key, fault_read() value;" ++
+			"CREATE VIEW fault_rows AS SELECT 1 value WHERE fault_read();" ++
+			"CREATE VIEW embeddings AS SELECT fault_read() rowid;\x00");
+		const operation = switch (reader) {
+			.body => "getSymbolBody: step",
+			.mtime => "getIndexedFileMtime: step",
+			.meta => "metaValue: step",
+			.count => "countRows: step",
+			.file_count => "countDistinctFiles: step",
+			.language => "primaryLanguage: step",
+			.stats => "languageStats: step",
+			.last_file => "lastIndexedFile: step",
+			.incomplete => "collectRowids: step",
+		};
+		switch (reader) {
+			.body => try std.testing.expectError(error.SqlStepFailed, getSymbolBody(allocator, db, 1)),
+			.mtime => try std.testing.expectError(error.SqlStepFailed, getIndexedFileMtime(db, "fixture.zig")),
+			.meta => try std.testing.expectError(error.SqlStepFailed, metaValue(db, allocator, "schema_version")),
+			.count => try std.testing.expectError(error.SqlStepFailed, countRows(db, allocator, "fault_rows")),
+			.file_count => try std.testing.expectError(error.SqlStepFailed, countDistinctFiles(db, allocator)),
+			.language => try std.testing.expectError(error.SqlStepFailed, primaryLanguage(db, allocator, &.{"zig"})),
+			.stats => try std.testing.expectError(error.SqlStepFailed, languageStats(db, allocator)),
+			.last_file => try std.testing.expectError(error.SqlStepFailed, lastIndexedFile(db, allocator)),
+			.incomplete => try std.testing.expectError(error.SqlStepFailed, getIncompleteIndexedFiles(db, allocator)),
+		}
+		try std.testing.expect(fault.calls > 0);
+		try exec(db, "SELECT 1;\x00");
+		try std.testing.expectEqual(@as(c_int, c.SQLITE_IOERR), capture.code);
+		try std.testing.expectEqual(@as(c_int, c.SQLITE_IOERR_READ), capture.extended_code);
+		try std.testing.expectEqualStrings(operation, capture.operation[0..capture.operation_len]);
+	}
+}
+
 pub const InitSchemaResult = struct {
 	did_schema_upgrade: bool = false,
 	previous_schema_version: ?u32 = null,
@@ -582,7 +667,7 @@ pub fn getSymbolBody(allocator: std.mem.Allocator, db: Db, id: i64) !?[]const u8
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 	_ = c.sqlite3_bind_int64(stmt.?, 1, id);
-	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) return null;
+	if (!try stepRow(db, stmt.?, "getSymbolBody: step")) return null;
 	const ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
 	const len: usize = @intCast(c.sqlite3_column_bytes(stmt.?, 0));
 	return try allocator.dupe(u8, ptr[0..len]);
@@ -753,9 +838,7 @@ fn columnExists(db: Db, allocator: std.mem.Allocator, table_name: []const u8, co
 	defer _ = c.sqlite3_finalize(stmt.?);
 
 	while (true) {
-		const rc = c.sqlite3_step(stmt.?);
-		if (rc == c.SQLITE_DONE) break;
-		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+		if (!try stepRow(db, stmt.?, "columnExists: step")) break;
 		const ptr = c.sqlite3_column_text(stmt.?, 1) orelse continue; // name column
 		const name = std.mem.span(ptr);
 		if (std.mem.eql(u8, name, column_name)) return true;
@@ -790,13 +873,11 @@ fn metaValue(db: Db, allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
 	defer _ = c.sqlite3_finalize(stmt.?);
 
 	try bindText(stmt.?, 1, key);
-	const rc = c.sqlite3_step(stmt.?);
-	if (rc == c.SQLITE_ROW) {
+	if (try stepRow(db, stmt.?, "metaValue: step")) {
 		const ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
 		return @as(?[]u8, try allocator.dupe(u8, std.mem.span(ptr)));
 	}
-	if (rc == c.SQLITE_DONE) return null;
-	return error.SqlStepFailed;
+	return null;
 }
 
 pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
@@ -814,7 +895,7 @@ pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 
-	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) {
+	if (!try stepRow(db, stmt.?, "countRows: step")) {
 		return error.SqlStepFailed;
 	}
 	return c.sqlite3_column_int64(stmt.?, 0);
@@ -841,7 +922,7 @@ pub fn countDistinctFiles(db: Db, allocator: std.mem.Allocator) !i64 {
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 
-	if (c.sqlite3_step(stmt.?) != c.SQLITE_ROW) {
+	if (!try stepRow(db, stmt.?, "countDistinctFiles: step")) {
 		return error.SqlStepFailed;
 	}
 	return c.sqlite3_column_int64(stmt.?, 0);
@@ -881,14 +962,12 @@ pub fn primaryLanguage(
 		try bindText(stmt.?, @intCast(idx + 1), lang);
 	}
 
-	const rc = c.sqlite3_step(stmt.?);
-	if (rc == c.SQLITE_ROW) {
+	if (try stepRow(db, stmt.?, "primaryLanguage: step")) {
 		const ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
 		const slice = std.mem.span(ptr);
 		return @as(?[]const u8, try allocator.dupe(u8, slice));
 	}
-	if (rc == c.SQLITE_DONE) return null;
-	return error.SqlStepFailed;
+	return null;
 }
 
 pub const LangStat = struct {
@@ -914,10 +993,11 @@ pub fn languageStats(db: Db, allocator: std.mem.Allocator) ![]LangStat {
 		results.deinit(allocator);
 	}
 
-	while (c.sqlite3_step(stmt.?) == c.SQLITE_ROW) {
+	while (try stepRow(db, stmt.?, "languageStats: step")) {
 		const lang_ptr = c.sqlite3_column_text(stmt.?, 0) orelse continue;
 		const lang_slice = std.mem.span(lang_ptr);
 		const lang = try allocator.dupe(u8, lang_slice);
+		errdefer allocator.free(lang);
 		try results.append(allocator, .{
 			.language = lang,
 			.file_count = c.sqlite3_column_int64(stmt.?, 1),
@@ -944,7 +1024,7 @@ pub fn lastIndexedFile(db: Db, allocator: std.mem.Allocator) !?LastIndexedResult
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 
-	if (c.sqlite3_step(stmt.?) == c.SQLITE_ROW) {
+	if (try stepRow(db, stmt.?, "lastIndexedFile: step")) {
 		const path_ptr = c.sqlite3_column_text(stmt.?, 0) orelse return null;
 		const path_slice = std.mem.span(path_ptr);
 		return .{
@@ -953,6 +1033,18 @@ pub fn lastIndexedFile(db: Db, allocator: std.mem.Allocator) !?LastIndexedResult
 		};
 	}
 	return null;
+}
+
+/// A cursor is exhausted only on DONE; copy terminal errors before finalize.
+fn stepRow(db: Db, stmt: *c.sqlite3_stmt, operation: []const u8) !bool {
+	return switch (c.sqlite3_step(stmt)) {
+		c.SQLITE_ROW => true,
+		c.SQLITE_DONE => false,
+		else => {
+			_ = captureSqliteError(db, operation);
+			return error.SqlStepFailed;
+		},
+	};
 }
 
 fn captureSqliteError(db: Db, context: []const u8) bool {
@@ -1065,12 +1157,10 @@ pub fn getIndexedFileMtime(db: Db, file_path: []const u8) !?i64 {
 	defer _ = c.sqlite3_finalize(stmt.?);
 
 	try bindText(stmt.?, 1, file_path);
-	const rc = c.sqlite3_step(stmt.?);
-	if (rc == c.SQLITE_ROW) {
+	if (try stepRow(db, stmt.?, "getIndexedFileMtime: step")) {
 		return c.sqlite3_column_int64(stmt.?, 0);
 	}
-	if (rc == c.SQLITE_DONE) return null;
-	return error.SqlStepFailed;
+	return null;
 }
 
 pub fn getAllIndexedFiles(db: Db, allocator: std.mem.Allocator) ![]IndexedFile {
@@ -1089,10 +1179,7 @@ pub fn getAllIndexedFiles(db: Db, allocator: std.mem.Allocator) ![]IndexedFile {
 		list.deinit(allocator);
 	}
 
-	while (true) {
-		const rc = c.sqlite3_step(stmt.?);
-		if (rc == c.SQLITE_DONE) break;
-		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+	while (try stepRow(db, stmt.?, "getAllIndexedFiles: step")) {
 
 		const ptr = c.sqlite3_column_text(stmt.?, 0) orelse continue;
 		const path = try allocator.dupe(u8, std.mem.span(ptr));
@@ -1133,10 +1220,7 @@ pub fn getIncompleteIndexedFiles(db: Db, allocator: std.mem.Allocator) ![][]cons
 		for (paths.items) |path| allocator.free(path);
 		paths.deinit(allocator);
 	}
-	while (true) {
-		const rc = c.sqlite3_step(stmt.?);
-		if (rc == c.SQLITE_DONE) break;
-		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+	while (try stepRow(db, stmt.?, "getIncompleteIndexedFiles: step")) {
 		const rowid = c.sqlite3_column_int64(stmt.?, 0);
 		const requires_comment = c.sqlite3_column_int(stmt.?, 2) != 0;
 		if (code_rowids.contains(rowid) and (!requires_comment or comment_rowids.contains(rowid))) continue;
@@ -1166,10 +1250,7 @@ fn collectRowids(
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
 
-	while (true) {
-		const rc = c.sqlite3_step(stmt.?);
-		if (rc == c.SQLITE_DONE) break;
-		if (rc != c.SQLITE_ROW) return error.SqlStepFailed;
+	while (try stepRow(db, stmt.?, "collectRowids: step")) {
 		try rowids.put(c.sqlite3_column_int64(stmt.?, 0), {});
 	}
 	return rowids;

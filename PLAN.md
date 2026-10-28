@@ -10,13 +10,15 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Report the shared Nix tokenizer's escaped-interpolation false positive; blocked only on approval to contact the additional recipient. (context: docs/plan_context/staged_dependency_parser.md)
 - [x] Make Git-discovery prerequisites hard failures, inject process-aware test I/O, and force-add the deliberately ignored tracked fixture; all three regressions execute successfully in the full native and Nix runners. (done 2026-10-27 22:09 EDT)
 - [x] Attribute and reduce the prepared runtime from 13.43 to 4.02 seconds using a nonblocking polling test, exact lightweight source inventory, and two test lanes; available checks pass, while exclusions prevent a complete budget claim. (done 2026-10-27 23:04 EDT; context: docs/plan_context/test_latency.md)
-- [ ] Ship the test-runtime changes and verify exact-commit Mechatron Prime CI and GitHub Actions; the polling-test commit's fleet build is still running.
+- [x] Finish exact-commit CI verification for 93a0fea3; Mechatron Prime CI passed in 42 seconds and GitHub Actions run 40624690426 passed, including native macOS ARM64 execution. (done 2026-10-27 23:17 EDT; commit 93a0fea3)
 
 ## Watcher reliability
 
 - [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; live root/status calls respond, the watcher is stopped, and pre-search reconciliation is a candidate for the October 27 delay, not an established cause.
 - [ ] Finish SQLite watcher diagnostics across remaining read/cursor failures, including controlled I/O faults, without broadening retry policy. (context: docs/plan_context/watcher_sqlite_failures.md)
 	- [x] Preserve connection-local startup/write error operation, primary/extended codes, message, command, and version through cleanup; controlled busy/constraint/schema/read-only/open-failure tests and the real preservation CLI regression pass. (done 2026-10-27 22:09 EDT)
+	- [ ] Ship shared cursor error handling and verify exact-commit CI; complete Nix and fresh host runners pass 749 unit cases with one optional skip and two live-provider exclusions after the read-error regressions failed first.
+	- [ ] Reproduce failed populated-index reads before metadata or automatic-indexing decisions; preserve the distinction between empty and unreadable indexes without changing retry policy.
 - [ ] Identify the historical watcher cause only if a new reproducer or underlying SQLite record becomes available; currently blocked on evidence and not on further recollection. (context: docs/plan_context/watcher_sqlite_failures.md)
 
 ## After shipping
@@ -33,7 +35,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
-	- [x] Prove real stdio MCP initialization, lexical/hybrid fallback search with agent-visible advice, create/read/versioned edits, and non-destructive indexing refusal with a stopped provider; verify subsequent file requests still succeed. (done 2026-10-27 21:53 EDT)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live index writes; do not infer a new all-project sweep.
 - [ ] Inventory discovery/search filters lacking set-level tests and add one bounded classifier suite at a time.
 
