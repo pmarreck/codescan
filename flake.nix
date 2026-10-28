@@ -24,10 +24,14 @@
 				};
 
 				# Pre-fetch Zig build.zig.zon dependencies for sandboxed builds
-				sqlite-vec-src = pkgs.fetchgit {
-					url = "https://github.com/pmarreck/sqlite-vec.git";
-					rev = "c9d3630f56637276829d9ab0c54b1116c6d3e2ef";
-					hash = "sha256-9MBuzlHICNc0U4TIEEPd0gWAftxllXcU8bhilcaAh+k=";
+				sqlite-vec-src = pkgs.applyPatches {
+					name = "sqlite-vec-callback-safe-source";
+					src = pkgs.fetchgit {
+						url = "https://github.com/pmarreck/sqlite-vec.git";
+						rev = "c9d3630f56637276829d9ab0c54b1116c6d3e2ef";
+						hash = "sha256-9MBuzlHICNc0U4TIEEPd0gWAftxllXcU8bhilcaAh+k=";
+					};
+					patches = [ ./patches/sqlite-vec-cleanup-callbacks.patch ];
 				};
 				pcre2-src = pkgs.fetchgit {
 					url = "https://github.com/pmarreck/pcre2.git";
@@ -195,7 +199,7 @@
 						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
 						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-						zig build test-artifacts --system ${zigPkgCache} -Dtarget=${nativeZigTarget} -Doptimize=ReleaseFast --prefix "$out" --color off
+						zig build test-artifacts --system ${zigPkgCache} -Dtarget=${nativeZigTarget} -Doptimize=ReleaseSafe --prefix "$out" --color off
 					'';
 				};
 

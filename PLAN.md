@@ -4,21 +4,19 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [x] Resolve the staged-dependency rejection locally with equivalent double-quoted Nix shell syntax; cache inheritance/default tests and the real staged gate pass without an override. (done 2026-10-27 22:14 EDT; context: docs/plan_context/staged_dependency_parser.md)
-- [x] Ship the validated changes and verify exact-commit Mechatron Prime CI and GitHub Actions, including native macOS ARM64 execution; both services passed c97e9d2 and GitHub run 40621238947. (done 2026-10-27 22:46 EDT; commits 96d90c5 and c97e9d2)
-	- [x] Move source-closure validation to declared build inputs and require its positive/negative controls in CI and the complete runner; local and cold GitHub checks pass. (done 2026-10-27 22:46 EDT; commit c97e9d2)
 - [ ] Report the shared Nix tokenizer's escaped-interpolation false positive; blocked only on approval to contact the additional recipient. (context: docs/plan_context/staged_dependency_parser.md)
-- [x] Make Git-discovery prerequisites hard failures, inject process-aware test I/O, and force-add the deliberately ignored tracked fixture; all three regressions execute successfully in the full native and Nix runners. (done 2026-10-27 22:09 EDT)
-- [x] Attribute and reduce the prepared runtime from 13.43 to 4.02 seconds using a nonblocking polling test, exact lightweight source inventory, and two test lanes; available checks pass, while exclusions prevent a complete budget claim. (done 2026-10-27 23:04 EDT; context: docs/plan_context/test_latency.md)
+- [x] Attribute and reduce the ReleaseFast diagnostic runtime from 13.43 to 4.02 seconds using a nonblocking polling test, exact lightweight source inventory, and two test lanes; exclusions prevent a complete budget claim, and ReleaseSafe correctness timing remains separate. (done 2026-10-27 23:04 EDT; context: docs/plan_context/test_latency.md)
 - [x] Finish exact-commit CI verification for 93a0fea3; Mechatron Prime CI passed in 42 seconds and GitHub Actions run 40624690426 passed, including native macOS ARM64 execution. (done 2026-10-27 23:17 EDT; commit 93a0fea3)
 
 ## Watcher reliability
 
 - [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; live root/status calls respond, the watcher is stopped, and pre-search reconciliation is a candidate for the October 27 delay, not an established cause.
 - [ ] Finish SQLite watcher diagnostics across remaining read/cursor failures, including controlled I/O faults, without broadening retry policy. (context: docs/plan_context/watcher_sqlite_failures.md)
-	- [x] Preserve connection-local startup/write error operation, primary/extended codes, message, command, and version through cleanup; controlled busy/constraint/schema/read-only/open-failure tests and the real preservation CLI regression pass. (done 2026-10-27 22:09 EDT)
-	- [ ] Ship shared cursor error handling and verify exact-commit CI; complete Nix and fresh host runners pass 749 unit cases with one optional skip and two live-provider exclusions after the read-error regressions failed first.
-	- [ ] Reproduce failed populated-index reads before metadata or automatic-indexing decisions; preserve the distinction between empty and unreadable indexes without changing retry policy.
+	- [x] Ship shared cursor error handling after complete Nix/fresh host checks; Mechatron Prime CI and GitHub Actions run 40626218384 pass, including native macOS ARM64 execution. (done 2026-10-27 23:33 EDT; commit 85bf226a)
+	- [x] Verify the populated-index guard and error-path ownership fixes after private regressions reproduced metadata replacement and 14 unfreed bytes; complete Nix and fresh host runners pass without changing retry policy. (done 2026-10-28 00:02 EDT)
+	- [x] Require ReleaseSafe correctness artifacts after a failing runtime-safety control exposed disabled allocator leak checks; explicit byte accounting and 752 passing unit cases verify cleanup, with one optional skip. (done 2026-10-28 00:02 EDT)
+	- [x] Pass the complete ReleaseSafe runner with compatible sqlite-vec cleanup callbacks and explicit scanner creation prototypes; real insertion and Bash parsing regressions exposed the callback failures first. (done 2026-10-28 00:02 EDT; context: docs/plan_context/sqlite_vec_callback_safety.md)
+	- [ ] Ship the populated-index, ownership, and callback-safety fixes and verify exact-commit Mechatron Prime CI plus native macOS GitHub execution.
 - [ ] Identify the historical watcher cause only if a new reproducer or underlying SQLite record becomes available; currently blocked on evidence and not on further recollection. (context: docs/plan_context/watcher_sqlite_failures.md)
 
 ## After shipping
@@ -31,7 +29,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Pin the shared profiling adapter and separate Nix evaluation/setup from the complete runner's fresh execution; retain safety-enabled correctness coverage and explicit live-provider/optional exclusions before claiming budget compliance. (context: docs/plan_context/test_latency.md)
+- [ ] Attribute and reduce the ReleaseSafe prepared runtime's 6.23-second lower bound, pin the shared profiling adapter, and separate Nix evaluation/setup from execution; retain safety checks and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.

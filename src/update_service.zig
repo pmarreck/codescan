@@ -591,7 +591,9 @@ pub fn indexUsable(allocator: std.mem.Allocator, db_path: []const u8) bool {
 	std.Io.Dir.accessAbsolute(io_singleton.getOrInit(), db_path, .{}) catch return false;
 	const db = storage.openFileWithVec(allocator, db_path) catch return false;
 	defer storage.close(db);
-	return storage.isIndexPopulated(db);
+	// This is a stale-search usability verdict, never evidence that an index
+	// is empty or permission to recreate one that could not be read.
+	return storage.isIndexPopulated(db, allocator) catch false;
 }
 
 test "indexUsable classifies missing, empty, and populated indexes" {

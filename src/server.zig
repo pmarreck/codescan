@@ -292,7 +292,7 @@ fn handleRequest(
 				freshness_result.inference_url = settings.embedding_url;
 			}
 		}
-		if (freshness_result.inference_unavailable and !storage.isIndexPopulated(db)) {
+		if (freshness_result.inference_unavailable and !(try storage.isIndexPopulated(db, allocator))) {
 			try req.respond(
 				"{\"error\":\"inference server unavailable and no usable existing index is available. Start or repair the embedding server, then retry.\"}\n",
 				.{ .status = .service_unavailable },

@@ -222,6 +222,86 @@ test "storage readers distinguish SQLite read failures from missing rows and ret
 	}
 }
 
+const ReadAuthorizationFixture = struct {
+	deny_presence: bool = false,
+	deny_metadata_read: usize = 0,
+	metadata_reads: usize = 0,
+	denials: usize = 0,
+
+	fn authorize(context: ?*anyopaque, action: c_int, table: [*c]const u8, column: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
+		if (action != c.SQLITE_READ or table == null or column == null) return c.SQLITE_OK;
+		const self: *@This() = @ptrCast(@alignCast(context.?));
+		var deny = self.deny_presence and std.mem.eql(u8, std.mem.span(table), "symbols") and column[0] == 0;
+		if (std.mem.eql(u8, std.mem.span(table), "meta") and std.mem.eql(u8, std.mem.span(column), "value")) {
+			self.metadata_reads += 1;
+			deny = deny or (self.deny_metadata_read > 0 and self.metadata_reads == self.deny_metadata_read);
+		}
+		if (!deny) return c.SQLITE_OK;
+		self.denials += 1;
+		return c.SQLITE_DENY;
+	}
+
+	fn install(self: *@This(), db: Db) !void {
+		try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_set_authorizer(db, authorize, self));
+	}
+};
+
+test "schema initialization preserves embedding metadata when populated-index inspection fails" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "original-model" });
+	_ = try insertSymbol(db, .{
+		.language = "zig", .file_path = "fixture.zig", .name = "kept", .signature = "fn kept() void",
+		.start_line = 1, .end_line = 1, .doc_comment = null,
+	});
+	var capture: ErrorCapture = .{};
+	try attachErrorCapture(db, &capture);
+	var authorization: ReadAuthorizationFixture = .{ .deny_presence = true };
+	try authorization.install(db);
+	defer _ = c.sqlite3_set_authorizer(db, null, null);
+	var failure: ?anyerror = null;
+	if (initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "replacement-model" })) |value| {
+		var result = value;
+		result.deinit(allocator);
+	} else |err| failure = err;
+	try std.testing.expectEqual(@as(usize, 1), authorization.denials);
+	try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_set_authorizer(db, null, null));
+	const stored = (try metaValue(db, allocator, "embedding_model")).?;
+	defer allocator.free(stored);
+	try std.testing.expectEqualStrings("original-model", stored);
+	try std.testing.expectEqual(@as(?anyerror, error.SqlPrepareFailed), failure);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_AUTH), capture.code);
+	try std.testing.expectEqualStrings("isIndexPopulated: prepare", capture.operation[0..capture.operation_len]);
+	try std.testing.expectEqual(@as(i64, 1), try countRows(db, allocator, "symbols"));
+}
+
+test "schema initialization frees owned model metadata when the later dimension read fails" {
+	var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+	defer arena.deinit();
+	var accounting = std.testing.FailingAllocator.init(arena.allocator(), .{});
+	const allocator = accounting.allocator();
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	_ = try initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "original-model" });
+	_ = try insertSymbol(db, .{
+		.language = "zig", .file_path = "fixture.zig", .name = "kept", .signature = "fn kept() void",
+		.start_line = 1, .end_line = 1, .doc_comment = null,
+	});
+	var capture: ErrorCapture = .{};
+	try attachErrorCapture(db, &capture);
+	// schema_version, embedding_model, then embedding_dim are distinct reads.
+	var authorization: ReadAuthorizationFixture = .{ .deny_metadata_read = 3 };
+	try authorization.install(db);
+	defer _ = c.sqlite3_set_authorizer(db, null, null);
+	try std.testing.expectError(error.SqlPrepareFailed, initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "replacement-model" }));
+	try std.testing.expectEqual(@as(usize, 3), authorization.metadata_reads);
+	try std.testing.expectEqual(@as(usize, 1), authorization.denials);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_AUTH), capture.code);
+	try std.testing.expectEqualStrings("metaValue: prepare", capture.operation[0..capture.operation_len]);
+	try std.testing.expectEqual(accounting.allocated_bytes, accounting.freed_bytes);
+}
+
 pub const InitSchemaResult = struct {
 	did_schema_upgrade: bool = false,
 	previous_schema_version: ?u32 = null,
@@ -381,8 +461,9 @@ pub fn initSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !InitSch
 		.did_schema_upgrade = did_schema_upgrade,
 		.previous_schema_version = previous_schema_version,
 	};
+	errdefer result.deinit(allocator);
 
-	if (had_meta_table and isIndexPopulated(db)) {
+	if (had_meta_table and (try isIndexPopulated(db, allocator))) {
 		// Check embedding model mismatch
 		if (schema.embedding_model.len > 0) {
 			const stored_model = try metaValue(db, allocator, "embedding_model");
@@ -902,14 +983,17 @@ pub fn countRows(db: Db, allocator: std.mem.Allocator, table: []const u8) !i64 {
 }
 
 /// Returns true if the symbols table exists and contains at least one row.
-pub fn isIndexPopulated(db: Db) bool {
+/// Missing/empty is false; an unreadable index is an error, never empty.
+pub fn isIndexPopulated(db: Db, allocator: std.mem.Allocator) !bool {
+	if (!try tableExists(db, allocator, "symbols")) return false;
 	var stmt: ?*c.sqlite3_stmt = null;
 	const sql = "SELECT 1 FROM symbols LIMIT 1;";
 	if (c.sqlite3_prepare_v2(db, sql, @intCast(sql.len), &stmt, null) != c.SQLITE_OK) {
-		return false; // table doesn't exist
+		logSqliteError(db, "isIndexPopulated: prepare");
+		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);
-	return c.sqlite3_step(stmt.?) == c.SQLITE_ROW;
+	return stepRow(db, stmt.?, "isIndexPopulated: step");
 }
 
 pub fn countDistinctFiles(db: Db, allocator: std.mem.Allocator) !i64 {
@@ -1845,7 +1929,7 @@ test "isIndexPopulated returns false on empty DB" {
 	defer _ = c.sqlite3_close(db);
 
 	_ = try initSchema(allocator, db, .{ .embedding_dim = 2 });
-	try std.testing.expect(!isIndexPopulated(db));
+	try std.testing.expect(!try isIndexPopulated(db, allocator));
 }
 
 test "isIndexPopulated returns true with data" {
@@ -1867,7 +1951,7 @@ test "isIndexPopulated returns true with data" {
 	defer sym.deinit(allocator);
 
 	_ = try insertSymbol(db, sym);
-	try std.testing.expect(isIndexPopulated(db));
+	try std.testing.expect(try isIndexPopulated(db, allocator));
 }
 
 test "isIndexPopulated returns false without schema" {
@@ -1876,7 +1960,7 @@ test "isIndexPopulated returns false without schema" {
 	defer _ = c.sqlite3_close(db);
 
 	// No initSchema — table doesn't exist
-	try std.testing.expect(!isIndexPopulated(db));
+	try std.testing.expect(!try isIndexPopulated(db, allocator));
 }
 
 test "initSchema detects embedding model mismatch" {

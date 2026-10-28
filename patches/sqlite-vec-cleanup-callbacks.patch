@@ -1,0 +1,10 @@
+diff --git a/sqlite-vec.c b/sqlite-vec.c
+--- a/sqlite-vec.c
++++ b/sqlite-vec.c
+@@ -673,3 +673,3 @@
+-typedef void (*fvec_cleanup)(f32 *vector);
+-
+-void fvec_cleanup_noop(f32 *_) { UNUSED_PARAMETER(_); }
++typedef vector_cleanup fvec_cleanup;
++
++void fvec_cleanup_noop(void *_) { UNUSED_PARAMETER(_); }

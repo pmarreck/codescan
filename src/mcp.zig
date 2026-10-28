@@ -517,7 +517,9 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			search.SearchMode.lexical
 		else
 			mcp_settings.search_mode;
-		if (!storage.isIndexPopulated(db)) {
+		const populated = storage.isIndexPopulated(db, allocator) catch |err|
+			return toolError("MCP search: existing index could not be inspected ({s}); refusing empty-index initialization", .{@errorName(err)});
+		if (!populated) {
 			if (!embedding_http.inferenceAvailable(
 				allocator,
 				http_client.transport(),
@@ -1241,7 +1243,7 @@ test "MCP index preserves the existing index and explains an unavailable inferen
 
 	const db = try storage.openFileWithVec(allocator, db_path);
 	defer storage.close(db);
-	try std.testing.expect(storage.isIndexPopulated(db));
+	try std.testing.expect(try storage.isIndexPopulated(db, allocator));
 }
 
 test "MCP protocol compliance: full handshake with string IDs" {

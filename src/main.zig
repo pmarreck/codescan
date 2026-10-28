@@ -3194,7 +3194,7 @@ fn runSearch(
 		) catch {};
 		_ = stderr.flush() catch {};
 	}
-	if (freshness_result.inference_unavailable and !storage.isIndexPopulated(db)) {
+	if (freshness_result.inference_unavailable and !(try storage.isIndexPopulated(db, allocator))) {
 		_ = stderr.writeAll(
 			"error: embedding server unavailable and no usable existing index is available. Start or repair the server, then run codescan index.\n",
 		) catch {};

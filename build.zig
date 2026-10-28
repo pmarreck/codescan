@@ -676,8 +676,15 @@ fn buildTreeSitterGrammar(
 		.file = sourcePath(b, b.fmt("{s}/parser.c", .{dir})),
 	});
 	if (has_scanner) {
+		// Match TSLanguage's prototype even when a C scanner uses an old-style
+		// empty parameter list; Clang's callback checks distinguish the types.
+		const scanner_wrapper = b.addWriteFiles();
+		const scanner_path = b.pathFromRoot(b.fmt("{s}/scanner.c", .{dir}));
 		module.addCSourceFile(.{
-			.file = sourcePath(b, b.fmt("{s}/scanner.c", .{dir})),
+			.file = scanner_wrapper.add("scanner.c", b.fmt(
+				"void *{s}_external_scanner_create(void);\n#include \"{s}\"\n",
+				.{ name, scanner_path },
+			)),
 		});
 	}
 	module.addIncludePath(sourcePath(b, dir));

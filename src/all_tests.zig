@@ -62,6 +62,10 @@ const _watcher = @import("watcher.zig");
 const _freshness = @import("freshness.zig");
 const _weights = @import("weights.zig");
 
+test "correctness suite retains runtime safety and allocator leak checks" {
+	try @import("std").testing.expect(@import("std").debug.runtime_safety);
+}
+
 test {
 	_ = _cli;
 	_ = _diff;
