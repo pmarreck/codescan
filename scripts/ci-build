@@ -12,15 +12,23 @@ if [ "$TARGET" = aarch64-macos ]; then
 	"$ci_mac_verifier"
 fi
 
-nix develop -c zig build -Doptimize=ReleaseFast -Dtarget="$TARGET"
+case "$TARGET" in
+	x86_64-linux-musl) attribute=release-linux-amd64 ;;
+	aarch64-linux-musl) attribute=release-linux-arm64 ;;
+	aarch64-macos) attribute=release-macos-arm64 ;;
+	x86_64-windows-gnu) attribute=release-mswin-amd64 ;;
+	aarch64-windows-gnu) attribute=release-mswin-arm64 ;;
+	*) printf 'error: unsupported release target: %s\n' "$TARGET" >&2; exit 64 ;;
+esac
+output="$(nix build --no-link --print-out-paths ".#$attribute")"
 
 if [ "$TARGET" = aarch64-macos ]; then
-	nix develop -c "$ci_mac_verifier" "zig-out/bin/codescan${EXT}"
+	nix develop -c "$ci_mac_verifier" "$output/bin/codescan${EXT}"
 fi
 
 rm -rf "$PKGDIR"
 mkdir -p "$PKGDIR"
-cp -f "zig-out/bin/codescan${EXT}" "$PKGDIR/"
+cp -f "$output/bin/codescan${EXT}" "$PKGDIR/"
 cp -f README.md LICENSE "$PKGDIR/"
 
 if [[ "$ARCHIVE" == *.zip ]]; then

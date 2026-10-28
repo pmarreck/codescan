@@ -1,0 +1,1 @@
+#define SOURCE_FIXTURE_VALUE 42

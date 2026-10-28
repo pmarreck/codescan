@@ -19,6 +19,7 @@ pub const ColorWhen = enum {
 
 pub const CommandTag = enum {
 	help,
+	about,
 	config,
 	init,
 	index,
@@ -334,6 +335,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 	}
 
 	const cmd = args[i];
+	if (std.mem.eql(u8, cmd, "--about")) {
+		parsed.command = .about;
+		return parsed;
+	}
     var help_topic_default: ?[]const u8 = null;
 	if (std.mem.eql(u8, cmd, "help") or std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h")) {
 		parsed.command = .help;
@@ -1156,6 +1161,14 @@ fn joinArgs(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
 test "parse with no args requires query" {
 	const args = [_][]const u8{ "codescan" };
 	try std.testing.expectError(error.MissingQuery, parse(std.testing.allocator, &args));
+}
+
+test "parse about does not assume a search or require a query" {
+	var parsed = try parse(std.testing.allocator, &.{ "codescan", "--about" });
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.about, parsed.command);
+	try std.testing.expect(!parsed.assumed_search);
+	try std.testing.expect(parsed.query == null);
 }
 
 test "parse defaults to search when first arg is query" {

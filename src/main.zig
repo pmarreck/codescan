@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const about = @import("about.zig");
+const build_options = @import("build_options");
 const cli = @import("cli.zig");
 const config = @import("config.zig");
 const storage = @import("storage.zig");
@@ -174,6 +176,15 @@ pub fn main(init: std.process.Init) !void {
 		return err;
 	};
 	defer parsed.deinit(allocator);
+
+	if (parsed.command == .about) {
+		const platform = about.forTarget(builtin.os.tag, builtin.cpu.arch, builtin.abi) orelse return error.UnsupportedPlatform;
+		const text = try about.format(allocator, build_options.version, platform);
+		defer allocator.free(text);
+		try stdout.writeAll(text);
+		try stdout.flush();
+		return;
+	}
 
 	if (parsed.command == .help) {
         try printUsage(stdout, parsed.help_topic);
@@ -544,7 +555,7 @@ pub fn main(init: std.process.Init) !void {
 			try stdout.print("Removed {s}/\n", .{codescan_dir});
 			try stdout.flush();
 		},
-		.help => {},
+		.help, .about => {},
 	}
 }
 
@@ -3352,8 +3363,8 @@ const WatcherDatabase = struct {
 
 /// Keeps schema failures from becoming unrequested index replacement. The
 /// caller owns successful opens; failed initialization closes only the handle.
-fn openWatcherDatabase(allocator: std.mem.Allocator, path: []const u8, schema: storage.Schema) !WatcherDatabase {
-	const db = try storage.openFileWithVec(allocator, path);
+fn openWatcherDatabase(allocator: std.mem.Allocator, path: []const u8, schema: storage.Schema, error_capture: ?*storage.ErrorCapture) !WatcherDatabase {
+	const db = try storage.openFileWithVecDiagnostics(allocator, path, error_capture);
 	errdefer storage.close(db);
 	const schema_result = try storage.initSchema(allocator, db, schema);
 	return .{ .db = db, .schema = schema_result };
@@ -3553,13 +3564,21 @@ fn runWatch(
 		.run => {
 			syslog.init("codescan");
 			defer syslog.deinit();
+			const sql_diagnostics = try allocator.create(storage.ErrorCapture);
+			defer allocator.destroy(sql_diagnostics);
+			sql_diagnostics.* = .{};
 			var daemon_failure_buf: [512]u8 = undefined;
-			errdefer |err| recordDaemonFailure(
-				allocator,
-				codescan_dir,
-				settings.root_path,
-				watcherDaemonFailureReason(&daemon_failure_buf, settings.embedding_url, settings.embedding_model, err),
-			);
+			errdefer |err| {
+				var detail_buf: [2048]u8 = undefined;
+				const reason = sql_diagnostics.describe(&detail_buf, watcherDaemonFailureReason(&daemon_failure_buf, settings.embedding_url, settings.embedding_model, err), err);
+				recordDaemonFailure(allocator, codescan_dir, settings.root_path, reason);
+				if (!parsed.watch_daemon) {
+					var error_buf: [4096]u8 = undefined;
+					var error_writer = io_singleton.stderrWriter(&error_buf);
+					error_writer.interface.print("error: {s}\n", .{reason}) catch {};
+					error_writer.interface.flush() catch {};
+				}
+			}
 			if (parsed.watch_daemon and comptime builtin.os.tag != .windows) {
 				if (std.c.setsid() == -1) return error.WatcherSessionDetachFailed;
 			}
@@ -3568,7 +3587,7 @@ fn runWatch(
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
 			try io_singleton.ensureParentDir(settings.db_path);
 			// Open existing DB or create new one (don't destroy existing index)
-			var initialized = try openWatcherDatabase(allocator, settings.db_path, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model });
+			var initialized = try openWatcherDatabase(allocator, settings.db_path, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }, sql_diagnostics);
 			defer initialized.deinit(allocator);
 			const db = initialized.db;
 			const schema_result = initialized.schema;
@@ -3647,6 +3666,8 @@ fn runWatch(
 					.interval_ms = parsed.watch_interval,
 					.idle_limit_ns = watcher_idle_limit,
 					.codescan_dir = codescan_dir,
+					.sql_diagnostics = sql_diagnostics,
+					.version = build_options.version,
 				.index_request = .{
 					.mode = .incremental,
 					.root_path = settings.root_path,
@@ -3681,7 +3702,7 @@ fn recordDaemonFailure(
 	root_path: []const u8,
 	reason: []const u8,
 ) void {
-	watcher.writeFailureRecord(allocator, codescan_dir, root_path, reason) catch {};
+	watcher.writeFailureRecord(allocator, codescan_dir, root_path, reason, build_options.version) catch {};
 	syslog.logWithRoot(syslog.LOG_ERR, root_path, reason);
 }
 
@@ -5816,6 +5837,7 @@ const usage =
     \\Use 'codescan help <command>' for details on any command.
     \\Topics: hashlines, name-paths, languages, lsp
     \\Common: --root <path>  --json  --no-progress  --top <n>  --file <path>  -h/--help
+    \\        --about  Show description, version, and compilation platform
     \\        --color <when>  --no-color/--no-ansi/--simple
     \\
 ;
@@ -7792,7 +7814,7 @@ test "watcher schema failure preserves an existing index instead of recreating i
 		try storage.insertEmbedding(db, allocator, 1, &.{ 0.25, 0.75 });
 	}
 
-	if (openWatcherDatabase(allocator, path, schema)) |opened| {
+	if (openWatcherDatabase(allocator, path, schema, null)) |opened| {
 		var unexpected = opened;
 		defer unexpected.deinit(allocator);
 		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(unexpected.db, allocator, "symbols"));
@@ -7832,7 +7854,7 @@ test "watcher database initialization accepts valid existing and missing indexes
 				null,
 			));
 		}
-		var opened = try openWatcherDatabase(allocator, path, schema);
+		var opened = try openWatcherDatabase(allocator, path, schema, null);
 		defer opened.deinit(allocator);
 		try std.testing.expectEqual(@as(i64, if (already_exists) 1 else 0), try storage.countRows(opened.db, allocator, "symbols"));
 		try std.testing.expect(!opened.schema.embedding_model_mismatch);

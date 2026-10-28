@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 FIXTURES_DIR="${CODESCAN_FIXTURES_DIR:-$TMPDIR/codescan-fixtures}"
 MANIFEST="$ROOT/fixtures/manifest.toml"
-BIN="$ROOT/zig-out/bin/codescan"
+BIN="${CODESCAN_TEST_BIN:?prepare test binaries with ./test}"
 OLLAMA_URL="${OLLAMA_URL:-http://localhost:11434}"
 MODEL_NAME="${OLLAMA_MODEL:-jina-code-embeddings:1.5b}"
 MODEL_DIM="${OLLAMA_EMBEDDING_DIM:-1536}"
@@ -103,11 +103,6 @@ require_ollama() {
 }
 
 build_codescan() {
-	capture nix develop -c zig build -Doptimize=ReleaseFast
-	if [ "$rc" -ne 0 ]; then
-		printf '%s' "$err" >&2
-		fail "zig build failed"
-	fi
 	if [ ! -x "$BIN" ]; then
 		fail "codescan binary not found at $BIN"
 	fi

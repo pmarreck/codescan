@@ -823,6 +823,8 @@ test "findFiles ignores built-in paths" {
 }
 
 test "findFiles respects .gitignore for untracked files" {
+	io_singleton.set(std.testing.io);
+	defer io_singleton.resetForTesting();
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
@@ -837,16 +839,16 @@ test "findFiles respects .gitignore for untracked files" {
 	defer allocator.free(root);
 
 	const io_t1 = io_singleton.getOrInit();
-	var init_child = std.process.spawn(io_t1, .{
+	var init_child = try std.process.spawn(io_t1, .{
 		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
 		.stdin = .close,
 		.stdout = .ignore,
 		.stderr = .ignore,
-	}) catch return error.SkipZigTest;
+	});
 	const init_term = try init_child.wait(io_t1);
 	switch (init_term) {
-		.exited => |code| if (code != 0) return error.SkipZigTest,
-		else => return error.SkipZigTest,
+		.exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+		else => return error.GitSetupFailed,
 	}
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -865,6 +867,8 @@ test "findFiles respects .gitignore for untracked files" {
 
 test "findFiles classifies gitignored symlinks with the full candidate set" {
 	if (comptime @import("builtin").os.tag == .windows) return error.SkipZigTest;
+	io_singleton.set(std.testing.io);
+	defer io_singleton.resetForTesting();
 
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
@@ -880,16 +884,16 @@ test "findFiles classifies gitignored symlinks with the full candidate set" {
 	defer allocator.free(root);
 
 	const io = io_singleton.getOrInit();
-	var init_child = std.process.spawn(io, .{
+	var init_child = try std.process.spawn(io, .{
 		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
 		.stdin = .close,
 		.stdout = .ignore,
 		.stderr = .ignore,
-	}) catch return error.SkipZigTest;
+	});
 	const init_term = try init_child.wait(io);
 	switch (init_term) {
-		.exited => |code| if (code != 0) return error.SkipZigTest,
-		else => return error.SkipZigTest,
+		.exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+		else => return error.GitSetupFailed,
 	}
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
@@ -907,6 +911,8 @@ test "findFiles classifies gitignored symlinks with the full candidate set" {
 }
 
 test "findFiles still includes tracked files even if matched by .gitignore" {
+	io_singleton.set(std.testing.io);
+	defer io_singleton.resetForTesting();
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
@@ -919,28 +925,28 @@ test "findFiles still includes tracked files even if matched by .gitignore" {
 	defer allocator.free(root);
 
 	const io_t2 = io_singleton.getOrInit();
-	var init_child = std.process.spawn(io_t2, .{
+	var init_child = try std.process.spawn(io_t2, .{
 		.argv = &[_][]const u8{ "git", "-C", root, "init", "-q" },
 		.stdin = .close,
 		.stdout = .ignore,
 		.stderr = .ignore,
-	}) catch return error.SkipZigTest;
+	});
 	const init_term = try init_child.wait(io_t2);
 	switch (init_term) {
-		.exited => |code| if (code != 0) return error.SkipZigTest,
-		else => return error.SkipZigTest,
+		.exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+		else => return error.GitSetupFailed,
 	}
 
-	var add_child = std.process.spawn(io_t2, .{
-		.argv = &[_][]const u8{ "git", "-C", root, "add", ".gitignore", "src/main.zig" },
+	var add_child = try std.process.spawn(io_t2, .{
+		.argv = &[_][]const u8{ "git", "-C", root, "add", "--force", ".gitignore", "src/main.zig" },
 		.stdin = .close,
 		.stdout = .ignore,
 		.stderr = .ignore,
-	}) catch return error.SkipZigTest;
+	});
 	const add_term = try add_child.wait(io_t2);
 	switch (add_term) {
-		.exited => |code| if (code != 0) return error.SkipZigTest,
-		else => return error.SkipZigTest,
+		.exited => |code| try std.testing.expectEqual(@as(u8, 0), code),
+		else => return error.GitSetupFailed,
 	}
 
 	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{

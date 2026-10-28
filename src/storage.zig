@@ -13,6 +13,130 @@ pub const sqlite = c;
 pub const Db = *c.sqlite3;
 const current_schema_version = 5;
 
+/// Connection-owned operations copy error details before finalize/rollback/close.
+/// The capture itself is caller-owned and must outlive the attached connection.
+/// Access follows the connection's serialized writer ownership.
+pub const ErrorCapture = struct {
+	present: bool = false,
+	code: c_int = 0,
+	extended_code: c_int = 0,
+	operation: [128]u8 = undefined,
+	operation_len: usize = 0,
+	message: [512]u8 = undefined,
+	message_len: usize = 0,
+
+	pub fn clear(self: *ErrorCapture) void {
+		self.present = false;
+	}
+
+	fn record(self: *ErrorCapture, db: Db, operation: []const u8) void {
+		self.code = c.sqlite3_errcode(db);
+		self.extended_code = c.sqlite3_extended_errcode(db);
+		self.operation_len = @min(operation.len, self.operation.len);
+		@memcpy(self.operation[0..self.operation_len], operation[0..self.operation_len]);
+		const message = std.mem.span(c.sqlite3_errmsg(db));
+		self.message_len = @min(message.len, self.message.len);
+		@memcpy(self.message[0..self.message_len], message[0..self.message_len]);
+		self.present = true;
+	}
+
+	pub fn describe(self: *const ErrorCapture, buf: []u8, base: []const u8, err: anyerror) []const u8 {
+		const sqlite_error = switch (err) {
+			error.OpenFailed, error.SqlError, error.SqlPrepareFailed, error.SqlStepFailed, error.SqlBindFailed => true,
+			else => false,
+		};
+		if (!sqlite_error or !self.present or self.code == c.SQLITE_OK) return base;
+		return std.fmt.bufPrint(buf, "{s}; SQLite operation={s} sqlite_code={d} sqlite_extended_code={d}: {s}", .{
+			base, self.operation[0..self.operation_len], self.code, self.extended_code, self.message[0..self.message_len],
+		}) catch base;
+	}
+};
+
+const error_capture_key = "codescan.error-capture";
+
+pub fn attachErrorCapture(db: Db, capture: *ErrorCapture) !void {
+	if (c.sqlite3_set_clientdata(db, error_capture_key, capture, null) != c.SQLITE_OK) return error.OutOfMemory;
+}
+
+test "SQLite failure capture survives rollback and close without mislabeling provider failures" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	var closed = false;
+	defer if (!closed) close(db);
+	var capture: ErrorCapture = .{};
+	try attachErrorCapture(db, &capture);
+	try exec(db, "CREATE TABLE unique_values(value TEXT UNIQUE);\x00");
+	try exec(db, "INSERT INTO unique_values VALUES ('same');\x00");
+	try exec(db, "BEGIN;\x00");
+	try std.testing.expectError(error.SqlError, exec(db, "INSERT INTO unique_values VALUES ('same');\x00"));
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_CONSTRAINT), capture.code);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_CONSTRAINT_UNIQUE), capture.extended_code);
+	try exec(db, "ROLLBACK;\x00");
+	close(db);
+	closed = true;
+	var buf: [2048]u8 = undefined;
+	const detail = capture.describe(&buf, "index error: SqlError", error.SqlError);
+	try std.testing.expect(std.mem.indexOf(u8, detail, "operation=exec sqlite_code=19") != null);
+	try std.testing.expect(std.mem.indexOf(u8, detail, "UNIQUE constraint failed: unique_values.value") != null);
+	try std.testing.expectEqualStrings("provider timed out", capture.describe(&buf, "provider timed out", error.Timeout));
+	capture.clear();
+	try std.testing.expectEqualStrings("next error", capture.describe(&buf, "next error", error.SqlError));
+}
+
+test "SQLite failure capture distinguishes schema and read-only errors and bounds copied details" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	var capture: ErrorCapture = .{};
+	try attachErrorCapture(db, &capture);
+	try std.testing.expectError(error.SqlError, exec(db, "SELECT * FROM missing_table;\x00"));
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_ERROR), capture.code);
+	try std.testing.expectEqualStrings("no such table: missing_table", capture.message[0..capture.message_len]);
+	try exec(db, "CREATE TABLE values_table(value INTEGER);\x00");
+	try exec(db, "PRAGMA query_only=ON;\x00");
+	try std.testing.expectError(error.SqlError, exec(db, "INSERT INTO values_table VALUES (1);\x00"));
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_READONLY), capture.code);
+	const long_name = "x" ** 1024;
+	const sql = try allocPrintZ(allocator, "SELECT * FROM {s};", .{long_name});
+	defer allocator.free(sql);
+	try std.testing.expectError(error.SqlError, exec(db, sql));
+	capture.record(db, long_name);
+	try std.testing.expectEqual(capture.operation.len, capture.operation_len);
+	try std.testing.expectEqual(capture.message.len, capture.message_len);
+}
+
+test "SQLite busy diagnostics are connection-local and database open failures retain their message" {
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const path = try std.fs.path.join(allocator, &.{ root, "busy.sqlite3" });
+	defer allocator.free(path);
+	var first: ErrorCapture = .{};
+	var second: ErrorCapture = .{};
+	const writer = try openFileWithVecDiagnostics(allocator, path, &first);
+	defer close(writer);
+	try exec(writer, "CREATE TABLE values_table(value INTEGER);\x00");
+	const contender = try openFileWithVecDiagnostics(allocator, path, &second);
+	defer close(contender);
+	try exec(contender, "PRAGMA busy_timeout=0;\x00");
+	try exec(writer, "BEGIN IMMEDIATE;\x00");
+	try std.testing.expectError(error.SqlError, exec(contender, "INSERT INTO values_table VALUES (1);\x00"));
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_BUSY), second.code);
+	try std.testing.expect(!first.present);
+	try std.testing.expectError(error.SqlError, exec(writer, "SELECT * FROM missing_table;\x00"));
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_ERROR), first.code);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_BUSY), second.code);
+	try exec(writer, "ROLLBACK;\x00");
+	const missing = try std.fs.path.join(allocator, &.{ root, "absent-parent", "index.sqlite3" });
+	defer allocator.free(missing);
+	var inaccessible: ErrorCapture = .{};
+	try std.testing.expectError(error.OpenFailed, openFileWithVecDiagnostics(allocator, missing, &inaccessible));
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_CANTOPEN), inaccessible.code);
+	try std.testing.expect(inaccessible.message_len > 0);
+}
+
 pub const InitSchemaResult = struct {
 	did_schema_upgrade: bool = false,
 	previous_schema_version: ?u32 = null,
@@ -52,15 +176,24 @@ pub fn close(db: Db) void {
 }
 
 pub fn openFileWithVec(allocator: std.mem.Allocator, path: []const u8) !Db {
+	return openFileWithVecDiagnostics(allocator, path, null);
+}
+
+pub fn openFileWithVecDiagnostics(allocator: std.mem.Allocator, path: []const u8, capture: ?*ErrorCapture) !Db {
 	const path_z = try allocator.dupeZ(u8, path);
 	defer allocator.free(path_z);
 
 	var db: ?*c.sqlite3 = null;
 	if (c.sqlite3_open(path_z, &db) != c.SQLITE_OK) {
+		if (db) |handle| {
+			if (capture) |details| details.record(handle, "openFileWithVec: open");
+			_ = c.sqlite3_close(handle);
+		}
 		return error.OpenFailed;
 	}
 	const handle = db orelse return error.OpenFailed;
 	errdefer _ = c.sqlite3_close(handle);
+	if (capture) |details| try attachErrorCapture(handle, details);
 
 	try initVecStatic(handle);
 
@@ -431,9 +564,10 @@ pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	}
 	const rowid = c.sqlite3_last_insert_rowid(db);
 	insertSymbolFts(db, symbol, rowid) catch |err| switch (err) {
-		error.SqlPrepareFailed => {},
+		error.SqlPrepareFailed => clearCapturedError(db),
 		else => {
 			logSqliteError(db, "insertSymbolFts");
+			clearCapturedError(db);
 			// Non-fatal: symbol is indexed, just FTS entry failed. Continue.
 		},
 	};
@@ -500,6 +634,7 @@ fn exec(db: Db, sql: [:0]const u8) !void {
 	var err_msg: [*c]u8 = null;
 	const rc = c.sqlite3_exec(db, sql, null, null, &err_msg);
 	if (rc != c.SQLITE_OK) {
+		_ = captureSqliteError(db, "exec");
 		if (err_msg != null) {
 			c.sqlite3_free(err_msg);
 		}
@@ -524,7 +659,10 @@ fn tryInitFts(allocator: std.mem.Allocator, db: Db) bool {
 		"CREATE VIRTUAL TABLE IF NOT EXISTS symbols_fts USING fts5(symbol_name, signature, doc_comment, file_path, body);\x00";
 	if (!execMaybe(db, fts_sql)) return false;
 
-	const fts_count = countRows(db, allocator, "symbols_fts") catch return true;
+	const fts_count = countRows(db, allocator, "symbols_fts") catch {
+		clearCapturedError(db);
+		return true;
+	};
 	if (fts_count == 0) {
 		const rebuild_sql: [:0]const u8 =
 			"INSERT OR REPLACE INTO symbols_fts(rowid, symbol_name, signature, doc_comment, file_path, body) "
@@ -817,7 +955,24 @@ pub fn lastIndexedFile(db: Db, allocator: std.mem.Allocator) !?LastIndexedResult
 	return null;
 }
 
+fn captureSqliteError(db: Db, context: []const u8) bool {
+	if (c.sqlite3_get_clientdata(db, error_capture_key)) |pointer| {
+		const capture: *ErrorCapture = @ptrCast(@alignCast(pointer));
+		capture.record(db, context);
+		return true;
+	}
+	return false;
+}
+
+fn clearCapturedError(db: Db) void {
+	if (c.sqlite3_get_clientdata(db, error_capture_key)) |pointer| {
+		const capture: *ErrorCapture = @ptrCast(@alignCast(pointer));
+		capture.clear();
+	}
+}
+
 fn logSqliteError(db: Db, context: []const u8) void {
+	if (captureSqliteError(db, context)) return;
 	const msg = c.sqlite3_errmsg(db);
 	if (msg != null) {
 		const msg_slice = std.mem.span(msg);
@@ -845,12 +1000,14 @@ fn logSqliteError(db: Db, context: []const u8) void {
 /// the lifetime invariant by code review rather than at the API level.
 fn bindText(stmt: *c.sqlite3_stmt, index: c_int, text: []const u8) !void {
 	if (c.sqlite3_bind_text(stmt, index, text.ptr, @intCast(text.len), null) != c.SQLITE_OK) {
+		_ = captureSqliteError(c.sqlite3_db_handle(stmt).?, "bindText");
 		return error.SqlBindFailed;
 	}
 }
 
 fn bindInt(stmt: *c.sqlite3_stmt, index: c_int, value: usize) !void {
 	if (c.sqlite3_bind_int64(stmt, index, @intCast(value)) != c.SQLITE_OK) {
+		_ = captureSqliteError(c.sqlite3_db_handle(stmt).?, "bindInt");
 		return error.SqlBindFailed;
 	}
 }
@@ -892,6 +1049,7 @@ pub fn upsertIndexedFile(db: Db, file_path: []const u8, mtime_ns: i64, size: i64
 	_ = c.sqlite3_bind_int64(stmt.?, 3, size);
 
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		_ = captureSqliteError(db, "upsertIndexedFile: step");
 		return error.SqlStepFailed;
 	}
 }
@@ -1029,6 +1187,7 @@ pub fn deleteIndexedFile(db: Db, file_path: []const u8) !void {
 
 	try bindText(stmt.?, 1, file_path);
 	if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+		_ = captureSqliteError(db, "deleteIndexedFile: step");
 		return error.SqlStepFailed;
 	}
 }
@@ -1056,6 +1215,7 @@ pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
 		defer _ = c.sqlite3_finalize(stmt.?);
 		try bindText(stmt.?, 1, file_path);
 		if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+			_ = captureSqliteError(db, "deleteSymbolsByFile: step embeddings");
 			return error.SqlStepFailed;
 		}
 	}
@@ -1080,6 +1240,7 @@ pub fn deleteSymbolsByFile(db: Db, file_path: []const u8) !void {
 		defer _ = c.sqlite3_finalize(stmt.?);
 		try bindText(stmt.?, 1, file_path);
 		if (c.sqlite3_step(stmt.?) != c.SQLITE_DONE) {
+			_ = captureSqliteError(db, "deleteSymbolsByFile: step symbols");
 			return error.SqlStepFailed;
 		}
 	}

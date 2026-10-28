@@ -6,6 +6,8 @@ zig-out/
 .DS_Store
 .zig-cache
 result
+/.nix-out/
+/.profiling.local.json
 inbox
 zig-pkg/
 

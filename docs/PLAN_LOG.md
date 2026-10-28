@@ -28,3 +28,17 @@ Publication checks use GitHub Actions and exact-commit Mechatron Prime CI.
 - [x] [Recent shipments] Use the configured temporary directory in the reindex-runner test; its hardcoded `/dev/shm` path fails on macOS. (done 2026-10-12 11:22 EDT)
 - [x] [Recent shipments] Commit the passing Python support, push `yolo`, and verify the remote commit: `357f6733`. (done 2026-10-12 11:29 EDT)
 - [x] [Recent shipments] Start the watcher after successful initialization; keep ordinary index/update/search commands non-spawning and report startup failures. (done 2026-10-12 12:51 EDT)
+
+## Retired 2026-10-27
+
+- [x] [Watcher reliability] Prevent watcher startup from recreating an existing database when schema initialization fails; prove index preservation with a failing regression first. (done 2026-10-14 16:17 EDT)
+- [x] [Recent shipments] Respect the configured embedding API and URL during initialization and use provider-specific model recovery instructions. (done 2026-10-12 12:51 EDT)
+- [x] [Recent shipments] Pass regression coverage, the complete suite, and five-target ReleaseFast builds for shipment; live-provider tests were excluded, and existing FTS5/log-test skips remain. (done 2026-10-12 13:03 EDT)
+- [x] [Watcher reliability] Keep CLI integration commands in their private fixture directory so default-path edit reindexing cannot alter the checkout's index; prove the isolation guard fails first. (done 2026-10-14 16:17 EDT)
+- [x] [Watcher reliability] Pass focused regressions, available complete-suite checks, and five-target ReleaseFast builds for the watcher data-preservation fix; live-provider tests were excluded and existing FTS5/log-test skips remain. (done 2026-10-14 16:17 EDT)
+- [x] [CI completion and maintenance] Verify the watcher-safety shipment; exact Mechatron Prime CI and GitHub Actions both passed, including the previously queued Mac14 job. (done 2026-10-14 21:00 EDT; commit 3efd9f3a)
+- [x] [CI completion and maintenance] Pin `macos-15` and require native ARM64 host/header/startup checks before packaging; prove regressions RED first and pass the complete native runner plus sandboxed Nix package/test builds in one budgeted job without changing targets or toolchain pins. (done 2026-10-14 20:41 EDT; source: https://github.com/actions/runner-images/issues/13518)
+- [x] [Active triage and execution] Triage every open item, recover answered decisions, record next actions/dependencies, and ask for incident evidence, independent relevance judgments, and disposition of speculative features. (done 2026-10-27 20:25 EDT)
+- [x] [Resolved decisions] Should concise I/O wrappers and whole-file/comment generation remain active, be tabled, or be discarded? Answer: Table both for now; do not resume without a concrete use case and renewed direction. (done 2026-10-27 20:43 EDT)
+- [x] [Resolved decisions] Is the original watcher SQLite failure still reproducible in a known project? Answer: No current reproducer was identified; the incident is not remembered, and its underlying SQLite operation/code/message remain unavailable. Continue diagnostic improvements without claiming the historical cause. (done 2026-10-27 20:44 EDT)
+- [x] [Resolved decisions] Can independent query/result examples be supplied for a relevance corpus now? Answer: Table the corpus; independent expected symbols/files are a prerequisite before judging ranking quality or reporting MRR, nDCG, or Recall@k. (done 2026-10-27 20:44 EDT)

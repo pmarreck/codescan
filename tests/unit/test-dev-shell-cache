@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
 
 assert_develop_paths() {
 	local description="$1"

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+set -u
+
+binary="${1:?usage: test-about PREPARED_BINARY PF [VARIANT]}"
+expected_pf="${2:?expected compilation platform}"
+expected_variant="${3:-}"
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/codescan-about.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+
+fail() {
+	printf 'FAIL: %s\n' "$1" >&2
+	exit 1
+}
+
+expected="codescan 0.1.0 - Semantic code search and targeted edits; PF=$expected_pf"
+if [ -n "$expected_variant" ]; then expected+=" VARIANT=$expected_variant"; fi
+mkdir -p "$fixture/.codescan" || fail 'fixture setup failed'
+printf 'embedding_api=invalid-provider\n' > "$fixture/.codescan/config.ini"
+cd "$fixture" || fail 'fixture working directory unavailable'
+
+for mode in normal conflicting-environment; do
+	if [ "$mode" = conflicting-environment ]; then
+		invocation=(env PF=wrong-platform PLATFORM=wrong-platform OS=wrong-os ARCH=wrong-arch VARIANT=wrong-abi)
+	else
+		invocation=()
+	fi
+	if "${invocation[@]}" "$binary" --about > stdout 2> stderr; then
+		rc=0
+	else
+		rc="$?"
+	fi
+	[ "$rc" -eq 0 ] || fail "--about failed with exit $rc ($mode)"
+	[ ! -s stderr ] || fail "--about wrote unexpected stderr ($mode)"
+	[ "$(wc -l < stdout)" -eq 1 ] || fail "--about must emit exactly one line ($mode)"
+	[ "$(< stdout)" = "$expected" ] || fail "--about did not identify the compilation target ($mode)"
+done
+
+printf 'CLI --about contract passed\n'

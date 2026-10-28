@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+set -u
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-build.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL Nix build: %s\n' "$1" >&2; exit 1; }
+nix() {
+	printf '%s\n' "$*" >> "$BUILD_EVENTS"
+	[ "$BUILD_STATUS" -eq 0 ] || return "$BUILD_STATUS"
+	printf '%s\n' "$BUILD_OUTPUT"
+}
+zig() { printf 'forbidden compiler\n' >> "$BUILD_EVENTS"; return 99; }
+export -f nix zig
+for mode in default debug test failure missing-nix output-symlink real-publication; do
+	project="$fixture/$mode/project with spaces"
+	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" "$project/tools" || fail setup
+	cp "$root/build" "$project/build" || fail 'cannot copy source fixture'
+	printf old > "$project/zig-out/bin/codescan"
+	printf new > "$project/prepared/bin/codescan"
+	chmod +x "$project/prepared/bin/codescan"
+	if [ "$mode" = output-symlink ]; then
+		mv "$project/zig-out" "$project/protected-output"
+		ln -s "$project/protected-output" "$project/zig-out"
+	fi
+	if [ "$mode" = real-publication ]; then
+		[ -x "${CODESCAN_TEST_BIN:-}" ] || fail 'real publication requires the prepared Nix CLI'
+		ln -sf "$CODESCAN_TEST_BIN" "$project/prepared/bin/codescan"
+	fi
+	: > "$project/events"
+	status=0
+	[ "$mode" != failure ] || status=19
+	args=()
+	case "$mode" in debug) args=(debug) ;; test) args=(--test) ;; esac
+	if [ "$mode" = missing-nix ]; then
+		ln -s "$(command -v dirname)" "$project/tools/dirname"
+		invocation=(bash -c 'unset -f nix; export PATH="$1"; exec "$2" "$3"' _ "$project/tools" "$BASH" "$project/build")
+	else
+		invocation=("$BASH" "$project/build" "${args[@]}")
+	fi
+	if (cd "$project" && env BUILD_EVENTS="$project/events" BUILD_STATUS="$status" BUILD_OUTPUT="$project/prepared" "${invocation[@]}") > "$project/stdout" 2> "$project/stderr"; then
+		rc=0
+	else rc="$?"; fi
+	case "$mode" in
+		failure|missing-nix|output-symlink)
+			[ "$rc" -ne 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$mode did not preserve the previous product"
+			;;
+		real-publication)
+			[ "$rc" -eq 0 ] || fail 'real prepared product was not published'
+			cmp "$CODESCAN_TEST_BIN" "$project/zig-out/bin/codescan" || fail 'real publication changed executable bytes'
+			"$project/zig-out/bin/codescan" --about > "$project/about" 2> "$project/about-error" || fail 'published native command did not execute'
+			[ -s "$project/about" ] && [ ! -s "$project/about-error" ] || fail 'published command did not identify itself cleanly'
+			;;
+		test)
+			[ "$rc" -eq 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'test preparation unexpectedly published a CLI'
+			grep -Fq '.#test-binaries' "$project/events" || fail 'test preparation did not select Nix test artifacts'
+			;;
+		default|debug)
+			if [ "$rc" -ne 0 ]; then printf '%s\n' "$(< "$project/stderr")" >&2; fail "$mode failed"; fi
+			[ "$(< "$project/zig-out/bin/codescan")" = new ] || fail "$mode did not publish the prepared output"
+			attribute=default
+			[ "$mode" != debug ] || attribute=debug
+			grep -Fq ".#$attribute" "$project/events" || fail "$mode selected the wrong output"
+			;;
+	esac
+	if grep -Fq 'forbidden compiler' "$project/events"; then fail "$mode fell back to direct compilation"; fi
+done
+printf 'Nix-required build adapter passed\n'

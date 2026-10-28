@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$ROOT/zig-out/bin/codescan"
+BIN="${CODESCAN_TEST_BIN:?prepare test binaries with ./test}"
+MK_DB="${CODESCAN_TEST_DB_BIN:?prepare the fixture generator with ./test}"
 
 PORT="${CODESCAN_HTTP_TEST_PORT:-8124}"
 HOST="127.0.0.1"
@@ -77,17 +78,13 @@ main() {
 		return 0
 	fi
 
-	capture nix develop -c zig build -Doptimize=ReleaseFast
-	if [ "$rc" -ne 0 ]; then
-		printf '%s' "$err" >&2
-		fail "zig build failed"
-	fi
+	[ -x "$BIN" ] && [ -x "$MK_DB" ] || fail 'prepared test artifacts are unavailable'
 
 	DB_DIR="$(mktemp -d "$TMPDIR/codescan-http.XXXXXX")"
 	DB="$DB_DIR/index.sqlite3"
 	trap 'rm -rf "$DB_DIR"' EXIT
 
-	capture "$ROOT/zig-out/bin/mk-test-db" --db "$DB" --embedding-dim "$MODEL_DIM"
+	capture "$MK_DB" --db "$DB" --embedding-dim "$MODEL_DIM"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "mk_test_db failed"

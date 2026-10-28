@@ -35,9 +35,11 @@ actual_commands="$(awk '
 ' "$workflow" | LC_ALL=C sort)"
 expected_commands="$(printf '%s\n' \
 	'nix flake check --no-build --all-systems' \
-	'nix develop -c ./tests/unit/test-ci-runner-contract' \
-	'nix develop -c ./tests/unit/test-ci-architecture' \
-	'nix develop -c zig build test-unit' | LC_ALL=C sort)"
+	'nix build .#checks.x86_64-linux.test --no-link' | LC_ALL=C sort)"
 [ "$actual_commands" = "$expected_commands" ] || fail "GitHub test job must run the CI contracts and all-system flake evaluation before building artifacts"
+
+actual_timeouts="$(awk '/^  [a-z_-]+:$/ { job = $1; sub(/:$/, "", job) } /^    timeout-minutes:/ { print job "\t" $2 }' "$workflow" | LC_ALL=C sort)"
+expected_timeouts=$'build\t30\nrelease\t30\ntest\t30'
+[ "$actual_timeouts" = "$expected_timeouts" ] || fail "Every CI job must retain its 30-minute execution bound"
 
 printf 'CI runner contract passed\n'

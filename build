@@ -1,29 +1,30 @@
 #!/usr/bin/env bash
-set -uo pipefail
-set -E
+set -u
 
-trap 'echo "ERR at ${BASH_SOURCE[0]}:${LINENO}: $BASH_COMMAND" >&2' ERR
-
-run() {
-	"$@" || {
-		echo "FAILED: $*" >&2
-		exit 1
-	}
-}
-
-optimize="ReleaseFast"
-if [[ "${1:-}" == "debug" ]]; then
-	optimize="Debug"
-	shift
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+attribute=default
+case "${1:-}" in
+	'') ;;
+	debug|--debug) attribute=debug; shift ;;
+	--test) attribute=test-binaries; shift ;;
+	-h|--help) printf 'Usage: ./build [--debug|--test]\nNix is required. ReleaseFast is the default.\n'; exit 0 ;;
+	*) printf 'error: unsupported build option: %s\n' "$1" >&2; exit 64 ;;
+esac
+[ "$#" -eq 0 ] || { printf 'error: unexpected build arguments\n' >&2; exit 64; }
+command -v nix >/dev/null 2>&1 || { printf 'error: Nix is required; install Nix before building codescan\n' >&2; exit 127; }
+cd "$root" || exit 1
+if output="$(nix build --no-link --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
+if [ "$attribute" = test-binaries ]; then
+	printf 'Prepared test artifacts: %s\n' "$output" >&2
+	exit 0
 fi
-
-if [[ "$optimize" != "ReleaseFast" ]]; then
-	# Non-release builds use zig directly (local dev, no need for Nix reproducibility)
-	run zig build "-Doptimize=$optimize" "$@"
-elif command -v nix >/dev/null 2>&1; then
-	run nix build "$@"
-	mkdir -p zig-out/bin
-	run install -m755 result/bin/* zig-out/bin/
-else
-	run zig build "-Doptimize=$optimize" "$@"
+[ -x "$output/bin/codescan" ] || { printf 'error: Nix output is missing codescan\n' >&2; exit 1; }
+if [ -L zig-out ] || [ -L zig-out/bin ] || [ -d zig-out/bin/codescan ]; then
+	printf 'error: refusing publication through an unexpected output symlink/directory\n' >&2
+	exit 1
 fi
+mkdir -p zig-out/bin || exit 1
+publication="$(mktemp "$root/zig-out/bin/.codescan.XXXXXX")" || exit 1
+trap 'rm -f -- "$publication"' EXIT
+install -m755 "$output/bin/codescan" "$publication" || exit 1
+mv -f -- "$publication" zig-out/bin/codescan || exit 1

@@ -1,3 +1,9 @@
-# Mechatron Prime CI targets for Thelio's x86_64-linux worker.
+# Native checks and the five declared release targets.
 packages.x86_64-linux.default
 checks.x86_64-linux.test
+checks.x86_64-linux.source-closure
+packages.x86_64-linux.release-linux-amd64
+packages.x86_64-linux.release-linux-arm64
+packages.x86_64-linux.release-macos-arm64
+packages.x86_64-linux.release-mswin-amd64
+packages.x86_64-linux.release-mswin-arm64

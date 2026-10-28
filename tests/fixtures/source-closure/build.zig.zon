@@ -1,0 +1,8 @@
+.{
+	.name = .source_closure_fixture,
+	.version = "0.1.0",
+	.fingerprint = 0x123456789abcdef0,
+	.minimum_zig_version = "0.16.0",
+	.dependencies = .{},
+	.paths = .{ "build.zig", "build.zig.zon", "src", "deps" },
+}

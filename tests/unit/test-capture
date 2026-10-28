@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -u
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
+out= err= rc=
+fail() { printf 'FAIL capture: %s\n' "$1" >&2; exit 1; }
+capture bash -c 'printf "stdout\nsecond line\n"; printf "stderr\n" >&2; exit 7'
+[ "$out" = $'stdout\nsecond line' ] && [ "$err" = stderr ] && [ "$rc" -eq 7 ] || fail 'streams or error status changed'
+capture bash -c 'exit 23'
+[ -z "$out" ] && [ -z "$err" ] && [ "$rc" -eq 23 ] || fail 'empty streams retained stale state'
+literal=$'quotes\047" $HOME $(exit 99) `exit 99` \\ tab\ttext'
+capture printf '%s' "$literal"
+[ "$out" = "$literal" ] && [ -z "$err" ] && [ "$rc" -eq 0 ] || fail 'captured text was interpreted'
+printf 'Portable capture contract passed\n'

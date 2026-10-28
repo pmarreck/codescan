@@ -7,9 +7,16 @@
 	};
 
 	outputs = { self, nixpkgs, flake-utils }:
-		flake-utils.lib.eachDefaultSystem (system:
+		flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
 			let
 				pkgs = import nixpkgs { inherit system; };
+				runtimeTools = with pkgs; [ bash coreutils diffutils findutils git gnugrep gnused gawk gnutar gzip jq ripgrep sqlite curl file ];
+				nativePF = { x86_64-linux = "linux-amd64"; aarch64-linux = "linux-arm64"; aarch64-darwin = "macos-arm64"; }.${system};
+				nativeZigTarget = { x86_64-linux = "x86_64-linux-musl"; aarch64-linux = "aarch64-linux-musl"; aarch64-darwin = "aarch64-macos"; }.${system};
+				compiledSource = root: pkgs.lib.fileset.toSource {
+					inherit root;
+					fileset = pkgs.lib.fileset.unions [ (root + "/src") (root + "/deps") (root + "/build.zig") (root + "/build.zig.zon") ];
+				};
 				sqlite-amalgamation = pkgs.fetchzip {
 					url = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
 					sha256 = "sha256-F50oTmmcPIl0AZJbsWAR3tbNAPV3pQLf+CNITzhmXfI=";
@@ -102,12 +109,13 @@
 						path = pcre2-src;
 					}
 				];
-			in {
-				packages.default = pkgs.stdenv.mkDerivation {
-					pname = "codescan";
+				mkCodescan = { target ? nativeZigTarget, pf ? null, profile ? "ReleaseFast", sourceRoot ? ./. }:
+				let executable = if target != null && pkgs.lib.hasInfix "-windows-" target then "codescan.exe" else "codescan";
+				in pkgs.stdenv.mkDerivation {
+					pname = "codescan" + pkgs.lib.optionalString (pf != null) "-${pf}" + pkgs.lib.optionalString (profile != "ReleaseFast") "-${profile}";
 					version = "0.1.0";
 
-					src = ./.;
+					src = compiledSource sourceRoot;
 
 					nativeBuildInputs = [ pkgs.zig_0_16 ];
 
@@ -123,50 +131,85 @@
 
 						zig build \
 							--system ${zigPkgCache} \
-							-Doptimize=ReleaseFast \
+							-Doptimize=${profile} \
+							${pkgs.lib.optionalString (target != null) "-Dtarget=${target}"} \
 							--color off
 					'';
 
 					installPhase = ''
 						mkdir -p $out/bin
-						cp zig-out/bin/codescan $out/bin/
+						cp zig-out/bin/${executable} $out/bin/
 					'';
 
 					meta = with pkgs.lib; {
 						description = "Semantic code search powered by embeddings and tree-sitter";
 						license = licenses.mit;
 						platforms = platforms.unix;
-						mainProgram = "codescan";
+						mainProgram = executable;
 					};
 				};
+			in {
+				packages.default = self.packages.${system}."release-${nativePF}";
+				packages.debug = mkCodescan { profile = "Debug"; };
+				packages.release-linux-amd64 = mkCodescan { pf = "linux-amd64"; target = "x86_64-linux-musl"; };
+				packages.release-linux-arm64 = mkCodescan { pf = "linux-arm64"; target = "aarch64-linux-musl"; };
+				packages.release-macos-arm64 = mkCodescan { pf = "macos-arm64"; target = "aarch64-macos"; };
+				packages.release-mswin-amd64 = mkCodescan { pf = "mswin-amd64"; target = "x86_64-windows-gnu"; };
+				packages.release-mswin-arm64 = mkCodescan { pf = "mswin-arm64"; target = "aarch64-windows-gnu"; };
 
-				# Check the CI contracts, run hermetic unit tests, and smoke-execute
-				# the binary independently of the compilation-only package target.
-				checks.test = pkgs.stdenv.mkDerivation {
-					pname = "codescan-test";
+				checks.source-closure =
+					let
+						fixturePackage = mkCodescan { sourceRoot = ./tests/fixtures/source-closure; };
+						actual = pkgs.lib.sort builtins.lessThan (map (path: pkgs.lib.removePrefix "${toString fixturePackage.src}/" (toString path)) (pkgs.lib.filesystem.listFilesRecursive fixturePackage.src));
+						expected = [ "build.zig" "build.zig.zon" "deps/parser/future.h" "deps/parser/parser.c" "src/docs/data.txt" "src/future/module.zig" "src/main.zig" ];
+					in assert pkgs.lib.assertMsg (actual == expected) "Compiled source closure must retain all source/dependency inputs and exclude inert planning/documentation";
+					pkgs.runCommand "codescan-source-closure" {} ''touch "$out"'';
+
+				packages.test-binaries = pkgs.stdenv.mkDerivation {
+					pname = "codescan-test-binaries";
 					version = "0.1.0";
-					src = ./.;
-					nativeBuildInputs = [ pkgs.zig_0_16 pkgs.git pkgs.file ];
+					src = compiledSource ./.;
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
 					dontConfigure = true;
+					dontInstall = true;
 					dontFixup = true;
 					buildPhase = ''
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
 						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
 						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-						mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
-						patchShebangs scripts/ci-build scripts/ci-verify-macos-arm64 tests/unit/test-ci-runner-contract tests/unit/test-ci-architecture
-						bash ./tests/unit/test-ci-runner-contract
-						bash ./tests/unit/test-ci-architecture
-						# 1) actually RUN the suite (the part never wired into CI)
-						zig build test-unit --system ${zigPkgCache} --color off
-						# 2) smoke-EXECUTE the built binary (catches runtime/loader regressions)
-						zig build --system ${zigPkgCache} -Doptimize=ReleaseFast --color off
-						./zig-out/bin/codescan --help >/dev/null
+						zig build test-artifacts --system ${zigPkgCache} -Dtarget=${nativeZigTarget} -Doptimize=ReleaseFast --prefix "$out" --color off
+					'';
+				};
+
+				# Reuse the complete prepared runtime suite inside the Nix sandbox.
+				# Compilation stays in separate reusable artifact derivations.
+				checks.test = pkgs.stdenv.mkDerivation {
+					pname = "codescan-test";
+					version = "0.1.0";
+					src = ./.;
+					nativeBuildInputs = runtimeTools;
+					dontConfigure = true;
+					dontFixup = true;
+					buildPhase = ''
+						export HOME="$TMPDIR/home"
+						export XDG_CONFIG_HOME="$TMPDIR/config" XDG_DATA_HOME="$TMPDIR/data"
+						export XDG_STATE_HOME="$TMPDIR/state" XDG_CACHE_HOME="$TMPDIR/cache"
+						export XDG_RUNTIME_DIR="$TMPDIR/runtime" TEST_WORKSPACE="$TMPDIR/workspace"
+						mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR" "$TEST_WORKSPACE"
+						patchShebangs build reindex_all scripts/ci-build scripts/ci-verify-macos-arm64 tests
+						git init -q
+						git add .
+						export CODESCAN_TEST_BIN=${self.packages.${system}.default}/bin/codescan
+						export CODESCAN_TEST_DB_BIN=${self.packages.${system}.test-binaries}/bin/mk-test-db
+						export CODESCAN_UNIT_TEST_BIN=${self.packages.${system}.test-binaries}/bin/codescan-unit-tests
+						export CODESCAN_EXPECT_PF=${nativePF} CODESCAN_EXPECT_VARIANT="${if pkgs.stdenv.isLinux then "musl" else ""}"
+						export OLLAMA_URL=http://127.0.0.1:1
+						bash ./tests/run-prepared
 					'';
 					installPhase = ''
 						mkdir -p $out
-						echo "tests passed and binary executes" > $out/result
+						echo "available runtime suites passed; live-provider exclusions are recorded in the build log" > $out/result
 					'';
 				};
 
@@ -174,19 +217,26 @@
 					packages = with pkgs; [
 						zig_0_16
 						git
+						bash
+						coreutils
+						diffutils
+						gnutar
+						ripgrep
+						curl
 						jq
 						file
 						sqlite
 						luajit
 						luajitPackages.cjson
-					];
-					shellHook = ''
-						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
-						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
-						export ZIG_GLOBAL_CACHE_DIR="''${ZIG_GLOBAL_CACHE_DIR:-$HOME/.cache/zig}"
-						export ZIG_LOCAL_CACHE_DIR="''${ZIG_LOCAL_CACHE_DIR:-$PWD/zig-cache}"
-						export NIX_CFLAGS_COMPILE=""
-					'';
+					] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.bubblewrap ];
+					shellHook = "
+						export CODESCAN_TEST_PATH=\"${pkgs.lib.makeBinPath runtimeTools}\"
+						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR=\"${sqlite-amalgamation}\"
+						export CODESCAN_GRAMMAR_ROOT=\"${grammarSources}\"
+						export ZIG_GLOBAL_CACHE_DIR=\"\${ZIG_GLOBAL_CACHE_DIR:-$HOME/.cache/zig}\"
+						export ZIG_LOCAL_CACHE_DIR=\"\${ZIG_LOCAL_CACHE_DIR:-$PWD/zig-cache}\"
+						export NIX_CFLAGS_COMPILE=\"\"
+					";
 				};
 			}
 		);

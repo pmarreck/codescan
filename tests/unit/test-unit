@@ -1,4 +1,4 @@
 #!/usr/bin/env bash
 set -u
 
-nix develop -c zig build test-unit
+exec "${CODESCAN_UNIT_TEST_BIN:?prepare unit tests with ./test}"

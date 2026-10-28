@@ -91,6 +91,7 @@ pub fn writeFailureRecord(
 	codescan_dir: []const u8,
 	root_path: []const u8,
 	reason: []const u8,
+	version: []const u8,
 ) !void {
 	const log_path = try failureLogPath(allocator, codescan_dir);
 	defer allocator.free(log_path);
@@ -100,8 +101,8 @@ pub fn writeFailureRecord(
 	const detail = reason[0..@min(reason.len, 2800)];
 	const record = try std.fmt.bufPrint(
 		&record_buf,
-		"watcher failure\nproject: {s}\nreason: {s}\n",
-		.{ project, detail },
+		"watcher failure\ncommand: codescan watch\nversion: {s}\nproject: {s}\nreason: {s}\n",
+		.{ version[0..@min(version.len, 64)], project, detail },
 	);
 	const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), log_path, .{ .truncate = true });
 	defer file.close(io_singleton.getOrInit());
@@ -121,6 +122,8 @@ fn startedMessage(buf: []u8, backend: []const u8) []const u8 {
 pub const WatchOptions = struct {
 	interval_ms: u64 = 2000,
 	codescan_dir: ?[]const u8 = null,
+	sql_diagnostics: ?*storage.ErrorCapture = null,
+	version: []const u8 = "unknown",
 	/// Resolved by the caller through the application service, so a watcher
 	/// pass applies exactly the filters and ignores an explicit update would.
 	index_request: index_service.Request,
@@ -220,6 +223,7 @@ fn executeInitialIncrementalWithRetry(
 	var failed_attempts: usize = 0;
 	while (true) {
 		tracker.beginIndex();
+		if (options.sql_diagnostics) |diagnostics| diagnostics.clear();
 		const stats = (index_service.execute(
 			allocator,
 			db,
@@ -366,6 +370,7 @@ pub fn watchLoop(
 		// Run incremental index on change or periodic timeout
 		progress.write(progress_path, "indexing...");
 		tracker.beginIndex();
+		if (options.sql_diagnostics) |diagnostics| diagnostics.clear();
 		const stats = (index_service.execute(
 			allocator,
 			db,
@@ -375,12 +380,14 @@ pub fn watchLoop(
 		) catch |err| {
 			tracker.abandonIndex();
 			consecutive_errors += 1;
-			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
-			_ = stderr.flush() catch {};
 			var msg_buf_w: [256]u8 = undefined;
-			const msg_w = std.fmt.bufPrint(&msg_buf_w, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			const base = std.fmt.bufPrint(&msg_buf_w, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			var detail_buf: [2048]u8 = undefined;
+			const msg_w = if (options.sql_diagnostics) |diagnostics| diagnostics.describe(&detail_buf, base, err) else base;
+			_ = stderr.print("watcher: {s}\n", .{msg_w}) catch {};
+			_ = stderr.flush() catch {};
 			if (options.codescan_dir) |dir| {
-				writeFailureRecord(allocator, dir, root_path, msg_w) catch {};
+				writeFailureRecord(allocator, dir, root_path, msg_w, options.version) catch {};
 			}
 			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_w);
 			if (consecutive_errors >= max_consecutive_errors) {
@@ -473,6 +480,7 @@ fn watchLoopPolling(
 
 		progress.write(progress_path_poll, "indexing...");
 		tracker.beginIndex();
+		if (options.sql_diagnostics) |diagnostics| diagnostics.clear();
 		const stats = (index_service.execute(
 			allocator,
 			db,
@@ -483,12 +491,14 @@ fn watchLoopPolling(
 			tracker.abandonIndex();
 			consecutive_errors += 1;
 			progress.write(progress_path_poll, "error");
-			_ = stderr.print("watcher: index error: {s} ({d}/{d})\n", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch {};
-			_ = stderr.flush() catch {};
 			var msg_buf_p: [256]u8 = undefined;
-			const msg_p = std.fmt.bufPrint(&msg_buf_p, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			const base = std.fmt.bufPrint(&msg_buf_p, "index error: {s} ({d}/{d})", .{ @errorName(err), consecutive_errors, max_consecutive_errors }) catch "index error (format failed)";
+			var detail_buf: [2048]u8 = undefined;
+			const msg_p = if (options.sql_diagnostics) |diagnostics| diagnostics.describe(&detail_buf, base, err) else base;
+			_ = stderr.print("watcher: {s}\n", .{msg_p}) catch {};
+			_ = stderr.flush() catch {};
 			if (options.codescan_dir) |dir| {
-				writeFailureRecord(allocator, dir, root_path, msg_p) catch {};
+				writeFailureRecord(allocator, dir, root_path, msg_p, options.version) catch {};
 			}
 			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_p);
 			if (consecutive_errors >= max_consecutive_errors) {
@@ -622,8 +632,8 @@ test "writeFailureRecord replaces the prior daemon failure in the project state"
 	const codescan_dir = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".codescan", allocator);
 	defer allocator.free(codescan_dir);
 
-	try writeFailureRecord(allocator, codescan_dir, "/project", "first failure");
-	try writeFailureRecord(allocator, codescan_dir, "/project", "second failure");
+	try writeFailureRecord(allocator, codescan_dir, "/project", "first failure", "test-version");
+	try writeFailureRecord(allocator, codescan_dir, "/project", "second failure", "test-version");
 
 	const saved = try tmp.dir.readFileAlloc(io_singleton.getOrInit(), ".codescan/watcher-error.log", allocator, .limited(1024));
 	defer allocator.free(saved);

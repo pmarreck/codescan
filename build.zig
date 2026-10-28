@@ -3,6 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
 	const target = b.standardTargetOptions(.{});
 	const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Optimization mode (default: ReleaseFast)") orelse .ReleaseFast;
+	const build_options = b.addOptions();
+	build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
 
 	const main_module = b.createModule(.{
 		.root_source_file = b.path("src/main.zig"),
@@ -10,6 +12,7 @@ pub fn build(b: *std.Build) void {
 		.optimize = optimize,
 	});
 	addTreeSitterIncludes(b, main_module);
+	main_module.addOptions("build_options", build_options);
 
 	const sqlite_vec_dep = b.dependency("sqlite_vec", .{
 		.target = target,
@@ -117,6 +120,7 @@ pub fn build(b: *std.Build) void {
 	b.installArtifact(mk_db);
 
 	const unit_aggregate_tests = b.addTest(.{
+		.name = "codescan-unit-tests",
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("src/all_tests.zig"),
 			.target = target,
@@ -124,10 +128,14 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, unit_aggregate_tests.root_module);
+	unit_aggregate_tests.root_module.addOptions("build_options", build_options);
 	addPcre2Includes(unit_aggregate_tests.root_module, pcre2_lib);
 	linkCommon(unit_aggregate_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	const test_unit_step = b.step("test-unit", "Run aggregated unit tests");
 	test_unit_step.dependOn(&b.addRunArtifact(unit_aggregate_tests).step);
+	const test_artifacts_step = b.step("test-artifacts", "Install compiled test prerequisites without running them");
+	test_artifacts_step.dependOn(&b.addInstallArtifact(unit_aggregate_tests, .{}).step);
+	test_artifacts_step.dependOn(&b.addInstallArtifact(mk_db, .{}).step);
 
 	const test_step = b.step("test", "Run unit tests");
 
@@ -151,6 +159,7 @@ pub fn build(b: *std.Build) void {
 		}),
 	});
 	addTreeSitterIncludes(b, main_tests.root_module);
+	main_tests.root_module.addOptions("build_options", build_options);
 	addPcre2Includes(main_tests.root_module, pcre2_lib);
 	linkCommon(main_tests, sqlite3_lib, vec_static_lib, pcre2_lib, ts_lib, &ts_langs);
 	test_step.dependOn(&b.addRunArtifact(main_tests).step);

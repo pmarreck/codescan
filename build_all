@@ -14,13 +14,20 @@ if [ "$#" -ne 0 ]; then
 fi
 
 for target in \
-	"aarch64-macos" \
-	"aarch64-linux-musl" \
-	"x86_64-linux-musl" \
-	"aarch64-windows-gnu" \
-	"x86_64-windows-gnu"
+	"macos-arm64" \
+	"linux-arm64" \
+	"linux-amd64" \
+	"mswin-arm64" \
+	"mswin-amd64"
 do
-	run nix develop -c zig build "-Dtarget=$target"
+	case "$target" in
+		macos-*) variant= ;;
+		linux-*) variant=musl/ ;;
+		mswin-*) variant=gnu/ ;;
+	esac
+	prefix=".nix-out/$target/${variant}ReleaseFast"
+	run mkdir -p "$(dirname "$prefix")"
+	run nix build ".#release-$target" --out-link "$prefix"
 done
 
 # Run native last so zig-out/bin contains a binary for this machine.

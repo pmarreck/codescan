@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026 Peter Marreck. MIT License; see LICENSE.
+# Qualified test-isolation runner: read-only host, private writable test state.
+set -u
+if [ "${1:-}" != -- ] || [ "$#" -lt 2 ]; then
+	printf 'Usage: run-isolated -- COMMAND [ARG...]\n' >&2
+	exit 2
+fi
+shift
+if [ "$(uname -s)" != Linux ] || ! command -v bwrap >/dev/null 2>&1; then
+	printf 'run-isolated: qualified Linux/bubblewrap boundary required; refusing unconfined execution\n' >&2
+	exit 69
+fi
+cwd=$(pwd -P) || exit 1
+case "$cwd" in
+	/|/tmp|/run|/proc|/dev|/tmp/test-isolation|/tmp/test-isolation/*)
+		printf 'run-isolated: use a project directory outside sandbox infrastructure\n' >&2
+		exit 2 ;;
+esac
+run_mounts=()
+if [ -d /run ]; then run_mounts=(--tmpfs /run --ro-bind-try /run/current-system /run/current-system); fi
+exec bwrap \
+	--ro-bind / / --unshare-all --cap-drop ALL --die-with-parent --new-session \
+	--proc /proc --dev /dev --tmpfs /tmp "${run_mounts[@]}" \
+	--ro-bind "$cwd" "$cwd" --chdir "$cwd" \
+	--clearenv \
+	--setenv PATH "${CODESCAN_TEST_PATH:?use the pinned Nix test environment}" \
+	--setenv LANG C.UTF-8 --setenv TZ UTC \
+	--setenv CODESCAN_TEST_BIN "${CODESCAN_TEST_BIN:-}" \
+	--setenv CODESCAN_TEST_DB_BIN "${CODESCAN_TEST_DB_BIN:-}" \
+	--setenv CODESCAN_UNIT_TEST_BIN "${CODESCAN_UNIT_TEST_BIN:-}" \
+	--setenv CODESCAN_EXPECT_PF "${CODESCAN_EXPECT_PF:-}" \
+	--setenv CODESCAN_EXPECT_VARIANT "${CODESCAN_EXPECT_VARIANT:-}" \
+	--setenv OLLAMA_URL http://127.0.0.1:1 \
+	--setenv HOME /tmp/test-isolation/home \
+	--setenv TMPDIR /tmp/test-isolation/tmp \
+	--setenv XDG_CONFIG_HOME /tmp/test-isolation/config \
+	--setenv XDG_DATA_HOME /tmp/test-isolation/data \
+	--setenv XDG_STATE_HOME /tmp/test-isolation/state \
+	--setenv XDG_CACHE_HOME /tmp/test-isolation/cache \
+	--setenv XDG_RUNTIME_DIR /tmp/test-isolation/runtime \
+	--setenv TEST_WORKSPACE /tmp/test-isolation/work \
+	-- bash -c '
+		umask 077
+		mkdir -p "$HOME" "$TMPDIR" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" \
+			"$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR" "$TEST_WORKSPACE" || exit 1
+		exec "$@"
+	' isolated-tests "$@"

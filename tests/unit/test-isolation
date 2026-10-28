@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -u
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-isolation.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL isolation: %s\n' "$1" >&2; exit 1; }
+mkdir -p "$fixture/project/bin" || fail 'fixture setup failed'
+printf 'before\n' > "$fixture/project/protected"
+ln -s ../protected "$fixture/project/bin/command" || fail 'fixture link setup failed'
+# The same unconfined user can alter this disposable sentinel (RED control).
+printf 'unconfined\n' > "$fixture/project/protected"
+[ "$(< "$fixture/project/protected")" = unconfined ] || fail 'unconfined write control failed'
+printf 'before\n' > "$fixture/project/protected"
+cd "$fixture/project" || fail 'private project unavailable'
+export CODESCAN_BOUNDARY_CANARY=parent-state-must-not-leak
+if "$root/tests/lib/run-isolated" -- bash -c '
+	set -u
+	[ "${CODESCAN_BOUNDARY_CANARY+present}" != present ] || { printf "ambient environment leaked\n" >&2; exit 1; }
+	bad=0
+	for operation in relative absolute symlink published replace rename chmod create; do
+		case "$operation" in
+			relative) (printf changed > protected) ;;
+			absolute) (printf changed > "$PWD/protected") ;;
+			symlink) ln -s "$PWD/protected" "$TEST_WORKSPACE/escape" && (printf changed > "$TEST_WORKSPACE/escape") ;;
+			published) (printf changed > bin/command) ;;
+			replace) ln -sf "$TEST_WORKSPACE/replacement" bin/command ;;
+			rename) mv protected moved ;;
+			chmod) chmod 000 protected ;;
+			create) touch new-file ;;
+		esac > "$TMPDIR/$operation.out" 2> "$TMPDIR/$operation.err"
+		status=$?
+		[ "$status" -ne 0 ] || bad=1
+		[ "$(< protected)" = before ] || bad=1
+	done
+	printf private > "$HOME/private"
+	printf private > "$TEST_WORKSPACE/private"
+	[ "$(readlink bin/command)" = ../protected ] || bad=1
+	[ "$bad" -eq 0 ] || exit 1
+' > "$fixture/stdout" 2> "$fixture/stderr"; then
+	[ "$(< protected)" = before ] || fail 'protected original changed'
+	[ "$(readlink bin/command)" = ../protected ] || fail 'published link changed'
+else
+	printf '%s\n' "$(< "$fixture/stderr")" >&2
+	fail 'preventive boundary qualification failed'
+fi
+if "$root/tests/lib/run-isolated" -- bash -c '[ ! -e "$HOME/private" ] || exit 99; exit 17' > "$fixture/stdout" 2> "$fixture/stderr"; then
+	fail 'child failure was swallowed'
+else
+	[ "$?" -eq 17 ] || fail 'child exit status changed'
+fi
+
+# Both workers reach the barrier after writing the same HOME-relative path.
+# Only then may either read it back; no sleep determines ordering.
+mkfifo "$fixture/first-in" "$fixture/first-out" "$fixture/second-in" "$fixture/second-out" || fail 'barrier setup failed'
+worker='printf "%s\n" "$1" > "$HOME/marker" || exit 1; printf "ready\n"; read -r release || exit 1; test "$release" = go || exit 1; read -r value < "$HOME/marker" || exit 1; printf "%s\n" "$value"'
+timeout 10 "$root/tests/lib/run-isolated" -- bash -c "$worker" worker first < "$fixture/first-in" > "$fixture/first-out" 2> "$fixture/first-error" &
+first_pid=$!
+timeout 10 "$root/tests/lib/run-isolated" -- bash -c "$worker" worker second < "$fixture/second-in" > "$fixture/second-out" 2> "$fixture/second-error" &
+second_pid=$!
+exec {first_input}> "$fixture/first-in"
+exec {first_output}< "$fixture/first-out"
+exec {second_input}> "$fixture/second-in"
+exec {second_output}< "$fixture/second-out"
+read -r first_ready <&"$first_output" && [ "$first_ready" = ready ] || fail 'first worker did not reach the barrier'
+read -r second_ready <&"$second_output" && [ "$second_ready" = ready ] || fail 'second worker did not reach the barrier'
+printf 'go\n' >&"$first_input"
+printf 'go\n' >&"$second_input"
+read -r first_value <&"$first_output" && [ "$first_value" = first ] || fail 'first worker observed another namespace'
+read -r second_value <&"$second_output" && [ "$second_value" = second ] || fail 'second worker observed another namespace'
+wait "$first_pid" || fail 'first concurrent boundary failed'
+wait "$second_pid" || fail 'second concurrent boundary failed'
+[ ! -s "$fixture/first-error" ] && [ ! -s "$fixture/second-error" ] || fail 'concurrent boundaries emitted unexpected errors'
+printf 'Preventive filesystem boundary passed\n'

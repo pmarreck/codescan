@@ -31,26 +31,29 @@ file() {
 }
 
 nix() {
-	[ "${1-}" = develop ] && [ "${2-}" = -c ] || return 64
-	shift 2
-	if [ "${1-}" != zig ]; then
+	if [ "${1-}" = develop ] && [ "${2-}" = -c ]; then
+		shift 2
+		[ "${1-}" != zig ] || return 64
 		"$@"
 		return "$?"
 	fi
+	[ "${1-}" = build ] && [ "${2-}" = --no-link ] && [ "${3-}" = --print-out-paths ] || return 64
 	printf 'build\t%s\n' "$*" >> "$CI_CASE_EVENTS"
 	if [ "$CI_CASE_BUILD_RC" -ne 0 ]; then
 		printf 'fixture compilation failed\n' >&2
 		return "$CI_CASE_BUILD_RC"
 	fi
-	mkdir -p zig-out/bin || return 1
+	local output="$PWD/prepared output"
+	mkdir -p "$output/bin" || return 1
 	{
 		printf '#!%s\n' "$BASH"
 		printf '%s\n' \
 			'printf "binary\t%s\n" "$*" >> "$CI_CASE_EVENTS"' \
 			'printf "fixture about\n"' \
 			'exit "$CI_CASE_BINARY_RC"'
-	} > zig-out/bin/codescan
-	chmod +x zig-out/bin/codescan
+	} > "$output/bin/codescan"
+	chmod +x "$output/bin/codescan"
+	printf '%s\n' "$output"
 }
 export -f uname file nix
 
@@ -105,7 +108,14 @@ run_case() {
 			;;
 	esac
 	if [ "$name" != wrong-os ] && [ "$name" != wrong-host-cpu ]; then
-		[ "$(awk -F '\t' -v expected="zig build -Doptimize=ReleaseFast -Dtarget=$target" '$1 == "build" && $2 == expected { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail "$name: CI changed its pinned target/profile build invocation"
+		local attribute
+		case "$target" in
+			aarch64-macos) attribute=release-macos-arm64 ;;
+			aarch64-linux-musl) attribute=release-linux-arm64 ;;
+			x86_64-linux-musl) attribute=release-linux-amd64 ;;
+			*) fail 'test case requires an explicit expected Nix output' ;;
+		esac
+		[ "$(awk -F '\t' -v expected="build --no-link --print-out-paths .#$attribute" '$1 == "build" && $2 == expected { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail "$name: CI did not select its declared Nix release output"
 	fi
 }
 

@@ -16,19 +16,19 @@ if [ ! -x "$script" ]; then
 fi
 
 for target in \
-	"aarch64-macos" \
-	"aarch64-linux-musl" \
-	"x86_64-linux-musl" \
-	"aarch64-windows-gnu" \
-	"x86_64-windows-gnu"
+	"macos-arm64" \
+	"linux-arm64" \
+	"linux-amd64" \
+	"mswin-arm64" \
+	"mswin-amd64"
 do
 	if ! rg -Fq -- "\"$target\"" "$script"; then
 		fail "build_all is missing $target"
 	fi
 done
 
-if ! rg -Fq -- 'zig build "-Dtarget=$target"' "$script"; then
-	fail "build_all must pass each target to Zig"
+if ! rg -Fq -- 'nix build' "$script"; then
+	fail "build_all must use declared Nix outputs"
 fi
 
 if rg -Fq -- "x86_64-macos" "$script"; then

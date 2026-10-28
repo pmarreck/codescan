@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$root" || exit 1
+source "$root/tests/lib/capture.bash"
 
 out=
 err=
@@ -14,6 +16,7 @@ run_case() {
 	capture "$@"
 	if [ "$rc" -eq 0 ]; then
 		printf '\033[32mPASS\033[0m %s\n' "$name"
+		if [ "$name" = 'isolated complete suite' ]; then printf '%s\n' "$out"; fi
 	else
 		printf '\033[31mFAIL\033[0m %s\n' "$name" >&2
 		printf '%s' "$out" >&2
@@ -22,19 +25,37 @@ run_case() {
 	fi
 }
 
-run_case "dev-shell cache preservation" ./tests/unit/test-dev-shell-cache
-run_case "five-target build contract" ./tests/unit/test-build-all-contract
-run_case "CI runner contract" nix develop -c ./tests/unit/test-ci-runner-contract
-run_case "CI native Mac architecture/publication" nix develop -c ./tests/unit/test-ci-architecture
-run_case "all-system flake evaluation" nix flake check --no-build --all-systems
-run_case "no committed oMLX keys" ./tests/unit/test-no-committed-secrets
-run_case "portable .mcp.json" ./tests/unit/test-portable-mcp-config
-run_case "single index entrypoint" ./tests/unit/test-single-index-entrypoint
-run_case "sequential project reindex runner" ./tests/unit/test-reindex-all-projects
-run_case "unit" nix develop -c ./tests/unit/test-unit
-run_case "cli" nix develop -c ./tests/cli/test-cli
-run_case "watcher schema preservation" nix develop -c ./tests/cli/test-watcher-schema-preservation
-run_case "http" nix develop -c ./tests/http/test-http
-run_case "integration" nix develop -c ./tests/integration/test-integration
+case "$(uname -s)/$(uname -m)" in
+	Linux/x86_64) export CODESCAN_EXPECT_PF=linux-amd64 CODESCAN_EXPECT_VARIANT=musl ;;
+	Linux/aarch64) export CODESCAN_EXPECT_PF=linux-arm64 CODESCAN_EXPECT_VARIANT=musl ;;
+	*) printf 'Required native runtime isolation is not qualified on this host; refusing unconfined tests\n' >&2; exit 69 ;;
+esac
+
+if [ "$#" -eq 3 ] && [ "$1" = --prepared ]; then
+	cli_output="$2"
+	test_output="$3"
+	nix path-info "$cli_output" "$test_output" >/dev/null || exit 1
+elif [ "$#" -eq 0 ]; then
+	printf 'Preparing exact CLI and unit-test artifacts through Nix...\n' >&2
+	if out="$(timeout 1800 nix build .#default .#test-binaries --no-link --json --timeout 1800 --log-format bar-with-logs)"; then
+		rc=0
+	else
+		exit "$?"
+	fi
+	cli_output="$(printf '%s' "$out" | nix develop -c jq -er '[.[] | select(.drvPath | contains("-codescan-test-binaries-") | not)] | if length == 1 then .[0].outputs.out else error("expected one CLI output") end')" || exit 1
+	test_output="$(printf '%s' "$out" | nix develop -c jq -er '[.[] | select(.drvPath | contains("-codescan-test-binaries-"))] | if length == 1 then .[0].outputs.out else error("expected one test output") end')" || exit 1
+else
+	printf 'Usage: ./test [--prepared NIX_CLI_OUTPUT NIX_TEST_OUTPUT]\n' >&2
+	exit 64
+fi
+export CODESCAN_TEST_BIN="$cli_output/bin/codescan"
+export CODESCAN_TEST_DB_BIN="$test_output/bin/mk-test-db"
+export CODESCAN_UNIT_TEST_BIN="$test_output/bin/codescan-unit-tests"
+run_case 'dev-shell cache preservation' nix develop -c ./tests/unit/test-dev-shell-cache
+run_case 'all-system flake evaluation' nix flake check --no-build --all-systems
+run_case 'preventive filesystem boundary' nix develop -c ./tests/unit/test-isolation
+if [ "$rc" -eq 0 ]; then
+	run_case 'isolated complete suite' nix develop -c ./tests/lib/run-isolated -- bash ./tests/run-prepared
+fi
 
 exit "$failed"

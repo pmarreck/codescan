@@ -56,6 +56,19 @@ sandboxed build. This is deliberate: there is one reproducible dependency
 contract rather than an undocumented collection of host packages. Pre-built
 binaries remain self-contained and do not require Nix at runtime.
 
+`./build --debug` selects the Nix debug package; `./build --test` prepares
+compiled unit tests and fixture tools without publishing a CLI. The legacy
+`./build_all` command builds the five declared release targets through Nix,
+retains them under `.nix-out/<PF>/[<VARIANT>/]ReleaseFast`, and restores the
+native CLI last. There is no direct compiler fallback.
+
+`./test` prepares its exact CLI and test executables through Nix once, then
+executes them in disposable project state. Linux uses a tested Bubblewrap
+filesystem boundary with private HOME/XDG directories and a pinned tool PATH.
+The host runner refuses unconfined execution on other platforms until an
+equivalent boundary is qualified. Native Nix checks and release smoke tests
+remain separate evidence. Live-provider tests report their exclusions explicitly.
+
 macOS CI uses the `macos-15` ARM64 runner. Before packaging, it checks the
 actual runner architecture, inspects the executable's ARM64 Mach-O header,
 and runs `codescan --about`. These checks leave the pinned compiler and

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$ROOT/zig-out/bin/codescan"
+BIN="${CODESCAN_TEST_BIN:?prepare test binaries with ./test}"
+MK_DB="${CODESCAN_TEST_DB_BIN:?prepare the fixture generator with ./test}"
 
 out=
 err=
@@ -36,21 +37,15 @@ search_names() {
 main() {
 	require_tool jq
 	require_tool rg
+	require_tool cmp
 
-	original_dir="$PWD"
-	cd "$ROOT"
-	capture nix develop -c zig build -Doptimize=ReleaseFast
-	cd "$original_dir"
-	if [ "$rc" -ne 0 ]; then
-		printf '%s' "$err" >&2
-		fail "zig build failed"
-	fi
+	[ -x "$BIN" ] && [ -x "$MK_DB" ] || fail 'prepared test artifacts are unavailable'
 
 	DB_DIR="$(mktemp -d "$TMPDIR/codescan-cli.XXXXXX")"
 	DB="$DB_DIR/index.sqlite3"
 	trap 'rm -rf "$DB_DIR"' EXIT
 
-	capture "$ROOT/zig-out/bin/mk-test-db" --db "$DB"
+	capture "$MK_DB" --db "$DB"
 	if [ "$rc" -ne 0 ]; then
 		printf '%s' "$err" >&2
 		fail "mk_test_db failed"
@@ -200,7 +195,7 @@ main() {
 		'embedding_model=test-model' \
 		'embedding_api=ollama' \
 		> "$doctor_root/.codescan/config.ini"
-	capture "$ROOT/zig-out/bin/mk-test-db" --db "$doctor_root/.codescan/index.sqlite3"
+	capture "$MK_DB" --db "$doctor_root/.codescan/index.sqlite3"
 	[ "$rc" -eq 0 ] || fail "mk-test-db could not create the doctor fixture: $err"
 	capture "$BIN" doctor --root "$doctor_root" --json
 	[ "$rc" -ne 0 ] || fail "doctor unexpectedly accepted an unavailable inference server"
@@ -349,7 +344,7 @@ main() {
 	# Give the February timestamp its own fixture, independent of files indexed
 	# by earlier edit tests. This checks the ISO8601 off-by-one-month regression.
 	status_db="$DB_DIR/status.sqlite3"
-	capture "$ROOT/zig-out/bin/mk-test-db" --db "$status_db"
+	capture "$MK_DB" --db "$status_db"
 	[ "$rc" -eq 0 ] || fail "status fixture creation failed: $err"
 	capture sqlite3 "$status_db" "INSERT INTO indexed_files (file_path, mtime_ns, size, indexed_at) VALUES ('test.zig', 0, 100, 1771148200);"
 	[ "$rc" -eq 0 ] || fail "status timestamp fixture failed: $err"
@@ -415,7 +410,7 @@ main() {
 	make_fake_agent() {
 		local name="$1" get_rc="$2"
 		cat > "$fake_bin/$name" <<FAKEEOF
-#!/usr/bin/env bash
+#!$BASH
 printf '%s %s\n' "$name" "\$*" >> "$fake_log"
 if [ "\${1:-}" = "mcp" ] && [ "\${2:-}" = "get" ]; then exit $get_rc; fi
 exit 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
 
 root="$(mktemp -d "$TMPDIR/codescan-reindex-test.XXXXXX")" || exit 1
 fake_bin="$root/bin"
@@ -9,7 +9,7 @@ log="$root/indexed-projects"
 failed=0
 
 cleanup() {
-	rm-safe -r "$root"
+	rm -rf -- "$root"
 }
 trap cleanup EXIT
 
@@ -47,8 +47,8 @@ printf '%s\n' \
 	> "$root/projects/project with space/.codescan/config.ini"
 existing_config_before=$(sha256sum "$root/projects/project with space/.codescan/config.ini")
 
-cat > "$fake_bin/codescan" <<'FAKE'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" > "$fake_bin/codescan"
+cat >> "$fake_bin/codescan" <<'FAKE'
 set -u
 printf '%s\n' "$PWD" >> "$CODESCAN_TEST_LOG"
 expected_action="${CODESCAN_EXPECT_ACTION:-index}"

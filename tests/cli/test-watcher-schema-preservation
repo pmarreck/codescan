@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -u
 
-source "$HOME/dotfiles/bin/src/capture.bash"
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BIN="$ROOT/zig-out/bin/codescan"
-MK_DB="$ROOT/zig-out/bin/mk-test-db"
+BIN="${CODESCAN_TEST_BIN:?prepare test binaries with ./test}"
+MK_DB="${CODESCAN_TEST_DB_BIN:?prepare the fixture generator with ./test}"
 out=
 err=
 rc=
@@ -59,5 +59,10 @@ capture sqlite3 -readonly "$db" 'SELECT count(*) FROM symbols;'
 capture sqlite3 -readonly "$db" "SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='reject_schema_write';"
 [ "$rc" -eq 0 ] && [ "$out" = 1 ] || fail "watcher removed the original schema failure fixture"
 rg -q 'SqlStepFailed' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the original schema error"
+rg -Fq 'setMetaValue: step' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the SQLite operation"
+rg -Fq 'sqlite_code=19' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the SQLite constraint code"
+rg -Fq 'deliberate schema write failure' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the SQLite rejection message"
+rg -Fq 'command: codescan watch' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the command"
+rg -Fq 'version: 0.1.0' "$project/.codescan/watcher-error.log" || fail "watcher failure record lost the version"
 
 printf 'watcher schema-preservation regression passed\n'
