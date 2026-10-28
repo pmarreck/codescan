@@ -6,11 +6,11 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [x] Resolve the staged-dependency rejection locally with equivalent double-quoted Nix shell syntax; cache inheritance/default tests and the real staged gate pass without an override. (done 2026-10-27 22:14 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [ ] Ship the validated changes and verify exact-commit Mechatron Prime CI and GitHub Actions, including native macOS ARM64 execution.
+	- [x] Move source-closure validation to declared build inputs and require its positive/negative controls in CI and the complete runner; local checks pass, with cold GitHub verification pending after run 40620285707 failed. (done 2026-10-27 22:28 EDT)
 - [ ] Report the shared Nix tokenizer's escaped-interpolation false positive; blocked only on approval to contact the additional recipient. (context: docs/plan_context/staged_dependency_parser.md)
-- [x] Fix the Mac15 smoke failure with a real `--about` CLI regression and compile-target PF/VARIANT identification; all five Nix release builds and actual headers passed, with native Mac execution still pending CI. (done 2026-10-27 21:12 EDT; prior failure e058546e)
 - [x] Prepare exact test binaries through Nix once and run mutation tests in a qualified disposable boundary; the complete local runner passed executed checks, with four unit and two live-provider exclusions reported explicitly. (done 2026-10-27 21:12 EDT)
 - [x] Make Git-discovery prerequisites hard failures, inject process-aware test I/O, and force-add the deliberately ignored tracked fixture; all three regressions execute successfully in the full native and Nix runners. (done 2026-10-27 22:09 EDT)
-- [ ] Separate queue/setup/compilation/execution timing and investigate long feedback; the previous Mac15 job waited over two hours before running, independently of its CLI failure.
+- [ ] Attribute and reduce the prepared runtime's 13.43-second lower bound against the five-second budget using shared per-phase measurements; keep compilation, Nix setup, queue waiting, and live-provider exclusions separate.
 
 ## Watcher reliability
 

@@ -160,10 +160,27 @@
 				checks.source-closure =
 					let
 						fixturePackage = mkCodescan { sourceRoot = ./tests/fixtures/source-closure; };
-						actual = pkgs.lib.sort builtins.lessThan (map (path: pkgs.lib.removePrefix "${toString fixturePackage.src}/" (toString path)) (pkgs.lib.filesystem.listFilesRecursive fixturePackage.src));
 						expected = [ "build.zig" "build.zig.zon" "deps/parser/future.h" "deps/parser/parser.c" "src/docs/data.txt" "src/future/module.zig" "src/main.zig" ];
-					in assert pkgs.lib.assertMsg (actual == expected) "Compiled source closure must retain all source/dependency inputs and exclude inert planning/documentation";
-					pkgs.runCommand "codescan-source-closure" {} ''touch "$out"'';
+					in pkgs.runCommand "codescan-source-closure" {
+						fixtureSource = fixturePackage.src;
+						unfilteredFixture = ./tests/fixtures/source-closure;
+						expectedFiles = pkgs.writeText "codescan-expected-source-files" (pkgs.lib.concatStringsSep "\n" expected + "\n");
+						nativeBuildInputs = [ pkgs.findutils pkgs.coreutils pkgs.diffutils ];
+					} ''
+						find "$fixtureSource" -type f -printf '%P\n' > paths || exit "$?"
+						LC_ALL=C sort paths > actual || exit "$?"
+						diff -u "$expectedFiles" actual || exit "$?"
+						find "$unfilteredFixture" -type f -printf '%P\n' > control-paths || exit "$?"
+						LC_ALL=C sort control-paths > control || exit "$?"
+						if cmp -s "$expectedFiles" control; then
+							echo "source-closure negative control must contain excluded inputs" >&2
+							exit 1
+						else
+							control_status=$?
+							[ "$control_status" -eq 1 ] || exit "$control_status"
+						fi
+						touch "$out"
+					'';
 
 				packages.test-binaries = pkgs.stdenv.mkDerivation {
 					pname = "codescan-test-binaries";

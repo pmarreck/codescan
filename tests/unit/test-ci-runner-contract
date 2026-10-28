@@ -35,7 +35,7 @@ actual_commands="$(awk '
 ' "$workflow" | LC_ALL=C sort)"
 expected_commands="$(printf '%s\n' \
 	'nix flake check --no-build --all-systems' \
-	'nix build .#checks.x86_64-linux.test --no-link' | LC_ALL=C sort)"
+	'nix build .#checks.x86_64-linux.test .#checks.x86_64-linux.source-closure --no-link' | LC_ALL=C sort)"
 [ "$actual_commands" = "$expected_commands" ] || fail "GitHub test job must run the CI contracts and all-system flake evaluation before building artifacts"
 
 actual_timeouts="$(awk '/^  [a-z_-]+:$/ { job = $1; sub(/:$/, "", job) } /^    timeout-minutes:/ { print job "\t" $2 }' "$workflow" | LC_ALL=C sort)"

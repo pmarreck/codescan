@@ -23,7 +23,7 @@ jobs:
         shell: bash
         run: |
           nix flake check --no-build --all-systems
-          nix build .#checks.x86_64-linux.test --no-link
+          nix build .#checks.x86_64-linux.test .#checks.x86_64-linux.source-closure --no-link
 
   build:
     needs: test

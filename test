@@ -26,8 +26,8 @@ run_case() {
 }
 
 case "$(uname -s)/$(uname -m)" in
-	Linux/x86_64) export CODESCAN_EXPECT_PF=linux-amd64 CODESCAN_EXPECT_VARIANT=musl ;;
-	Linux/aarch64) export CODESCAN_EXPECT_PF=linux-arm64 CODESCAN_EXPECT_VARIANT=musl ;;
+	Linux/x86_64) export CODESCAN_EXPECT_PF=linux-amd64 CODESCAN_EXPECT_VARIANT=musl; codescan_nix_system=x86_64-linux ;;
+	Linux/aarch64) export CODESCAN_EXPECT_PF=linux-arm64 CODESCAN_EXPECT_VARIANT=musl; codescan_nix_system=aarch64-linux ;;
 	*) printf 'Required native runtime isolation is not qualified on this host; refusing unconfined tests\n' >&2; exit 69 ;;
 esac
 
@@ -53,6 +53,7 @@ export CODESCAN_TEST_DB_BIN="$test_output/bin/mk-test-db"
 export CODESCAN_UNIT_TEST_BIN="$test_output/bin/codescan-unit-tests"
 run_case 'dev-shell cache preservation' nix develop -c ./tests/unit/test-dev-shell-cache
 run_case 'all-system flake evaluation' nix flake check --no-build --all-systems
+run_case 'compiled source closure' nix build --no-link ".#checks.$codescan_nix_system.source-closure"
 run_case 'preventive filesystem boundary' nix develop -c ./tests/unit/test-isolation
 if [ "$rc" -eq 0 ]; then
 	run_case 'isolated complete suite' nix develop -c ./tests/lib/run-isolated -- bash ./tests/run-prepared
