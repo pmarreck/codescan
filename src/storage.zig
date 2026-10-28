@@ -224,6 +224,7 @@ test "storage readers distinguish SQLite read failures from missing rows and ret
 
 const ReadAuthorizationFixture = struct {
 	deny_presence: bool = false,
+	deny_body: bool = false,
 	deny_metadata_read: usize = 0,
 	metadata_reads: usize = 0,
 	denials: usize = 0,
@@ -232,6 +233,7 @@ const ReadAuthorizationFixture = struct {
 		if (action != c.SQLITE_READ or table == null or column == null) return c.SQLITE_OK;
 		const self: *@This() = @ptrCast(@alignCast(context.?));
 		var deny = self.deny_presence and std.mem.eql(u8, std.mem.span(table), "symbols") and column[0] == 0;
+		deny = deny or (self.deny_body and std.mem.eql(u8, std.mem.span(table), "symbols") and std.mem.eql(u8, std.mem.span(column), "body"));
 		if (std.mem.eql(u8, std.mem.span(table), "meta") and std.mem.eql(u8, std.mem.span(column), "value")) {
 			self.metadata_reads += 1;
 			deny = deny or (self.deny_metadata_read > 0 and self.metadata_reads == self.deny_metadata_read);
@@ -245,6 +247,29 @@ const ReadAuthorizationFixture = struct {
 		try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_set_authorizer(db, authorize, self));
 	}
 };
+
+test "symbol body preparation failures retain their SQLite diagnostics" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	try exec(db, "CREATE TABLE symbols(id INTEGER PRIMARY KEY, body TEXT);\x00");
+	try exec(db, "INSERT INTO symbols VALUES(1, 'preserved body');\x00");
+	var capture: ErrorCapture = .{};
+	try attachErrorCapture(db, &capture);
+	var authorization: ReadAuthorizationFixture = .{ .deny_body = true };
+	try authorization.install(db);
+	defer _ = c.sqlite3_set_authorizer(db, null, null);
+	try std.testing.expectError(error.SqlPrepareFailed, getSymbolBody(allocator, db, 1));
+	try std.testing.expectEqual(@as(usize, 1), authorization.denials);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_AUTH), capture.code);
+	try std.testing.expectEqualStrings("getSymbolBody: prepare", capture.operation[0..capture.operation_len]);
+	try std.testing.expect(capture.message_len > 0);
+	try std.testing.expectEqual(c.SQLITE_OK, c.sqlite3_set_authorizer(db, null, null));
+	const body = (try getSymbolBody(allocator, db, 1)).?;
+	defer allocator.free(body);
+	try std.testing.expectEqualStrings("preserved body", body);
+	try std.testing.expectEqual(@as(c_int, c.SQLITE_AUTH), capture.code);
+}
 
 test "schema initialization preserves embedding metadata when populated-index inspection fails" {
 	const allocator = std.testing.allocator;
@@ -744,6 +769,7 @@ pub fn getSymbolBody(allocator: std.mem.Allocator, db: Db, id: i64) !?[]const u8
 	const sql: [:0]const u8 = "SELECT body FROM symbols WHERE id = ?1;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
 	if (c.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != c.SQLITE_OK) {
+		logSqliteError(db, "getSymbolBody: prepare");
 		return error.SqlPrepareFailed;
 	}
 	defer _ = c.sqlite3_finalize(stmt.?);

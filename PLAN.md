@@ -6,13 +6,15 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [x] Send the approved Nix tokenizer repair request through durable inbox and native delivery; the owning agent acknowledged acceptance and failing-first validation, with unsafe-path and staged/worktree controls retained. (done 2026-10-28 00:25 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [ ] Verify the shared tokenizer repair when its owning agent reports the fix commit and complete gate results; keep the tested local quoting workaround meanwhile. (context: docs/plan_context/staged_dependency_parser.md)
-- [x] Attribute and reduce the ReleaseFast diagnostic runtime from 13.43 to 4.02 seconds using a nonblocking polling test, exact lightweight source inventory, and two test lanes; exclusions prevent a complete budget claim, and ReleaseSafe correctness timing remains separate. (done 2026-10-27 23:04 EDT; context: docs/plan_context/test_latency.md)
+- [x] Verify the profiler-pin shipment on exact-commit Mechatron Prime CI and GitHub Actions run 40634162232, including native macOS ARM64 build/header/about execution. (done 2026-10-28 00:58 EDT; commit b7dc4595)
+- [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [x] Finish exact-commit CI verification for 93a0fea3; Mechatron Prime CI passed in 42 seconds and GitHub Actions run 40624690426 passed, including native macOS ARM64 execution. (done 2026-10-27 23:17 EDT; commit 93a0fea3)
 
 ## Watcher reliability
 
 - [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; live root/status calls respond, the watcher is stopped, and pre-search reconciliation is a candidate for the October 27 delay, not an established cause.
 - [ ] Finish SQLite watcher diagnostics across remaining read/cursor failures, including controlled I/O faults, without broadening retry policy. (context: docs/plan_context/watcher_sqlite_failures.md)
+	- [x] Preserve symbol-body preparation diagnostics after an authorizer regression reported expected 23, found 0; complete Nix and fresh host runners now pass 753 unit cases, with one optional skip and unchanged live-provider exclusions. (done 2026-10-28 01:00 EDT)
 	- [x] Ship shared cursor error handling after complete Nix/fresh host checks; Mechatron Prime CI and GitHub Actions run 40626218384 pass, including native macOS ARM64 execution. (done 2026-10-27 23:33 EDT; commit 85bf226a)
 	- [x] Verify the populated-index guard and error-path ownership fixes after private regressions reproduced metadata replacement and 14 unfreed bytes; complete Nix and fresh host runners pass without changing retry policy. (done 2026-10-28 00:02 EDT)
 	- [x] Require ReleaseSafe correctness artifacts after a failing runtime-safety control exposed disabled allocator leak checks; explicit byte accounting and 752 passing unit cases verify cleanup, with one optional skip. (done 2026-10-28 00:02 EDT)
