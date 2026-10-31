@@ -8,6 +8,7 @@ zig-out/
 result
 /.nix-out/
 /.profiling.local.json
+/.codescan-package.*/
 inbox
 zig-pkg/
 

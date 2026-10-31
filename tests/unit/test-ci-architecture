@@ -53,16 +53,29 @@ nix() {
 			'exit "$CI_CASE_BINARY_RC"'
 	} > "$output/bin/codescan"
 	chmod +x "$output/bin/codescan"
+	cp "$output/bin/codescan" "$output/bin/codescan.exe" || return 1
 	printf '%s\n' "$output"
 }
-export -f uname file nix
+tar() {
+	if [ "${CI_CASE_ARCHIVE_RC:-0}" -ne 0 ]; then
+		[ "${1-}" = -czf ] && [ -n "${2-}" ] || return 64
+		printf 'partial archive\n' > "$2" || return 1
+		return "$CI_CASE_ARCHIVE_RC"
+	fi
+	command tar "$@"
+}
+export -f uname file nix tar
 
 run_case() {
 	local name="$1" os="$2" arch="$3" format="$4" outcome="$5" target="$6"
 	local build_rc="${7:-0}" file_rc="${8:-0}" binary_rc="${9:-0}"
+	local package_name="${10:-package dir}"
+	local archive_name="${11:-artifact.tar.gz}" executable=codescan
+	case "$target" in *-windows-gnu) executable=codescan.exe ;; esac
+	local extension="${executable#codescan}"
 	local case_dir="$fixture_root/$name/project with spaces"
-	mkdir -p "$case_dir/package dir" || fail "could not create case $name"
-	printf 'previous artifact\n' > "$case_dir/package dir/previous"
+	mkdir -p "$case_dir/$package_name" || fail "could not create case $name"
+	printf 'previous artifact\n' > "$case_dir/$package_name/previous"
 	printf 'fixture README\n' > "$case_dir/README.md"
 	printf 'fixture license\n' > "$case_dir/LICENSE"
 	: > "$case_dir/events"
@@ -72,7 +85,7 @@ run_case() {
 		env CI_CASE_EVENTS="$case_dir/events" CI_CASE_OS="$os" CI_CASE_ARCH="$arch" \
 			CI_CASE_FORMAT="$format" CI_CASE_BUILD_RC="$build_rc" CI_CASE_FILE_RC="$file_rc" \
 			CI_CASE_BINARY_RC="$binary_rc" \
-			bash "$root/scripts/ci-build" "$target" 'package dir' artifact.tar.gz ''
+			bash "$root/scripts/ci-build" "$target" "$package_name" "$archive_name" "$extension"
 	) > "$case_dir/stdout" 2> "$case_dir/stderr"; then
 		rc=0
 	else
@@ -80,14 +93,31 @@ run_case() {
 	fi
 	if [ "$outcome" = reject ]; then
 		[ "$rc" -ne 0 ] || fail "$name: CI published an invalid native Mac product"
-		[ -f "$case_dir/package dir/previous" ] || fail "$name: failed verification replaced the previous package"
-		[ ! -e "$case_dir/artifact.tar.gz" ] || fail "$name: failed verification published an archive"
+		[ -f "$case_dir/$package_name/previous" ] || fail "$name: failed verification replaced the previous package"
+		[ ! -e "$case_dir/$archive_name" ] || fail "$name: failed verification published an archive"
 	else
 		if [ "$rc" -ne 0 ]; then
 			printf '%s\n' "$(<"$case_dir/stderr")" >&2
 			fail "$name: valid CI product was rejected"
 		fi
-		[ -x "$case_dir/package dir/codescan" ] && [ -f "$case_dir/artifact.tar.gz" ] || fail "$name: valid product was not published"
+		[ -f "$case_dir/$package_name/previous" ] && [ "$(<"$case_dir/$package_name/previous")" = 'previous artifact' ] || fail "$name: packaging destroyed caller-owned staging contents"
+		[ ! -e "$case_dir/$package_name/$executable" ] || fail "$name: packaging wrote into caller-owned staging"
+		[ -f "$case_dir/$archive_name" ] || fail "$name: valid product was not published"
+		local actual_members expected_members
+		case "$archive_name" in
+			*.zip) actual_members="$(unzip -Z -1 "$case_dir/$archive_name")" || fail "$name: ZIP listing failed" ;;
+			*) actual_members="$(tar -tzf "$case_dir/$archive_name")" || fail "$name: tar listing failed" ;;
+		esac
+		actual_members="$(printf '%s\n' "$actual_members" | LC_ALL=C sort)" || fail "$name: member sorting failed"
+		expected_members="$(printf '%s\n' "$package_name/" "$package_name/LICENSE" "$package_name/README.md" "$package_name/$executable")"
+		[ "$actual_members" = "$expected_members" ] || fail "$name: archive contains the wrong product set"
+		mkdir "$case_dir/extracted" || fail "$name: could not allocate extraction fixture"
+		case "$archive_name" in
+			*.zip) unzip -q "$case_dir/$archive_name" -d "$case_dir/extracted" || fail "$name: archive extraction failed" ;;
+			*) tar -xzf "$case_dir/$archive_name" -C "$case_dir/extracted" || fail "$name: archive extraction failed" ;;
+		esac
+		cmp "$case_dir/prepared output/bin/$executable" "$case_dir/extracted/$package_name/$executable" || fail "$name: archive changed executable bytes"
+		[ -x "$case_dir/extracted/$package_name/$executable" ] || fail "$name: archive lost executable permissions"
 	fi
 	case "$name" in
 		wrong-os|wrong-host-cpu)
@@ -113,6 +143,8 @@ run_case() {
 			aarch64-macos) attribute=release-macos-arm64 ;;
 			aarch64-linux-musl) attribute=release-linux-arm64 ;;
 			x86_64-linux-musl) attribute=release-linux-amd64 ;;
+			x86_64-windows-gnu) attribute=release-mswin-amd64 ;;
+			aarch64-windows-gnu) attribute=release-mswin-arm64 ;;
 			*) fail 'test case requires an explicit expected Nix output' ;;
 		esac
 		[ "$(awk -F '\t' -v expected="build --no-link --print-out-paths .#$attribute" '$1 == "build" && $2 == expected { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail "$name: CI did not select its declared Nix release output"
@@ -128,6 +160,81 @@ run_case build-failure Darwin arm64 'Mach-O 64-bit arm64 executable' reject aarc
 run_case valid-mac Darwin arm64 'Mach-O 64-bit arm64 executable' accept aarch64-macos
 run_case linux-arm Linux x86_64 'ELF 64-bit LSB executable, ARM aarch64' accept aarch64-linux-musl
 run_case linux-x86 Linux x86_64 'ELF 64-bit LSB executable, x86-64' accept x86_64-linux-musl
+run_case linux-archive-label Linux x86_64 '' accept x86_64-linux-musl 0 0 0 archive.tar.gz
+run_case linux-zip-label Linux x86_64 '' accept x86_64-linux-musl 0 0 0 archive.zip
+run_case linux-zip-archive Linux x86_64 '' accept x86_64-linux-musl 0 0 0 archive.zip artifact.zip
+run_case windows-x86 Linux x86_64 '' accept x86_64-windows-gnu 0 0 0 package artifact.zip
+run_case windows-arm Linux x86_64 '' accept aarch64-windows-gnu 0 0 0 package artifact.zip
+
+# The failing builder is a controlled stop: even a broken argument validator
+# cannot reach staging deletion for these adversarial inputs.
+reject_package_args() {
+	local name="$1" package_name="$2" archive_name="$3" extension="$4"
+	local case_dir="$fixture_root/$name/project with spaces" rc
+	mkdir -p "$case_dir" || fail "could not create argument case $name"
+	case "$name" in
+		absolute-package) package_name="$case_dir/package" ;;
+		absolute-archive) archive_name="$case_dir/artifact.tar.gz" ;;
+		symlink-archive)
+			printf 'protected archive\n' > "$case_dir/protected"
+			ln -s protected "$case_dir/artifact.tar.gz" || fail 'could not create archive symlink fixture'
+			;;
+		directory-archive) mkdir "$case_dir/artifact.tar.gz" || fail 'could not create archive directory fixture' ;;
+	esac
+	: > "$case_dir/events"
+	if (
+		cd "$case_dir" || exit 1
+		env CI_CASE_EVENTS="$case_dir/events" CI_CASE_BUILD_RC=6 \
+			bash "$root/scripts/ci-build" x86_64-linux-musl "$package_name" "$archive_name" "$extension"
+	) > "$case_dir/stdout" 2> "$case_dir/stderr"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 64 ] || fail "$name: unsafe package arguments were not rejected as usage errors"
+	[ ! -s "$case_dir/events" ] || fail "$name: invalid package arguments reached the builder"
+	[ -s "$case_dir/stderr" ] || fail "$name: invalid package arguments had no diagnostic"
+	if [ "$name" = symlink-archive ]; then
+		[ -L "$case_dir/artifact.tar.gz" ] && [ "$(<"$case_dir/protected")" = 'protected archive' ] || fail 'archive validation changed its symlink target'
+	fi
+}
+while IFS='|' read -r name package_name archive_name extension; do
+	reject_package_args "$name" "$package_name" "$archive_name" "$extension"
+done <<'CASES'
+empty-package||artifact.tar.gz|
+dot-package|.|artifact.tar.gz|
+parent-package|..|artifact.tar.gz|
+absolute-package|package|artifact.tar.gz|
+nested-package|stage/package|artifact.tar.gz|
+escaping-package|../package|artifact.tar.gz|
+backslash-package|stage\package|artifact.tar.gz|
+option-package|-package|artifact.tar.gz|
+escaping-archive|package|../artifact.tar.gz|
+absolute-archive|package|artifact.tar.gz|
+nested-archive|package|stage/artifact.tar.gz|
+option-archive|package|-artifact.tar.gz|
+unknown-archive|package|artifact.data|
+wrong-extension|package|artifact.tar.gz|.exe
+escaping-extension|package|artifact.tar.gz|/../secret
+symlink-archive|package|artifact.tar.gz|
+directory-archive|package|artifact.tar.gz|
+CASES
+
+# Inject a writer that opens and partly writes the requested archive, then fails.
+# Publication must retain the old archive and clean only its owned workspace.
+archive_failure_dir="$fixture_root/archive-failure/project with spaces"
+mkdir -p "$archive_failure_dir/package dir" || fail 'could not allocate archive-failure fixture'
+printf 'previous artifact\n' > "$archive_failure_dir/package dir/previous"
+printf 'previous archive\n' > "$archive_failure_dir/artifact.tar.gz"
+printf 'fixture README\n' > "$archive_failure_dir/README.md"
+printf 'fixture license\n' > "$archive_failure_dir/LICENSE"
+: > "$archive_failure_dir/events"
+if (
+	cd "$archive_failure_dir" || exit 1
+	env CI_CASE_EVENTS="$archive_failure_dir/events" CI_CASE_BUILD_RC=0 CI_CASE_ARCHIVE_RC=7 \
+		bash "$root/scripts/ci-build" x86_64-linux-musl 'package dir' artifact.tar.gz ''
+) > "$archive_failure_dir/stdout" 2> "$archive_failure_dir/stderr"; then archive_rc=0; else archive_rc="$?"; fi
+[ "$archive_rc" -eq 7 ] || fail 'archive failure did not preserve the adapter exit status'
+[ "$(<"$archive_failure_dir/artifact.tar.gz")" = 'previous archive' ] || fail 'archive failure replaced the previous archive'
+[ "$(<"$archive_failure_dir/package dir/previous")" = 'previous artifact' ] || fail 'archive failure changed caller staging'
+leftovers="$(find "$archive_failure_dir" -maxdepth 1 -type d -name '.codescan-package.*' -print)" || fail 'could not inspect owned package cleanup'
+[ -z "$leftovers" ] || fail 'archive failure leaked its temporary workspace'
 
 # Sweep the declared host domain as a set, not a few presence checks.
 source "$root/scripts/ci-verify-macos-arm64"

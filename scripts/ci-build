@@ -1,38 +1,66 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -u
 
-TARGET="${1:?target}"
-PKGDIR="${2:?pkgdir}"
-ARCHIVE="${3:?archive}"
+if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
+	printf 'Usage: ci-build TARGET PACKAGE_NAME ARCHIVE [EXTENSION]\n' >&2
+	exit 64
+fi
+TARGET="$1"
+PKGDIR="$2"
+ARCHIVE="$3"
 EXT="${4:-}"
 ci_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ci_mac_verifier="$ci_script_dir/ci-verify-macos-arm64"
 
-if [ "$TARGET" = aarch64-macos ]; then
-	"$ci_mac_verifier"
-fi
-
 case "$TARGET" in
-	x86_64-linux-musl) attribute=release-linux-amd64 ;;
-	aarch64-linux-musl) attribute=release-linux-arm64 ;;
-	aarch64-macos) attribute=release-macos-arm64 ;;
-	x86_64-windows-gnu) attribute=release-mswin-amd64 ;;
-	aarch64-windows-gnu) attribute=release-mswin-arm64 ;;
+	x86_64-linux-musl) attribute=release-linux-amd64; expected_extension= ;;
+	aarch64-linux-musl) attribute=release-linux-arm64; expected_extension= ;;
+	aarch64-macos) attribute=release-macos-arm64; expected_extension= ;;
+	x86_64-windows-gnu) attribute=release-mswin-amd64; expected_extension=.exe ;;
+	aarch64-windows-gnu) attribute=release-mswin-arm64; expected_extension=.exe ;;
 	*) printf 'error: unsupported release target: %s\n' "$TARGET" >&2; exit 64 ;;
 esac
-output="$(nix build --no-link --print-out-paths ".#$attribute")"
+package_label_pattern='^[A-Za-z0-9][A-Za-z0-9._ -]*$'
+if ! [[ "$PKGDIR" =~ $package_label_pattern && "$ARCHIVE" =~ $package_label_pattern ]] ||
+	[[ "$EXT" != "$expected_extension" ]]; then
+	printf 'error: package/archive names must be plain labels and the extension must match the target\n' >&2
+	exit 64
+fi
+case "$ARCHIVE" in
+	*.tar.gz|*.zip) ;;
+	*) printf 'error: archive must end in .tar.gz or .zip\n' >&2; exit 64 ;;
+esac
+if [ -L "$ARCHIVE" ] || { [ -e "$ARCHIVE" ] && [ ! -f "$ARCHIVE" ]; }; then
+	printf 'error: archive output must be a regular file, not a link or directory\n' >&2
+	exit 64
+fi
 
 if [ "$TARGET" = aarch64-macos ]; then
-	nix develop -c "$ci_mac_verifier" "$output/bin/codescan${EXT}"
+	"$ci_mac_verifier" || exit "$?"
+fi
+output="$(nix build --no-link --print-out-paths ".#$attribute")" || exit "$?"
+
+if [ "$TARGET" = aarch64-macos ]; then
+	nix develop -c "$ci_mac_verifier" "$output/bin/codescan${EXT}" || exit "$?"
 fi
 
-rm -rf "$PKGDIR"
-mkdir -p "$PKGDIR"
-cp -f "$output/bin/codescan${EXT}" "$PKGDIR/"
-cp -f README.md LICENSE "$PKGDIR/"
+# Keep temporary archives on the destination filesystem for rename publication.
+# The package label never selects a caller-owned filesystem directory.
+package_work="$(mktemp -d "$PWD/.codescan-package.XXXXXXXX")" || exit 1
+trap 'rm -rf -- "$package_work"' EXIT
+mkdir "$package_work/$PKGDIR" || exit 1
+cp "$output/bin/codescan${EXT}" "$package_work/$PKGDIR/" || exit 1
+cp README.md LICENSE "$package_work/$PKGDIR/" || exit 1
 
 if [[ "$ARCHIVE" == *.zip ]]; then
-	zip -rq "$ARCHIVE" "$PKGDIR"
+	package_archive="$package_work/.archive.zip"
+	(cd "$package_work" && zip -rq "$package_archive" "$PKGDIR") || exit "$?"
 else
-	tar -czf "$ARCHIVE" "$PKGDIR"
+	package_archive="$package_work/.archive.tar.gz"
+	tar -czf "$package_archive" -C "$package_work" "$PKGDIR" || exit "$?"
 fi
+if [ -L "$ARCHIVE" ] || { [ -e "$ARCHIVE" ] && [ ! -f "$ARCHIVE" ]; }; then
+	printf 'error: archive output changed to a link or directory during packaging\n' >&2
+	exit 1
+fi
+mv -f -- "$package_archive" "$ARCHIVE"
