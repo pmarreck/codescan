@@ -64,6 +64,42 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$(mktemp -d "${TMPDIR:?}/codescan-prepared-runner.XXXXXX")" || exit 1
 trap 'rm -rf -- "$fixture"' EXIT
 fail() { printf 'FAIL prepared runner: %s\n' "$1" >&2; exit 1; }
+
+check_suite_calls() {
+	local actual expected='1 1 1 1 1 1'
+	case "$2" in copy-failure|profiled-copy-failure) expected='1 0 0 0 0 0' ;; esac
+	actual="$(awk '
+		{ counts[$0]++ }
+		END { print counts["test-unit"]+0, counts["test-cli"]+0,
+			counts["test-integration"]+0, counts["test-test-latency"]+0,
+			counts["test-prepared-runner"]+0, counts["test-ci-architecture"]+0 }
+	' "$1")" || return 1
+	[ "$actual" = "$expected" ]
+}
+
+# Multiplicity controls derive failures by removing or duplicating each member
+# of a known-good set, not by copying the counter implementation.
+suite_names=(test-unit test-cli test-integration test-test-latency test-prepared-runner test-ci-architecture)
+call_fixture="$fixture/call-counts"
+printf '%s\n' "${suite_names[@]}" > "$call_fixture"
+check_suite_calls "$call_fixture" normal || fail 'complete adapter set rejected'
+for altered in "${suite_names[@]}"; do
+	: > "$call_fixture"
+	for name in "${suite_names[@]}"; do
+		if [ "$name" != "$altered" ]; then printf '%s\n' "$name" >> "$call_fixture"; fi
+	done
+	if check_suite_calls "$call_fixture" normal; then fail "missing $altered accepted"; fi
+	printf '%s\n' "${suite_names[@]}" "$altered" > "$call_fixture"
+	if check_suite_calls "$call_fixture" normal; then fail "duplicate $altered accepted"; fi
+done
+printf 'test-unit\n' > "$call_fixture"
+check_suite_calls "$call_fixture" copy-failure || fail 'copy-failure unit set rejected'
+for altered in "${suite_names[@]}"; do
+	printf 'test-unit\n%s\n' "$altered" > "$call_fixture"
+	if check_suite_calls "$call_fixture" copy-failure; then fail "extra $altered accepted after copy failure"; fi
+done
+: > "$call_fixture"
+if check_suite_calls "$call_fixture" copy-failure; then fail 'missing unit accepted after copy failure'; fi
 source_project="$fixture/source"
 mkdir -p "$source_project/tests/lib" || fail setup
 cp "$root/tests/run-prepared" "$source_project/tests/run-prepared" || fail 'runner fixture'
@@ -141,11 +177,7 @@ for scenario in reuse-architecture profiled-architecture-failure reuse-slot pass
 		{ if (active[$0]) exit 1; active[$0]=1; live++; if (live>2) exit 1 }
 		END { if (live) exit 1 }
 	' "$HARNESS_EVENTS" || fail "$scenario exceeded two suites or returned without joining them"
-	for name in test-unit test-cli test-integration test-test-latency test-prepared-runner test-ci-architecture; do
-		calls=1
-		case "$scenario:$name" in copy-failure:*|profiled-copy-failure:*) if [ "$name" != test-unit ]; then calls=0; fi ;; esac
-		[ "$(awk -v name="$name" '$0 == name { n++ } END { print n+0 }' "$HARNESS_EVENTS")" -eq "$calls" ] || fail "$scenario ran $name an unexpected number of times"
-	done
+	check_suite_calls "$HARNESS_EVENTS" "$scenario" || fail "$scenario ran a required adapter an unexpected number of times"
 	[ ! -s "$HARNESS_JOB_EVENTS" ] || fail "$scenario leaked the parent suite job into child adapters"
 	case "$scenario" in
 		profiled*)
