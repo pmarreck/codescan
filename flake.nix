@@ -28,6 +28,25 @@
 						]);
 				};
 				projectSource = compiledSource ./.;
+				cancellationSource = pkgs.lib.fileset.toSource {
+					root = ./src;
+					fileset = pkgs.lib.fileset.unions [ ./src/embedding_http.zig ./src/io_singleton.zig ];
+				};
+				mkCancellationTests = pf: target: pkgs.stdenv.mkDerivation {
+					pname = "codescan-cancellation-${pf}";
+					version = "0.1.0";
+					src = cancellationSource;
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
+					dontConfigure = true;
+					dontInstall = true;
+					dontFixup = true;
+					buildPhase = ''
+						cp ${./tests/cancellation-build.zig} build.zig || exit "$?"
+						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global"
+						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local"
+						zig build -j"$NIX_BUILD_CORES" -Dtarget=${target} -Doptimize=ReleaseSafe --prefix "$out" --color off
+					'';
+				};
 				sqlite-amalgamation = pkgs.fetchzip {
 					url = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
 					sha256 = "sha256-F50oTmmcPIl0AZJbsWAR3tbNAPV3pQLf+CNITzhmXfI=";
@@ -188,6 +207,28 @@
 				packages.release-macos-arm64 = mkCodescan { pf = "macos-arm64"; target = "aarch64-macos"; };
 				packages.release-mswin-amd64 = mkCodescan { pf = "mswin-amd64"; target = "x86_64-windows-gnu"; };
 				packages.release-mswin-arm64 = mkCodescan { pf = "mswin-arm64"; target = "aarch64-windows-gnu"; };
+				packages.cancellation-native = mkCancellationTests nativePF nativeZigTarget;
+				packages.cancellation-mswin-amd64 = mkCancellationTests "mswin-amd64" "x86_64-windows-gnu";
+				packages.cancellation-mswin-arm64 = mkCancellationTests "mswin-arm64" "aarch64-windows-gnu";
+
+				checks.cancellation-artifacts = pkgs.runCommand "codescan-cancellation-artifacts" {
+					nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.file ];
+					source = ./tests;
+				} ''
+					umask 077
+					export HOME="$TMPDIR/home" XDG_CONFIG_HOME="$TMPDIR/config" XDG_CACHE_HOME="$TMPDIR/cache"
+					export XDG_DATA_HOME="$TMPDIR/data" XDG_STATE_HOME="$TMPDIR/state" XDG_RUNTIME_DIR="$TMPDIR/runtime"
+					mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR"
+					bash "$source/unit/test-cancellation-artifacts" \
+						${self.packages.${system}.cancellation-native} \
+						${self.packages.${system}.cancellation-mswin-amd64} \
+						${self.packages.${system}.cancellation-mswin-arm64} || exit "$?"
+					bash "$source/unit/test-cancellation-artifact-controls" \
+						${self.packages.${system}.cancellation-native} \
+						${self.packages.${system}.cancellation-mswin-amd64} \
+						${self.packages.${system}.cancellation-mswin-arm64} || exit "$?"
+					touch "$out"
+				'';
 
 				checks.source-closure =
 					let
@@ -234,7 +275,8 @@
 				checks.compiler-concurrency = pkgs.runCommand "codescan-compiler-concurrency" {
 					cliPhase = self.packages.${system}.default.buildPhase;
 					unitPhase = self.packages.${system}.test-binaries.buildPhase;
-					passAsFile = [ "cliPhase" "unitPhase" ];
+					cancellationPhase = self.packages.${system}.cancellation-native.buildPhase;
+					passAsFile = [ "cliPhase" "unitPhase" "cancellationPhase" ];
 					nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
 				} ''
 					set +e
@@ -249,12 +291,14 @@
 					}
 					export -f zig
 					failed=0
-					for phase in "$cliPhasePath" "$unitPhasePath"; do
+					for phase in "$cliPhasePath" "$unitPhasePath" "$cancellationPhasePath"; do
 						for cores in 1 4 12; do
 							export PROBE_CALLS="$TMPDIR/calls" PROBE_JOBS="$TMPDIR/jobs"
 							: > "$PROBE_CALLS"
 							: > "$PROBE_JOBS"
-							if env NIX_BUILD_CORES="$cores" out="$TMPDIR/probe-product" bash "$phase"; then :; else failed=1; fi
+							probe="$TMPDIR/$(basename "$phase")-$cores"
+							mkdir "$probe" || exit "$?"
+							if (cd "$probe" && env NIX_BUILD_CORES="$cores" out="$probe/product" bash "$phase"); then :; else failed=1; fi
 							if [ "$(< "$PROBE_CALLS")" != call ] || [ "$(< "$PROBE_JOBS")" != "-j$cores" ]; then
 								printf 'compiler phase did not request exactly one -j%s build\n' "$cores" >&2
 								failed=1
@@ -271,6 +315,7 @@
 					pname = "codescan-test";
 					version = "0.1.0";
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
+					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					src = ./.;
 					nativeBuildInputs = runtimeTools;
 					dontConfigure = true;

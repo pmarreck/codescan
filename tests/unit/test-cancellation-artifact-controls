@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -u
+source "$(dirname "$0")/../lib/capture.bash"
+checker="$(dirname "$0")/test-cancellation-artifacts"
+fail() { printf 'FAIL cancellation controls: %s\n' "$1" >&2; exit 1; }
+[ "$#" -eq 3 ] || fail 'expected three real compiled products'
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/codescan-cancellation-controls.XXXXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+mkdir -p "$fixture/foreign/bin" "$fixture/link/bin" || fail 'fixture setup'
+cp "$2/bin/codescan-cancellation-tests.exe" "$fixture/foreign/bin/codescan-cancellation-tests" || fail 'foreign native fixture'
+ln -s "$1/bin/codescan-cancellation-tests" "$fixture/link/bin/codescan-cancellation-tests" || fail 'linked native fixture'
+
+# Only process execution is substituted. Header cases use real compiled data.
+timeout() {
+	case "$CANCELLATION_CONTROL" in
+		empty) return 0 ;;
+		partial) printf 'All 1 tests passed.\n' >&2; return 0 ;;
+		skipped) printf '1 passed; 1 skipped; 0 failed.\n' >&2; return 0 ;;
+		failed) return 42 ;;
+		unexpected-output) printf 'unexpected\n'; return 0 ;;
+		*) printf 'unexpected process execution\n' >&2; return 99 ;;
+	esac
+}
+export -f timeout
+out= err= rc=
+for control in swapped-windows foreign-native linked-native empty partial skipped failed unexpected-output; do
+	args=("$1" "$2" "$3")
+	case "$control" in
+		swapped-windows) args=("$1" "$3" "$2"); expected='Windows x86-64 product has the wrong executable header' ;;
+		foreign-native) args[0]="$fixture/foreign"; expected='native product has the wrong executable header' ;;
+		linked-native) args[0]="$fixture/link"; expected='missing regular executable:' ;;
+		failed) expected='native cancellation tests returned 42' ;;
+		*) expected='expected exactly both passing cancellation cases' ;;
+	esac
+	capture env CANCELLATION_CONTROL="$control" bash "$checker" "${args[@]}"
+	[ "$rc" -eq 1 ] || fail "$control returned $rc instead of refusal"
+	case "$err" in *"$expected"*) ;; *) printf '%s\n' "$err" >&2; fail "$control lost its specific failure" ;; esac
+done
+printf 'All eight cancellation artifact rejection controls passed\n'

@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -u
+source "$(dirname "$0")/../lib/capture.bash"
+fail() { printf 'FAIL cancellation artifacts: %s\n' "$1" >&2; exit 1; }
+[ "$#" -eq 3 ] || fail 'expected native, Windows x86-64, and Windows ARM64 products'
+native="$1/bin/codescan-cancellation-tests"
+amd64="$2/bin/codescan-cancellation-tests.exe"
+arm64="$3/bin/codescan-cancellation-tests.exe"
+for executable in "$native" "$amd64" "$arm64"; do
+	[ -f "$executable" ] && [ ! -L "$executable" ] || fail "missing regular executable: $executable"
+done
+case "$(file --brief "$amd64")" in
+	'PE32+ executable (console) x86-64, for MS Windows,'*) ;;
+	*) fail 'Windows x86-64 product has the wrong executable header' ;;
+esac
+case "$(file --brief "$arm64")" in
+	'PE32+ executable (console) Aarch64, for MS Windows,'*) ;;
+	*) fail 'Windows ARM64 product has the wrong executable header' ;;
+esac
+case "$(uname -s)/$(uname -m):$(file --brief "$native")" in
+	Linux/x86_64:'ELF 64-bit LSB executable, x86-64,'*|Linux/aarch64:'ELF 64-bit LSB executable, ARM aarch64,'*|Darwin/arm64:'Mach-O 64-bit arm64 executable'*) ;;
+	*) fail 'native product has the wrong executable header' ;;
+esac
+out= err= rc=
+capture timeout --kill-after=5 30 "$native"
+[ "$rc" -eq 0 ] || { printf '%s\n%s\n' "$out" "$err" >&2; fail "native cancellation tests returned $rc"; }
+# This is the observed non-TTY output of the pinned Zig runner. Require every
+# selected case, not merely a successful or empty test runner.
+expected=$'1/2 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK\n2/2 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP and TLS exchanges...OK\nAll 2 tests passed.'
+[ -z "$out" ] && [ "$err" = "$expected" ] || { printf '%s\n%s\n' "$out" "$err" >&2; fail 'expected exactly both passing cancellation cases'; }
+printf 'Native cancellation execution and both Windows executable headers passed\n'
