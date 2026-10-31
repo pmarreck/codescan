@@ -1,0 +1,65 @@
+name: native-windows
+
+on:
+  push:
+    branches: [yolo]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Setup Nix
+        shell: bash
+        run: ./scripts/ci-setup-nix
+      - name: Prepare focused cancellation products
+        shell: bash
+        run: |
+          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64
+          mkdir -p cancellation-mswin-amd64 cancellation-mswin-arm64
+          cp "$(nix path-info .#cancellation-mswin-amd64)/bin/codescan-cancellation-tests.exe" cancellation-mswin-amd64/
+          cp "$(nix path-info .#cancellation-mswin-arm64)/bin/codescan-cancellation-tests.exe" cancellation-mswin-arm64/
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cancellation-mswin-amd64
+          path: cancellation-mswin-amd64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cancellation-mswin-arm64
+          path: cancellation-mswin-arm64/
+          if-no-files-found: error
+
+  qualify:
+    needs: prepare
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            arch: amd64
+          - os: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v7
+        with:
+          name: cancellation-mswin-${{ matrix.arch }}
+          path: cancellation
+      - name: Validate qualification controls
+        shell: pwsh
+        run: ./tests/unit/test-windows-cancellation.ps1
+      - name: Execute native cancellation tests
+        shell: pwsh
+        run: ./scripts/ci-test-windows.ps1 -Architecture "${{ matrix.arch }}" -Executable "./cancellation/codescan-cancellation-tests.exe"

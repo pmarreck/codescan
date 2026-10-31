@@ -230,6 +230,24 @@
 					touch "$out"
 				'';
 
+				checks.windows-cancellation-harness = pkgs.runCommand "codescan-windows-cancellation-harness" {
+					nativeBuildInputs = [ pkgs.powershell ];
+					source = pkgs.lib.fileset.toSource {
+						root = ./.;
+						fileset = pkgs.lib.fileset.unions [ ./scripts/ci-test-windows.ps1 ./tests/unit/test-windows-cancellation.ps1 ];
+					};
+				} ''
+					umask 077
+					export HOME="$TMPDIR/home" XDG_CONFIG_HOME="$TMPDIR/config" XDG_CACHE_HOME="$TMPDIR/cache"
+					export XDG_DATA_HOME="$TMPDIR/data" XDG_STATE_HOME="$TMPDIR/state" XDG_RUNTIME_DIR="$TMPDIR/runtime"
+					export DOTNET_CLI_TELEMETRY_OPTOUT=1 POWERSHELL_TELEMETRY_OPTOUT=1
+					mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR"
+					pwsh -NoLogo -NoProfile -NonInteractive -File "$source/tests/unit/test-windows-cancellation.ps1" \
+						-Amd64Executable ${self.packages.${system}.cancellation-mswin-amd64}/bin/codescan-cancellation-tests.exe \
+						-Arm64Executable ${self.packages.${system}.cancellation-mswin-arm64}/bin/codescan-cancellation-tests.exe || exit "$?"
+					touch "$out"
+				'';
+
 				checks.source-closure =
 					let
 						fixturePackage = mkCodescan { sourceRoot = ./tests/fixtures/source-closure; };
@@ -316,6 +334,7 @@
 					version = "0.1.0";
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
+					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					src = ./.;
 					nativeBuildInputs = runtimeTools;
 					dontConfigure = true;
