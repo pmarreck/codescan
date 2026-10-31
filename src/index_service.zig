@@ -185,6 +185,136 @@ test "execute owns full and incremental index dispatch" {
 	try std.testing.expectEqual(@as(usize, 1), incremental.incremental.unchanged_files);
 }
 
+test "full indexing rebuilds vector schemas when the detected model width changes" {
+	const http = @import("embedding_http.zig");
+	const update = @import("update_service.zig");
+	const Reply = struct {
+		calls: usize = 0,
+		fn send(ctx: *anyopaque, allocator: std.mem.Allocator, _: http.HttpRequest) !http.HttpResponse {
+			const self: *@This() = @ptrCast(@alignCast(ctx));
+			self.calls += 1;
+			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"embeddings\":[[1,0,0]]}") };
+		}
+	};
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "current.zig", .data = "/// A current operation.\npub fn current() void {}\n",
+	});
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	var failures: usize = 0;
+	for ([_]bool{ false, true }) |populated| {
+		const db = try storage.openMemoryWithVec(allocator);
+		defer storage.close(db);
+		var old_schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "original-model" });
+		defer old_schema.deinit(allocator);
+		if (populated) {
+			const id = try storage.insertSymbol(db, .{
+				.language = "zig", .file_path = "old.zig", .name = "old", .signature = "fn old() void",
+				.doc_comment = "An original operation.", .start_line = 1, .end_line = 1,
+			});
+			try storage.insertEmbedding(db, allocator, id, &.{ 1, 0 });
+			try storage.insertCommentEmbedding(db, allocator, id, &.{ 0, 1 });
+		}
+		var reply = Reply{};
+		var adapter = embedding.HttpEmbedder{
+			.transport = .{ .ctx = &reply, .send = Reply.send }, .base_url = "http://provider.invalid", .model = "replacement-model",
+		};
+		const dimension = update.probeEmbeddingDim(allocator, adapter.embedder()).?;
+		try std.testing.expectEqual(@as(usize, 3), dimension);
+		const result = execute(allocator, db, plugin.defaultRegistry(), adapter.embedder(), .{
+			.root_path = root, .embedding_dim = dimension, .embedding_model = "replacement-model",
+			.batch_size = 1, .max_file_size = 4096, .index_ext = "zig",
+		}) catch |err| {
+			std.debug.print("full-index width change (populated={}) returned {s}\n", .{ populated, @errorName(err) });
+			failures += 1;
+			continue;
+		};
+		try std.testing.expectEqual(@as(usize, 1), result.full.files);
+		try std.testing.expectEqual(@as(usize, 1), result.full.symbols);
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+		try std.testing.expectEqual(@as(usize, 3), reply.calls);
+		try std.testing.expectEqual(dimension, try storage.embeddingDimension(db, allocator));
+		var checked = try storage.initSchema(allocator, db, .{ .embedding_dim = dimension, .embedding_model = "replacement-model" });
+		defer checked.deinit(allocator);
+		try std.testing.expect(!checked.embedding_model_mismatch and !checked.embedding_dim_mismatch);
+	}
+	try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "full index preparation preserves the old index after failure and permits retry" {
+	const http = @import("embedding_http.zig");
+	const semantic = @import("search.zig");
+	const sql = storage.sqlite;
+	const DenyReset = struct {
+		denials: usize = 0,
+		fn authorize(context: ?*anyopaque, action: c_int, table: [*c]const u8, _: [*c]const u8, _: [*c]const u8, _: [*c]const u8) callconv(.c) c_int {
+			if (action != sql.SQLITE_DELETE or table == null or !std.mem.eql(u8, std.mem.span(table), "embeddings_comment")) return sql.SQLITE_OK;
+			const self: *@This() = @ptrCast(@alignCast(context.?));
+			self.denials += 1;
+			return sql.SQLITE_DENY;
+		}
+	};
+	const Reply = struct {
+		calls: usize = 0,
+		fn send(ctx: *anyopaque, allocator: std.mem.Allocator, _: http.HttpRequest) !http.HttpResponse {
+			const self: *@This() = @ptrCast(@alignCast(ctx));
+			self.calls += 1;
+			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"embeddings\":[[1,0]]}") };
+		}
+	};
+	const allocator = std.testing.allocator;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io_singleton.getOrInit(), .{
+		.sub_path = "current.zig", .data = "/// A current operation.\npub fn current() void {}\n",
+	});
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "original-model" });
+	defer schema.deinit(allocator);
+	const id = try storage.insertSymbol(db, .{
+		.language = "zig", .file_path = "old.zig", .name = "old", .signature = "fn old() void",
+		.doc_comment = "An original operation.", .start_line = 1, .end_line = 1,
+	});
+	try storage.insertEmbedding(db, allocator, id, &.{ 1, 0 });
+	try storage.insertCommentEmbedding(db, allocator, id, &.{ 0, 1 });
+	var reply = Reply{};
+	var adapter = embedding.HttpEmbedder{
+		.transport = .{ .ctx = &reply, .send = Reply.send }, .base_url = "http://provider.invalid", .model = "original-model",
+	};
+	const request = Request{
+		.root_path = root, .embedding_dim = 2, .embedding_model = "original-model",
+		.batch_size = 1, .max_file_size = 4096, .index_ext = "zig",
+	};
+	var fault = DenyReset{};
+	try std.testing.expectEqual(sql.SQLITE_OK, sql.sqlite3_set_authorizer(db, DenyReset.authorize, &fault));
+	defer _ = sql.sqlite3_set_authorizer(db, null, null);
+	try std.testing.expectError(error.SqlError, execute(allocator, db, plugin.defaultRegistry(), adapter.embedder(), request));
+	try std.testing.expect(fault.denials > 0);
+	try std.testing.expectEqual(@as(usize, 0), reply.calls);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+	try std.testing.expectEqual(@as(usize, 2), try storage.embeddingDimension(db, allocator));
+	const retained = try semantic.search(allocator, db, adapter.embedder(), "old", .{ .mode = .vector, .top_n = 1 });
+	defer semantic.freeResults(allocator, retained.results);
+	try std.testing.expectEqual(@as(usize, 1), retained.results.len);
+	try std.testing.expectEqualStrings("old", retained.results[0].symbol.name);
+	try std.testing.expectEqual(sql.SQLITE_OK, sql.sqlite3_set_authorizer(db, null, null));
+	const retried = try execute(allocator, db, plugin.defaultRegistry(), adapter.embedder(), request);
+	try std.testing.expectEqual(@as(usize, 1), retried.full.symbols);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings_comment"));
+}
+
 test "pendingPathCounts owns index filter resolution" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();

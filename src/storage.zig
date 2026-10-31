@@ -685,6 +685,23 @@ pub fn resetIndex(db: Db) !void {
 	_ = execMaybe(db, files_sql);
 }
 
+/// Prepare an empty full index at the requested vector width, retaining the
+/// previous schema and rows if any preparation step fails.
+pub fn resetIndexWithSchema(allocator: std.mem.Allocator, db: Db, schema: Schema) !void {
+	try exec(db, "SAVEPOINT codescan_full_index;\x00");
+	errdefer {
+		_ = execMaybe(db, "ROLLBACK TO codescan_full_index;\x00");
+		_ = execMaybe(db, "RELEASE codescan_full_index;\x00");
+	}
+	try exec(db, "DROP TABLE IF EXISTS embeddings;\x00");
+	try exec(db, "DROP TABLE IF EXISTS embeddings_comment;\x00");
+	var initialized = try initSchema(allocator, db, schema);
+	defer initialized.deinit(allocator);
+	try resetIndex(db);
+	try setEmbeddingMeta(db, schema);
+	try exec(db, "RELEASE codescan_full_index;\x00");
+}
+
 pub fn insertSymbol(db: Db, symbol: model.Symbol) !i64 {
 	const sql: [:0]const u8 =
 		"INSERT OR REPLACE INTO symbols (" ++

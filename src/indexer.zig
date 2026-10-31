@@ -361,8 +361,7 @@ pub fn indexAll(
 	defer root_dir.close(io_singleton.getOrInit());
 	const preparation = try PreparationPool.init(allocator, root_dir, registry, options, files);
 	defer preparation.deinit();
-	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
-	try storage.resetIndex(db);
+	try storage.resetIndexWithSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
 	if (show_progress) {
 		printProgress(stderr, 0, files.len, false);
 	}
