@@ -264,6 +264,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==2 and .body==["proc add(a: int, b: int): int = a + b"]' >/dev/null || \
 		fail "Nim grammar changed the exact procedure body: $out"
 
+	bash_file="$DB_DIR/functions with spaces.sh"
+	printf '%s\n' '# Prints a value.' 'add() {' \
+		$'\techo "$1"' '}' 'function adjacent() { :; }' > "$bash_file"
+	capture "$BIN" symbols --file "$bash_file" --json
+	[ "$rc" -eq 0 ] || fail "Bash symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"add",kind:"fn",start_line:2,end_line:4},{name:"adjacent",kind:"fn",start_line:5,end_line:5}]' >/dev/null || \
+		fail "Bash grammar changed the complete function set or source ranges: $out"
+	capture "$BIN" symbols add --file "$bash_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Bash function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==4 and .body==["add() {","\techo \"$1\"","}"]' >/dev/null || \
+		fail "Bash grammar changed the exact function body: $out"
+
 	swift_file="$DB_DIR/functions with spaces.swift"
 	printf '%s\n' '// Forces a throwing call.' 'func force() -> Int {' \
 		$'\treturn try! load()' '}' 'func adjacent() -> Int { 42 }' > "$swift_file"

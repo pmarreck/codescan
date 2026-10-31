@@ -23,6 +23,7 @@
 						(pkgs.lib.fileset.unions [ (root + "/src") (root + "/deps") (root + "/build.zig") (root + "/build.zig.zon") ])
 						(pkgs.lib.fileset.unions [
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-bash/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -80,6 +81,17 @@
 				grammar-lean = grammarSource "Julian" "tree-sitter-lean"
 					"efe6b87145608d12f5996bd7f0cf6095a0e82261"
 					"sha256-MF+LRzhDw3V/l/h11ZTyWCUCm3b+g0oyOdaCZMVlJc4=";
+				grammar-bash = pkgs.runCommand "codescan-bash-source" {
+					source = grammarSource "tree-sitter" "tree-sitter-bash"
+						"a06c2e4415e9bc0346c6b86d401879ffb44058f7"
+						"sha256-ONQ1Ljk3aRWjElSWD2crCFZraZoRj3b3/VELz1789GE=";
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-bash/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-bash/LICENSE} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE "$out/" || exit "$?"
+				'';
 				grammar-nim = pkgs.applyPatches {
 					name = "codescan-nim-source";
 					src = grammarSource "alaviss" "tree-sitter-nim"
@@ -200,6 +212,7 @@
 				# store paths while preserving exact source provenance in this flake.
 				grammarSources = pkgs.linkFarm "codescan-tree-sitter-grammars" [
 					{ name = "c"; path = "${grammar-c}/src"; }
+					{ name = "bash"; path = "${grammar-bash}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -320,6 +333,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.bash-source = pkgs.runCommand "codescan-bash-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/bash/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-bash/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-bash/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.swift-scanner-shifts = pkgs.runCommand "codescan-swift-scanner-shifts" {
 					source = "${grammar-swift}/src";
 					nativeBuildInputs = [ pkgs.zig_0_16 ];
@@ -352,6 +373,7 @@
 						fixturePackage = mkCodescan { sourceRoot = ./tests/fixtures/source-closure; };
 						expected = [ "build.zig" "build.zig.zon" "deps/parser/future.h" "deps/parser/parser.c" "src/docs/data.txt" "src/future/module.zig" "src/main.zig" ];
 					in pkgs.runCommand "codescan-source-closure" {
+						bashSourceContract = self.checks.${system}.bash-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -432,6 +454,7 @@
 				checks.test = pkgs.stdenv.mkDerivation {
 					pname = "codescan-test";
 					version = "0.1.0";
+					bashSourceContract = self.checks.${system}.bash-source;
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;

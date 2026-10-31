@@ -1,0 +1,1 @@
+/* Pinned Bash parser sources must not be read from the checkout. */
