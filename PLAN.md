@@ -4,10 +4,10 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Diagnose the native Windows ARM64 cancellation hang in the 8295fd41 rerun; local process-port controls now preserve timeout output after kill/reap, and a fixed twenty-process campaign stops on first failure, but actual incident progress and the underlying cause still require native CI evidence.
+- [ ] Diagnose the native Windows ARM64 cancellation hang: c7b31b61's first process passes generic cancel/join then hangs in the combined real HTTP/TLS test; separate header/body/TLS cases preserve its assertions and pass locally, but the stalled phase and underlying cause still require native evidence.
 - [x] Verify focused cancellation prerequisites on exact-commit GitHub Actions and Mechatron Prime CI; both pass for c914cbff, including complete native Mac checks, both selected cancellation cases, eight rejection controls, all five release targets, and exactly five nonempty canonical archives. (done 2026-10-31 13:41 EDT; commit c914cbff)
 - [x] Finish complete CI verification for cd3002f4; both services and the native Windows workflow pass, including full native Mac checks, actual x64/ARM64 cancellation execution, and exactly five nonempty canonical archives; the later ARM64 hang is tracked separately rather than erasing this result. (done 2026-10-31 14:03 EDT; commit cd3002f4)
-- [ ] Verify the new native Linux ARM64 full-suite gate on exact-commit CI; both Linux native test jobs must pass before all five archives, and local complete checks pass the forty host/request controls without changing compiled products.
+- [x] Verify native Linux ARM64 full-suite gating for 8295fd41: the GitHub build workflow and Mechatron Prime CI pass, actual native Linux x64/ARM64 checks finish before all five archives, and the artifact API confirms exactly five nonempty canonical archives; the separate Windows ARM64 runtime failure remains open. (done 2026-10-31 14:21 EDT; commit 8295fd41)
 - [x] Verify the complete native macOS suite-before-archive gate and host-independent latency fixture on exact-commit GitHub Actions and Mechatron Prime CI; both pass for 9f4ee1a8, including 804 native macOS unit cases, CLI/MCP/source checks, the repaired fixture, actual ARM64 smoke execution, and exactly five nonempty release archives. (done 2026-10-31 13:13 EDT; commit 9f4ee1a8)
 - [x] Verify the Nim source pin and preserved scanner guard on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 0215e1e7, including all five release targets, native macOS smoke checks, and exactly five nonempty canonical archives after fourteen byte-identity checks, 804 passing local unit cases, and actual procedure/range/body controls. (done 2026-10-31 12:36 EDT; commit 0215e1e7)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
@@ -41,7 +41,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 		- [x] Require complete Nix test/source checks on native Linux ARM64 and x86-64 before archive builds after missing-runner and foreign-host regressions; all forty host/request cases and 804 available unit cases pass local complete checks, while actual native ARM64 execution remains separately pending. (done 2026-10-31 13:45 EDT)
 - [ ] Move update database preparation/freshness into the shared service after characterization tests prove CLI/MCP/HTTP behavior remains identical.
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
-	- [x] Pin the existing Nim grammar at 9b4ede21 with its scanner guard preserved explicitly after source-boundary and unpatched-identity failures; fourteen files match byte-for-byte, attribution stays unchanged, seven source copies retire recoverably, and complete Nix/fresh host checks pass 804 unit cases plus exact CLI controls. (done 2026-10-31 12:04 EDT)
 
 ## Tabled (not actionable)
 

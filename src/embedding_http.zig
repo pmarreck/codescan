@@ -736,49 +736,59 @@ const HeldExchange = struct {
 	}
 };
 
-test "StdHttpTransport cancellation closes and joins held HTTP and TLS exchanges" {
+test "StdHttpTransport cancellation closes and joins held HTTP headers" {
+	try testHeldExchangeCancellation(.response_head);
+}
+
+test "StdHttpTransport cancellation closes and joins held HTTP body" {
+	try testHeldExchangeCancellation(.response_body);
+}
+
+test "StdHttpTransport cancellation closes and joins held TLS handshake" {
+	try testHeldExchangeCancellation(.tls_handshake);
+}
+
+fn testHeldExchangeCancellation(phase: HeldExchange.Phase) !void {
 	const allocator = std.testing.allocator;
 	const io = io_singleton.getOrInit();
-	for (std.enums.values(HeldExchange.Phase)) |phase| {
-		const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
-		var server = try address.listen(io, .{ .reuse_address = true });
-		defer server.socket.close(io);
-		const port = switch (server.socket.address) {
-			.ip4 => |a| a.port,
-			.ip6 => |a| a.port,
-		};
-		var peer = HeldExchange{ .server = &server, .phase = phase };
-		var peer_task = try std.Io.concurrent(io, HeldExchange.run, .{&peer});
-		defer _ = peer_task.cancel(io) catch {};
+	const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+	var server = try address.listen(io, .{ .reuse_address = true });
+	defer server.socket.close(io);
+	const port = switch (server.socket.address) {
+		.ip4 => |a| a.port,
+		.ip6 => |a| a.port,
+	};
+	var peer = HeldExchange{ .server = &server, .phase = phase };
+	var peer_task = try std.Io.concurrent(io, HeldExchange.run, .{&peer});
+	defer _ = peer_task.cancel(io) catch {};
 
-		var http = StdHttpTransport.init(allocator);
-		defer http.deinit();
-		// The peer never sends a certificate. A fixed time and empty trust
-		// bundle avoid loading the host's certificate store for this fixture.
-		http.client.now = .zero;
-		const scheme = if (phase == .tls_handshake) "https" else "http";
-		const url = try std.fmt.allocPrint(allocator, "{s}://127.0.0.1:{d}/hold", .{ scheme, port });
-		defer allocator.free(url);
-		var request_task = try std.Io.concurrent(io, StdHttpTransport.send, .{
-			@as(*anyopaque, @ptrCast(&http)),
-			allocator,
-			HttpRequest{
-				.method = "GET",
-				.url = url,
-				.headers = &.{.{ .name = "Connection", .value = "close" }},
-				.body = "",
-				// External cancellation is synchronized to wire progress; the
-				// outer process guard is shorter than this unused deadline.
-				.deadline_ns = 60 * std.time.ns_per_s,
-			},
-		});
-		defer {
-			if (request_task.cancel(io)) |response| allocator.free(response.body) else |_| {}
-		}
-		try peer.ready.wait(io);
-		try std.testing.expectError(error.Canceled, request_task.cancel(io));
-		try peer_task.await(io);
+	var http = StdHttpTransport.init(allocator);
+	defer http.deinit();
+	// The peer never sends a certificate. A fixed time and empty trust
+	// bundle avoid loading the host's certificate store for this fixture.
+	http.client.now = .zero;
+	const scheme = if (phase == .tls_handshake) "https" else "http";
+	const url = try std.fmt.allocPrint(allocator, "{s}://127.0.0.1:{d}/hold", .{ scheme, port });
+	defer allocator.free(url);
+	var request_task = try std.Io.concurrent(io, StdHttpTransport.send, .{
+		@as(*anyopaque, @ptrCast(&http)),
+		allocator,
+		HttpRequest{
+			.method = "GET",
+			.url = url,
+			.headers = &.{.{ .name = "Connection", .value = "close" }},
+			.body = "",
+			// External cancellation is synchronized to wire progress; the
+			// outer process guard is shorter than this unused deadline.
+			.deadline_ns = 60 * std.time.ns_per_s,
+		},
+	});
+	defer {
+		if (request_task.cancel(io)) |response| allocator.free(response.body) else |_| {}
 	}
+	try peer.ready.wait(io);
+	try std.testing.expectError(error.Canceled, request_task.cancel(io));
+	try peer_task.await(io);
 }
 
 /// Transport stub that yields one caller-chosen outcome, so reachability can be

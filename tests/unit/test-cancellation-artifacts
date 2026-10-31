@@ -26,6 +26,6 @@ capture timeout --kill-after=5 30 "$native"
 [ "$rc" -eq 0 ] || { printf '%s\n%s\n' "$out" "$err" >&2; fail "native cancellation tests returned $rc"; }
 # This is the observed non-TTY output of the pinned Zig runner. Require every
 # selected case, not merely a successful or empty test runner.
-expected=$'1/2 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK\n2/2 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP and TLS exchanges...OK\nAll 2 tests passed.'
-[ -z "$out" ] && [ "$err" = "$expected" ] || { printf '%s\n%s\n' "$out" "$err" >&2; fail 'expected exactly both passing cancellation cases'; }
+expected=$'1/4 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK\n2/4 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP headers...OK\n3/4 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP body...OK\n4/4 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK\nAll 4 tests passed.'
+[ -z "$out" ] && [ "$err" = "$expected" ] || { printf '%s\n%s\n' "$out" "$err" >&2; fail 'expected all four passing cancellation cases'; }
 printf 'Native cancellation execution and both Windows executable headers passed\n'

@@ -23,9 +23,9 @@ function Assert-NativeTarget([string] $Architecture, [bool] $WindowsHost, [strin
 }
 
 function Assert-CancellationEvidence([int] $ExitCode, [string] $StandardOutput, [string] $StandardError) {
-	$expected = "1/2 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK`n2/2 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP and TLS exchanges...OK`nAll 2 tests passed."
+	$expected = "1/4 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK`n2/4 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP headers...OK`n3/4 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP body...OK`n4/4 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK`nAll 4 tests passed."
 	if ($ExitCode -ne 0 -or $StandardOutput -cne '' -or $StandardError.Replace("`r`n", "`n").TrimEnd([char[]] "`n") -cne $expected) {
-		throw "Cancellation evidence failed: exit=$ExitCode; require exactly both passing cases"
+		throw "Cancellation evidence failed: exit=$ExitCode; require all four passing cases"
 	}
 }
 
