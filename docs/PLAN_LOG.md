@@ -72,3 +72,8 @@ Publication checks use GitHub Actions and exact-commit Mechatron Prime CI.
 	- [x] Ship the populated-index, ownership, and callback-safety fixes; exact-commit Mechatron Prime CI and GitHub Actions run 40630870526 pass, including native macOS ARM64 execution. (done 2026-10-28 00:24 EDT; commit 75172eb4)
 - [x] [CI completion and maintenance] Verify the shared tokenizer repair in 9c935fb: the exact installed blob accepts escaped cache interpolation, rejects unsafe dependencies, and honors staged content in both disagreement directions inside a disposable consumer fixture. (done 2026-10-28 02:36 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [x] [Watcher reliability › Reproduce slow MCP semantic search in a disposable fixture w…] Preserve inference-unavailable advice after a reachable server rejects embeddings; complete Nix/fresh host checks pass 754 unit cases, and exact-commit Mechatron Prime CI plus GitHub Actions run 40644259465 pass, including native macOS CLI smoke checks. (done 2026-10-28 02:49 EDT; commit 28602f00; context: docs/plan_context/inference_availability.md)
+
+## Retired 2026-10-31
+
+- [x] [After shipping] Require FTS5 in all seven dependent scoring regressions instead of silently returning or skipping; the complete Nix check passes 754 unit cases with the pinned FTS5-enabled SQLite. (done 2026-10-28 03:04 EDT)
+- [x] [Validation and performance › Add controlled TCP-blackhole/TLS-cancellation fixtures and r…] Bound the unit process independently and verify real held HTTP/TLS exchanges close and join on cancellation; the complete Linux Nix check passes 755 unit cases without changing cold-model request policy. (done 2026-10-28 03:15 EDT; context: docs/plan_context/request_deadlines.md)

@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -u
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+fixture="$(mktemp -d "${TMPDIR:-/tmp}/codescan-test-latency.XXXXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL test latency: %s\n' "$1" >&2; exit 1; }
+mkdir -p "$fixture/project/tests/lib" "$fixture/project/tests/unit" "$fixture/cli" "$fixture/units" "$fixture/job-tmp" "$fixture/nix-tmp" || exit 1
+cp "$root/test" "$fixture/project/test" || exit 1
+cp "$root/tests/lib/capture.bash" "$fixture/project/tests/lib/capture.bash" || exit 1
+if [ -f "$root/tests/lib/latency-run" ]; then
+	cp "$root/tests/lib/latency-run" "$fixture/project/tests/lib/latency-run" || exit 1
+fi
+for path in tests/unit/test-dev-shell-cache tests/unit/test-isolation tests/lib/run-isolated; do
+	{ printf '#!%s\n' "$BASH"; printf '%s\n' \
+		'printf "test\t%s\t%s\t%s\n" "$0" "${CODESCAN_LATENCY_JOB-}" "$TMPDIR" >> "$LATENCY_FIXTURE_EVENTS"' \
+		'case "$LATENCY_FIXTURE_FAILURE:$0" in test:*test-dev-shell-cache|boundary:*test-isolation) exit 7 ;; esac' \
+		'exit 0'; } > "$fixture/project/$path"
+	chmod +x "$fixture/project/$path" || exit 1
+done
+
+# Recording process adapters, never actual Nix or shared history operations.
+nix() {
+	case "${1-}" in
+		path-info|flake) return 0 ;;
+		build)
+			for arg in "$@"; do
+				if [ "$arg" = --json ]; then
+					printf '[{"drvPath":"fixture-codescan-cli.drv","outputs":{"out":"%s"}},{"drvPath":"fixture-codescan-test-binaries-unit.drv","outputs":{"out":"%s"}}]\n' "$LATENCY_FIXTURE_CLI" "$LATENCY_FIXTURE_UNITS"
+				fi
+			done
+			return 0
+			;;
+		develop)
+			[ "${2-}" = -c ] || return 64
+			shift 2
+			(TMPDIR="$LATENCY_FIXTURE_SHELL_TMP"; export TMPDIR; "$@")
+			;;
+		*) return 64 ;;
+	esac
+}
+timeout() { [ "$1" = 1800 ] || return 64; shift; "$@"; }
+performance-profile() {
+	if [ "$TMPDIR" != "$LATENCY_FIXTURE_JOB_TMP" ]; then
+		printf 'fixture recorder lost the parent job scratch directory\n' >&2
+		return 9
+	fi
+	[ "${1-}" = latency ] || return 64
+	case "${2-}" in
+		stamp)
+			[ "$LATENCY_FIXTURE_FAILURE" != stamp ] || return 9
+			printf '123\n'; return 0
+			;;
+		span) shift 2 ;;
+		*) return 64 ;;
+	esac
+	local job='' kind='' name='' since=''
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--job) job="$2"; shift 2 ;;
+			--kind) kind="$2"; shift 2 ;;
+			--name) name="$2"; shift 2 ;;
+			--since) since="$2"; shift 2 ;;
+			--) shift; break ;;
+			*) return 64 ;;
+		esac
+	done
+	printf 'span\t%s\t%s\t%s\t%s\n' "$job" "$kind" "$name" "$since" >> "$LATENCY_FIXTURE_EVENTS"
+	if [ "$LATENCY_FIXTURE_FAILURE" = recorder ] && [ "$kind" = setup ]; then return 9; fi
+	[ "$#" -gt 0 ] || return 0
+	"$@"
+}
+export -f nix timeout performance-profile
+
+run_case() {
+	local name="$1" job="$2" failure="$3" expected_rc="$4" rc events="$fixture/$1.events"
+	local -a args=(--prepared "$fixture/cli" "$fixture/units")
+	if [ "${5-}" = prepare ]; then args=(); fi
+	: > "$events"
+	if env CODESCAN_LATENCY_JOB="$job" LATENCY_FIXTURE_EVENTS="$events" LATENCY_FIXTURE_FAILURE="$failure" \
+		LATENCY_FIXTURE_CLI="$fixture/cli" LATENCY_FIXTURE_UNITS="$fixture/units" \
+		TMPDIR="$fixture/job-tmp" LATENCY_FIXTURE_JOB_TMP="$fixture/job-tmp" LATENCY_FIXTURE_SHELL_TMP="$fixture/nix-tmp" \
+		bash "$fixture/project/test" "${args[@]}" \
+		> "$fixture/$name.stdout" 2> "$fixture/$name.stderr"; then rc=0; else rc="$?"; fi
+	if [ "$rc" -ne "$expected_rc" ]; then
+		printf '%s\n%s\n' "$(<"$fixture/$name.stdout")" "$(<"$fixture/$name.stderr")" >&2
+		fail "$name: wrong runner status $rc"
+	fi
+	if awk -F '\t' '$1 == "test" && $3 != "" { leaked=1 } END { exit !leaked }' "$events"; then
+		fail "$name: child suite inherited the parent latency job"
+	fi
+	if awk -F '\t' -v expected="$fixture/job-tmp" '$1 == "test" && $4 != expected { lost=1 } END { exit !lost }' "$events"; then
+		fail "$name: child suite lost the task-owned scratch directory"
+	fi
+}
+run_case disabled '' none 0
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/disabled.events")" -eq 0 ] || fail 'disabled recording invoked the profiler'
+run_case profiled fixture-job none 0
+actual="$(awk -F '\t' '$1 == "span" { print $2 "\t" $3 "\t" $4 }' "$fixture/profiled.events")"
+expected=$'fixture-job\tsetup\tdev-shell cache preservation shell entry\nfixture-job\texecute\tdev-shell cache preservation\nfixture-job\tnix_eval\tall-system flake evaluation\nfixture-job\tmixed\tcompiled source closure\nfixture-job\tsetup\tpreventive filesystem boundary shell entry\nfixture-job\texecute\tpreventive filesystem boundary\nfixture-job\tsetup\tisolated complete suite shell entry\nfixture-job\texecute\tisolated complete suite'
+[ "$actual" = "$expected" ] || fail 'the real runner did not record the complete ordered phase set'
+[ "$(awk -F '\t' '$1 == "span" && $3 == "setup" && $5 == 123 { n++ } END { print n+0 }' "$fixture/profiled.events")" -eq 3 ] || fail 'shell-entry spans lost their pre-entry stamps'
+run_case recorder-failure fixture-job recorder 1
+[ "$(awk '$1 == "test" { n++ } END { print n+0 }' "$fixture/recorder-failure.events")" -eq 0 ] || fail 'a failed setup recorder still launched test execution'
+run_case stamp-failure fixture-job stamp 1
+[ "$(awk '$1 == "test" { n++ } END { print n+0 }' "$fixture/stamp-failure.events")" -eq 0 ] || fail 'a failed clock recorder still launched test execution'
+run_case test-failure fixture-job test 1
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/test-failure.events")" -eq 8 ] || fail 'a failed test dropped later required phase records'
+run_case boundary-failure fixture-job boundary 1
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/boundary-failure.events")" -eq 6 ] || fail 'a failed isolation check still launched the complete suite'
+run_case artifact-preparation fixture-job none 0 prepare
+[ "$(awk -F '\t' '$1 == "span" && $3 == "mixed" && $4 == "artifact preparation" { n++ } END { print n+0 }' "$fixture/artifact-preparation.events")" -eq 1 ] || fail 'Nix preparation was omitted or misclassified as pure compilation'
+printf 'Optional test phase recording preserves execution and failure contracts\n'

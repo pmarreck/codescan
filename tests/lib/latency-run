@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -u
+if [ "$#" -lt 4 ]; then
+	printf 'Usage: latency-run JOB STAMP NAME COMMAND [ARG...]\n' >&2
+	exit 64
+fi
+latency_job="$1"
+latency_stamp="$2"
+latency_name="$3"
+shift 3
+unset CODESCAN_LATENCY_JOB
+performance-profile latency span --job "$latency_job" --name "$latency_name shell entry" --kind setup --since "$latency_stamp" || exit "$?"
+performance-profile latency span --job "$latency_job" --name "$latency_name" --kind execute -- "$@"

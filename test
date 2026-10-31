@@ -9,6 +9,18 @@ out=
 err=
 rc=
 failed=0
+latency_job="${CODESCAN_LATENCY_JOB:-}"
+unset CODESCAN_LATENCY_JOB
+
+profile_command() {
+	local kind="$1" name="$2"
+	shift 2
+	if [ -n "$latency_job" ]; then
+		performance-profile latency span --job "$latency_job" --name "$name" --kind "$kind" -- "$@"
+	else
+		"$@"
+	fi
+}
 
 run_case() {
 	local name="$1"
@@ -25,6 +37,20 @@ run_case() {
 	fi
 }
 
+run_development_case() {
+	local name="$1" stamp
+	shift
+	if [ -z "$latency_job" ]; then
+		run_case "$name" nix develop -c env TMPDIR="${TMPDIR:-/tmp}" "$@"
+	elif stamp="$(performance-profile latency stamp)"; then
+		run_case "$name" nix develop -c env TMPDIR="${TMPDIR:-/tmp}" bash ./tests/lib/latency-run "$latency_job" "$stamp" "$name" "$@"
+	else
+		rc=1
+		failed=1
+		printf 'FAIL %s: profiling clock failed\n' "$name" >&2
+	fi
+}
+
 case "$(uname -s)/$(uname -m)" in
 	Linux/x86_64) export CODESCAN_EXPECT_PF=linux-amd64 CODESCAN_EXPECT_VARIANT=musl; codescan_nix_system=x86_64-linux ;;
 	Linux/aarch64) export CODESCAN_EXPECT_PF=linux-arm64 CODESCAN_EXPECT_VARIANT=musl; codescan_nix_system=aarch64-linux ;;
@@ -37,7 +63,7 @@ if [ "$#" -eq 3 ] && [ "$1" = --prepared ]; then
 	nix path-info "$cli_output" "$test_output" >/dev/null || exit 1
 elif [ "$#" -eq 0 ]; then
 	printf 'Preparing exact CLI and unit-test artifacts through Nix...\n' >&2
-	if out="$(timeout 1800 nix build .#default .#test-binaries --no-link --json --timeout 1800 --log-format bar-with-logs)"; then
+	if out="$(profile_command mixed 'artifact preparation' timeout 1800 nix build .#default .#test-binaries --no-link --json --timeout 1800 --log-format bar-with-logs)"; then
 		rc=0
 	else
 		exit "$?"
@@ -51,12 +77,12 @@ fi
 export CODESCAN_TEST_BIN="$cli_output/bin/codescan"
 export CODESCAN_TEST_DB_BIN="$test_output/bin/mk-test-db"
 export CODESCAN_UNIT_TEST_BIN="$test_output/bin/codescan-unit-tests"
-run_case 'dev-shell cache preservation' nix develop -c ./tests/unit/test-dev-shell-cache
-run_case 'all-system flake evaluation' nix flake check --no-build --all-systems
-run_case 'compiled source closure' nix build --no-link ".#checks.$codescan_nix_system.source-closure"
-run_case 'preventive filesystem boundary' nix develop -c ./tests/unit/test-isolation
+run_development_case 'dev-shell cache preservation' ./tests/unit/test-dev-shell-cache
+run_case 'all-system flake evaluation' profile_command nix_eval 'all-system flake evaluation' nix flake check --no-build --all-systems
+run_case 'compiled source closure' profile_command mixed 'compiled source closure' nix build --no-link ".#checks.$codescan_nix_system.source-closure"
+run_development_case 'preventive filesystem boundary' ./tests/unit/test-isolation
 if [ "$rc" -eq 0 ]; then
-	run_case 'isolated complete suite' nix develop -c ./tests/lib/run-isolated -- bash ./tests/run-prepared
+	run_development_case 'isolated complete suite' ./tests/lib/run-isolated -- bash ./tests/run-prepared
 fi
 
 exit "$failed"

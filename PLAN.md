@@ -4,7 +4,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify owned release staging and ZIP dependencies on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 759 unit cases.
+- [ ] Verify optional test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh profiled host run pass all available checks with 759 passing unit cases.
+- [x] Verify owned release staging and ZIP dependencies on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for c391ec2b, following 759 passing local unit cases. (done 2026-10-31 00:01 EDT)
 - [x] Verify the recursive-directory glob fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 54440026, following 759 passing local unit cases. (done 2026-10-30 23:32 EDT)
 - [x] Verify the empty language/type intersection fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 488fef10, following 758 passing local unit cases. (done 2026-10-30 23:16 EDT)
 - [x] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; all five release builds and native macOS smoke checks pass for f3cad46c, following 757 passing local unit cases. (done 2026-10-30 22:46 EDT)
@@ -26,13 +27,13 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [ ] Add Zig signature-query matching and negative cases, then exercise the actual CLI against indexed Zig fixtures.
 	- [ ] Add Rust signature-query matching for functions/methods with type constraints and actual CLI coverage.
 	- [ ] Add TypeScript signature-query matching for typed functions/methods with actual CLI coverage.
-- [x] Require FTS5 in all seven dependent scoring regressions instead of silently returning or skipping; the complete Nix check passes 754 unit cases with the pinned FTS5-enabled SQLite. (done 2026-10-28 03:04 EDT)
 
 ## Validation and performance
 
-- [ ] Attribute and reduce the ReleaseSafe prepared runtime's 6.23-second lower bound, pin the shared profiling adapter, and separate Nix evaluation/setup from execution; retain safety checks and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the attributed ReleaseSafe host runner's 7.33-second execution lower bound and 8.40-second flake-evaluation span; retain safety, coverage, and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
+	- [x] Add opt-in shared-profiler spans to the real test entry point, preserving task scratch across Nix shell entry and keeping parent jobs out of nested suites; complete Nix and fresh profiled host checks pass 759 unit cases. (done 2026-10-31 00:01 EDT; context: docs/plan_context/test_latency.md)
+	- [ ] Attribute the isolated suite's 6.23-second span to its actual components while preserving both execution lanes, complete test inventory, and private history export. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
-	- [x] Bound the unit process independently and verify real held HTTP/TLS exchanges close and join on cancellation; the complete Linux Nix check passes 755 unit cases without changing cold-model request policy. (done 2026-10-28 03:15 EDT; context: docs/plan_context/request_deadlines.md)
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.

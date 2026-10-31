@@ -170,6 +170,7 @@ annotate=[
 	tests/integration/test-integration = RAM-backed live integration test; bounded Ollama preflight skips by default and strict mode requires it.
 	tests/lib/capture.bash = Portable RAM-only stdout/stderr/status capture for test scripts
 	tests/lib/copy-source = Tracked-source fixture copy with lightweight searchable Git inventory
+	tests/lib/latency-run = Append shared-profiler shell-entry and execution spans without propagating the parent job to child suites
 	tests/lib/run-isolated = Linux preventive read-only host boundary for prepared test execution
 	tests/run-prepared = Complete runtime suite using immutable Nix artifacts and a disposable tracked-source copy
 	tests/unit/test-build-all-contract = Structural test locking the supported five-target build_all matrix and final native build.
@@ -186,6 +187,7 @@ annotate=[
 	tests/unit/test-reindex-all-projects = Isolated reindex-runner behavior tests using TMPDIR on macOS and Linux
 	tests/unit/test-single-index-entrypoint = Structural control: indexer.indexAll/indexIncremental may only be called from index_service, so adapters cannot drift on filters or dimension
 	tests/unit/test-source-fixture = Exact tracked-set, ignored-path, searchability, and overwrite regression
+	tests/unit/test-test-latency = Recorded-effect regressions for opt-in test phases, nested-job isolation, setup failures, and guarded execution
 	tests/unit/test-unit = Runs prepared safety-enabled Zig unit tests with an outer hang guard
 	tests/unit/test-unit-runner = Checks unit hang-guard arguments, output, and child/timeout exit statuses
 ]
