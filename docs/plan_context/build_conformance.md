@@ -4,8 +4,8 @@ The project has one executable implementation: Zig with linked C libraries and g
 
 | Entry or product | Current behavior | Remaining migration |
 | --- | --- | --- |
-| `./build` | Required Nix build for native release/debug or prepared tests; CLI copied atomically into `zig-out/bin/codescan` | Independent scope flags; verified target/profile products; serialized publication into `bin/<PF>/` |
-| `./build_all` | Five release outputs retained under `.nix-out/<PF>/[<VARIANT>/]ReleaseFast`, then native `./build` | Consolidate into `./build --all` and update callers without delegation loops |
+| `./build` | Required Nix build for native release/debug or prepared tests; independent implementation/platform scope flags; CLI copied atomically into `zig-out/bin/codescan` | Verified target/profile products; serialized publication into `bin/<PF>/` |
+| `./build --all` | Five release outputs retained under `.nix-out/<PF>/[<VARIANT>/]ReleaseFast`, then native publication; replaces the retired `build_all` script | Preserve this scope contract during publication migration |
 | `./test` | Exact Nix-built CLI and ReleaseSafe unit artifacts; complete available runner in a qualified Linux boundary | Preserve exact-product selection while migrating publication; native macOS/Windows full-suite boundaries remain unqualified |
 | `./run` | Absent | Build current source through Nix and execute the exact selected host output |
 | Public command discovery | Legacy raw output directories still resolve commands | Coordinate PATH cutover separately; no global shell edits are authorized by this inventory |
@@ -28,3 +28,11 @@ Behavioral controls cover unchanged caller staging, exact archive members/execut
 Exercising the actual ZIP branch then failed with `zip: command not found`. ZIP and unzip are now explicit tools from the existing pinned Nixpkgs input in both the development and hermetic runtime environments. Tar and ZIP payloads pass, including synthetic Windows executable filenames and exact Nix output selection for all five declared targets. These adapter fixtures do not execute native Windows binaries.
 
 The complete Nix check and fresh confined host runner pass all available checks, including 759 unit cases, one optional OS-log skip, and the unchanged two live-provider suite exclusions. The workflow still consumes the archive, not the temporary staging directory. Archive payload layout and target namespaces are unchanged; this increment does not claim full build-convention migration or concurrent-publisher qualification.
+
+## Build-scope consolidation
+
+The behavioral scope regression first fails against the real old wrapper: `./build --all` exits 64 instead of requesting the declared release matrix. It replaces the former source-text presence check with complete request-set assertions, including duplicate and unexpected requests. The implementation now accepts independent implementation/platform flags, both alias spellings, reversed order, and repeated flags. With one executable implementation, implementation scope needs no selector file. All-platform mode retains the five release products and performs existing native publication last. A failed cross-build returns its original failure status before replacing the native command.
+
+Debug and prepared-test products remain native-only because cross-platform packages for those profiles are not declared. Unsupported combinations fail before requesting a builder. Eighteen private scenarios cover these scopes, defaults, aliases, failures, paths with spaces, and symlink escapes at retained-output root/platform/variant parents. All retained parents are checked before the first build. The request adapter records actual wrapper calls; it does not compile foreign binaries or establish native Windows execution. Existing real prepared-native publication coverage remains in the complete suite.
+
+Complete Nix and the fresh confined host entry point pass 775 unit cases and all 18 scope scenarios with unchanged exclusions. CLI/unit artifact identities are unchanged. The standalone `build_all` script is retired in Git, and documentation/file notes point to `./build --all`; earlier commits retain it recoverably. No live product or PATH setting is changed by validation. Exact-product `./run`, namespaced native products, independently verified/serialized publication, resource retention, and native Windows qualification remain open. This is a bounded interface migration, not full build-architecture conformance.

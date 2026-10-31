@@ -57,10 +57,14 @@ contract rather than an undocumented collection of host packages. Pre-built
 binaries remain self-contained and do not require Nix at runtime.
 
 `./build --debug` selects the Nix debug package; `./build --test` prepares
-compiled unit tests and fixture tools without publishing a CLI. The legacy
-`./build_all` command builds the five declared release targets through Nix,
+compiled unit tests and fixture tools without publishing a CLI. `./build --all`
+(or `--all-platforms` / `--all-plats`) builds the five declared release targets through Nix,
 retains them under `.nix-out/<PF>/[<VARIANT>/]ReleaseFast`, and restores the
-native CLI last. There is no direct compiler fallback.
+native CLI last. It replaces the former `build_all` script. Implementation scope
+(`--all-impls` / `--all-implementations`) is independent; with Zig as the sole
+implementation, it selects the same implementation as the default. Scope flags
+are order-independent and repeatable. All-platform builds are ReleaseFast-only;
+debug/test products are native-only. There is no direct compiler fallback.
 
 `./test` prepares its exact CLI and test executables through Nix once, then
 executes them in disposable project state. Linux uses a tested Bubblewrap

@@ -3,16 +3,56 @@ set -u
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
 attribute=default
-case "${1:-}" in
-	'') ;;
-	debug|--debug) attribute=debug; shift ;;
-	--test) attribute=test-binaries; shift ;;
-	-h|--help) printf 'Usage: ./build [--debug|--test]\nNix is required. ReleaseFast is the default.\n'; exit 0 ;;
-	*) printf 'error: unsupported build option: %s\n' "$1" >&2; exit 64 ;;
-esac
-[ "$#" -eq 0 ] || { printf 'error: unexpected build arguments\n' >&2; exit 64; }
+all_platforms=0
+while [ "$#" -gt 0 ]; do
+	case "$1" in
+		debug|--debug)
+			[ "$attribute" != test-binaries ] || { printf 'error: choose debug or test preparation, not both\n' >&2; exit 64; }
+			attribute=debug ;;
+		--test)
+			[ "$attribute" != debug ] || { printf 'error: choose debug or test preparation, not both\n' >&2; exit 64; }
+			attribute=test-binaries ;;
+		--all|--all-plats|--all-platforms) all_platforms=1 ;;
+		--all-impls|--all-implementations) ;; # Zig is the sole executable implementation.
+		-h|--help)
+			printf 'Usage: ./build [--debug|--test] [--all-impls] [--all-plats|--all]\nNix is required. ReleaseFast is the default.\nImplementation aliases: --all-impls, --all-implementations\nPlatform aliases: --all-plats, --all-platforms\n--all enables both scopes. Debug/test products are native-only.\n'
+			exit 0 ;;
+		*) printf 'error: unsupported build option: %s\n' "$1" >&2; exit 64 ;;
+	esac
+	shift
+done
+if [ "$all_platforms" -eq 1 ] && [ "$attribute" != default ]; then
+	printf 'error: all-platform builds support ReleaseFast only; debug/test products are native-only\n' >&2
+	exit 64
+fi
 command -v nix >/dev/null 2>&1 || { printf 'error: Nix is required; install Nix before building codescan\n' >&2; exit 127; }
 cd "$root" || exit 1
+if [ "$all_platforms" -eq 1 ]; then
+	targets=(macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64)
+	prefixes=()
+	# Validate every retained-output parent before any build or publication.
+	for target in "${targets[@]}"; do
+		case "$target" in
+			macos-*) variant= ;;
+			linux-*) variant=musl/ ;;
+			mswin-*) variant=gnu/ ;;
+		esac
+		prefix=".nix-out/$target/${variant}ReleaseFast"
+		prefixes+=("$prefix")
+		for parent in .nix-out ".nix-out/$target" "${prefix%/*}"; do
+			if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
+				printf 'error: refusing retained output through unexpected symlink/file: %s\n' "$parent" >&2
+				exit 1
+			fi
+		done
+	done
+	for index in "${!targets[@]}"; do
+		prefix="${prefixes[$index]}"
+		mkdir -p "${prefix%/*}" || exit 1
+		nix build ".#release-${targets[$index]}" --out-link "$prefix" || exit "$?"
+	done
+fi
+# Native publication remains last, so a failed cross-build cannot replace it.
 if output="$(nix build --no-link --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
 if [ "$attribute" = test-binaries ]; then
 	printf 'Prepared test artifacts: %s\n' "$output" >&2

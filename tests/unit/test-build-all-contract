@@ -1,42 +1,105 @@
 #!/usr/bin/env bash
 set -u
-
 root="$(cd "$(dirname "$0")/../.." && pwd)"
-script="$root/build_all"
-failed=0
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-build-scopes.XXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+fail() { printf 'FAIL build scopes: %s\n' "$1" >&2; exit 1; }
 
-fail() {
-	printf 'FAIL: %s\n' "$1" >&2
-	failed=1
-}
-
-if [ ! -x "$script" ]; then
-	fail "build_all must be an executable project entrypoint"
-	exit "$failed"
-fi
-
-for target in \
-	"macos-arm64" \
-	"linux-arm64" \
-	"linux-amd64" \
-	"mswin-arm64" \
-	"mswin-amd64"
-do
-	if ! rg -Fq -- "\"$target\"" "$script"; then
-		fail "build_all is missing $target"
+# Record the real wrapper's declared Nix requests; never invoke a compiler.
+nix() {
+	[ "${1:-}" = build ] || return 64
+	shift
+	local attribute='' link='' next_link=0 argument
+	for argument in "$@"; do
+		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
+		case "$argument" in
+			--out-link) next_link=1 ;;
+			'.#'*) attribute="$argument" ;;
+		esac
+	done
+	[ -n "$attribute" ] && [ "$next_link" -eq 0 ] || return 64
+	printf '%s\t%s\n' "$attribute" "$link" >> "$SCOPE_EVENTS"
+	if [ "$attribute" = "$SCOPE_FAIL_ATTRIBUTE" ]; then
+		printf 'controlled Nix build failure\n' >&2
+		return 19
 	fi
+	if [ -n "$link" ]; then
+		mkdir -p "$(dirname "$link")" || return 1
+		ln -s "$SCOPE_OUTPUT" "$link" || return 1
+	else printf '%s\n' "$SCOPE_OUTPUT"; fi
+}
+zig() { printf 'forbidden direct compiler\n' >> "$SCOPE_EVENTS"; return 99; }
+export -f nix zig
+
+all_requests="$(printf '%s\n' \
+	$'.#default\t' \
+	$'.#release-macos-arm64\t.nix-out/macos-arm64/ReleaseFast' \
+	$'.#release-linux-arm64\t.nix-out/linux-arm64/musl/ReleaseFast' \
+	$'.#release-linux-amd64\t.nix-out/linux-amd64/musl/ReleaseFast' \
+	$'.#release-mswin-arm64\t.nix-out/mswin-arm64/gnu/ReleaseFast' \
+	$'.#release-mswin-amd64\t.nix-out/mswin-amd64/gnu/ReleaseFast' | LC_ALL=C sort)"
+for scenario in all default implementations-short implementations-long platforms-short platforms-long combined reverse repeated debug test invalid-debug invalid-test unknown failure retention-root-symlink retention-platform-symlink retention-variant-symlink; do
+	project="$fixture/$scenario/project with spaces"
+	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" || fail 'fixture setup'
+	cp "$root/build" "$project/build" || fail 'wrapper fixture'
+	printf old > "$project/zig-out/bin/codescan"
+	printf new > "$project/prepared/bin/codescan"
+	chmod +x "$project/prepared/bin/codescan" || fail 'fixture executable'
+	: > "$project/events"
+	args=()
+	expected=$'.#default\t'
+	expected_rc=0
+	fail_attribute=''
+	case "$scenario" in
+		all) args=(--all); expected="$all_requests" ;;
+		implementations-short) args=(--all-impls) ;;
+		implementations-long) args=(--all-implementations) ;;
+		platforms-short) args=(--all-plats); expected="$all_requests" ;;
+		platforms-long) args=(--all-platforms); expected="$all_requests" ;;
+		combined) args=(--all-impls --all-plats); expected="$all_requests" ;;
+		reverse) args=(--all-platforms --all-implementations); expected="$all_requests" ;;
+		repeated) args=(--all --all-plats --all-implementations --all); expected="$all_requests" ;;
+		debug) args=(--all-impls --debug); expected=$'.#debug\t' ;;
+		test) args=(--test --all-implementations); expected=$'.#test-binaries\t' ;;
+		invalid-debug) args=(--all-platforms --debug); expected=''; expected_rc=64 ;;
+		invalid-test) args=(--test --all); expected=''; expected_rc=64 ;;
+		unknown) args=(--unsupported); expected=''; expected_rc=64 ;;
+		failure) args=(--all); fail_attribute='.#release-linux-arm64'; expected_rc=19 ;;
+		retention-*-symlink)
+			args=(--all); expected=''; expected_rc=1
+			mkdir -p "$project/protected" || fail 'protected fixture setup'
+			printf unchanged > "$project/protected/sentinel"
+			case "$scenario" in
+				retention-root-symlink) link="$project/.nix-out" ;;
+				retention-platform-symlink) link="$project/.nix-out/linux-arm64" ;;
+				retention-variant-symlink) link="$project/.nix-out/linux-arm64/musl" ;;
+			esac
+			mkdir -p "$(dirname "$link")" || fail 'retained parent fixture'
+			ln -s "$project/protected" "$link" || fail 'retained escape fixture'
+			;;
+	esac
+	if (cd "$project" && env SCOPE_EVENTS="$project/events" SCOPE_OUTPUT="$project/prepared" \
+		SCOPE_FAIL_ATTRIBUTE="$fail_attribute" "$BASH" "$project/build" "${args[@]}") > "$project/stdout" 2> "$project/stderr"; then
+		rc=0
+	else rc="$?"; fi
+	[ "$rc" -eq "$expected_rc" ] || fail "$scenario returned $rc, expected $expected_rc"
+	actual="$(LC_ALL=C sort "$project/events")" || fail 'request sorting'
+	if [ "$scenario" = failure ]; then
+		awk -F '\t' '$1 == ".#default" { exit 1 }' "$project/events" || fail 'failed cross-build reached native publication'
+		[ "$(awk -F '\t' '$1 == ".#release-linux-arm64" { n++ } END { print n+0 }' "$project/events")" -eq 1 ] || fail 'controlled failed target was not requested exactly once'
+		[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'failed build replaced the previous command'
+		rg -q 'controlled Nix build failure' "$project/stderr" || fail 'failed build hid its diagnostic'
+	else
+		[ "$actual" = "$expected" ] || fail "$scenario selected the wrong target/profile set or repeated a request: $actual"
+		case "$scenario" in
+			test|invalid-debug|invalid-test|unknown|retention-*-symlink)
+				[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$scenario published a command" ;;
+			*) [ "$(< "$project/zig-out/bin/codescan")" = new ] || fail "$scenario omitted native publication" ;;
+		esac
+	fi
+	case "$scenario" in retention-*-symlink)
+		[ "$(< "$project/protected/sentinel")" = unchanged ] || fail 'retained output escaped into caller data'
+		[ "$(find "$project/protected" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || fail 'retained output wrote through a symlink'
+		;; esac
 done
-
-if ! rg -Fq -- 'nix build' "$script"; then
-	fail "build_all must use declared Nix outputs"
-fi
-
-if rg -Fq -- "x86_64-macos" "$script"; then
-	fail "build_all must not restore the retired x86_64 macOS target"
-fi
-
-if ! rg -Fq -- "./build" "$script"; then
-	fail "build_all must finish with the native ./build artifact"
-fi
-
-exit "$failed"
+printf 'Build scopes select exact declared target/profile sets\n'
