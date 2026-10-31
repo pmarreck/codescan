@@ -4,6 +4,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify the recursive-directory glob fix on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 759 unit cases.
 - [ ] Verify the empty language/type intersection fix on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 758 unit cases.
 - [x] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; all five release builds and native macOS smoke checks pass for f3cad46c, following 757 passing local unit cases. (done 2026-10-30 22:46 EDT)
 - [x] Verify the FTS prerequisite and real-socket cancellation shipments on exact-commit Mechatron Prime CI and GitHub Actions, including native macOS CLI smoke checks; all pass for 591c07a8 and b2d2ebd9. (done 2026-10-28 12:32 EDT)
@@ -36,7 +37,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live index writes; do not infer a new all-project sweep.
-- [ ] Cover the remaining inventoried discovery/search classifiers one bounded suite at a time, continuing with ignored-directory boundaries and similarly named allowed neighbors. (context: docs/plan_context/filter_classifiers.md)
+- [x] Cover the inventoried bounded discovery/search classifier gaps with complete-set regressions; standalone path constraints, language/type intersections, and recursive-directory boundaries pass without claiming exhaustive pattern coverage. (done 2026-10-30 23:13 EDT; context: docs/plan_context/filter_classifiers.md)
+	- [x] Preserve directory-component boundaries in recursive globs after two unit regressions failed; 29 discovery paths, 42 pattern-set checks, and three real-CLI controls pass with 759 passing unit cases in complete Nix and fresh confined host runs. (done 2026-10-30 23:13 EDT; context: docs/plan_context/filter_classifiers.md)
 	- [x] Preserve empty language/type intersections without bypassing existing validation; 48 search-mode/filter combinations, weight controls, and six real-CLI checks pass in complete Nix and fresh confined host runs with 758 passing unit cases. (done 2026-10-30 23:00 EDT; context: docs/plan_context/filter_classifiers.md)
 	- [x] Repair standalone path filtering after the vector regression returned four candidates instead of two; all 16 path-set/search-mode combinations and 756 unit cases pass in the complete Nix check and fresh confined host runner. (done 2026-10-28 12:33 EDT; context: docs/plan_context/filter_classifiers.md)
 

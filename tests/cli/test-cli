@@ -69,6 +69,14 @@ main() {
 	capture "$BIN" search checksum --db "$DB" --mode lexical --lang markdown --type doc --json
 	[ "$rc" -eq 0 ] || fail 'matching document filters failed'
 	printf '%s' "$out" | jq -e '[.results[].name] == ["Checksum Docs"]' >/dev/null || fail 'matching document filters returned the wrong set'
+	for query in checksum_fn ''; do
+		capture "$BIN" search "$query" --db "$DB" --mode lexical --path '**/sum.zig' --json
+		[ "$rc" -eq 0 ] || fail 'whole-component path filter failed'
+		printf '%s' "$out" | jq -e '.results == []' >/dev/null || fail 'recursive path filter matched only a basename suffix'
+	done
+	capture "$BIN" search checksum_fn --db "$DB" --mode lexical --path '**/checksum.zig' --json
+	[ "$rc" -eq 0 ] || fail 'matching recursive path filter failed'
+	printf '%s' "$out" | jq -e '[.results[].name] == ["checksum_fn"]' >/dev/null || fail 'matching recursive path filter returned the wrong set'
 
 	# A bad log duration is a CLI usage error. Keep stdout available for log
 	# records so shell callers do not have to strip a diagnostic from their data.

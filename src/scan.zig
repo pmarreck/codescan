@@ -789,20 +789,41 @@ test "findFiles ignores built-in paths" {
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), "src");
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".git");
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".jj");
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan");
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), ".codescan-fixtures/fixture");
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), "deps/lib");
-	try tmp.dir.createDirPath(io_singleton.getOrInit(), "node_modules/pkg");
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "src/main.zig", .data = "" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".git/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".jj/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan/index.sqlite3", .data = "" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan-fixtures/fixture/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "deps/lib/ignored.zig", .data = "" });
-	try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "node_modules/pkg/ignored.zig", .data = "" });
+	const cases = [_]struct { path: []const u8, include: bool }{
+		.{ .path = "src/main.zig", .include = true },
+		.{ .path = ".git/ignored.zig", .include = false },
+		.{ .path = "nested/.git/ignored.zig", .include = false },
+		.{ .path = "my.git/allowed.zig", .include = true },
+		.{ .path = ".git-extra/allowed.zig", .include = true },
+		.{ .path = ".jj/ignored.zig", .include = false },
+		.{ .path = "nested/.jj/ignored.zig", .include = false },
+		.{ .path = "my.jj/allowed.zig", .include = true },
+		.{ .path = ".jj-extra/allowed.zig", .include = true },
+		.{ .path = ".codescan/ignored.zig", .include = false },
+		.{ .path = "nested/.codescan/ignored.zig", .include = false },
+		.{ .path = "my.codescan/allowed.zig", .include = true },
+		.{ .path = ".codescan-extra/allowed.zig", .include = true },
+		.{ .path = ".codescan-fixtures/fixture/ignored.zig", .include = false },
+		.{ .path = "nested/.codescan-fixtures/fixture/ignored.zig", .include = false },
+		.{ .path = "my.codescan-fixtures/fixture/allowed.zig", .include = true },
+		.{ .path = ".codescan-fixtures-extra/fixture/allowed.zig", .include = true },
+		.{ .path = "deps/lib/ignored.zig", .include = false },
+		.{ .path = "nested/deps/lib/ignored.zig", .include = false },
+		.{ .path = "mydeps/lib/allowed.zig", .include = true },
+		.{ .path = "deps-extra/lib/allowed.zig", .include = true },
+		.{ .path = "node_modules/pkg/ignored.zig", .include = false },
+		.{ .path = "nested/node_modules/pkg/ignored.zig", .include = false },
+		.{ .path = "my_node_modules/pkg/allowed.zig", .include = true },
+		.{ .path = "node_modules-extra/pkg/allowed.zig", .include = true },
+		.{ .path = "bin/ignored.zig", .include = false },
+		.{ .path = "nested/bin/ignored.zig", .include = false },
+		.{ .path = "mybin/allowed.zig", .include = true },
+		.{ .path = "bin-extra/allowed.zig", .include = true },
+	};
+	for (cases) |case| {
+		try tmp.dir.createDirPath(io_singleton.getOrInit(), std.fs.path.dirname(case.path).?);
+		try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = case.path, .data = "" });
+	}
 
 	const allocator = std.testing.allocator;
 	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
@@ -818,8 +839,18 @@ test "findFiles ignores built-in paths" {
 		allocator.free(files);
 	}
 
-	try std.testing.expectEqual(@as(usize, 1), files.len);
-	try std.testing.expectEqualStrings("src/main.zig", files[0]);
+	var actual: [cases.len]bool = @splat(false);
+	for (files) |path| {
+		const index = found: {
+			for (cases, 0..) |case, i| {
+				if (std.mem.eql(u8, case.path, path)) break :found i;
+			}
+			return error.UnexpectedDiscoveredFile;
+		};
+		try std.testing.expect(!actual[index]);
+		actual[index] = true;
+	}
+	for (cases, 0..) |case, i| try std.testing.expectEqual(case.include, actual[i]);
 }
 
 test "findFiles respects .gitignore for untracked files" {

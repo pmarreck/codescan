@@ -24,6 +24,7 @@
 //! Glob patterns are translated to PCRE2 regex as follows:
 //! - `*` → `[^/\\]*` (match any chars except path separators)
 //! - `**` → `.*` (match anything including path separators)
+//! - `**/` → an optional directory prefix ending at a separator
 //! - `?` → `[^/\\]` (match single non-separator char)
 //! - `[abc]` → `[abc]` (pass through to PCRE2)
 //! - `[^abc]` → `[^abc]` (PCRE2 negation - matches any char NOT in set)
@@ -97,6 +98,7 @@ pub fn compile(allocator: Allocator, pattern: []const u8) CompileError!Pattern {
 /// Translations:
 /// - `*` → `[^/\\]*` (match any chars except path separators)
 /// - `**` → `.*` (match anything including separators)
+/// - `**/` → an optional directory prefix ending at a separator
 /// - `?` → `[^/\\]` (match single non-separator char)
 /// - `[abc]` → `[abc]` (pass through)
 /// - `[^abc]` → `[^abc]` (pass through - PCRE2 negation)
@@ -137,14 +139,14 @@ fn globToRegexInner(allocator: Allocator, glob: []const u8, anchored: bool) Comp
 			'*' => {
 				// Check for **
 				if (i + 1 < glob.len and glob[i + 1] == '*') {
-					// ** matches anything including path separators
-					result.appendSlice(allocator, ".*") catch return CompileError.OutOfMemory;
 					i += 2;
-					// Skip trailing / after ** (e.g., **/foo → .*foo)
 					if (i < glob.len and (glob[i] == '/' or glob[i] == '\\')) {
-						// But we need to match the separator too, so add optional separator
-						result.appendSlice(allocator, "(?:/|\\\\|)") catch return CompileError.OutOfMemory;
+						// Match zero directories or a prefix ending at a separator,
+						// never just a suffix of the next path component.
+						result.appendSlice(allocator, "(?:.*[/\\\\])?") catch return CompileError.OutOfMemory;
 						i += 1;
+					} else {
+						result.appendSlice(allocator, ".*") catch return CompileError.OutOfMemory;
 					}
 				} else {
 					// * matches any chars except path separators
@@ -410,7 +412,7 @@ test "globToRegex: double star" {
 	const allocator = std.testing.allocator;
 	const result = try globToRegex(allocator, "**/*.txt");
 	defer allocator.free(result);
-	try std.testing.expectEqualStrings("^.*(?:/|\\\\|)[^/\\\\]*\\.txt$", result);
+	try std.testing.expectEqualStrings("^(?:.*[/\\\\])?[^/\\\\]*\\.txt$", result);
 }
 
 test "globToRegex: question mark" {
@@ -466,6 +468,36 @@ test "double star matches across directories" {
 	try std.testing.expect(pattern.matches("dir/hello.txt"));
 	try std.testing.expect(pattern.matches("a/b/c/hello.txt"));
 	try std.testing.expect(!pattern.matches("hello.log"));
+}
+
+test "pattern set classifies whole path components before and after additions" {
+	const cases = [_]struct { path: []const u8, alt: ?[]const u8 = null, expected: [3]bool }{
+		.{ .path = "deps/lib.zig", .expected = .{ false, true, true } },
+		.{ .path = "a/deps/lib.zig", .expected = .{ false, true, true } },
+		.{ .path = "a/b/deps/lib.zig", .expected = .{ false, true, true } },
+		.{ .path = "mydeps/lib.zig", .expected = .{ false, false, false } },
+		.{ .path = "a/mydeps/lib.zig", .expected = .{ false, false, false } },
+		.{ .path = "deps-extra/lib.zig", .expected = .{ false, false, false } },
+		.{ .path = "needle.zig", .expected = .{ false, false, true } },
+		.{ .path = "src/needle.zig", .expected = .{ false, false, true } },
+		.{ .path = "src\\needle.zig", .expected = .{ false, false, true } },
+		.{ .path = "myneedle.zig", .expected = .{ false, false, false } },
+		.{ .path = "src/myneedle.zig", .expected = .{ false, false, false } },
+		.{ .path = "renamed.bin", .alt = "needle.zig", .expected = .{ false, false, true } },
+		.{ .path = "renamed.bin", .alt = "myneedle.zig", .expected = .{ false, false, false } },
+		.{ .path = "other.zig", .expected = .{ false, false, false } },
+	};
+	var set = PatternSet.init(std.testing.allocator);
+	defer set.deinit();
+	for (0..3) |stage| {
+		switch (stage) {
+			0 => {},
+			1 => try set.add("**/deps/**"),
+			2 => try set.add("**/needle.zig"),
+			else => unreachable,
+		}
+		for (cases) |case| try std.testing.expectEqual(case.expected[stage], set.matchesAny(case.path, case.alt));
+	}
 }
 
 test "question mark matches single char" {
