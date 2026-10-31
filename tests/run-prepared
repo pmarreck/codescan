@@ -55,7 +55,6 @@ fi
 	run_case 'five-target build contract' ./tests/unit/test-build-all-contract
 	run_case 'Nix-required build adapter' ./tests/unit/test-build-nix
 	run_case 'CI runner contract' ./tests/unit/test-ci-runner-contract
-	run_case 'CI architecture/publication' ./tests/unit/test-ci-architecture
 	run_case 'no committed embedding keys' ./tests/unit/test-no-committed-secrets
 	run_case 'portable MCP configuration' ./tests/unit/test-portable-mcp-config
 	run_case 'single index entrypoint' ./tests/unit/test-single-index-entrypoint
@@ -72,6 +71,7 @@ source_pid=$!
 # Reuse the unit lane for independent harness checks, without a third lane.
 if ! wait "$unit_pid"; then failed=1; fi
 run_case 'test phase recording' bash ./tests/unit/test-test-latency
+run_case 'CI architecture/publication' ./tests/unit/test-ci-architecture
 run_case 'prepared runner orchestration' bash ./tests/unit/test-prepared-runner
 if ! wait "$source_pid"; then failed=1; fi
 exit "$failed"

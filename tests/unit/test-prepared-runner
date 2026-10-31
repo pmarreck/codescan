@@ -40,9 +40,21 @@ if [ "${1:-}" = --adapter ]; then
 				printf 'parallel\n' > "$HARNESS_PARALLEL" || exit 1
 			fi
 			exit "$HARNESS_PHASE_RC" ;;
+		test-ci-architecture)
+			if [ "$HARNESS_ARCH_REUSE" = 1 ]; then
+				read -r ready < "$HARNESS_ARCH_READY" || exit 1
+				[ "$ready" = cli ] || exit 1
+				printf 'architecture\n' > "$HARNESS_ARCH_RELEASE" || exit 1
+			fi
+			exit "$HARNESS_ARCH_RC" ;;
 		test-cli)
 			if [ "$HARNESS_REUSE_SLOT" = 0 ]; then
 				printf 'go\n' > "$HARNESS_RELEASE" || exit 1
+			fi
+			if [ "$HARNESS_ARCH_REUSE" = 1 ]; then
+				printf 'cli\n' > "$HARNESS_ARCH_READY" || exit 1
+				read -r ready < "$HARNESS_ARCH_RELEASE" || exit 1
+				[ "$ready" = architecture ] || exit 1
 			fi
 			exit "$HARNESS_CLI_RC" ;;
 	esac
@@ -94,39 +106,42 @@ source_root="$source_project"
 while IFS= read -r invocation; do eval "${invocation% &}"; done < <(sed -n '/^[[:space:]]*run_case /p' "$root/tests/run-prepared")
 git -C "$source_project" init -q || fail 'Git setup'
 git -C "$source_project" add . || fail 'tracked fixture'
-for scenario in reuse-slot pass unit-failure cli-failure phase-failure both-failures copy-failure profiled profiled-reuse-slot profiled-unit-failure profiled-cli-failure profiled-phase-failure profiled-copy-failure profiled-recorder-failure; do
+for scenario in reuse-architecture profiled-architecture-failure reuse-slot pass unit-failure cli-failure phase-failure both-failures copy-failure profiled profiled-reuse-slot profiled-unit-failure profiled-cli-failure profiled-phase-failure profiled-copy-failure profiled-recorder-failure; do
 	case_root="$fixture/$scenario"
 	mkdir -p "$case_root/workspace" || fail 'scenario setup'
 	export HARNESS_EVENTS="$case_root/events" HARNESS_READY="$case_root/ready" HARNESS_RELEASE="$case_root/release"
 	export HARNESS_COPY_DONE="$case_root/copy-done" HARNESS_PARALLEL="$case_root/parallel" HARNESS_REUSE_SLOT=0
+	export HARNESS_ARCH_READY="$case_root/architecture-ready" HARNESS_ARCH_RELEASE="$case_root/architecture-release" HARNESS_ARCH_REUSE=0
 	case "$scenario" in reuse-slot|profiled-reuse-slot) HARNESS_REUSE_SLOT=1 ;; esac
+	case "$scenario" in reuse-architecture|profiled-architecture-failure) HARNESS_ARCH_REUSE=1 ;; esac
 	export HARNESS_JOB_EVENTS="$case_root/job-events" HARNESS_SPANS="$case_root/spans" HARNESS_PROFILE_FAIL=''
 	: > "$HARNESS_JOB_EVENTS"
 	: > "$HARNESS_SPANS"
 	unset CODESCAN_LATENCY_JOB
 	case "$scenario" in profiled*) export CODESCAN_LATENCY_JOB=fixture-suite-job ;; esac
-	export HARNESS_UNIT_RC=0 HARNESS_CLI_RC=0 HARNESS_PHASE_RC=0 HARNESS_COPY_RC=0
+	export HARNESS_UNIT_RC=0 HARNESS_CLI_RC=0 HARNESS_PHASE_RC=0 HARNESS_COPY_RC=0 HARNESS_ARCH_RC=0
 	case "$scenario" in
+		profiled-architecture-failure) HARNESS_ARCH_RC=13 ;;
 		unit-failure|profiled-unit-failure) HARNESS_UNIT_RC=7 ;;
 		cli-failure|profiled-cli-failure) HARNESS_CLI_RC=9 ;;
 		phase-failure|profiled-phase-failure) HARNESS_PHASE_RC=11 ;;
-		both-failures) HARNESS_UNIT_RC=7 HARNESS_CLI_RC=9 HARNESS_PHASE_RC=11 ;;
+		both-failures) HARNESS_UNIT_RC=7 HARNESS_CLI_RC=9 HARNESS_PHASE_RC=11 HARNESS_ARCH_RC=13 ;;
 		copy-failure|profiled-copy-failure) HARNESS_COPY_RC=37 ;;
 		profiled-recorder-failure) HARNESS_PROFILE_FAIL='pinned profiling adapter' ;;
 	esac
-	mkfifo "$HARNESS_READY" "$HARNESS_RELEASE" "$HARNESS_PARALLEL" || fail 'barrier setup'
+	mkfifo "$HARNESS_READY" "$HARNESS_RELEASE" "$HARNESS_PARALLEL" "$HARNESS_ARCH_READY" "$HARNESS_ARCH_RELEASE" || fail 'barrier setup'
 	if (cd "$source_project" && TEST_WORKSPACE="$case_root/workspace" timeout 10 bash ./tests/run-prepared) > "$case_root/out" 2> "$case_root/err"; then
 		rc=0
 	else rc="$?"; fi
 	expected=1
-	case "$scenario" in pass|profiled|reuse-slot|profiled-reuse-slot) expected=0 ;; esac
+	case "$scenario" in pass|profiled|reuse-slot|profiled-reuse-slot|reuse-architecture) expected=0 ;; esac
 	[ "$rc" -eq "$expected" ] || fail "$scenario returned $rc, expected $expected (unit must overlap source preparation and both lanes must be awaited)"
 	awk '
 		/^end:/ { name=substr($0,5); if (!active[name]) exit 1; delete active[name]; live--; next }
 		{ if (active[$0]) exit 1; active[$0]=1; live++; if (live>2) exit 1 }
 		END { if (live) exit 1 }
 	' "$HARNESS_EVENTS" || fail "$scenario exceeded two suites or returned without joining them"
-	for name in test-unit test-cli test-integration test-test-latency test-prepared-runner; do
+	for name in test-unit test-cli test-integration test-test-latency test-prepared-runner test-ci-architecture; do
 		calls=1
 		case "$scenario:$name" in copy-failure:*|profiled-copy-failure:*) if [ "$name" != test-unit ]; then calls=0; fi ;; esac
 		[ "$(awk -v name="$name" '$0 == name { n++ } END { print n+0 }' "$HARNESS_EVENTS")" -eq "$calls" ] || fail "$scenario ran $name an unexpected number of times"

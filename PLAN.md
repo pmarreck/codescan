@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify packaging-suite lane reuse on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host/component runs pass 772 unit cases and all 16 scheduling/failure scenarios, retaining two lanes and unchanged exclusions.
 - [ ] Verify automatic symbol-discovery root handling on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 772 unit cases and the CLI/MCP root regressions.
 - [x] Verify shared scanner ignore preparation and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for aef038b1, following 771 passing local unit cases and 2,050 paired CLI output checks. (done 2026-10-31 04:07 EDT; commit aef038b1)
 - [x] Verify MCP project-relative file targeting on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 0df165c1, following all 18 local file-operation cases and 769 passing unit cases. (done 2026-10-31 03:11 EDT; commit 0df165c1)
 - [x] Verify pending-file vector incompatibility advice on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fb68fa55, following 769 passing local unit cases and the independent SQLite-failure control. (done 2026-10-31 03:11 EDT; commit fb68fa55)
 - [x] Verify atomic full-index schema replacement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for b12c183b, following 767 passing local unit cases plus rollback, retained semantic search, and retry controls. (done 2026-10-31 02:40 EDT; commit b12c183b)
-- [x] Verify shared Nix source evaluation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for e1f04179, with all 24 package identities unchanged and 765 passing local unit cases. (done 2026-10-31 02:20 EDT; commit e1f04179)
 - [x] Verify query-vector compatibility guards on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 8aa45c33, following 765 passing local unit cases and genuine database-failure controls. (done 2026-10-31 02:20 EDT; commit 8aa45c33)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
@@ -31,7 +31,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 5.98-second execution lower bound and 4.52-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.81-second execution lower bound and 4.58-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+	- [x] Move CI architecture/publication into the freed unit lane after a failing FIFO-overlap regression; all 16 scheduling/failure scenarios and 772 unit cases pass, with 4.53-second component elapsed execution and a retained two-suite limit. (done 2026-10-31 04:12 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Compile shared scanner ignore rules once per discovery; a leaking allocation-failure sweep failed first, then 771 unit cases, 136 classifier decisions, and 2,050 paired CLI checks passed; identical one-file discovery batches improved in both CPU-affinity modes. (done 2026-10-31 03:50 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
