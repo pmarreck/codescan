@@ -48,6 +48,7 @@ annotate=[
 	patches/profiler-latency-debounce-fixture.patch = Seed a bounded prior notification state in the pinned profiler CLI fixture
 	patches/sqlite-vec-cleanup-callbacks.patch = Pinned sqlite-vec callback-type correction for ReleaseSafe vector insertion
 	reindex_all = Sequentially update direct-child Git projects with local Ollama Jina and percentage progress
+	run = Build current native source through Nix and exec the exact output without publication
 	scripts/ci-build = Nix release packaging with validated labels, owned staging, archive failure preservation, and native macOS verification
 	scripts/ci-local = Runs the CI build job locally via act (Linux only)
 	scripts/ci-setup-nix = CI helper that installs Nix for GitHub Actions

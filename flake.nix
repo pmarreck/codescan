@@ -223,7 +223,7 @@
 						export XDG_STATE_HOME="$TMPDIR/state" XDG_CACHE_HOME="$TMPDIR/cache"
 						export XDG_RUNTIME_DIR="$TMPDIR/runtime" TEST_WORKSPACE="$TMPDIR/workspace"
 						mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$XDG_RUNTIME_DIR" "$TEST_WORKSPACE"
-						patchShebangs build reindex_all scripts/ci-build scripts/ci-verify-macos-arm64 tests
+						patchShebangs build run reindex_all scripts/ci-build scripts/ci-verify-macos-arm64 tests
 						git init -q
 						git add .
 						export CODESCAN_TEST_BIN=${self.packages.${system}.default}/bin/codescan

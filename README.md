@@ -66,6 +66,10 @@ implementation, it selects the same implementation as the default. Scope flags
 are order-independent and repeatable. All-platform builds are ReleaseFast-only;
 debug/test products are native-only. There is no direct compiler fallback.
 
+Use `./run ARGS...` to build the current checkout's native release package and
+execute that exact Nix output. It preserves your working directory, arguments,
+stdin, and exit status without publishing a command or using a stale PATH binary.
+
 `./test` prepares its exact CLI and test executables through Nix once, then
 executes them in disposable project state. Linux uses a tested Bubblewrap
 filesystem boundary with private HOME/XDG directories and a pinned tool PATH.

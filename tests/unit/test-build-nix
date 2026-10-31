@@ -64,4 +64,85 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	esac
 	if grep -Fq 'forbidden compiler' "$project/events"; then fail "$mode fell back to direct compilation"; fi
 done
+
+# Explicit source execution must not select a stale PATH or published command.
+nix() {
+	printf '%s\0' "$@" > "$BUILD_EVENTS"
+	local input
+	if IFS= read -r input; then printf '%s\0' consumed-stdin "$input" >> "$BUILD_EVENTS"; fi
+	[ "$BUILD_STATUS" -eq 0 ] || return "$BUILD_STATUS"
+	printf '%s\n' "$BUILD_OUTPUT"
+}
+export -f nix
+for mode in run run-child-failure run-build-failure run-missing-product run-nonexecutable run-multiple-products run-missing-nix run-real-product; do
+	project="$fixture/$mode/project with spaces"
+	caller="$fixture/$mode/caller directory"
+	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" "$caller" "$project/tools" || fail 'run setup'
+	cp "$root/run" "$project/run" 2> "$project/setup-error" || fail 'explicit run entrypoint is missing'
+	printf old > "$project/zig-out/bin/codescan"
+	printf '#!%s\nexit 91\n' "$BASH" > "$project/tools/codescan"
+	chmod +x "$project/tools/codescan" || fail 'stale command setup'
+	{
+		printf '#!%s\n' "$BASH"
+		printf '%s\n' \
+			'printf "%s\0" "$@" > "$RUN_ARGUMENTS"' \
+			'printf "%s\n" "$PWD" > "$RUN_DIRECTORY"' \
+			'printf "%s\n" "$BASHPID" > "$RUN_PID"' \
+			'printf "child diagnostic\n" >&2' \
+			'command cat' \
+			'exit "$RUN_STATUS"'
+	} > "$project/prepared/bin/codescan"
+	chmod +x "$project/prepared/bin/codescan" || fail 'prepared run setup'
+	status=0 child_status=0 expected_rc=0 output="$project/prepared"
+	args=('query with spaces' '' --json --root 'relative directory')
+	case "$mode" in
+		run-child-failure) child_status=37 expected_rc=37 ;;
+		run-build-failure) status=19 expected_rc=19 ;;
+		run-missing-product) output="$project/absent" expected_rc=1 ;;
+		run-nonexecutable) chmod -x "$project/prepared/bin/codescan"; expected_rc=1 ;;
+		run-multiple-products) output="$project/prepared"$'\n'"$project/another output"; expected_rc=1 ;;
+		run-missing-nix) expected_rc=127 ;;
+		run-real-product)
+			ln -sf "$CODESCAN_TEST_BIN" "$project/prepared/bin/codescan" || fail 'prepared CLI setup'
+			args=(--about)
+			;;
+	esac
+	: > "$project/events"
+	printf 'stdin marker\n' > "$project/input"
+	if [ "$mode" = run-missing-nix ]; then
+		ln -s "$(command -v dirname)" "$project/tools/dirname" || fail 'missing Nix fixture'
+		invocation=(bash -c 'unset -f nix; export PATH="$1"; exec "$2" "$3"' _ "$project/tools" "$BASH" "$project/run")
+	else
+		invocation=("$BASH" "$project/run" "${args[@]}")
+	fi
+	(cd "$caller" && exec env PATH="$project/tools:$PATH" BUILD_EVENTS="$project/events" BUILD_STATUS="$status" BUILD_OUTPUT="$output" \
+		RUN_ARGUMENTS="$project/arguments" RUN_DIRECTORY="$project/directory" RUN_PID="$project/pid" RUN_STATUS="$child_status" \
+		"${invocation[@]}") < "$project/input" > "$project/stdout" 2> "$project/stderr" &
+	invocation_pid=$!
+	if wait "$invocation_pid"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq "$expected_rc" ] || fail "$mode returned $rc instead of $expected_rc"
+	[ "$(< "$project/zig-out/bin/codescan")" = old ] && [ ! -e "$project/.nix-out" ] && [ ! -e "$project/bin" ] || fail "$mode published a product"
+	if [ "$mode" = run-missing-nix ]; then
+		[ ! -s "$project/events" ] && [ -s "$project/stderr" ] || fail 'missing Nix did not fail clearly before building'
+	else
+		printf '%s\0' build --no-link --print-out-paths "$project#default" > "$project/expected-build"
+		cmp -s "$project/expected-build" "$project/events" || fail "$mode did not build its own exact native output once"
+	fi
+	case "$mode" in
+		run|run-child-failure)
+			printf '%s\0' "${args[@]}" > "$project/expected-arguments"
+			cmp -s "$project/expected-arguments" "$project/arguments" || fail "$mode changed arguments"
+			cmp -s "$project/input" "$project/stdout" || fail "$mode changed stdin/stdout"
+			[ "$(< "$project/directory")" = "$caller" ] || fail "$mode changed the caller directory"
+			[ "$(< "$project/pid")" -eq "$invocation_pid" ] || fail "$mode retained a selector process instead of exec"
+			printf 'child diagnostic\n' > "$project/expected-stderr"
+			cmp -s "$project/expected-stderr" "$project/stderr" || fail "$mode changed child diagnostics"
+			;;
+		run-real-product)
+			"$CODESCAN_TEST_BIN" --about > "$project/expected-about" 2> "$project/about-error" || fail 'prepared CLI oracle failed'
+			cmp -s "$project/expected-about" "$project/stdout" && [ ! -s "$project/stderr" ] || fail 'run did not execute the exact real prepared product'
+			;;
+		*) [ ! -e "$project/pid" ] && [ ! -s "$project/stdout" ] || fail "$mode invoked a stale or invalid command" ;;
+	esac
+done
 printf 'Nix-required build adapter passed\n'

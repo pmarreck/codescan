@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -u
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+command -v nix >/dev/null 2>&1 || { printf 'error: Nix is required; install Nix before running current source\n' >&2; exit 127; }
+if output="$(nix build --no-link --print-out-paths "$root#default" < /dev/null)"; then :; else exit "$?"; fi
+[ -x "$output/bin/codescan" ] || { printf 'error: Nix output is missing executable codescan\n' >&2; exit 1; }
+exec "$output/bin/codescan" "$@"
