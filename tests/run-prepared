@@ -47,25 +47,31 @@ if ! cd "$project"; then
 	wait "$unit_pid"
 	exit 1
 fi
-run_case 'pinned profiling adapter' bash ./tests/unit/test-profiler-pin
-run_case 'portable capture' ./tests/unit/test-capture
-run_case 'unit process hang guard' bash ./tests/unit/test-unit-runner
-run_case 'tracked source fixture' bash ./tests/unit/test-source-fixture
-run_case 'prepared runner orchestration' bash ./tests/unit/test-prepared-runner
-run_case 'test phase recording' bash ./tests/unit/test-test-latency
-run_case 'five-target build contract' ./tests/unit/test-build-all-contract
-run_case 'Nix-required build adapter' ./tests/unit/test-build-nix
-run_case 'CI runner contract' ./tests/unit/test-ci-runner-contract
-run_case 'CI architecture/publication' ./tests/unit/test-ci-architecture
-run_case 'no committed embedding keys' ./tests/unit/test-no-committed-secrets
-run_case 'portable MCP configuration' ./tests/unit/test-portable-mcp-config
-run_case 'single index entrypoint' ./tests/unit/test-single-index-entrypoint
-run_case 'sequential project reindex runner' ./tests/unit/test-reindex-all-projects
-run_case 'CLI about' ./tests/cli/test-about "$CODESCAN_TEST_BIN" "$CODESCAN_EXPECT_PF" "${CODESCAN_EXPECT_VARIANT:-}"
-run_case 'MCP offline session' ./tests/cli/test-mcp-offline
-run_case 'CLI' ./tests/cli/test-cli
-run_case 'watcher schema preservation' ./tests/cli/test-watcher-schema-preservation
-run_case 'HTTP' ./tests/http/test-http
-run_case 'integration' ./tests/integration/test-integration
+(
+	run_case 'pinned profiling adapter' bash ./tests/unit/test-profiler-pin
+	run_case 'portable capture' ./tests/unit/test-capture
+	run_case 'unit process hang guard' bash ./tests/unit/test-unit-runner
+	run_case 'tracked source fixture' bash ./tests/unit/test-source-fixture
+	run_case 'five-target build contract' ./tests/unit/test-build-all-contract
+	run_case 'Nix-required build adapter' ./tests/unit/test-build-nix
+	run_case 'CI runner contract' ./tests/unit/test-ci-runner-contract
+	run_case 'CI architecture/publication' ./tests/unit/test-ci-architecture
+	run_case 'no committed embedding keys' ./tests/unit/test-no-committed-secrets
+	run_case 'portable MCP configuration' ./tests/unit/test-portable-mcp-config
+	run_case 'single index entrypoint' ./tests/unit/test-single-index-entrypoint
+	run_case 'sequential project reindex runner' ./tests/unit/test-reindex-all-projects
+	run_case 'CLI about' ./tests/cli/test-about "$CODESCAN_TEST_BIN" "$CODESCAN_EXPECT_PF" "${CODESCAN_EXPECT_VARIANT:-}"
+	run_case 'MCP offline session' ./tests/cli/test-mcp-offline
+	run_case 'CLI' ./tests/cli/test-cli
+	run_case 'watcher schema preservation' ./tests/cli/test-watcher-schema-preservation
+	run_case 'HTTP' ./tests/http/test-http
+	run_case 'integration' ./tests/integration/test-integration
+	exit "$failed"
+) &
+source_pid=$!
+# Reuse the unit lane for independent harness checks, without a third lane.
 if ! wait "$unit_pid"; then failed=1; fi
+run_case 'test phase recording' bash ./tests/unit/test-test-latency
+run_case 'prepared runner orchestration' bash ./tests/unit/test-prepared-runner
+if ! wait "$source_pid"; then failed=1; fi
 exit "$failed"

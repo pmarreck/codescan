@@ -4,6 +4,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify freed-unit-lane scheduling on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host/component runs pass 759 unit cases with unchanged exclusions.
 - [ ] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined component run pass 759 unit cases with unchanged exclusions.
 - [x] Verify isolated component timing on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 07ff0838, following 759 passing local unit cases. (done 2026-10-31 00:40 EDT; commit 07ff0838)
 - [x] Verify optional host test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for dc3e41cd, following 759 passing local unit cases. (done 2026-10-31 00:18 EDT)
@@ -29,19 +30,15 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the attributed ReleaseSafe host runner's 7.33-second execution lower bound and 8.40-second flake-evaluation span; retain safety, coverage, and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the attributed ReleaseSafe host runner's 6.63-second execution lower bound and 9.83-second flake-evaluation span; isolated component execution measures 4.83 seconds, with unchanged safety, coverage, exclusions, and five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Add opt-in shared-profiler spans to the real test entry point, preserving task scratch across Nix shell entry and keeping parent jobs out of nested suites; complete Nix and fresh profiled host checks pass 759 unit cases. (done 2026-10-31 00:01 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Attribute the isolated suite with 22 exact component spans and private record export; 759 unit cases pass, and the current run records 7.49 seconds elapsed versus 10.14 seconds summed work without changing either lane. (done 2026-10-31 00:18 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Reduce redundant orchestration-fixture processes while retaining all ten barrier/failure scenarios and real source-copy coverage; the component fell from 2.22 to 1.46 seconds, without establishing an overall budget improvement. (done 2026-10-31 00:40 EDT; context: docs/plan_context/test_latency.md)
-	- [ ] Reuse the second suite slot after the unit process finishes; prove bounded concurrency, independent-suite overlap, source-copy ordering, complete failure accumulation, and child cleanup before measuring. (context: docs/plan_context/test_latency.md)
+	- [x] Reuse the freed unit lane for independent harness checks; a FIFO regression failed on the old runner, and fourteen scenarios now cover two-suite concurrency, source-copy ordering, lane failures, and joins; fresh component execution fell from 7.77 to 4.83 seconds. (done 2026-10-31 00:47 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
-- [x] Cover the inventoried bounded discovery/search classifier gaps with complete-set regressions; standalone path constraints, language/type intersections, and recursive-directory boundaries pass without claiming exhaustive pattern coverage. (done 2026-10-30 23:13 EDT; context: docs/plan_context/filter_classifiers.md)
-	- [x] Preserve directory-component boundaries in recursive globs after two unit regressions failed; 29 discovery paths, 42 pattern-set checks, and three real-CLI controls pass with 759 passing unit cases in complete Nix and fresh confined host runs. (done 2026-10-30 23:13 EDT; context: docs/plan_context/filter_classifiers.md)
-	- [x] Preserve empty language/type intersections without bypassing existing validation; 48 search-mode/filter combinations, weight controls, and six real-CLI checks pass in complete Nix and fresh confined host runs with 758 passing unit cases. (done 2026-10-30 23:00 EDT; context: docs/plan_context/filter_classifiers.md)
-	- [x] Repair standalone path filtering after the vector regression returned four candidates instead of two; all 16 path-set/search-mode combinations and 756 unit cases pass in the complete Nix check and fresh confined host runner. (done 2026-10-28 12:33 EDT; context: docs/plan_context/filter_classifiers.md)
 
 ## Architecture and features
 
