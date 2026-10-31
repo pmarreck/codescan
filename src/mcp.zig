@@ -653,11 +653,6 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				.{},
 			);
 		}
-		try io_singleton.ensureParentDir(settings.db_path);
-		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch |err|
-			return toolError("MCP index: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
-		defer storage.close(db);
-
 		var embedder_adapter = embedding.HttpEmbedder{
 			.transport = http_client.transport(),
 			.base_url = settings.embedding_url,
@@ -669,7 +664,13 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		// The MCP index tool previously used the configured dimension and empty
 		// filter lists, so it could build a vec table at a width the provider
 		// does not emit and silently ignore index_ext/index_type.
-		const index_dim = update_service.probeEmbeddingDim(allocator, embedder_adapter.embedder()) orelse settings.embedding_dim;
+		const index_dim = update_service.probeEmbeddingDim(allocator, embedder_adapter.embedder()) orelse
+			return toolErrorDetail(allocator, err_detail, "MCP index: embedding provider could not produce a usable embedding. Codescan left the existing index unchanged. Check the model, credentials, and server, then retry", .{});
+		try io_singleton.ensureParentDir(settings.db_path);
+		const db = storage.openFileWithVecRecreate(allocator, settings.db_path) catch |err|
+			return toolError("MCP index: failed to open DB '{s}': {}\n", .{ settings.db_path, err });
+		defer storage.close(db);
+
 		const index_result = index_service.execute(allocator, db, plugin.defaultRegistry(), embedder_adapter.embedder(), .{
 			.mode = .full,
 			.root_path = settings.root_path,

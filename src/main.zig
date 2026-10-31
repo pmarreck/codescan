@@ -2412,7 +2412,7 @@ fn runInit(
 	}
 
 	// The schema is branded only after model compatibility and dimension have
-	// been established, preventing a cancelled choice from creating false state.
+	// been established, preventing a canceled choice from creating false state.
 	var db = try storage.openFileWithVec(allocator, resolved_settings.db_path);
 	_ = storage.initSchema(allocator, db, .{
 		.embedding_dim = resolved_settings.embedding_dim,
@@ -2507,12 +2507,6 @@ fn runIndex(
 			std.process.exit(1);
 		};
 	}
-	// A full index replaces the database. Do not create or truncate it until an
-	// embedding provider has been accepted, unless the caller deliberately
-	// requested lexical-only indexing.
-	try io_singleton.ensureParentDir(settings.db_path);
-	const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
-	defer storage.close(db);
 	var embedder_adapter = embedding.HttpEmbedder{
 		.transport = http_client.transport(),
 		.base_url = settings.embedding_url,
@@ -2527,9 +2521,21 @@ fn runIndex(
 
 	// Auto-detect embedding dimension if using a real embedder
 	const effective_dim = if (!use_null_embedder)
-		update_service.probeEmbeddingDim(allocator, active_embedder) orelse settings.embedding_dim
+		update_service.probeEmbeddingDim(allocator, active_embedder) orelse {
+			var buffer: [512]u8 = undefined;
+			var writer = io_singleton.stderrWriter(&buffer);
+			try writer.interface.writeAll("error: embedding provider could not produce a usable embedding; the existing index was left unchanged. Check the model, credentials, and server, then retry.\n");
+			try writer.interface.flush();
+			return error.EmbeddingUnavailable;
+		}
 	else
 		settings.embedding_dim;
+
+	// A responding endpoint is insufficient. Only replace the database after
+	// a real embedding succeeds, or lexical-only indexing was accepted.
+	try io_singleton.ensureParentDir(settings.db_path);
+	const db = try storage.openFileWithVecRecreate(allocator, settings.db_path);
+	defer storage.close(db);
 
 	const result = try index_service.execute(
 		allocator,
@@ -6828,7 +6834,7 @@ fn runAgentQuietly(argv: []const []const u8) AgentRun {
 ///
 /// Idempotency is delegated, not reimplemented: membership is decided by the
 /// agent's own `mcp get <name>` exit status rather than by matching text in a
-/// server listing, so a neighbouring entry such as `codescan-old` can never be
+/// server listing, so a neighboring entry such as `codescan-old` can never be
 /// mistaken for this one. A missing agent CLI is reported, never treated as a
 /// failure — most machines have only one of these installed.
 fn runMcpInstall(

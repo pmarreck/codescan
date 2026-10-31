@@ -4,13 +4,11 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify freed-unit-lane scheduling on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host/component runs pass 759 unit cases with unchanged exclusions.
-- [ ] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined component run pass 759 unit cases with unchanged exclusions.
+- [x] Verify freed-unit-lane scheduling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fa8630cd, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit fa8630cd)
+- [ ] Verify provider-response cleanup and rejected-replacement preservation on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined host runner pass 761 unit cases with unchanged exclusions.
+- [x] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 134812b3, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit 134812b3)
 - [x] Verify isolated component timing on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 07ff0838, following 759 passing local unit cases. (done 2026-10-31 00:40 EDT; commit 07ff0838)
 - [x] Verify optional host test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for dc3e41cd, following 759 passing local unit cases. (done 2026-10-31 00:18 EDT)
-- [x] Verify owned release staging and ZIP dependencies on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for c391ec2b, following 759 passing local unit cases. (done 2026-10-31 00:01 EDT)
-- [x] Verify the recursive-directory glob fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 54440026, following 759 passing local unit cases. (done 2026-10-30 23:32 EDT)
-- [x] Verify the empty language/type intersection fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 488fef10, following 758 passing local unit cases. (done 2026-10-30 23:16 EDT)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
@@ -30,7 +28,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the attributed ReleaseSafe host runner's 6.63-second execution lower bound and 9.83-second flake-evaluation span; isolated component execution measures 4.83 seconds, with unchanged safety, coverage, exclusions, and five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 6.00-second execution lower bound and 8.61-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Add opt-in shared-profiler spans to the real test entry point, preserving task scratch across Nix shell entry and keeping parent jobs out of nested suites; complete Nix and fresh profiled host checks pass 759 unit cases. (done 2026-10-31 00:01 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Attribute the isolated suite with 22 exact component spans and private record export; 759 unit cases pass, and the current run records 7.49 seconds elapsed versus 10.14 seconds summed work without changing either lane. (done 2026-10-31 00:18 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Reduce redundant orchestration-fixture processes while retaining all ten barrier/failure scenarios and real source-copy coverage; the component fell from 2.22 to 1.46 seconds, without establishing an overall budget improvement. (done 2026-10-31 00:40 EDT; context: docs/plan_context/test_latency.md)
@@ -38,12 +36,15 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
+	- [x] Reject malformed embedding rows and invalid OpenAI index mappings without trapping or leaking; the ReleaseSafe regression first aborted during cleanup, and ten malformed-response cases plus allocation-failure sweeps now pass. (done 2026-10-31 00:59 EDT; context: docs/plan_context/inference_availability.md)
+	- [x] Preserve the index when a responding provider rejects full-index embeddings; CLI and MCP regressions first lost all six vectors, then passed exact symbol-row/vector-count checks, actionable advice, and continued lexical/file operations. (done 2026-10-31 00:59 EDT; context: docs/plan_context/inference_availability.md)
+	- [ ] Characterize HTTP `/index` and `/update` against a responding provider that rejects embeddings; prevent entry into index reset and return actionable service-unavailable advice.
+	- [ ] Validate response cardinality at the embedding boundary so zero or extra vectors for a single input cannot authorize replacement or bypass lexical fallback; retain valid batching and malformed-response fallback controls through the actual HTTP embedder/search service.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
 
 ## Architecture and features
 
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
-	- [x] Make release packaging own staging and preserve caller files/previous archives; invalid arguments, filename collisions, tar/ZIP payloads, and all five target selections pass in complete Nix and fresh confined host checks with 759 passing unit cases. (done 2026-10-30 23:33 EDT; context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
 	- [ ] Consolidate legacy `build_all` into thin Nix-required `./build` scope flags/aliases and exact-product `./run`/`./test`; remove direct-build fallbacks and prepare compiled tests through Nix; add canonical-implementation selection only if multiple executable implementations exist.
 	- [ ] Publish verified commands in `bin/<PF>/` without runtime selector wrappers; preserve previous selections on failure, serialize publishers, retain runtime resources, support native Windows entrypoints, and coordinate PATH changes separately.

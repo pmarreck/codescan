@@ -330,6 +330,7 @@ fn parseOllamaEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f3
 
 	const rows = embeddings_value.array.items;
 	var result = try allocator.alloc([]f32, rows.len);
+	for (result) |*slot| slot.* = &.{};
 	errdefer freeEmbeddings(allocator, result);
 
 	for (rows, 0..) |row_value, row_idx| {
@@ -359,13 +360,17 @@ fn parseOpenAiEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f3
 	// Initialize all slots to empty so partial-fill errdefer works cleanly
 	for (result) |*slot| slot.* = &.{};
 	errdefer freeEmbeddings(allocator, result);
+	const assigned = try allocator.alloc(bool, items.len);
+	defer allocator.free(assigned);
+	@memset(assigned, false);
 
 	for (items) |item| {
 		if (item != .object) return error.InvalidEmbeddings;
 		const index_value = item.object.get("index") orelse return error.InvalidEmbeddings;
 		if (index_value != .integer) return error.InvalidEmbeddings;
-		const idx: usize = @intCast(index_value.integer);
+		const idx = std.math.cast(usize, index_value.integer) orelse return error.InvalidEmbeddings;
 		if (idx >= result.len) return error.InvalidEmbeddings;
+		if (assigned[idx]) return error.InvalidEmbeddings;
 
 		const embedding_value = item.object.get("embedding") orelse return error.InvalidEmbeddings;
 		if (embedding_value != .array) return error.InvalidEmbeddings;
@@ -376,6 +381,7 @@ fn parseOpenAiEmbeddings(allocator: std.mem.Allocator, body: []const u8) ![][]f3
 			vec[col_idx] = try parseNumber(value);
 		}
 		result[idx] = vec;
+		assigned[idx] = true;
 	}
 
 	return result;
@@ -967,6 +973,46 @@ test "buildEmbedRequest omits keep_alive for openai dialect" {
 	defer allocator.free(body);
 	// keep_alive must NOT appear in output
 	try std.testing.expectEqualStrings("{\"model\":\"text-embedding-3-small\",\"input\":[\"hello\"]}", body);
+}
+
+test "parseEmbeddings rejects malformed rows and index mappings without invalid cleanup" {
+	const Case = struct { dialect: ApiDialect, body: []const u8 };
+	const cases = [_]Case{
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[false]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,2],false]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,\"bad\"]]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,2],[3,false]]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[null]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1,\"bad\"]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1]},{\"index\":0,\"embedding\":[2]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":-1,\"embedding\":[1]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":1,\"embedding\":[1]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0.5,\"embedding\":[1]}]}" },
+	};
+	for (cases) |case| {
+		if (parseEmbeddings(std.testing.allocator, case.body, case.dialect)) |vectors| {
+			defer freeEmbeddings(std.testing.allocator, vectors);
+			return error.AcceptedMalformedEmbeddings;
+		} else |err| try std.testing.expectEqual(error.InvalidEmbeddings, err);
+	}
+}
+
+test "parseEmbeddings releases partial vectors at every allocation failure" {
+	const Control = struct {
+		fn parse(allocator: std.mem.Allocator, body: []const u8, dialect: ApiDialect) !void {
+			const vectors = try parseEmbeddings(allocator, body, dialect);
+			defer freeEmbeddings(allocator, vectors);
+			try std.testing.expectEqual(@as(usize, 2), vectors.len);
+			try std.testing.expectEqualSlices(f32, &.{ 1, 2 }, vectors[0]);
+			try std.testing.expectEqualSlices(f32, &.{ 3, 4 }, vectors[1]);
+		}
+	};
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, Control.parse, .{
+		@as([]const u8, "{\"embeddings\":[[1,2],[3,4]]}"), ApiDialect.ollama,
+	});
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, Control.parse, .{
+		@as([]const u8, "{\"data\":[{\"index\":1,\"embedding\":[3,4]},{\"index\":0,\"embedding\":[1,2]}]}"), ApiDialect.openai,
+	});
 }
 
 test "parseEmbeddings reads vectors" {

@@ -128,4 +128,54 @@ capture sqlite3 -readonly -json .codescan/index.sqlite3 'SELECT * FROM symbols O
 [ "$rc" -eq 0 ] || fail 'could not inspect the retained symbols'
 jq -ne --argjson before "$symbols_before_rejection" --argjson after "$out" \
 	'($before | length) > 0 and all($before[]; . as $symbol | any($after[]; . == $symbol))' >/dev/null || fail 'embedding rejection removed or changed an original symbol'
+
+# A responding endpoint does not authorize replacing a usable index. Exercise
+# both actual full-index adapters against the same provider's rejected POSTs.
+replacement_failed=0
+for adapter in CLI MCP; do
+	capture "$fixture_db" --db .codescan/index.sqlite3 --embedding-dim 2
+	[ "$rc" -eq 0 ] || fail "$adapter replacement fixture creation failed"
+	capture "$binary" status --json --root "$fixture"
+	[ "$rc" -eq 0 ] || fail "$adapter pre-replacement status failed"
+	index_before="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid replacement fixture status'
+	capture sqlite3 -readonly -json .codescan/index.sqlite3 'SELECT * FROM symbols ORDER BY id;'
+	[ "$rc" -eq 0 ] || fail 'could not record replacement fixture rows'
+	rows_before="$out"
+	if [ "$adapter" = CLI ]; then
+		capture timeout 15 "$binary" index --root "$fixture" --no-progress
+		[ "$rc" -ne 0 ] && [ "$rc" -ne 124 ] || fail 'CLI must reject unusable embeddings without hanging'
+		printf '%s\n' "$err" | rg -qF 'existing index was left unchanged' || fail 'CLI rejection lost the index-preservation advice'
+	else
+		requests="$(printf '%s\n' \
+			'{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+			'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"index","arguments":{}}}' \
+			'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"file":"editable.zig"}}}')"
+		capture timeout 15 "$binary" mcp-serve --root "$fixture" <<< "$requests"
+		[ "$rc" -eq 0 ] || fail 'MCP stopped after a rejected replacement request'
+		printf '%s\n' "$out" | jq -se 'map(.id) == [1,2,3] and .[1].error != null and (.[2].result.content[0].text | contains("after"))' >/dev/null || fail 'MCP replacement rejection lost its error or subsequent file access'
+		printf '%s\n' "$out" | jq -se '.[1].error.message | contains("existing index unchanged")' >/dev/null || fail 'MCP rejection lost the index-preservation advice'
+	fi
+	printf '%s\n' "$err" | rg -qF 'HTTP 404' || fail "$adapter replacement did not exercise an actual rejected embedding request"
+	capture "$binary" status --json --root "$fixture"
+	[ "$rc" -eq 0 ] || fail "$adapter left an unreadable index"
+	index_after="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid replacement result status'
+	capture sqlite3 -readonly -json .codescan/index.sqlite3 'SELECT * FROM symbols ORDER BY id;'
+	[ "$rc" -eq 0 ] || fail 'could not inspect replacement result rows'
+	if [ "$index_after" != "$index_before" ] || [ "$out" != "$rows_before" ]; then
+		printf '%s\n' "$adapter rejected embeddings changed the index: $index_before -> $index_after" >&2
+		replacement_failed=1
+	fi
+done
+[ "$replacement_failed" -eq 0 ] || fail 'full-index rejection must preserve symbols and vectors'
+requests="$(printf '%s\n' \
+	'{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+	'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"checksum_fn"}}}' \
+	'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"file":"editable.zig"}}}')"
+capture timeout 15 "$binary" mcp-serve --root "$fixture" <<< "$requests"
+[ "$rc" -eq 0 ] || fail 'search/read session stopped after rejected replacement'
+printf '%s\n' "$out" | jq -se '
+	map(.id) == [1,2,3] and all(.error == null) and
+	(.[1].result.content[0].text | fromjson | .inference_unavailable and (.results | any(.name == "checksum_fn"))) and
+	(.[2].result.content[0].text | contains("after"))
+' >/dev/null || fail 'rejected replacement lost usable lexical search or file reads'
 printf 'MCP offline session contract passed\n'
