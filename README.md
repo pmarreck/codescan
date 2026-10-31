@@ -383,8 +383,8 @@ touches the empty file `.codescan/last_index_datetime`. Its filesystem mtime is
 the canonical last-success timestamp used by watcher lifecycle tooling. Failed
 or interrupted indexing leaves the previous timestamp unchanged.
 
-Search defaults to the primary code language by file count unless a filter is supplied.
-Multi-word queries use OR semantics in lexical/hybrid search — results matching any term surface, with BM25 ranking results matching all terms higher.
+Search defaults to all supported code languages; explicit filters or a configured primary language can narrow that scope.
+Multi-word queries use OR semantics by default in lexical/hybrid search: results matching any term surface, with BM25 ranking results matching all terms higher.
 `--include-docs` adds markdown/README; `--docs`/`--only-docs` restricts results to markdown/README only.
 `--comments`/`--only-comments` restricts results to doc comments.
 `--scope <code|docs|comments|all>` is a unified alias for common filter combinations.
@@ -404,6 +404,10 @@ results. Lexical hits also report their matched indexed fields (`name`, `signatu
 result relevant even when the comment itself is hidden; use `--show-comments` to
 display it. JSON, HTTP, and MCP search output expose the same `confidence`,
 `evidence`, and `lexical_sources` data for agents.
+
+Single-identifier lookups include camelCase/snake_case alternatives in name,
+signature, and frontmatter-description evidence. Comment, body, path, and
+frontmatter-tag evidence retain literal-query matching.
 
 ### Markdown frontmatter
 

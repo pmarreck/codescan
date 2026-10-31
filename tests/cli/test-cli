@@ -117,6 +117,8 @@ main() {
 			[ "$rc" -eq 0 ] || fail "cross-case search failed: $err"
 			printf '%s' "$out" | jq -e '[.results[].name] | sort == ["invoke", "parseHttpResponse", "parse_http_response"]' >/dev/null || \
 				fail "cross-case search lost a complete identifier or added unrelated symbols ($query/$fts_mode): $out"
+			printf '%s' "$out" | jq -e 'all(.results[]; .lexical_sources.signature == true and (.lexical_sources.name == (.name != "invoke")))' >/dev/null || \
+				fail "cross-case search omitted matched-field evidence ($query/$fts_mode): $out"
 		done
 	done
 

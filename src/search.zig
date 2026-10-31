@@ -346,6 +346,8 @@ pub fn search(
 	try filterCandidates(allocator, options, &results);
 
 	const query_trimmed = std.mem.trim(u8, query, " \t\r\n");
+	var query_variants: ?IdentifierVariants = if (options.comments_only) null else try identifierVariants(allocator, query_trimmed);
+	defer if (query_variants) |*variants| variants.deinit(allocator);
 
 	// Pre-tokenize the query once rather than re-tokenizing per result.
 	var token_buf: [64][]const u8 = undefined;
@@ -392,7 +394,7 @@ pub fn search(
 			break :blk @max(bm25_norm * coverage, field_lexical);
 		} else field_lexical;
 		res.lexical = lexical;
-		if (lexical > 0) res.lexical_sources = lexicalSources(query_tokens, res.symbol);
+		if (lexical > 0) res.lexical_sources = lexicalSources(query_tokens, res.symbol, if (query_variants) |*variants| variants else null);
 		const vector_score = if (std.math.isInf(res.distance)) 0 else (1.0 / (1.0 + res.distance));
 		if (options.mode == .vector) {
 			res.score = vector_score;
@@ -1194,7 +1196,7 @@ fn tokenCoverage(query_tokens: []const []const u8, symbol: model.Symbol) f32 {
 
 /// Classifies lexical provenance over the complete set of FTS-indexed symbol
 /// fields so hidden comments can explain a hit without being printed in full.
-fn lexicalSources(query_tokens: []const []const u8, symbol: model.Symbol) LexicalSources {
+fn lexicalSources(query_tokens: []const []const u8, symbol: model.Symbol, variants: ?*const IdentifierVariants) LexicalSources {
 	var sources: LexicalSources = .{};
     const is_frontmatter = if (symbol.symbol_kind) |value|
         std.mem.eql(u8, value, "frontmatter")
@@ -1223,7 +1225,56 @@ fn lexicalSources(query_tokens: []const []const u8, symbol: model.Symbol) Lexica
 			false;
 		sources.path = sources.path or simd.indexOfIgnoreCase(symbol.file_path, tok) != null;
 	}
+	if (variants) |alternatives| {
+		for ([_][]const u8{ alternatives.camel, alternatives.snake }) |alternate| {
+			sources.name = sources.name or simd.indexOfIgnoreCase(symbol.name, alternate) != null;
+			const signature_match = simd.indexOfIgnoreCase(symbol.signature, alternate) != null;
+			if (is_frontmatter) {
+				sources.frontmatter_description = sources.frontmatter_description or signature_match;
+			} else {
+				sources.signature = sources.signature or signature_match;
+			}
+		}
+	}
 	return sources;
+}
+
+test "lexical provenance classifies identifier alternatives only in name and signature fields" {
+	const allocator = std.testing.allocator;
+	const cases = [_]struct {
+		name: []const u8 = "unrelated",
+		signature: []const u8 = "",
+		comment: ?[]const u8 = null,
+		body: ?[]const u8 = null,
+		path: []const u8 = "fixture.zig",
+		kind: ?[]const u8 = null,
+		expected: [2]LexicalSources,
+	}{
+		.{ .name = "parse_http_response", .expected = .{ .{ .name = true }, .{ .name = true } } },
+		.{ .name = "parseHttpResponse", .expected = .{ .{ .name = true }, .{ .name = true } } },
+		.{ .signature = "fn invoke(value: parse_http_response) void", .expected = .{ .{ .signature = true }, .{ .signature = true } } },
+		.{ .signature = "fn invoke(value: parseHttpResponse) void", .expected = .{ .{ .signature = true }, .{ .signature = true } } },
+		.{ .comment = "parse_http_response", .expected = .{ .{}, .{ .comment = true } } },
+		.{ .body = "parse_http_response", .expected = .{ .{}, .{ .body = true } } },
+		.{ .path = "parse_http_response.zig", .expected = .{ .{}, .{ .path = true } } },
+		.{ .kind = "frontmatter", .signature = "parse_http_response", .expected = .{
+			.{ .frontmatter_description = true }, .{ .frontmatter_description = true },
+		} },
+		.{ .kind = "frontmatter", .comment = "parse_http_response", .expected = .{ .{}, .{ .frontmatter_tags = true } } },
+		.{ .name = "parseAhttpBresponse", .expected = .{ .{}, .{} } },
+	};
+	for ([_][]const u8{ "parseHttpResponse", "parse_http_response" }, 0..) |query, query_index| {
+		var variants = (try identifierVariants(allocator, query)).?;
+		defer variants.deinit(allocator);
+		for (cases) |case| {
+			const symbol = model.Symbol{
+				.language = "zig", .file_path = case.path, .name = case.name, .signature = case.signature,
+				.doc_comment = case.comment, .body = case.body, .symbol_kind = case.kind,
+				.start_line = 1, .end_line = 1,
+			};
+			try std.testing.expectEqualDeep(case.expected[query_index], lexicalSources(&.{query}, symbol, &variants));
+		}
+	}
 }
 
 fn frontmatterTagMatches(tags: []const u8, query_token: []const u8) bool {
@@ -2497,17 +2548,17 @@ test "frontmatter lexical provenance distinguishes descriptions and exact tags" 
     };
     defer symbol.deinit(allocator);
 
-    const description = lexicalSources(&.{"untracked"}, symbol);
+    const description = lexicalSources(&.{"untracked"}, symbol, null);
     try std.testing.expect(description.frontmatter_description);
     try std.testing.expect(!description.frontmatter_tags);
     try std.testing.expect(!description.signature);
     try std.testing.expect(!description.comment);
 
-    const tag = lexicalSources(&.{"nix"}, symbol);
+    const tag = lexicalSources(&.{"nix"}, symbol, null);
     try std.testing.expect(tag.frontmatter_tags);
     try std.testing.expect(!tag.frontmatter_description);
 
-    const substring = lexicalSources(&.{"nixo"}, symbol);
+    const substring = lexicalSources(&.{"nixo"}, symbol, null);
     try std.testing.expect(!substring.frontmatter_tags);
 }
 
@@ -4442,7 +4493,7 @@ test "lexical source classifier reports every matching indexed field as a set" {
 	};
 	defer symbol.deinit(allocator);
 
-	const sources = lexicalSources(&.{"drm"}, symbol);
+	const sources = lexicalSources(&.{"drm"}, symbol, null);
 	try std.testing.expect(!sources.name);
 	try std.testing.expect(!sources.signature);
 	try std.testing.expect(sources.comment);
