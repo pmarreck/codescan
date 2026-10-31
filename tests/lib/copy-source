@@ -5,12 +5,12 @@ set -u
 source_root="$1"
 project="$2"
 inventory="$(mktemp "${TMPDIR:?}/codescan-source-paths.XXXXXX")" || exit 1
-archive="$(mktemp "$TMPDIR/codescan-source.XXXXXX")" || exit 1
-trap 'rm -f -- "$inventory" "$archive"' EXIT
+trap 'rm -f -- "$inventory"' EXIT
 mkdir "$project" || exit 1
 git -C "$source_root" ls-files -z > "$inventory" || exit 1
-tar -C "$source_root" --null -T "$inventory" -cf "$archive" || exit 1
-tar -C "$project" -xf "$archive" || exit 1
+tar -C "$source_root" --null -T "$inventory" -cf - | tar -C "$project" -xf -
+pipeline_status=("${PIPESTATUS[@]}")
+if [ "${pipeline_status[0]}" -ne 0 ] || [ "${pipeline_status[1]}" -ne 0 ]; then exit 1; fi
 git -C "$project" init -q || exit 1
 # Tests need tracked path names and worktree search, not compressed blob copies.
 git -C "$project" add --intent-to-add --force --pathspec-from-file="$inventory" --pathspec-file-nul || exit 1

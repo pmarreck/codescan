@@ -29,4 +29,63 @@ cmp -s "$fixture/expected-matches" "$fixture/matches" || fail 'Git search missed
 if bash "$root/tests/lib/copy-source" "$source_project" "$copy" > "$fixture/out" 2> "$fixture/err"; then
 	fail 'copy overwrote an existing destination'
 fi
+
+# A source copy needs one NUL inventory, not enough scratch for a second full archive.
+limited_copy="$fixture/single-manifest copy"
+: > "$fixture/temp-events"
+if (
+	export COPY_TEMP_EVENTS="$fixture/temp-events"
+	mktemp() {
+		printf 'allocate\n' >> "$COPY_TEMP_EVENTS"
+		[ "$(wc -l < "$COPY_TEMP_EVENTS")" -eq 1 ] || { printf 'whole-archive scratch unavailable\n' >&2; return 23; }
+		command mktemp "$@"
+	}
+	export -f mktemp
+	bash "$root/tests/lib/copy-source" "$source_project" "$limited_copy"
+) > "$fixture/out" 2> "$fixture/err"; then :; else
+	fail 'copy must stream its payload when only manifest scratch is available'
+fi
+git -C "$limited_copy" ls-files -z > "$fixture/actual" || fail 'streamed inventory'
+cmp -s "$fixture/expected" "$fixture/actual" || fail 'streaming changed the tracked inventory'
+for path in .gitignore 'source with spaces.zig' ignored-tracked.zig; do
+	cmp -s "$source_project/$path" "$limited_copy/$path" || fail "streaming changed content: $path"
+done
+[ ! -e "$limited_copy/untracked.zig" ] && [ ! -e "$limited_copy/ignored-untracked.zig" ] || fail 'streaming copied private files'
+
+for failure in producer consumer; do
+	failed_copy="$fixture/$failure failure"
+	: > "$fixture/tar-events"
+	if (
+		export COPY_TAR_FAILURE="$failure" COPY_TAR_EVENTS="$fixture/tar-events"
+		tar() {
+			local mode='' argument status
+			for argument in "$@"; do
+				case "$argument" in -cf) mode=producer ;; -xf) mode=consumer ;; esac
+			done
+			if [ "$mode" = consumer ] && [ "$COPY_TAR_FAILURE" = consumer ]; then
+				printf 'consumer:29\n' >> "$COPY_TAR_EVENTS"
+				printf 'controlled extraction failure\n' >&2
+				return 29
+			fi
+			if command tar "$@"; then status=0; else status="$?"; fi
+			if [ "$status" -eq 0 ] && [ "$mode" = producer ] && [ "$COPY_TAR_FAILURE" = producer ]; then
+				status=23
+				printf 'controlled late producer failure\n' >&2
+			fi
+			printf '%s:%s\n' "$mode" "$status" >> "$COPY_TAR_EVENTS"
+			return "$status"
+		}
+		export -f tar
+		bash "$root/tests/lib/copy-source" "$source_project" "$failed_copy"
+	) > "$fixture/out" 2> "$fixture/err"; then
+		fail "$failure failure was hidden by the other pipeline stage"
+	fi
+	[ ! -d "$failed_copy/.git" ] || fail "$failure failure initialized a partial Git fixture"
+	[ "$(wc -l < "$fixture/tar-events")" -eq 2 ] || fail "$failure pipeline did not join both stages"
+	if [ "$failure" = producer ]; then
+		rg -qx 'producer:23' "$fixture/tar-events" && rg -qx 'consumer:0' "$fixture/tar-events" || fail 'late producer control did not deliver an extractable payload'
+	else
+		rg -qx 'consumer:29' "$fixture/tar-events" || fail 'extraction failure control was not exercised'
+	fi
+done
 printf 'Source fixture preserves tracked paths and searchable content\n'
