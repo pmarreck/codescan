@@ -12,13 +12,20 @@ if [ -f "$root/tests/lib/latency-run" ]; then
 fi
 for path in tests/unit/test-dev-shell-cache tests/unit/test-isolation tests/lib/run-isolated; do
 	{ printf '#!%s\n' "$BASH"; printf '%s\n' \
-		'printf "test\t%s\t%s\t%s\n" "$0" "${CODESCAN_LATENCY_JOB-}" "$TMPDIR" >> "$LATENCY_FIXTURE_EVENTS"' \
+		'printf "test\t%s\t%s\t%s\t%s\t%s\n" "$0" "${CODESCAN_LATENCY_JOB-}" "$TMPDIR" "$CODESCAN_EXPECT_PF" "$CODESCAN_EXPECT_VARIANT" >> "$LATENCY_FIXTURE_EVENTS"' \
 		'case "$LATENCY_FIXTURE_FAILURE:$0" in test:*test-dev-shell-cache|boundary:*test-isolation) exit 7 ;; esac' \
 		'exit 0'; } > "$fixture/project/$path"
 	chmod +x "$fixture/project/$path" || exit 1
 done
 
 # Recording process adapters, never actual Nix or shared history operations.
+uname() {
+	case "${1-}" in
+		-s) printf '%s\n' "${LATENCY_FIXTURE_OS:-Linux}" ;;
+		-m) printf '%s\n' "${LATENCY_FIXTURE_ARCH:-x86_64}" ;;
+		*) return 64 ;;
+	esac
+}
 nix() {
 	case "${1-}" in
 		path-info|flake) return 0 ;;
@@ -76,14 +83,16 @@ performance-profile() {
 	[ "$#" -gt 0 ] || return 0
 	"$@"
 }
-export -f nix timeout performance-profile
+export -f uname nix timeout performance-profile
 
 run_case() {
 	local name="$1" job="$2" failure="$3" expected_rc="$4" rc events="$fixture/$1.events"
+	local fixture_os="${6:-Linux}" fixture_arch="${7:-x86_64}"
 	local -a args=(--prepared "$fixture/cli" "$fixture/units")
 	if [ "${5-}" = prepare ]; then args=(); fi
 	: > "$events"
 	if env CODESCAN_LATENCY_JOB="$job" LATENCY_FIXTURE_EVENTS="$events" LATENCY_FIXTURE_FAILURE="$failure" \
+		LATENCY_FIXTURE_OS="$fixture_os" LATENCY_FIXTURE_ARCH="$fixture_arch" \
 		LATENCY_FIXTURE_CLI="$fixture/cli" LATENCY_FIXTURE_UNITS="$fixture/units" \
 		TMPDIR="$fixture/job-tmp" LATENCY_FIXTURE_JOB_TMP="$fixture/job-tmp" LATENCY_FIXTURE_SHELL_TMP="$fixture/nix-tmp" \
 		bash "$fixture/project/test" "${args[@]}" \
@@ -100,12 +109,7 @@ run_case() {
 	fi
 }
 assert_gate_request() {
-	local events="$1" actual expected system
-	case "$(uname -m)" in
-		x86_64) system=x86_64-linux ;;
-		aarch64) system=aarch64-linux ;;
-		*) fail 'unsupported fixture architecture' ;;
-	esac
+	local events="$1" actual expected system="${2:-x86_64-linux}"
 	actual="$(awk -F '\t' '$1 == "build" && $0 !~ /--json/ { print }' "$events")"
 	expected=$(printf 'build\tbuild\t--no-link\t--keep-going\t.#checks.%s.compiler-concurrency\t.#checks.%s.source-closure' "$system" "$system")
 	[ "$actual" = "$expected" ] || fail 'both immutable gates must share exactly one keep-going Nix request'
@@ -113,6 +117,17 @@ assert_gate_request() {
 run_case disabled '' none 0
 assert_gate_request "$fixture/disabled.events"
 [ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/disabled.events")" -eq 0 ] || fail 'disabled recording invoked the profiler'
+awk -F '\t' '$1 == "test" { n++; if ($5 != "linux-amd64" || $6 != "musl") bad=1 } END { exit bad || n != 3 }' "$fixture/disabled.events" || fail 'x86-64 fixture selected the wrong product or omitted a test'
+run_case supported-arm64 '' none 0 prepared Linux aarch64
+assert_gate_request "$fixture/supported-arm64.events" aarch64-linux
+awk -F '\t' '$1 == "test" { n++; if ($5 != "linux-arm64" || $6 != "musl") bad=1 } END { exit bad || n != 3 }' "$fixture/supported-arm64.events" || fail 'ARM64 fixture selected the wrong product or omitted a test'
+for host in Darwin:arm64 Darwin:x86_64 Linux:arm64 Linux:armv7l MINGW64_NT:x86_64 unknown:x86_64; do
+	IFS=: read -r fixture_os fixture_arch <<< "$host"
+	name="unqualified-$fixture_os-$fixture_arch"
+	run_case "$name" '' none 69 prepared "$fixture_os" "$fixture_arch"
+	[ ! -s "$fixture/$name.events" ] || fail "$host invoked a builder or test outside a qualified boundary"
+	rg -F 'not qualified' "$fixture/$name.stderr" >/dev/null || fail "$host lost its isolation refusal diagnostic"
+done
 run_case profiled fixture-job none 0
 actual="$(awk -F '\t' '$1 == "span" { print $2 "\t" $3 "\t" $4 }' "$fixture/profiled.events")"
 expected=$'fixture-job\tsetup\tdev-shell cache preservation shell entry\nfixture-job\texecute\tdev-shell cache preservation\nfixture-job\tnix_eval\tall-system flake evaluation\nfixture-job\tmixed\tNix build contracts\nfixture-job\tsetup\tpreventive filesystem boundary shell entry\nfixture-job\texecute\tpreventive filesystem boundary\nfixture-job\tsetup\tisolated complete suite shell entry\nfixture-job\texecute\tisolated complete suite'
