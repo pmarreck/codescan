@@ -455,3 +455,55 @@ test "executeWithInferenceFallback returns lexical results after an embedding fa
 	try std.testing.expectEqual(@as(usize, 1), execution.execution.result.results.len);
 	try std.testing.expectEqualStrings("offlineSearch", execution.execution.result.results[0].symbol.name);
 }
+
+test "HTTP response failures preserve lexical fallback without rejecting valid embeddings" {
+	const http = @import("embedding_http.zig");
+	const Reply = struct {
+		body: []const u8,
+		calls: usize = 0,
+		fn send(ctx: *anyopaque, allocator: std.mem.Allocator, _: http.HttpRequest) !http.HttpResponse {
+			const self: *@This() = @ptrCast(@alignCast(ctx));
+			self.calls += 1;
+			return .{ .status = 200, .body = try allocator.dupe(u8, self.body) };
+		}
+	};
+	const Case = struct { dialect: http.ApiDialect, body: []const u8, fallback: bool = true };
+	const cases = [_]Case{
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,0],[0,1]]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[false]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,0]]}", .fallback = false },
+		.{ .dialect = .openai, .body = "{\"data\":[]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1,0]},{\"index\":1,\"embedding\":[0,1]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":-1,\"embedding\":[1,0]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1,0]}]}", .fallback = false },
+	};
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+	const id = try storage.insertSymbol(db, .{
+		.language = "zig", .file_path = "retained.zig", .name = "retainedSearch",
+		.signature = "fn retainedSearch() void", .doc_comment = null, .start_line = 1, .end_line = 1,
+	});
+	try storage.insertEmbedding(db, allocator, id, &.{ 1, 0 });
+	for (cases) |case| {
+		var reply = Reply{ .body = case.body };
+		var adapter = embedding.HttpEmbedder{
+			.transport = .{ .ctx = &reply, .send = Reply.send },
+			.base_url = "http://provider.invalid", .model = "fixture-model", .dialect = case.dialect,
+		};
+		var execution = try executeWithInferenceFallback(allocator, db, plugin.defaultRegistry(), adapter.embedder(), .{
+			.query = "retainedSearch", .top_n = 5, .mode = .hybrid, .fusion = .weighted_sum,
+			.rrf_k = 60, .fts_mode = .broad, .weight_vector = 0.5, .weight_lexical = 0.5, .min_score = 0,
+		});
+		defer execution.deinit();
+		try std.testing.expectEqual(case.fallback, execution.used_lexical_fallback);
+		try std.testing.expectEqual(@as(usize, 1), reply.calls);
+		try std.testing.expectEqual(@as(usize, 1), execution.execution.result.results.len);
+		try std.testing.expectEqualStrings("retainedSearch", execution.execution.result.results[0].symbol.name);
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
+		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
+	}
+}

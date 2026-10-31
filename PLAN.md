@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify embedding-cardinality guards on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 764 unit cases with unchanged exclusions.
 - [ ] Verify HTTP embedding-rejection preservation on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 761 unit cases, retained rows/vectors, HTTP 503 advice, health, and lexical fallback.
 - [x] Verify freed-unit-lane scheduling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fa8630cd, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit fa8630cd)
-- [ ] Verify provider-response cleanup and rejected-replacement preservation on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined host runner pass 761 unit cases with unchanged exclusions.
+- [x] Verify provider-response cleanup and rejected-replacement preservation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for f1211cf8, following 761 passing local unit cases. (done 2026-10-31 01:21 EDT; commit f1211cf8)
 - [x] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 134812b3, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit 134812b3)
 - [x] Verify isolated component timing on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 07ff0838, following 759 passing local unit cases. (done 2026-10-31 00:40 EDT; commit 07ff0838)
-- [x] Verify optional host test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for dc3e41cd, following 759 passing local unit cases. (done 2026-10-31 00:18 EDT)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
@@ -29,8 +29,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 5.92-second execution lower bound and 8.16-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
-	- [x] Attribute the isolated suite with 22 exact component spans and private record export; 759 unit cases pass, and the current run records 7.49 seconds elapsed versus 10.14 seconds summed work without changing either lane. (done 2026-10-31 00:18 EDT; context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 7.46-second execution lower bound and 10.95-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Reduce redundant orchestration-fixture processes while retaining all ten barrier/failure scenarios and real source-copy coverage; the component fell from 2.22 to 1.46 seconds, without establishing an overall budget improvement. (done 2026-10-31 00:40 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Reuse the freed unit lane for independent harness checks; a FIFO regression failed on the old runner, and fourteen scenarios now cover two-suite concurrency, source-copy ordering, lane failures, and joins; fresh component execution fell from 7.77 to 4.83 seconds. (done 2026-10-31 00:47 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
@@ -39,7 +38,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [x] Reject malformed embedding rows and invalid OpenAI index mappings without trapping or leaking; the ReleaseSafe regression first aborted during cleanup, and ten malformed-response cases plus allocation-failure sweeps now pass. (done 2026-10-31 00:59 EDT; context: docs/plan_context/inference_availability.md)
 	- [x] Preserve the index when a responding provider rejects full-index embeddings; CLI and MCP regressions first lost all six vectors, then passed exact symbol-row/vector-count checks, actionable advice, and continued lexical/file operations. (done 2026-10-31 00:59 EDT; context: docs/plan_context/inference_availability.md)
 	- [x] Preserve HTTP `/index` and `/update` against responding-provider embedding rejection; both regressions first returned 500 and lost all six vectors, then passed 503 advice, exact retained rows/counts, health, and lexical fallback. (done 2026-10-31 01:12 EDT; context: docs/plan_context/inference_availability.md)
-	- [ ] Validate response cardinality at the embedding boundary so zero or extra vectors for a single input cannot authorize replacement or bypass lexical fallback; retain valid batching and malformed-response fallback controls through the actual HTTP embedder/search service.
+	- [x] Validate response cardinality before accepting embeddings or dimension probes; three regressions failed first, then 18 wire-count combinations, eight HTTP-embedder/search controls, six probe controls, and 764 unit cases passed in complete Nix and fresh confined host runs. (done 2026-10-31 01:28 EDT; context: docs/plan_context/inference_availability.md)
+	- [ ] Characterize empty-vector and stored-index/provider-width mismatches through actual HTTP embedding and search; preserve lexical fallback without misclassifying genuine SQLite failures as provider outages.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
 
 ## Architecture and features

@@ -108,7 +108,7 @@ pub fn probeEmbeddingDim(allocator: std.mem.Allocator, embedder: embedding.Embed
 	const inputs = [_][]const u8{"dimension probe"};
 	const embeddings = embedder.embed(embedder.ctx, allocator, &inputs) catch return null;
 	defer embedder.free(embedder.ctx, allocator, embeddings);
-	if (embeddings.len == 0) return null;
+	if (embeddings.len != inputs.len) return null;
 	if (embeddings[0].len == 0) return null;
 	return embeddings[0].len;
 }
@@ -317,6 +317,7 @@ test "decideDbAction matches the openUpdateDb decision table across the whole do
 /// the provider at all.
 const FakeEmbedder = struct {
 	dim: usize,
+	count: ?usize = null,
 	calls: usize = 0,
 
 	fn embedder(self: *FakeEmbedder) embedding.Embedder {
@@ -326,7 +327,7 @@ const FakeEmbedder = struct {
 	fn embedFn(ctx: *anyopaque, allocator: std.mem.Allocator, inputs: []const []const u8) anyerror![][]f32 {
 		const self: *FakeEmbedder = @ptrCast(@alignCast(ctx));
 		self.calls += 1;
-		const out = try allocator.alloc([]f32, inputs.len);
+		const out = try allocator.alloc([]f32, self.count orelse inputs.len);
 		errdefer allocator.free(out);
 		for (out) |*slot| {
 			slot.* = try allocator.alloc(f32, self.dim);
@@ -371,6 +372,17 @@ fn countSymbols(allocator: std.mem.Allocator, db_path: []const u8) !i64 {
 	const db = try storage.openFileWithVec(allocator, db_path);
 	defer storage.close(db);
 	return storage.countRows(db, allocator, "symbols");
+}
+
+test "probeEmbeddingDim requires exactly one nonempty vector for its one input" {
+	for ([_]usize{ 0, 1, 2 }) |count| {
+		for ([_]usize{ 0, 2 }) |dim| {
+			var fake = FakeEmbedder{ .dim = dim, .count = count };
+			const expected: ?usize = if (count == 1 and dim > 0) dim else null;
+			try std.testing.expectEqual(expected, probeEmbeddingDim(std.testing.allocator, fake.embedder()));
+			try std.testing.expectEqual(@as(usize, 1), fake.calls);
+		}
+	}
 }
 
 test "prepare refuses to destroy an index when the live embedder's width disagrees" {

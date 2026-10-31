@@ -88,7 +88,10 @@ pub fn embed(
 		if (response.status == 401) return error.Unauthorized;
 		return error.HttpStatus;
 	}
-	return parseEmbeddings(allocator, response.body, dialect);
+	const vectors = try parseEmbeddings(allocator, response.body, dialect);
+	errdefer freeEmbeddings(allocator, vectors);
+	if (vectors.len != inputs.len) return error.InvalidEmbeddingCount;
+	return vectors;
 }
 
 /// Reports whether an embedding server is answering at `base_url`.
@@ -783,6 +786,8 @@ test "StdHttpTransport cancellation closes and joins held HTTP and TLS exchanges
 const OutcomeTransport = struct {
 	status: ?u16,
 	fail_with: ?anyerror,
+	response_body: []const u8 = "{}",
+	calls: usize = 0,
 	url_buf: [256]u8 = undefined,
 	url_len: usize = 0,
 
@@ -794,10 +799,11 @@ const OutcomeTransport = struct {
 
 	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
 		const self: *OutcomeTransport = @ptrCast(@alignCast(ctx));
+		self.calls += 1;
 		self.url_len = @min(req.url.len, self.url_buf.len);
 		@memcpy(self.url_buf[0..self.url_len], req.url[0..self.url_len]);
 		if (self.fail_with) |e| return e;
-		return .{ .status = self.status.?, .body = try allocator.dupe(u8, "{}") };
+		return .{ .status = self.status.?, .body = try allocator.dupe(u8, self.response_body) };
 	}
 
 	fn transport(self: *OutcomeTransport) Transport {
@@ -973,6 +979,32 @@ test "buildEmbedRequest omits keep_alive for openai dialect" {
 	defer allocator.free(body);
 	// keep_alive must NOT appear in output
 	try std.testing.expectEqualStrings("{\"model\":\"text-embedding-3-small\",\"input\":[\"hello\"]}", body);
+}
+
+test "embed preserves the input-to-vector count contract across both dialects" {
+	const allocator = std.testing.allocator;
+	const inputs = [_][]const u8{ "one", "two" };
+	const bodies = [_][3][]const u8{
+		.{ "{\"embeddings\":[]}", "{\"embeddings\":[[1,2]]}", "{\"embeddings\":[[1,2],[3,4]]}" },
+		.{ "{\"data\":[]}", "{\"data\":[{\"index\":0,\"embedding\":[1,2]}]}", "{\"data\":[{\"index\":1,\"embedding\":[3,4]},{\"index\":0,\"embedding\":[1,2]}]}" },
+	};
+	for ([_]ApiDialect{ .ollama, .openai }, bodies) |dialect, replies| {
+		for ([_]usize{ 1, 2, 0 }) |input_count| {
+			for (replies, 0..) |body, row_count| {
+				var reply = OutcomeTransport{ .status = 200, .fail_with = null, .response_body = body };
+				if (embed(allocator, reply.transport(), "http://provider.invalid", "fixture-model", inputs[0..input_count], null, dialect, null)) |vectors| {
+					defer freeEmbeddings(allocator, vectors);
+					try std.testing.expectEqual(input_count, vectors.len);
+					if (input_count > 0) try std.testing.expectEqualSlices(f32, &.{ 1, 2 }, vectors[0]);
+					if (input_count > 1) try std.testing.expectEqualSlices(f32, &.{ 3, 4 }, vectors[1]);
+				} else |err| {
+					try std.testing.expectEqual(error.InvalidEmbeddingCount, err);
+					try std.testing.expect(input_count != row_count);
+				}
+				try std.testing.expectEqual(@as(usize, 1), reply.calls);
+			}
+		}
+	}
 }
 
 test "parseEmbeddings rejects malformed rows and index mappings without invalid cleanup" {
