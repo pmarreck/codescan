@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -u
+ci_release_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$ci_release_script_dir/ci-verify-macos-arm64"
+
+ci_release_header() {
+	local target="$1" description="$2"
+	case "$target:$description" in
+		x86_64-linux-musl:'ELF 64-bit LSB executable, x86-64,'*|aarch64-linux-musl:'ELF 64-bit LSB executable, ARM aarch64,'*)
+			case "$description" in *'dynamically linked'*|*'interpreter '*) return 1 ;; esac
+			case "$description" in *', statically linked,'*|*', statically linked') return 0 ;; esac
+			;;
+		aarch64-macos:*) ci_arm64_macho "$description"; return "$?" ;;
+		x86_64-windows-gnu:'PE32+ executable (console) x86-64, for MS Windows,'*|aarch64-windows-gnu:'PE32+ executable (console) Aarch64, for MS Windows,'*) return 0 ;;
+	esac
+	return 1
+}
+
+ci_verify_release() {
+	[ "$#" -eq 2 ] || { printf 'Usage: ci-verify-release TARGET EXECUTABLE\n' >&2; return 64; }
+	local target="$1" artifact="$2" description status
+	case "$target" in x86_64-linux-musl|aarch64-linux-musl|aarch64-macos|x86_64-windows-gnu|aarch64-windows-gnu) ;; *) return 64 ;; esac
+	if [ ! -f "$artifact" ] || [ -L "$artifact" ] || [ ! -x "$artifact" ]; then
+		printf 'error: regular executable required for %s: %s\n' "$target" "$artifact" >&2
+		return 1
+	fi
+	if description="$(file -b -- "$artifact")"; then :; else
+		status="$?"
+		printf 'error: release header inspection failed for %s (exit %s)\n' "$target" "$status" >&2
+		return "$status"
+	fi
+	if ! ci_release_header "$target" "$description"; then
+		printf 'error: release CPU/format/static-link mismatch for %s: %s\n' "$target" "$description" >&2
+		return 1
+	fi
+	printf 'CI release header: %s: %s\n' "$target" "$description" >&2
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then ci_verify_release "$@"; fi

@@ -143,7 +143,8 @@ run_case() {
 			[ "$(awk '/^error:/ { n++ } END { print n+0 }' "$case_dir/stderr")" -gt 0 ] || fail "native smoke failure had no error diagnostic"
 			;;
 		linux-*)
-			[ "$(awk '$1 == "uname" || $1 == "file" || $1 == "binary" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "Linux cross-build unexpectedly required a native Mac runner"
+			[ "$(awk '$1 == "uname" || $1 == "binary" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "Linux cross-build unexpectedly required native execution"
+			[ "$(awk '$1 == "file" { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail 'Linux release header was not inspected exactly once'
 			;;
 	esac
 	if [ "$target" != aarch64-macos ] || [ "$name" = wrong-os ] || [ "$name" = wrong-host-cpu ]; then
@@ -187,6 +188,26 @@ reject_native_checks() {
 }
 
 reject_native_checks
+for target in x86_64-linux-musl aarch64-linux-musl x86_64-windows-gnu aarch64-windows-gnu; do
+	case_dir="$fixture_root/header-refusal-$target"
+	mkdir -p "$case_dir/package" || fail 'header refusal setup'
+	printf 'previous archive\n' > "$case_dir/artifact.tar.gz"
+	printf 'previous staging\n' > "$case_dir/package/previous"
+	printf 'fixture README\n' > "$case_dir/README.md"
+	printf 'fixture license\n' > "$case_dir/LICENSE"
+	: > "$case_dir/events"
+	extension=
+	case "$target" in *-windows-gnu) extension=.exe ;; esac
+	if (
+		cd "$case_dir" || exit 1
+		env CI_CASE_EVENTS="$case_dir/events" CI_CASE_OS=Linux CI_CASE_ARCH=x86_64 \
+			CI_CASE_FORMAT=data CI_CASE_BUILD_RC=0 CI_CASE_FILE_RC=0 CI_CASE_BINARY_RC=0 \
+			bash "$root/scripts/ci-build" "$target" package artifact.tar.gz "$extension"
+	) > "$case_dir/out" 2> "$case_dir/err"; then status=0; else status="$?"; fi
+	[ "$status" -eq 1 ] || fail "$target published an invalid product instead of refusing it: $status"
+	[ "$(< "$case_dir/artifact.tar.gz")" = 'previous archive' ] || fail "$target replaced an archive after invalid-header detection"
+	[ "$(< "$case_dir/package/previous")" = 'previous staging' ] || fail "$target changed caller staging after invalid-header detection"
+done
 run_case wrong-os Linux arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos
 run_case wrong-host-cpu Darwin x86_64 'Mach-O 64-bit arm64 executable' reject aarch64-macos
 run_case wrong-binary Darwin arm64 'Mach-O 64-bit x86_64 executable' reject aarch64-macos
@@ -194,13 +215,18 @@ run_case header-tool-failure Darwin arm64 '' reject aarch64-macos 0 9
 run_case binary-failure Darwin arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos 0 0 7
 run_case build-failure Darwin arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos 6
 run_case valid-mac Darwin arm64 'Mach-O 64-bit arm64 executable' accept aarch64-macos
-run_case linux-arm Linux x86_64 'ELF 64-bit LSB executable, ARM aarch64' accept aarch64-linux-musl
-run_case linux-x86 Linux x86_64 'ELF 64-bit LSB executable, x86-64' accept x86_64-linux-musl
-run_case linux-archive-label Linux x86_64 '' accept x86_64-linux-musl 0 0 0 archive.tar.gz
-run_case linux-zip-label Linux x86_64 '' accept x86_64-linux-musl 0 0 0 archive.zip
-run_case linux-zip-archive Linux x86_64 '' accept x86_64-linux-musl 0 0 0 archive.zip artifact.zip
-run_case windows-x86 Linux x86_64 '' accept x86_64-windows-gnu 0 0 0 package artifact.zip
-run_case windows-arm Linux x86_64 '' accept aarch64-windows-gnu 0 0 0 package artifact.zip
+linux_x64='ELF 64-bit LSB executable, x86-64, version 1 (SYSV), statically linked, not stripped'
+linux_arm='ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), statically linked, not stripped'
+run_case linux-arm Linux x86_64 "$linux_arm" accept aarch64-linux-musl
+run_case linux-x86 Linux x86_64 "$linux_x64" accept x86_64-linux-musl
+run_case linux-archive-label Linux x86_64 "$linux_x64" accept x86_64-linux-musl 0 0 0 archive.tar.gz
+run_case linux-zip-label Linux x86_64 "$linux_x64" accept x86_64-linux-musl 0 0 0 archive.zip
+run_case linux-zip-archive Linux x86_64 "$linux_x64" accept x86_64-linux-musl 0 0 0 archive.zip artifact.zip
+run_case windows-x86 Linux x86_64 'PE32+ executable (console) x86-64, for MS Windows, 7 sections' accept x86_64-windows-gnu 0 0 0 package artifact.zip
+run_case windows-arm Linux x86_64 'PE32+ executable (console) Aarch64, for MS Windows, 7 sections' accept aarch64-windows-gnu 0 0 0 package artifact.zip
+run_case linux-dynamic Linux x86_64 'ELF 64-bit LSB executable, x86-64, dynamically linked, interpreter /lib/ld.so' reject x86_64-linux-musl
+run_case linux-foreign Linux x86_64 "$linux_arm" reject x86_64-linux-musl
+run_case windows-foreign Linux x86_64 'PE32+ executable (console) Aarch64, for MS Windows, 7 sections' reject x86_64-windows-gnu
 
 # The failing builder is a controlled stop: even a broken argument validator
 # cannot reach staging deletion for these adversarial inputs.
@@ -264,6 +290,7 @@ printf 'fixture license\n' > "$archive_failure_dir/LICENSE"
 if (
 	cd "$archive_failure_dir" || exit 1
 	env CI_CASE_EVENTS="$archive_failure_dir/events" CI_CASE_BUILD_RC=0 CI_CASE_ARCHIVE_RC=7 \
+		CI_CASE_FORMAT="$linux_x64" CI_CASE_FILE_RC=0 \
 		bash "$root/scripts/ci-build" x86_64-linux-musl 'package dir' artifact.tar.gz ''
 ) > "$archive_failure_dir/stdout" 2> "$archive_failure_dir/stderr"; then archive_rc=0; else archive_rc="$?"; fi
 [ "$archive_rc" -eq 7 ] || fail 'archive failure did not preserve the adapter exit status'
@@ -326,4 +353,5 @@ do
 	fi
 done
 
+(unset -f file uname nix tar; bash "$root/tests/unit/test-release-product") || fail 'release product classifier/reader controls'
 printf 'CI architecture/publication regressions passed\n'

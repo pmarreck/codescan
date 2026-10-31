@@ -44,6 +44,8 @@ output="$(nix build --no-link --print-out-paths ".#$attribute")" || exit "$?"
 
 if [ "$TARGET" = aarch64-macos ]; then
 	nix develop -c "$ci_mac_verifier" "$output/bin/codescan${EXT}" || exit "$?"
+else
+	bash "$ci_script_dir/ci-verify-release" "$TARGET" "$output/bin/codescan${EXT}" || exit "$?"
 fi
 
 # Keep temporary archives on the destination filesystem for rename publication.
