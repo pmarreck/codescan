@@ -3830,7 +3830,7 @@ pub fn runSymbols(
 	var first_file = true;
 	var any_found = false;
 	for (file_list) |file_path| {
-		const rooted_file_path: ?[]const u8 = if (files.len > 0 and !std.fs.path.isAbsolute(file_path))
+		const rooted_file_path: ?[]const u8 = if (!std.fs.path.isAbsolute(file_path))
 			try std.fs.path.join(allocator, &.{ root_path orelse ".", file_path })
 		else
 			null;
@@ -3937,6 +3937,31 @@ pub fn runSymbols(
 		} else {
 			try writer.print("No symbols matching '{s}' found\n", .{pattern.?});
 		}
+	}
+}
+
+test "runSymbols resolves discovered files from absolute and relative project roots" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io, .{
+		.sub_path = "automatic-root-fixture.zig", .data = "pub fn discoveredRootSymbol() void {}\n",
+	});
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(cwd);
+	const relative_root = try std.fs.path.relative(allocator, cwd, io_singleton.getEnvMap(), cwd, root);
+	defer allocator.free(relative_root);
+	for ([_][]const u8{ root, relative_root }) |root_arg| {
+		var rendered: std.Io.Writer.Allocating = .init(allocator);
+		defer rendered.deinit();
+		try runSymbols(allocator, &.{}, null, false, .json, &rendered.writer, root_arg);
+		var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered.written(), .{});
+		defer parsed.deinit();
+		try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
+		try std.testing.expectEqualStrings("discoveredRootSymbol", parsed.value.array.items[0].object.get("name").?.string);
 	}
 }
 

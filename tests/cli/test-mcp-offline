@@ -60,6 +60,7 @@ scope_tools=(read_file create_file replace_content replace_symbol insert_before 
 mkdir -p "$scope_root/$scope_prefix" "$fixture/$scope_prefix" || fail 'file-root fixture setup'
 cp .codescan/config.ini "$scope_root/.codescan/config.ini" || fail 'file-root fixture config'
 printf 'pub fn old() void {}\n' > "$scope_root/.codescan/baseline.zig"
+printf 'pub fn discoveredRootSymbol() void {}\n' > "$scope_root/visible.zig"
 for scope_mode in relative absolute; do
 	for scope_tool in "${scope_tools[@]}"; do
 		scope_relative="$scope_prefix/$scope_mode-$scope_tool.zig"
@@ -87,14 +88,15 @@ scope_requests="$(jq -cn --arg root "$scope_root" --arg prefix "$scope_prefix" \
 	   elif $tool == "replace_lines" then {version:$version,from:$ref,to:$ref,body:"pub fn new() void {}"}
 	   elif $tool == "insert_at" then {version:$version,ref:$ref,body:"pub fn new() void {}"}
 	   else {version:$version,pattern:"old",body:"pub fn new() void {}"} end) as $arguments |
-	  {method:"tools/call",params:{name:$tool,arguments:$arguments}})] |
+	  {method:"tools/call",params:{name:$tool,arguments:$arguments}}),
+	 {method:"tools/call",params:{name:"symbols",arguments:{}}}] |
 	to_entries[] | .value + {jsonrpc:"2.0",id:(.key + 1)}
 	' --args "${scope_tools[@]}")" || fail 'file-root request encoding'
 capture timeout 15 "$binary" mcp-serve --root "$scope_root" <<< "$scope_requests"
 [ "$rc" -eq 0 ] || fail "file-root session stopped (exit $rc): $err"
 scope_responses="$out"
 printf '%s\n' "$scope_responses" | jq -se \
-	'map(.id) == [range(1;20)] and all(.error == null and .result != null)' >/dev/null || fail "file-root protocol failed: $scope_responses"
+	'map(.id) == [range(1;21)] and all(.error == null and .result != null)' >/dev/null || fail "file-root protocol failed: $scope_responses"
 scope_failed=0
 scope_id=2
 for scope_mode in relative absolute; do
@@ -126,6 +128,22 @@ for scope_mode in relative absolute; do
 	done
 done
 [ "$scope_failed" -eq 0 ] || fail "$scope_failed file-root cases failed"
+discovery_failed=0
+if printf '%s\n' "$scope_responses" | jq -se '
+	.[-1].result.content[0].text | fromjson |
+	length == 1 and .[0].name == "discoveredRootSymbol" and .[0].kind == "fn"
+' >/dev/null; then :; else
+	printf 'MCP automatic symbol discovery did not read from its configured root\n' >&2
+	discovery_failed=1
+fi
+capture "$binary" symbols --root "$scope_root" --json
+if [ "$rc" -eq 0 ] && [ -n "$out" ] && printf '%s' "$out" | jq -e '
+	length == 1 and .[0].name == "discoveredRootSymbol" and .[0].kind == "fn"
+' >/dev/null; then :; else
+	printf 'CLI automatic symbol discovery did not read from --root\n' >&2
+	discovery_failed=1
+fi
+[ "$discovery_failed" -eq 0 ] || fail 'automatic symbol discovery must read its supplied root'
 
 capture "$binary" status --json --root "$fixture"
 [ "$rc" -eq 0 ] || fail 'could not inspect the index before the rejected indexing request'

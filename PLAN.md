@@ -4,7 +4,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify shared scanner ignore preparation and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 771 unit cases, the classifier matrix, and 2,050 paired CLI output checks.
+- [ ] Verify automatic symbol-discovery root handling on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 772 unit cases and the CLI/MCP root regressions.
+- [x] Verify shared scanner ignore preparation and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for aef038b1, following 771 passing local unit cases and 2,050 paired CLI output checks. (done 2026-10-31 04:07 EDT; commit aef038b1)
 - [x] Verify MCP project-relative file targeting on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 0df165c1, following all 18 local file-operation cases and 769 passing unit cases. (done 2026-10-31 03:11 EDT; commit 0df165c1)
 - [x] Verify pending-file vector incompatibility advice on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fb68fa55, following 769 passing local unit cases and the independent SQLite-failure control. (done 2026-10-31 03:11 EDT; commit fb68fa55)
 - [x] Verify atomic full-index schema replacement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for b12c183b, following 767 passing local unit cases plus rollback, retained semantic search, and retry controls. (done 2026-10-31 02:40 EDT; commit b12c183b)
@@ -30,10 +31,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 10.37-second execution lower bound and 7.54-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.98-second execution lower bound and 4.52-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
 	- [x] Compile shared scanner ignore rules once per discovery; a leaking allocation-failure sweep failed first, then 771 unit cases, 136 classifier decisions, and 2,050 paired CLI checks passed; identical one-file discovery batches improved in both CPU-affinity modes. (done 2026-10-31 03:50 EDT; context: docs/plan_context/test_latency.md)
-	- [x] Record current prepared components in one admitted job: 22 spans, 765 passing unit cases, 7.14 seconds elapsed/13.28 seconds summed work; largest spans are units, orchestration, CLI, source copy, and packaging, without establishing a single cause for broad slowdown. (done 2026-10-31 02:04 EDT; context: docs/plan_context/test_latency.md)
-	- [x] Share the filtered Nix project source across package outputs; all 24 package identities stay unchanged, evaluation measures 5.54 seconds versus a 9.79-second reverse control, and the full fresh host runner passes all available checks. (done 2026-10-31 02:04 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [x] Test controlled provider-model failure paths for compatibility and preserved lexical/file operations; rejected replacements, malformed/count/width responses, pending-file advice, and independent SQLite controls pass with 769 unit cases; ranking-quality comparisons remain tabled. (done 2026-10-31 02:49 EDT; context: docs/plan_context/inference_availability.md)
@@ -44,7 +43,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Architecture and features
 
-- [ ] Reproduce and fix `symbols --root DIR` automatic discovery from another working directory; a private one-file CLI diagnostic returned empty output with exit zero outside DIR and the expected symbol inside DIR, while explicit-file root handling already has coverage.
+- [x] Resolve automatically discovered symbol files against the supplied root; CLI and MCP regressions first returned empty results outside that root, then complete Nix and fresh confined host checks passed 772 unit cases and absolute/relative root controls. (done 2026-10-31 04:07 EDT; context: docs/plan_context/inference_availability.md)
 - [x] Resolve MCP relative file-operation arguments against the configured project root; nine relative cases first failed while nine absolute controls passed, then all 18 passed complete Nix and fresh confined host checks with unchanged launch-directory files. (done 2026-10-31 02:49 EDT; context: docs/plan_context/inference_availability.md)
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
