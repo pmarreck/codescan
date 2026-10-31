@@ -1,9 +1,10 @@
 # PLAN
 
-Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains recoverable in Git; private operational context is retained outside the repository. Execution pauses after the current shipment; resume only with renewed direction (2026-10-28).
+Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains recoverable in Git; private operational context is retained outside the repository. Execution resumed on 2026-10-30; open items remain ordered below.
 
 ## CI completion and maintenance
 
+- [ ] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 757 unit cases.
 - [x] Verify the FTS prerequisite and real-socket cancellation shipments on exact-commit Mechatron Prime CI and GitHub Actions, including native macOS CLI smoke checks; all pass for 591c07a8 and b2d2ebd9. (done 2026-10-28 12:32 EDT)
 - [x] Repair the native macOS profiler-fixture failure without disabling checks; Mechatron Prime CI and GitHub Actions run 40638927693 pass, including native macOS ARM64 build/header/about execution. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/test_latency.md)
 - [x] Verify the shared tokenizer repair in 9c935fb: the exact installed blob accepts escaped cache interpolation, rejects unsafe dependencies, and honors staged content in both disagreement directions inside a disposable consumer fixture. (done 2026-10-28 02:36 EDT; context: docs/plan_context/staged_dependency_parser.md)
@@ -11,7 +12,9 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Watcher reliability
 
-- [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; live root/status calls respond, the watcher is stopped, and pre-search reconciliation is a candidate for the October 27 delay, not an established cause.
+- [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; October 27 root/status calls responded with the watcher stopped, but the historical cause remains unestablished. (context: docs/plan_context/inference_availability.md)
+	- [x] Characterize a held pending-file embedding through the real MCP handler and HTTP transport; wire input identifies reconciliation, search remains pending until release, and rejection restores lexical results plus provider advice; complete Nix and fresh confined host checks pass 757 unit cases. (done 2026-10-30 22:28 EDT; context: docs/plan_context/inference_availability.md)
+	- [ ] Decide whether pre-search reconciliation should have a total wait budget with lexical fallback while explicit indexing retains cold-model waits; no budget or request-policy change has been selected. (context: docs/plan_context/inference_availability.md)
 	- [x] Preserve inference-unavailable advice after a reachable server rejects embeddings; complete Nix/fresh host checks pass 754 unit cases, and exact-commit Mechatron Prime CI plus GitHub Actions run 40644259465 pass, including native macOS CLI smoke checks. (done 2026-10-28 02:49 EDT; commit 28602f00; context: docs/plan_context/inference_availability.md)
 	- [ ] Decide whether failed incremental embedding should retain new lexical rows as pending work or roll them back; the private fixture grew from four symbols/four vectors to five/four while retaining working search and file reads. (context: docs/plan_context/inference_availability.md)
 - [x] Finish SQLite watcher diagnostics across controlled open/write/read/cursor failures while preserving the index and retry policy; complete Linux Nix/fresh host checks, five-target builds, and native macOS CLI smoke checks pass. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/watcher_sqlite_failures.md)
@@ -35,7 +38,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 ## Validation and performance
 
 - [ ] Attribute and reduce the ReleaseSafe prepared runtime's 6.23-second lower bound, pin the shared profiling adapter, and separate Nix evaluation/setup from execution; retain safety checks and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
-	- [x] Overlap unit execution with source-fixture preparation after a FIFO-barrier regression failed on the old runner; copy and lane failures remain checked, and fresh prepared runtime measured 4.51 seconds with unchanged exclusions. (done 2026-10-28 01:34 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 	- [x] Bound the unit process independently and verify real held HTTP/TLS exchanges close and join on cancellation; the complete Linux Nix check passes 755 unit cases without changing cold-model request policy. (done 2026-10-28 03:15 EDT; context: docs/plan_context/request_deadlines.md)
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.

@@ -1553,6 +1553,153 @@ test "MCP search reports inference fallback while returning an existing index" {
 	try std.testing.expect(std.mem.indexOf(u8, response, "Start or repair the server") != null);
 }
 
+const HeldInferenceFixture = struct {
+	listener: *std.Io.net.Server,
+	entered: std.Io.Event = .unset,
+	release: std.Io.Event = .unset,
+	probes: usize = 0,
+	body_len: usize = 0,
+	body: [8192]u8 = undefined,
+	wire: [8192]u8 = undefined,
+
+	fn run(self: *HeldInferenceFixture) !void {
+		const io = io_singleton.getOrInit();
+		defer self.entered.set(io);
+		while (true) {
+			var stream = try self.listener.accept(io);
+			defer stream.close(io);
+			var reader = stream.reader(io, &self.wire);
+			const line = try reader.interface.takeDelimiterInclusive('\n');
+			const probe = std.mem.eql(u8, line, "GET /v1/models HTTP/1.1\r\n");
+			const post = std.mem.eql(u8, line, "POST /v1/embeddings HTTP/1.1\r\n");
+			try std.testing.expect(probe or post);
+			var length: usize = 0;
+			while (true) {
+				const header = try reader.interface.takeDelimiterInclusive('\n');
+				if (std.mem.eql(u8, header, "\r\n")) break;
+				const colon = std.mem.indexOfScalar(u8, header, ':') orelse return error.InvalidFixtureHeader;
+				if (std.ascii.eqlIgnoreCase(header[0..colon], "content-length")) {
+					length = try std.fmt.parseInt(usize, std.mem.trim(u8, header[colon + 1 ..], " \t\r\n"), 10);
+				}
+			}
+			if (probe) {
+				self.probes += 1;
+			} else {
+				try std.testing.expect(length > 0 and length <= self.body.len);
+				try reader.interface.readSliceAll(self.body[0..length]);
+				self.body_len = length;
+				self.entered.set(io);
+				try self.release.wait(io);
+			}
+			var buffer: [128]u8 = undefined;
+			var writer = stream.writer(io, &buffer);
+			try writer.interface.writeAll(if (probe)
+				"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+			else
+				"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+			try writer.interface.flush();
+			if (post) return;
+		}
+	}
+};
+
+const HeldSearchCall = struct {
+	allocator: std.mem.Allocator,
+	params: std.json.Value,
+	settings: Settings,
+	finished: std.atomic.Value(bool) = .init(false),
+
+	fn run(self: *HeldSearchCall) ![]u8 {
+		defer self.finished.store(true, .release);
+		return handleToolsCall(self.allocator, .{ .integer = 1 }, self.params, self.settings);
+	}
+};
+
+test "MCP search waits for a pending-file embedding before falling back after rejection" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io, ".codescan");
+	try tmp.dir.writeFile(io, .{ .sub_path = "pending.zig", .data = "pub fn pendingFixtureSymbol() void {}\n" });
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	const db_path = try std.fmt.allocPrint(allocator, "{s}/.codescan/index.sqlite3", .{root});
+	defer allocator.free(db_path);
+	{
+		const db = try storage.openFileWithVec(allocator, db_path);
+		defer storage.close(db);
+		var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "fixture-model" });
+		defer schema.deinit(allocator);
+		const id = try storage.insertSymbol(db, .{
+			.language = "zig",
+			.file_path = "retained.zig",
+			.name = "existingFixtureSymbol",
+			.signature = "pub fn existingFixtureSymbol() void",
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		});
+		try storage.insertEmbedding(db, allocator, id, &.{ 1.0, 0.0 });
+	}
+	const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+	var listener = try address.listen(io, .{ .reuse_address = true });
+	defer listener.socket.close(io);
+	const port = switch (listener.socket.address) { .ip4 => |a| a.port, .ip6 => |a| a.port };
+	const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}", .{port});
+	defer allocator.free(url);
+	const provider = try allocator.create(HeldInferenceFixture);
+	defer allocator.destroy(provider);
+	provider.* = .{ .listener = &listener };
+	var provider_task = try std.Io.concurrent(io, HeldInferenceFixture.run, .{provider});
+	defer _ = provider_task.cancel(io) catch {};
+	var params = try std.json.parseFromSlice(std.json.Value, allocator,
+		"{\"name\":\"search\",\"arguments\":{\"query\":\"existingFixtureSymbol\"}}", .{});
+	defer params.deinit();
+	var call = HeldSearchCall{ .allocator = allocator, .params = params.value, .settings = .{
+		.root_path = root,
+		.db_path = db_path,
+		.embedding_url = url,
+		.embedding_model = "fixture-model",
+		.embedding_dim = 2,
+		.embedding_dialect = .openai,
+		.embedding_auth_header = "Bearer fixture-key",
+	} };
+	var search_task = try std.Io.concurrent(io, HeldSearchCall.run, .{&call});
+	defer {
+		provider.release.set(io);
+		if (search_task.cancel(io)) |response| allocator.free(response) else |_| {}
+	}
+	try provider.entered.wait(io);
+	try std.testing.expect(provider.probes > 0);
+	try std.testing.expect(provider.body_len > 0);
+	try std.testing.expect(!call.finished.load(.acquire));
+	var request = try std.json.parseFromSlice(std.json.Value, allocator, provider.body[0..provider.body_len], .{});
+	defer request.deinit();
+	const inputs = request.value.object.get("input").?.array.items;
+	var pending_file_embedded = false;
+	for (inputs) |input| {
+		if (std.mem.indexOf(u8, input.string, "pendingFixtureSymbol") != null) pending_file_embedded = true;
+		try std.testing.expect(!std.mem.eql(u8, input.string, "existingFixtureSymbol"));
+	}
+	try std.testing.expect(pending_file_embedded);
+	provider.release.set(io);
+	const response = try search_task.await(io);
+	try provider_task.await(io);
+	try std.testing.expect(call.finished.load(.acquire));
+	var envelope = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+	defer envelope.deinit();
+	const text = envelope.value.object.get("result").?.object.get("content").?.array.items[0].object.get("text").?.string;
+	var result = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
+	defer result.deinit();
+	try std.testing.expect(result.value.object.get("inference_unavailable").?.bool);
+	var retained = false;
+	for (result.value.object.get("results").?.array.items) |item| {
+		if (std.mem.eql(u8, item.object.get("name").?.string, "existingFixtureSymbol")) retained = true;
+	}
+	try std.testing.expect(retained);
+}
+
 test "getArgInt parses integer and string arguments" {
 	const allocator = std.testing.allocator;
 	const json_str = "{\"top\":42,\"name\":\"hello\",\"neg\":-1,\"str_num\":\"1376\",\"str_neg\":\"-5\"}";

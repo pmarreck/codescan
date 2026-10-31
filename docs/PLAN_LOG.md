@@ -58,3 +58,7 @@ Publication checks use GitHub Actions and exact-commit Mechatron Prime CI.
 - [x] [CI completion and maintenance] Send the approved Nix tokenizer repair request through durable inbox and native delivery; the owning agent acknowledged acceptance and failing-first validation, with unsafe-path and staged/worktree controls retained. (done 2026-10-28 00:25 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [x] [CI completion and maintenance] Verify the profiler-pin shipment on exact-commit Mechatron Prime CI and GitHub Actions run 40634162232, including native macOS ARM64 build/header/about execution. (done 2026-10-28 00:58 EDT; commit b7dc4595)
 - [x] [Validation and performance › Attribute and reduce the ReleaseSafe prepared runtime's 6.23…] Pin the shared profiler and verify monotonic stamps inside the isolated runtime after a missing-tool regression failed; complete Nix and fresh host runners pass without recompiling the CLI or unit artifacts. (done 2026-10-28 00:46 EDT)
+
+## Retired 2026-10-30
+
+- [x] [Validation and performance › Attribute and reduce the ReleaseSafe prepared runtime's 6.23…] Overlap unit execution with source-fixture preparation after a FIFO-barrier regression failed on the old runner; copy and lane failures remain checked, and fresh prepared runtime measured 4.51 seconds with unchanged exclusions. (done 2026-10-28 01:34 EDT; context: docs/plan_context/test_latency.md)
