@@ -79,8 +79,7 @@ export CODESCAN_TEST_DB_BIN="$test_output/bin/mk-test-db"
 export CODESCAN_UNIT_TEST_BIN="$test_output/bin/codescan-unit-tests"
 run_development_case 'dev-shell cache preservation' ./tests/unit/test-dev-shell-cache
 run_case 'all-system flake evaluation' profile_command nix_eval 'all-system flake evaluation' nix flake check --no-build --all-systems
-run_case 'compiler concurrency contract' profile_command mixed 'compiler concurrency contract' nix build --no-link ".#checks.$codescan_nix_system.compiler-concurrency"
-run_case 'compiled source closure' profile_command mixed 'compiled source closure' nix build --no-link ".#checks.$codescan_nix_system.source-closure"
+run_case 'Nix build contracts' profile_command mixed 'Nix build contracts' nix build --no-link --keep-going ".#checks.$codescan_nix_system.compiler-concurrency" ".#checks.$codescan_nix_system.source-closure"
 run_development_case 'preventive filesystem boundary' ./tests/unit/test-isolation
 if [ "$rc" -eq 0 ]; then
 	run_development_case 'isolated complete suite' ./tests/lib/run-isolated -- bash ./tests/run-prepared

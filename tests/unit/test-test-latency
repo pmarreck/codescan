@@ -23,10 +23,17 @@ nix() {
 	case "${1-}" in
 		path-info|flake) return 0 ;;
 		build)
+			printf 'build' >> "$LATENCY_FIXTURE_EVENTS"
+			printf '\t%s' "$@" >> "$LATENCY_FIXTURE_EVENTS"
+			printf '\n' >> "$LATENCY_FIXTURE_EVENTS"
 			for arg in "$@"; do
 				if [ "$arg" = --json ]; then
 					printf '[{"drvPath":"fixture-codescan-cli.drv","outputs":{"out":"%s"}},{"drvPath":"fixture-codescan-test-binaries-unit.drv","outputs":{"out":"%s"}}]\n' "$LATENCY_FIXTURE_CLI" "$LATENCY_FIXTURE_UNITS"
 				fi
+				case "$LATENCY_FIXTURE_FAILURE:$arg" in
+					compiler:*.compiler-concurrency|both:*.compiler-concurrency) return 17 ;;
+					closure:*.source-closure|both:*.source-closure) return 19 ;;
+				esac
 			done
 			return 0
 			;;
@@ -92,11 +99,23 @@ run_case() {
 		fail "$name: child suite lost the task-owned scratch directory"
 	fi
 }
+assert_gate_request() {
+	local events="$1" actual expected system
+	case "$(uname -m)" in
+		x86_64) system=x86_64-linux ;;
+		aarch64) system=aarch64-linux ;;
+		*) fail 'unsupported fixture architecture' ;;
+	esac
+	actual="$(awk -F '\t' '$1 == "build" && $0 !~ /--json/ { print }' "$events")"
+	expected=$(printf 'build\tbuild\t--no-link\t--keep-going\t.#checks.%s.compiler-concurrency\t.#checks.%s.source-closure' "$system" "$system")
+	[ "$actual" = "$expected" ] || fail 'both immutable gates must share exactly one keep-going Nix request'
+}
 run_case disabled '' none 0
+assert_gate_request "$fixture/disabled.events"
 [ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/disabled.events")" -eq 0 ] || fail 'disabled recording invoked the profiler'
 run_case profiled fixture-job none 0
 actual="$(awk -F '\t' '$1 == "span" { print $2 "\t" $3 "\t" $4 }' "$fixture/profiled.events")"
-expected=$'fixture-job\tsetup\tdev-shell cache preservation shell entry\nfixture-job\texecute\tdev-shell cache preservation\nfixture-job\tnix_eval\tall-system flake evaluation\nfixture-job\tmixed\tcompiler concurrency contract\nfixture-job\tmixed\tcompiled source closure\nfixture-job\tsetup\tpreventive filesystem boundary shell entry\nfixture-job\texecute\tpreventive filesystem boundary\nfixture-job\tsetup\tisolated complete suite shell entry\nfixture-job\texecute\tisolated complete suite'
+expected=$'fixture-job\tsetup\tdev-shell cache preservation shell entry\nfixture-job\texecute\tdev-shell cache preservation\nfixture-job\tnix_eval\tall-system flake evaluation\nfixture-job\tmixed\tNix build contracts\nfixture-job\tsetup\tpreventive filesystem boundary shell entry\nfixture-job\texecute\tpreventive filesystem boundary\nfixture-job\tsetup\tisolated complete suite shell entry\nfixture-job\texecute\tisolated complete suite'
 [ "$actual" = "$expected" ] || fail 'the real runner did not record the complete ordered phase set'
 [ "$(awk -F '\t' '$1 == "span" && $3 == "setup" && $5 == 123 { n++ } END { print n+0 }' "$fixture/profiled.events")" -eq 3 ] || fail 'shell-entry spans lost their pre-entry stamps'
 run_case recorder-failure fixture-job recorder 1
@@ -104,11 +123,17 @@ run_case recorder-failure fixture-job recorder 1
 run_case stamp-failure fixture-job stamp 1
 [ "$(awk '$1 == "test" { n++ } END { print n+0 }' "$fixture/stamp-failure.events")" -eq 0 ] || fail 'a failed clock recorder still launched test execution'
 run_case test-failure fixture-job test 1
-[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/test-failure.events")" -eq 9 ] || fail 'a failed test dropped later required phase records'
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/test-failure.events")" -eq 8 ] || fail 'a failed test dropped later required phase records'
 run_case boundary-failure fixture-job boundary 1
-[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/boundary-failure.events")" -eq 7 ] || fail 'a failed isolation check still launched the complete suite'
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/boundary-failure.events")" -eq 6 ] || fail 'a failed isolation check still launched the complete suite'
 run_case artifact-preparation fixture-job none 0 prepare
 [ "$(awk -F '\t' '$1 == "span" && $3 == "mixed" && $4 == "artifact preparation" { n++ } END { print n+0 }' "$fixture/artifact-preparation.events")" -eq 1 ] || fail 'Nix preparation was omitted or misclassified as pure compilation'
+assert_gate_request "$fixture/artifact-preparation.events"
+for gate_failure in compiler closure both; do
+	run_case "$gate_failure-failure" fixture-job "$gate_failure" 1
+	assert_gate_request "$fixture/$gate_failure-failure.events"
+	[ "$(awk -F '\t' '$1 == "test" { n++ } END { print n+0 }' "$fixture/$gate_failure-failure.events")" -eq 3 ] || fail 'a failed Nix gate omitted a later required suite'
+done
 
 # Keep both real shell-entry assertions; this port tests only their scheduling.
 mkdir "$fixture/cache-tools" || fail 'cache scheduling setup'

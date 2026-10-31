@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [x] Verify exact-product `./run` on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 5b4aee34, following 776 passing local unit cases, all eight launcher scenarios, and seven retained build controls. (done 2026-10-31 06:10 EDT; commit 5b4aee34)
 - [x] Verify overlapping cache-inheritance checks on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 456d7192, following 776 passing local unit cases, both real shell assertions, and all three barrier/failure/join scenarios. (done 2026-10-31 06:26 EDT; commit 456d7192)
 - [x] Verify the byte-identical C grammar source pin on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 522d5f49, following 776 passing local unit cases, the source-boundary classifier, and old/new CLI range/body controls. (done 2026-10-31 06:42 EDT; commit 522d5f49)
 - [x] Verify redundant C-source retirement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 34d4176b, with all 24 package identities unchanged, 776 passing local unit cases, and attribution retained. (done 2026-10-31 06:42 EDT; commit 34d4176b)
 - [x] Verify shared CLI/MCP root JSON reporting on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for bc335257, following 778 passing local unit cases, all 20 path/state/adapter cases, and allocation-failure cleanup. (done 2026-10-31 07:06 EDT; commit bc335257)
 - [ ] Verify Nix-declared Zig build-job forwarding on exact-commit Mechatron Prime CI and GitHub Actions; six real-phase controls and complete Nix/fresh host checks pass, with all 778 unit cases and three byte-identical executables.
+- [ ] Verify batched immutable Nix gates on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix/fresh host checks pass all 778 unit cases, both gate targets, and independent failure-continuation controls.
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -30,8 +30,9 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 5.72-second execution lower bound and 4.33-second flake-evaluation span; retain prior broad slowdowns without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 15.97-second execution lower bound and 7.74-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Forward Nix's declared job count in both Zig build phases after all six real-phase controls fail; complete Nix/fresh host checks pass 778 unit cases, all three rebuilt executables are byte-identical, and the measured compilation cost remains explicit without a host-cause or speedup claim. (done 2026-10-31 07:08 EDT; context: docs/plan_context/build_conformance.md)
+	- [x] Batch both immutable Nix gates after a failing request-vector regression; both targets and independent failure-continuation controls pass complete checks, and paired one-/twelve-CPU requests favor batching without a whole-suite budget pass. (done 2026-10-31 07:19 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
