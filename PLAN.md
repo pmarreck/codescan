@@ -4,7 +4,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify native/shared Rust signature queries on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix/fresh confined host checks pass 790 unit cases and ten actual CLI query forms after recognition, empty-result, grouped-input, and malformed-tail failures.
+- [ ] Verify native/shared TypeScript signature queries and mixed-language isolation on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix/fresh confined host checks pass 795 unit cases, fourteen actual CLI query forms, and comparison-default regressions.
+- [x] Verify native/shared Rust signature queries on exact-commit Mechatron Prime CI and GitHub Actions; both pass for d9c166a3, including all five release targets, native macOS smoke checks, and five nonempty canonical archives after 790 passing local unit cases and ten actual CLI queries. (done 2026-10-31 09:45 EDT; commit d9c166a3)
 - [x] Verify native/shared Zig signature queries on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 5fe609d2, including all five release targets, native macOS smoke checks, and five nonempty canonical archives after 784 passing local unit cases and the original CLI failure. (done 2026-10-31 09:23 EDT; commit 5fe609d2)
 - [x] Verify read-file orchestration extraction on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 9b2b1cfb, following 779 passing unit cases and the existing actual CLI/MCP controls. (done 2026-10-31 08:54 EDT; commit 9b2b1cfb)
 - [x] Verify all five canonical archive jobs and uploaded artifacts on exact-commit GitHub Actions plus all five Mechatron Prime release builds; bc6b35b9 passes both services with exactly five nonempty, unexpired canonical archives, without creating a tag or release. (done 2026-10-31 08:54 EDT; commit bc6b35b9)
@@ -21,15 +22,15 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## After shipping
 
-- [ ] Extend partial signature queries in the selected language order, beginning with the existing partial-signature acceptance example. (decision 2026-10-20)
+- [x] Extend partial signature queries through the approved Zig, Rust, then TypeScript order, with native/shared forms, explicit declaration constraints, mixed-language sets, and inference-free actual CLI coverage; complete Nix/fresh confined host checks pass 795 unit cases, with exact TypeScript CI verification tracked separately. (done 2026-10-31 10:06 EDT)
 	- [x] Resolve the signature-query syntax choice; Answer: accept both native language signatures and the shared Roc-style form, preserving the approved Zig, Rust, then TypeScript implementation order. (done 2026-10-31 08:41 EDT)
 	- [x] Add native/shared Zig signature queries after failing recognition and actual CLI regressions; complete Nix/fresh confined host checks pass 784 unit cases, exact declaration sets, nested types, qualifiers, name boundaries, and seven actual CLI query forms without inference or live-index changes. (done 2026-10-31 09:10 EDT)
 	- [x] Add native/shared Rust signature queries for functions/methods with explicit generic/where constraints, receivers, lifetimes, nested types, and actual CLI coverage after failing regressions; complete Nix/fresh confined host checks pass 790 unit cases without inference or live-index changes. (done 2026-10-31 09:31 EDT)
-	- [ ] Add TypeScript signature-query matching for typed functions/methods with actual CLI coverage, including mixed-language shared matches and native-syntax isolation.
+	- [x] Add native/shared TypeScript signature queries for annotated functions/methods after recognition, empty-result, and explicit-input comparison-default failures; 795 unit cases and fourteen CLI query forms cover mixed-language sets, native isolation, generic/parameter shape, and missing-annotation refusal without live-index changes. (done 2026-10-31 10:06 EDT)
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 6.36-second execution lower bound and 4.01-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 6.58-second execution lower bound and 4.04-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
@@ -38,7 +39,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
-		- [x] Align GitHub's archive/release matrix with all five canonical PF targets after independent matrix, asset-list, and packaging-environment failures; complete Nix/fresh host checks pass 779 unit cases and tar/ZIP controls, with both Windows jobs cross-building on Linux and live CI verification pending. (done 2026-10-31 08:30 EDT; context: docs/plan_context/build_conformance.md)
 	- [ ] Publish verified commands in `bin/<PF>/` without runtime selector wrappers; preserve previous selections on failure, serialize publishers, retain runtime resources, support native Windows entrypoints, and coordinate PATH changes separately.
 	- [ ] Prove conformance through failing behavioral regressions in `./test`, real binary-header/ABI checks, host/foreign/profile coexistence, and native execution where available; report unavailable target checks without claiming full conformance.
 - [ ] Move update database preparation/freshness into the shared service after characterization tests prove CLI/MCP/HTTP behavior remains identical.

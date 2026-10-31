@@ -165,6 +165,33 @@ main() {
 		printf '%s' "$out" | jq -e 'all(.results[]; .language == "rust" and .lexical_sources.name and .lexical_sources.signature)' >/dev/null || fail "Rust signature query omitted matching evidence: $out"
 	done
 
+	typescript_signature_root="$DB_DIR/typescript-signatures"
+	mkdir -p "$typescript_signature_root/.git" || fail 'TypeScript signature fixture setup'
+	printf '%s\n' 'export function ceil(value: number): number { return value; }' \
+		'export function ceiling(value: number): number { return value; }' > "$typescript_signature_root/input.ts"
+	printf '%s\n' 'export function ceil(): number { return 1; }' > "$typescript_signature_root/zero.ts"
+	printf '%s\n' 'export function ceil(value: number): string { return String(value); }' > "$typescript_signature_root/other.ts"
+	printf '%s\n' 'export class Rounder {' 'ceil(value: number): number { return value; }' '}' > "$typescript_signature_root/method.ts"
+	printf '%s\n' 'export function ceil(value) { return value; }' > "$typescript_signature_root/untyped.ts"
+	printf '%s\n' 'export function choose(flag: boolean = 1 < 2): number { return flag ? 1 : 0; }' > "$typescript_signature_root/default.ts"
+	printf '%s\n' 'export function identity<T extends object>(value: T): T { return value; }' > "$typescript_signature_root/generic.ts"
+	printf '%s\n' 'pub fn identity<T>(value: T) -> T { value }' > "$typescript_signature_root/generic.rs"
+	printf '%s\n' 'pub fn identity(comptime T: type, value: T) T { return value; }' > "$typescript_signature_root/generic.zig"
+	capture "$BIN" index --root "$typescript_signature_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "TypeScript signature fixture index failed: $err"
+	typescript_signature_queries=('ceil : -> number' 'function ceil(...): number' 'ceil : number -> number' 'ceil(renamed: number): number' 'function ceil(): number' 'ceil : -> string' 'ceil : -> boolean' 'identity : -> T' 'function identity<T extends object>(...): T' 'function identity<T extends string>(...): T' 'fn identity(...) -> T' 'fn identity(...) T' 'choose : boolean -> number' 'choose(flag?: boolean): number')
+	typescript_signature_expected=('input.ts method.ts zero.ts' 'input.ts method.ts zero.ts' 'input.ts method.ts' 'input.ts method.ts' 'zero.ts' 'other.ts' '' 'generic.rs generic.ts generic.zig' 'generic.ts' '' 'generic.rs' 'generic.zig' 'default.ts' 'default.ts')
+	for i in "${!typescript_signature_queries[@]}"; do
+		capture "$BIN" search "${typescript_signature_queries[$i]}" --root "$typescript_signature_root" --mode lexical --top 20 --json
+		[ "$rc" -eq 0 ] || fail "TypeScript signature query failed: $err"
+		actual="$(printf '%s' "$out" | jq -r '[.results[].file_path | split("/")[-1]] | sort | join(" ")')" || fail 'invalid TypeScript signature result paths'
+		[ "$actual" = "${typescript_signature_expected[$i]}" ] || fail "TypeScript/mixed signature query returned the wrong set (${typescript_signature_queries[$i]}): $out"
+		printf '%s' "$out" | jq -e 'all(.results[]; .lexical_sources.name and .lexical_sources.signature)' >/dev/null || fail "signature query omitted matching evidence: $out"
+	done
+	capture "$BIN" search 'identity : -> T' --root "$typescript_signature_root" --mode lexical --lang typescript --json
+	[ "$rc" -eq 0 ] || fail 'TypeScript signature language filter failed'
+	printf '%s' "$out" | jq -e '[.results[].language] == ["typescript"]' >/dev/null || fail 'mixed signature query ignored the TypeScript language filter'
+
 	c_file="$DB_DIR/functions with spaces.c"
 	printf '%s\n' '// Adds two values.' 'int add(int left, int right) {' \
 		$'\treturn left + right;' '}' 'int prototype(int value);' 'static void adjacent(void) {}' > "$c_file"

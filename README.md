@@ -202,6 +202,20 @@ Parenthesize function-type inputs in the shared form so their arrows stay
 inside the type: `decode : (fn(u8) -> u8) -> Result<u8, Error>`.
 Use `--lang rust` to exclude matching declarations from other languages.
 
+TypeScript accepts `ceil : -> number`, native `function ceil(...): number`,
+and method-shaped `ceil(value: number): number` queries. Inputs omitted with
+`...` remain open; native `()` requires zero declared inputs. Only written
+return annotations match: a body returning a number without an annotation is
+not inferred. Shared input types ignore parameter names and optional/rest
+markers; native lists also constrain required, optional, and rest shape, with
+defaulted inputs treated as optional. Explicit native generic bounds compare
+written tokens. Nested generic/callback types and literal return types retain
+their token boundaries; modifiers and outer parameter names are ignored.
+This covers indexed function/method declarations, not an expanded extractor
+for arrow-valued variables. Shared queries can match multiple languages with
+the same written type names; distinctive Zig/Rust/TypeScript native forms stay
+language-specific. Use `--lang` for one language rather than the shared match set.
+
 Full indexing (`codescan init` and `codescan index`) prepares files in parallel,
 using up to eight CPU workers by default. Incremental preparation in
 `codescan update` and watcher events is still sequential.

@@ -1,8 +1,9 @@
 const std = @import("std");
 
-pub const Dialect = enum { zig, rust };
+pub const Dialect = enum { zig, rust, typescript };
 pub const Zig = Syntax(.zig);
 pub const Rust = Syntax(.rust);
+pub const TypeScript = Syntax(.typescript);
 
 fn Syntax(comptime dialect: Dialect) type {
 	return struct {
@@ -11,7 +12,7 @@ fn Syntax(comptime dialect: Dialect) type {
 		}
 
 		pub fn word(ch: u8) bool {
-			return std.ascii.isAlphanumeric(ch) or ch == '_' or ch >= 128;
+			return std.ascii.isAlphanumeric(ch) or ch == '_' or ch >= 128 or (dialect == .typescript and ch == '$');
 		}
 
 		pub const Tokens = struct {
@@ -25,11 +26,11 @@ fn Syntax(comptime dialect: Dialect) type {
 						self.offset += 1;
 					} else if (std.mem.startsWith(u8, self.text[self.offset..], "//")) {
 						while (self.offset < self.text.len and self.text[self.offset] != '\n') self.offset += 1;
-					} else if (dialect == .rust and std.mem.startsWith(u8, self.text[self.offset..], "/*")) {
+					} else if (dialect != .zig and std.mem.startsWith(u8, self.text[self.offset..], "/*")) {
 						self.offset += 2;
 						var depth: usize = 1;
 						while (self.offset + 1 < self.text.len and depth > 0) {
-							if (std.mem.startsWith(u8, self.text[self.offset..], "/*")) {
+							if (dialect == .rust and std.mem.startsWith(u8, self.text[self.offset..], "/*")) {
 								depth += 1;
 								self.offset += 2;
 							} else if (std.mem.startsWith(u8, self.text[self.offset..], "*/")) {
@@ -46,6 +47,14 @@ fn Syntax(comptime dialect: Dialect) type {
 				if (self.offset == self.text.len) return null;
 				const start = self.offset;
 				self.offset += 1;
+				if (dialect == .typescript) {
+					for ([_][]const u8{ "->", "=>" }) |operator| {
+						if (std.mem.startsWith(u8, self.text[start..], operator)) {
+							self.offset = start + operator.len;
+							return self.text[start..self.offset];
+						}
+					}
+				}
 				if (dialect == .rust) {
 					for ([_][]const u8{ "->", "::" }) |operator| {
 						if (std.mem.startsWith(u8, self.text[start..], operator)) {
@@ -69,7 +78,7 @@ fn Syntax(comptime dialect: Dialect) type {
 				}
 				if (self.text[start] == '@' and self.offset < self.text.len and self.text[self.offset] == '"') self.offset += 1;
 				const quote = self.text[self.offset - 1];
-				if (quote == '"' or quote == '\'') {
+				if (quote == '"' or quote == '\'' or (dialect == .typescript and quote == '`')) {
 					while (self.offset < self.text.len) {
 						const ch = self.text[self.offset];
 						self.offset += 1;
@@ -92,6 +101,10 @@ fn Syntax(comptime dialect: Dialect) type {
 		}
 
 		pub fn topLevelToken(text: []const u8, stop: []const u8) ?usize {
+			return scan(text, stop, true);
+		}
+
+		fn scan(text: []const u8, stop: []const u8, type_angles: bool) ?usize {
 			var tokens = Tokens{ .text = text };
 			var stack: [64]u8 = undefined;
 			var depth: usize = 0;
@@ -100,7 +113,10 @@ fn Syntax(comptime dialect: Dialect) type {
 				if (depth == 0 and std.mem.eql(u8, token, stop)) return tokens.offset - token.len;
 				if (token.len != 1) continue;
 				const ch = token[0];
-				const angle = dialect == .rust and braces == 0;
+				// Parameter defaults may contain comparison operators. Parenthesis
+				// discovery does not need angles; type/parameter splitting still does.
+				const angle = type_angles and dialect != .zig and braces == 0 and
+					!(dialect == .typescript and std.mem.eql(u8, stop, ")"));
 				if (ch == '(' or ch == '[' or ch == '{' or (angle and ch == '<')) {
 					if (depth == stack.len) return null;
 					stack[depth] = ch;
@@ -121,7 +137,10 @@ fn Syntax(comptime dialect: Dialect) type {
 			if (topLevelEnd(text, 0) == null) return false;
 			if (dialect == .rust and (typesEqual(text, "()") or typesEqual(text, "!"))) return true;
 			var tokens = Tokens{ .text = text };
-			while (tokens.next()) |token| if (word(token[0]) or token[0] == '@') return true;
+			while (tokens.next()) |token| {
+				if (word(token[0]) or token[0] == '@') return true;
+				if (dialect == .typescript and (token[0] == '"' or token[0] == '\'' or token[0] == '`')) return true;
+			}
 			return false;
 		}
 
@@ -147,7 +166,14 @@ fn Syntax(comptime dialect: Dialect) type {
 			pub fn next(self: *Parameters) ?[]const u8 {
 				var tokens = Tokens{ .text = self.text };
 				if (tokens.next() == null) return null;
-				const end = topLevelEnd(self.text, ',') orelse return null;
+				const end = topLevelEnd(self.text, ',') orelse if (dialect == .typescript) expression: {
+					// An unmatched angle after a binding default can be a comparison,
+					// not a type delimiter. Preserve the validated annotation prefix.
+					const assignment = topLevelEnd(self.text, '=') orelse return null;
+					if (assignment == self.text.len) return null;
+					const tail = self.text[assignment + 1 ..];
+					break :expression assignment + 1 + (scan(tail, ",", false) orelse return null);
+				} else return null;
 				const parameter = self.text[0..end];
 				self.text = if (end == self.text.len) "" else self.text[end + 1 ..];
 				return parameter;

@@ -7,6 +7,7 @@ const simd = @import("simd.zig");
 const roc_signature = @import("roc_signature.zig");
 const zig_signature = @import("zig_signature.zig");
 const rust_signature = @import("rust_signature.zig");
+const typescript_signature = @import("typescript_signature.zig");
 
 const sqlite = storage.sqlite;
 
@@ -525,19 +526,22 @@ const SignatureQuery = struct {
 	roc: ?roc_signature.Query,
 	zig: ?zig_signature.Query,
 	rust: ?rust_signature.Query,
+	typescript: ?typescript_signature.Query,
 
 	fn parse(text: []const u8) ?SignatureQuery {
 		const roc = roc_signature.Query.parse(text);
 		const zig = zig_signature.Query.parse(text);
 		const rust = rust_signature.Query.parse(text);
-		if (roc == null and zig == null and rust == null) return null;
-		return .{ .roc = roc, .zig = zig, .rust = rust };
+		const typescript = typescript_signature.Query.parse(text);
+		if (roc == null and zig == null and rust == null and typescript == null) return null;
+		return .{ .roc = roc, .zig = zig, .rust = rust, .typescript = typescript };
 	}
 
 	fn matches(self: SignatureQuery, language: []const u8, name: []const u8, signature: []const u8) bool {
 		if (std.mem.eql(u8, language, "roc")) return if (self.roc) |query| query.matches(name, signature) else false;
 		if (std.mem.eql(u8, language, "zig")) return if (self.zig) |query| query.matches(name, signature) else false;
 		if (std.mem.eql(u8, language, "rust")) return if (self.rust) |query| query.matches(name, signature) else false;
+		if (std.mem.eql(u8, language, "typescript")) return if (self.typescript) |query| query.matches(name, signature) else false;
 		return false;
 	}
 };
@@ -550,7 +554,7 @@ fn searchSignature(allocator: std.mem.Allocator, db: storage.Db, query: Signatur
 	}
 	if (options.comments_only or options.min_score > 1) return .{ .results = try results.toOwnedSlice(allocator), .total_relevant = 0 };
 	const sql = "SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
-		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, 0.0 FROM symbols WHERE lang IN ('roc', 'zig', 'rust') ORDER BY file_path, start_line, id";
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, 0.0 FROM symbols WHERE lang IN ('roc', 'zig', 'rust', 'typescript') ORDER BY file_path, start_line, id";
 	var stmt: ?*sqlite.sqlite3_stmt = null;
 	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlPrepareFailed;
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
@@ -2249,6 +2253,48 @@ test "Rust partial signature search classifies declarations and filters without 
 	const excluded = try search(allocator, db, embedding.NullEmbedder.embedder(), "ceil : -> f64", .{ .allowed_langs = &.{"zig"} });
 	defer freeResults(allocator, excluded.results);
 	try std.testing.expectEqual(@as(usize, 0), excluded.total_relevant);
+}
+
+test "signature search classifies mixed language shared matches and native syntax isolation" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	const declarations = [_]struct { language: []const u8, name: []const u8 = "identity", signature: []const u8 }{
+		.{ .language = "typescript", .signature = "function identity<T>(value: T): T" },
+		.{ .language = "rust", .signature = "fn identity<T>(value: T) -> T" },
+		.{ .language = "zig", .signature = "fn identity(comptime T: type, value: T) T" },
+		.{ .language = "roc", .signature = "identity : T -> T" },
+		.{ .language = "typescript", .signature = "function identity<T>(value: T): Array<T>" },
+		.{ .language = "typescript", .name = "identities", .signature = "function identities<T>(value: T): T" },
+		.{ .language = "typescript", .signature = "function identity(value)" },
+	};
+	for (declarations, 0..) |declaration, i| {
+		const path = try std.fmt.allocPrint(allocator, "case-{d}", .{i});
+		defer allocator.free(path);
+		_ = try storage.insertSymbol(db, .{ .language = declaration.language, .file_path = path, .name = declaration.name, .signature = declaration.signature, .doc_comment = null, .start_line = 1, .end_line = 3 });
+	}
+	const queries = [_]struct { text: []const u8, expected: [declarations.len]bool }{
+		.{ .text = "identity : -> T", .expected = .{ true, true, true, true, false, false, false } },
+		.{ .text = "function identity(...): T", .expected = .{ true, false, false, false, false, false, false } },
+		.{ .text = "fn identity(...) -> T", .expected = .{ false, true, false, false, false, false, false } },
+		.{ .text = "fn identity(...) T", .expected = .{ false, false, true, false, false, false, false } },
+	};
+	for (queries) |query| {
+		const result = try search(allocator, db, embedding.NullEmbedder.embedder(), query.text, .{ .top_n = 20 });
+		defer freeResults(allocator, result.results);
+		var found: [declarations.len]bool = @splat(false);
+		for (result.results) |hit| {
+			const i = try std.fmt.parseInt(usize, hit.symbol.file_path["case-".len..], 10);
+			found[i] = true;
+			try std.testing.expect(hit.lexical_sources.name and hit.lexical_sources.signature);
+		}
+		try std.testing.expectEqualSlices(bool, &query.expected, &found);
+	}
+	const filtered = try search(allocator, db, embedding.NullEmbedder.embedder(), "identity : -> T", .{ .allowed_langs = &.{"typescript"} });
+	defer freeResults(allocator, filtered.results);
+	try std.testing.expectEqual(@as(usize, 1), filtered.total_relevant);
+	try std.testing.expectEqualStrings("typescript", filtered.results[0].symbol.language);
 }
 
 test "search vector mode returns nearest symbol" {

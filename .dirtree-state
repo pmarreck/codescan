@@ -161,6 +161,7 @@ annotate=[
 	src/symbol_tree.zig = Hierarchical symbol-tree model plus the native-Zig-AST extractor and human-readable tree formatting
 	src/syslog.zig = Unix OS-log adapter; compiles log calls out on Windows while watcher failures persist project-locally.
 	src/ts_symbols.zig = Tree-sitter symbol hierarchy and edit boundaries, including Python decorators and Roc annotations
+	src/typescript_signature.zig = Native and shared TypeScript signature constraints for annotated definitions
 	src/update_service.zig = Update-database lifecycle service: exhausted decideDbAction, and the two-phase prepare() that proves the live embedder's width before any rebuild
 	src/watcher.zig = Native/polling loops with readiness, bounded retries, and durable daemon failures
 	src/watcher_mgmt.zig = Cross-project watcher inventory; its numeric project PID fields keep unsupported Windows commands compilable while Unix parses ps and lsof output.
