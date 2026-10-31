@@ -40,6 +40,7 @@ annotate=[
 	docs/plan_context/sqlite_vec_callback_safety.md = SQLite vector callback failure evidence, Nix patch scope, and removal criteria
 	docs/plan_context/staged_dependency_parser.md = Shared tokenizer repair evidence and independent consumer controls
 	docs/plan_context/test_latency.md = Measured test-runtime costs, removed polling delay, and remaining budget work
+	docs/plan_context/watcher_memory.md = Bounded incremental ownership evidence and remaining watcher memory scopes
 	docs/plan_context/watcher_sqlite_failures.md = SQLite watcher failure evidence, constraints, and diagnostic acceptance criteria
 	fixtures/manifest.toml = Pinned fixture repositories used by the integration suite
 	flake.lock = Pinned Nix inputs for a reproducible dev shell

@@ -185,6 +185,70 @@ test "execute owns full and incremental index dispatch" {
 	try std.testing.expectEqual(@as(usize, 1), incremental.incremental.unchanged_files);
 }
 
+test "repeated incremental event batches release caller allocations for both root forms" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	const http = @import("embedding_http.zig");
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(cwd);
+	const relative_root = try std.fs.path.relative(allocator, cwd, io_singleton.getEnvMap(), cwd, root);
+	defer allocator.free(relative_root);
+	const cases = [_]struct {
+		action: enum { write, unchanged, remove },
+		source: []const u8 = "",
+		counts: [5]usize,
+		rows: i64,
+		embed_calls: usize,
+	}{
+		.{ .action = .write, .source = "/// First operation.\npub fn first() void {}\n",
+			.counts = .{ 1, 0, 0, 0, 1 }, .rows = 1, .embed_calls = 2 },
+		.{ .action = .write, .source = "/// Revised operation.\npub fn first() void {}\n/// Another operation.\npub fn second() void {}\n",
+			.counts = .{ 0, 1, 0, 0, 2 }, .rows = 2, .embed_calls = 4 },
+		.{ .action = .unchanged, .counts = .{ 0, 0, 0, 1, 0 }, .rows = 2, .embed_calls = 0 },
+		.{ .action = .remove, .counts = .{ 0, 0, 1, 0, 0 }, .rows = 0, .embed_calls = 0 },
+	};
+	for ([_][]const u8{ root, relative_root }) |root_arg| {
+		const db = try storage.openMemoryWithVec(allocator);
+		defer storage.close(db);
+		var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "fixture-model" });
+		defer schema.deinit(allocator);
+		var replies: http.MockTransportCtx = .{ .tags_body = "{}", .ps_body = "{}" };
+		var provider = embedding.HttpEmbedder{
+			.transport = replies.transport(), .base_url = "http://provider.invalid", .model = "fixture-model",
+		};
+		var accounting = std.testing.FailingAllocator.init(allocator, .{});
+		for (0..3) |_| {
+			for (cases) |case| {
+				switch (case.action) {
+					.write => try tmp.dir.writeFile(io, .{ .sub_path = "events.zig", .data = case.source }),
+					.unchanged => {},
+					.remove => try tmp.dir.deleteFile(io, "events.zig"),
+				}
+				const previous_calls = replies.embed_count;
+				const result = try execute(accounting.allocator(), db, plugin.defaultRegistry(), provider.embedder(), .{
+					.mode = .incremental, .root_path = root_arg, .embedding_dim = 2,
+					.embedding_model = "fixture-model", .batch_size = 1, .max_file_size = 4096,
+					.index_ext = "zig",
+				});
+				const stats = result.incremental;
+				try std.testing.expectEqual(case.counts, [5]usize{
+					stats.new_files, stats.modified_files, stats.deleted_files, stats.unchanged_files, stats.symbols,
+				});
+				try std.testing.expectEqual(@as(usize, 0), stats.recovered_files);
+				try std.testing.expectEqual(case.embed_calls, replies.embed_count - previous_calls);
+				for ([_][]const u8{ "symbols", "embeddings", "embeddings_comment" }) |table| {
+					try std.testing.expectEqual(case.rows, try storage.countRows(db, allocator, table));
+				}
+				try std.testing.expectEqual(accounting.allocated_bytes, accounting.freed_bytes);
+			}
+		}
+	}
+}
+
 test "full indexing rebuilds vector schemas when the detected model width changes" {
 	const http = @import("embedding_http.zig");
 	const update = @import("update_service.zig");

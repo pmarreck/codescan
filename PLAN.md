@@ -4,6 +4,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify repeated incremental-index ownership characterization on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 775 unit cases and 24 add/modify/no-op/delete passes without unowned caller-allocator bytes.
 - [ ] Verify lexical identifier candidate normalization and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 774 unit cases, 132 candidate-membership decisions, four comment-only controls, and six CLI query/mode cases.
 - [x] Verify packaging-suite lane reuse on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 1532513d, following 772 passing local unit cases and all 16 scheduling/failure scenarios. (done 2026-10-31 04:27 EDT; commit 1532513d)
 - [x] Verify automatic symbol-discovery root handling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 370067d9, following 772 passing local unit cases and actual CLI/MCP discovery controls. (done 2026-10-31 04:27 EDT; commit 370067d9)
@@ -30,17 +31,17 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 5.28-second execution lower bound and 3.85-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.85-second execution lower bound and 8.71-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
 	- [x] Move CI architecture/publication into the freed unit lane after a failing FIFO-overlap regression; all 16 scheduling/failure scenarios and 772 unit cases pass, with 4.53-second component elapsed execution and a retained two-suite limit. (done 2026-10-31 04:12 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Compile shared scanner ignore rules once per discovery; a leaking allocation-failure sweep failed first, then 771 unit cases, 136 classifier decisions, and 2,050 paired CLI checks passed; identical one-file discovery batches improved in both CPU-affinity modes. (done 2026-10-31 03:50 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
-- [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
+- [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
+	- [x] Characterize repeated add/modify/no-op/delete indexing through absolute and relative roots; all 24 passes have exact SQLite/vector effects, embedding request counts, and zero unowned caller-allocator bytes; complete Nix and fresh confined host checks pass 775 unit cases without a production change. (done 2026-10-31 04:46 EDT; context: docs/plan_context/watcher_memory.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
 
 ## Architecture and features
 
 - [x] Resolve automatically discovered symbol files against the supplied root; CLI and MCP regressions first returned empty results outside that root, then complete Nix and fresh confined host checks passed 772 unit cases and absolute/relative root controls. (done 2026-10-31 04:07 EDT; context: docs/plan_context/inference_availability.md)
-- [x] Resolve MCP relative file-operation arguments against the configured project root; nine relative cases first failed while nine absolute controls passed, then all 18 passed complete Nix and fresh confined host checks with unchanged launch-directory files. (done 2026-10-31 02:49 EDT; context: docs/plan_context/inference_availability.md)
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
 	- [ ] Consolidate legacy `build_all` into thin Nix-required `./build` scope flags/aliases and exact-product `./run`/`./test`; remove direct-build fallbacks and prepare compiled tests through Nix; add canonical-implementation selection only if multiple executable implementations exist.
