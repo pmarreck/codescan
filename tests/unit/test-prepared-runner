@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -u
+if [ "${1:-}" = --adapter ] || [ "${1:-}" = --copy-adapter ]; then
+	if [ -n "${CODESCAN_LATENCY_JOB:-}" ]; then
+		printf '%s\n' "$CODESCAN_LATENCY_JOB" >> "$HARNESS_JOB_EVENTS"
+	fi
+fi
 if [ "${1:-}" = --copy-adapter ]; then
 	shift
 	read -r ready < "$HARNESS_READY" || exit 1
@@ -35,6 +40,25 @@ cp "$root/tests/run-prepared" "$source_project/tests/run-prepared" || fail 'runn
 cp "$root/tests/lib/capture.bash" "$source_project/tests/lib/" || fail 'adapter fixtures'
 export HARNESS_ADAPTER="$root/tests/unit/test-prepared-runner"
 export HARNESS_COPY_SOURCE="$root/tests/lib/copy-source"
+performance-profile() {
+	[ "${1-}" = latency ] && [ "${2-}" = span ] || return 64
+	shift 2
+	local job='' kind='' name=''
+	while [ "$#" -gt 0 ]; do
+		case "$1" in
+			--job) job="$2"; shift 2 ;;
+			--kind) kind="$2"; shift 2 ;;
+			--name) name="$2"; shift 2 ;;
+			--) shift; break ;;
+			*) return 64 ;;
+		esac
+	done
+	[ "$job" = fixture-suite-job ] && [ "$kind" = execute ] && [ "$#" -gt 0 ] || return 64
+	printf '%s\n' "$name" >> "$HARNESS_SPANS"
+	[ "$name" != "$HARNESS_PROFILE_FAIL" ] || return 43
+	"$@"
+}
+export -f performance-profile
 printf '#!%s\nexec "$HARNESS_ADAPTER" --copy-adapter "$@"\n' "$BASH" > "$source_project/tests/lib/copy-source"
 chmod +x "$source_project/tests/lib/copy-source" || fail 'copy adapter permissions'
 run_case() {
@@ -49,28 +73,53 @@ source_root="$source_project"
 while IFS= read -r invocation; do eval "${invocation% &}"; done < <(sed -n '/^[[:space:]]*run_case /p' "$root/tests/run-prepared")
 git -C "$source_project" init -q || fail 'Git setup'
 git -C "$source_project" add . || fail 'tracked fixture'
-for scenario in pass unit-failure cli-failure both-failures copy-failure; do
+for scenario in pass unit-failure cli-failure both-failures copy-failure profiled profiled-unit-failure profiled-cli-failure profiled-copy-failure profiled-recorder-failure; do
 	case_root="$fixture/$scenario"
 	mkdir -p "$case_root/workspace" || fail 'scenario setup'
 	export HARNESS_EVENTS="$case_root/events" HARNESS_READY="$case_root/ready" HARNESS_RELEASE="$case_root/release"
+	export HARNESS_JOB_EVENTS="$case_root/job-events" HARNESS_SPANS="$case_root/spans" HARNESS_PROFILE_FAIL=''
+	: > "$HARNESS_JOB_EVENTS"
+	: > "$HARNESS_SPANS"
+	unset CODESCAN_LATENCY_JOB
+	case "$scenario" in profiled*) export CODESCAN_LATENCY_JOB=fixture-suite-job ;; esac
 	export HARNESS_UNIT_RC=0 HARNESS_CLI_RC=0 HARNESS_COPY_RC=0
 	case "$scenario" in
-		unit-failure) HARNESS_UNIT_RC=7 ;;
-		cli-failure) HARNESS_CLI_RC=9 ;;
+		unit-failure|profiled-unit-failure) HARNESS_UNIT_RC=7 ;;
+		cli-failure|profiled-cli-failure) HARNESS_CLI_RC=9 ;;
 		both-failures) HARNESS_UNIT_RC=7 HARNESS_CLI_RC=9 ;;
-		copy-failure) HARNESS_COPY_RC=37 ;;
+		copy-failure|profiled-copy-failure) HARNESS_COPY_RC=37 ;;
+		profiled-recorder-failure) HARNESS_PROFILE_FAIL='pinned profiling adapter' ;;
 	esac
 	mkfifo "$HARNESS_READY" "$HARNESS_RELEASE" || fail 'barrier setup'
 	if (cd "$source_project" && TEST_WORKSPACE="$case_root/workspace" timeout 10 bash ./tests/run-prepared) > "$case_root/out" 2> "$case_root/err"; then
 		rc=0
 	else rc="$?"; fi
 	expected=1
-	[ "$scenario" != pass ] || expected=0
+	case "$scenario" in pass|profiled) expected=0 ;; esac
 	[ "$rc" -eq "$expected" ] || fail "$scenario returned $rc, expected $expected (unit must overlap source preparation and both lanes must be awaited)"
 	for name in test-unit test-cli test-integration; do
 		calls=1
-		if [ "$scenario" = copy-failure ] && [ "$name" != test-unit ]; then calls=0; fi
+		case "$scenario:$name" in copy-failure:test-cli|copy-failure:test-integration|profiled-copy-failure:test-cli|profiled-copy-failure:test-integration) calls=0 ;; esac
 		[ "$(awk -v name="$name" '$0 == name { n++ } END { print n+0 }' "$HARNESS_EVENTS")" -eq "$calls" ] || fail "$scenario ran $name an unexpected number of times"
 	done
+	[ ! -s "$HARNESS_JOB_EVENTS" ] || fail "$scenario leaked the parent suite job into child adapters"
+	case "$scenario" in
+		profiled*)
+			if [ "$scenario" = profiled-copy-failure ]; then
+				expected_spans=$'source fixture\nunit'
+			else
+				expected_spans="$(printf '%s\n' unit 'source fixture' 'pinned profiling adapter' 'portable capture' \
+					'unit process hang guard' 'tracked source fixture' 'prepared runner orchestration' 'test phase recording' \
+					'five-target build contract' 'Nix-required build adapter' 'CI runner contract' 'CI architecture/publication' \
+					'no committed embedding keys' 'portable MCP configuration' 'single index entrypoint' \
+					'sequential project reindex runner' 'CLI about' 'MCP offline session' CLI 'watcher schema preservation' HTTP integration | LC_ALL=C sort)"
+			fi
+			[ "$(LC_ALL=C sort "$HARNESS_SPANS")" = "$expected_spans" ] || fail "$scenario omitted, duplicated, or invented prepared-suite phases"
+			;;
+		*) [ ! -s "$HARNESS_SPANS" ] || fail 'disabled suite recording invoked the profiler' ;;
+	esac
+	if [ "$scenario" = profiled-recorder-failure ]; then
+		[ "$(awk '$0 == "test-profiler-pin" { n++ } END { print n+0 }' "$HARNESS_EVENTS")" -eq 0 ] || fail 'a failed suite recorder still invoked its command'
+	fi
 done
 printf 'Prepared runner overlaps source preparation and accumulates failures\n'

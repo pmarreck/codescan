@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify optional test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh profiled host run pass all available checks with 759 passing unit cases.
+- [ ] Verify isolated component timing on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined component run pass 759 unit cases with unchanged exclusions.
+- [x] Verify optional host test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for dc3e41cd, following 759 passing local unit cases. (done 2026-10-31 00:18 EDT)
 - [x] Verify owned release staging and ZIP dependencies on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for c391ec2b, following 759 passing local unit cases. (done 2026-10-31 00:01 EDT)
 - [x] Verify the recursive-directory glob fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 54440026, following 759 passing local unit cases. (done 2026-10-30 23:32 EDT)
 - [x] Verify the empty language/type intersection fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 488fef10, following 758 passing local unit cases. (done 2026-10-30 23:16 EDT)
 - [x] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; all five release builds and native macOS smoke checks pass for f3cad46c, following 757 passing local unit cases. (done 2026-10-30 22:46 EDT)
-- [x] Verify the FTS prerequisite and real-socket cancellation shipments on exact-commit Mechatron Prime CI and GitHub Actions, including native macOS CLI smoke checks; all pass for 591c07a8 and b2d2ebd9. (done 2026-10-28 12:32 EDT)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
@@ -32,7 +32,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [ ] Reduce the attributed ReleaseSafe host runner's 7.33-second execution lower bound and 8.40-second flake-evaluation span; retain safety, coverage, and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Add opt-in shared-profiler spans to the real test entry point, preserving task scratch across Nix shell entry and keeping parent jobs out of nested suites; complete Nix and fresh profiled host checks pass 759 unit cases. (done 2026-10-31 00:01 EDT; context: docs/plan_context/test_latency.md)
-	- [ ] Attribute the isolated suite's 6.23-second span to its actual components while preserving both execution lanes, complete test inventory, and private history export. (context: docs/plan_context/test_latency.md)
+	- [x] Attribute the isolated suite with 22 exact component spans and private record export; 759 unit cases pass, and the current run records 7.49 seconds elapsed versus 10.14 seconds summed work without changing either lane. (done 2026-10-31 00:18 EDT; context: docs/plan_context/test_latency.md)
+	- [ ] Reduce redundant orchestration-fixture I/O while preserving all barrier/failure cases and separate real source-copy adapter coverage; retain changes only with measured evidence. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
@@ -45,7 +46,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 ## Architecture and features
 
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
-	- [x] Inventory the single Zig implementation, Nix profiles, five release targets, legacy publication/callers, exact test artifacts, and rollback boundary without moving live products. (done 2026-10-28 03:24 EDT; context: docs/plan_context/build_conformance.md)
 	- [x] Make release packaging own staging and preserve caller files/previous archives; invalid arguments, filename collisions, tar/ZIP payloads, and all five target selections pass in complete Nix and fresh confined host checks with 759 passing unit cases. (done 2026-10-30 23:33 EDT; context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
 	- [ ] Consolidate legacy `build_all` into thin Nix-required `./build` scope flags/aliases and exact-product `./run`/`./test`; remove direct-build fallbacks and prepare compiled tests through Nix; add canonical-implementation selection only if multiple executable implementations exist.

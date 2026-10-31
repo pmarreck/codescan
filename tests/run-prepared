@@ -5,10 +5,21 @@ source_root="$PWD"
 project="$TEST_WORKSPACE/project"
 export PATH="$(dirname "$CODESCAN_TEST_BIN"):$PATH"
 out= err= rc= failed=0
+latency_job="${CODESCAN_LATENCY_JOB:-}"
+unset CODESCAN_LATENCY_JOB
+profile_suite_command() {
+	local name="$1"
+	shift
+	if [ -n "$latency_job" ]; then
+		performance-profile latency span --job "$latency_job" --name "$name" --kind execute -- "$@"
+	else
+		"$@"
+	fi
+}
 run_case() {
 	local name="$1"
 	shift
-	capture "$@"
+	capture profile_suite_command "$name" "$@"
 	if [ "$rc" -eq 0 ]; then
 		case "$out" in
 			*skipped*) printf 'SKIP %s: %s\n' "$name" "$out" ;;
@@ -28,7 +39,7 @@ run_case() {
 ) &
 unit_pid=$!
 # Copy current tracked/staged source, never ignored live indexes or products.
-if ! bash "$source_root/tests/lib/copy-source" "$source_root" "$project"; then
+if ! profile_suite_command 'source fixture' bash "$source_root/tests/lib/copy-source" "$source_root" "$project"; then
 	wait "$unit_pid"
 	exit 1
 fi
