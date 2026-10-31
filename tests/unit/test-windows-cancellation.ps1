@@ -69,8 +69,8 @@ foreach ($scenario in @('completed', 'timeout', 'reap-failure', 'diagnostic', 'd
 		Events = $events; Completes = ($scenario -eq 'completed'); Reaps = ($scenario -ne 'reap-failure')
 		StandardOutput = $streams[0]; StandardError = $streams[1]; ExitCode = 42
 		HasExited = ($scenario -eq 'completed'); ExitsDuringKill = ($scenario -eq 'diagnostic-exit')
-		ExpectedWait = $(if ($scenario -eq 'debugger-timeout') { 1500 } else { 30000 })
-		ExpectedReap = $(if ($scenario -eq 'debugger-timeout') { 500 } elseif ($scenario -like 'diagnostic*') { 3000 } else { 5000 })
+		ExpectedWait = $(if ($scenario -eq 'debugger-timeout') { 10000 } else { 30000 })
+		ExpectedReap = $(if ($scenario -eq 'debugger-timeout') { 1000 } elseif ($scenario -like 'diagnostic*') { 3000 } else { 5000 })
 	}
 	$processPort | Add-Member ScriptMethod WaitForExit {
 		param([int] $Milliseconds)
@@ -97,13 +97,13 @@ foreach ($scenario in @('completed', 'timeout', 'reap-failure', 'diagnostic', 'd
 			}
 			if ($scenario -eq 'diagnostic' -and $result.Diagnostics -cne 'captured stack') { throw 'Lost stack capture' }
 			if ($scenario -eq 'diagnostic-failure' -and $result.Diagnostics -notlike '*controlled stack capture failure*') { throw 'Lost stack failure diagnostic' }
-		} elseif ($scenario -eq 'debugger-timeout') { $result = Complete-CancellationProcess $processPort -WaitMilliseconds 1500 -ReapMilliseconds 500 }
+		} elseif ($scenario -eq 'debugger-timeout') { $result = Complete-StackCapture $processPort }
 		else { $result = Complete-CancellationProcess $processPort }
 		if ($result.StandardOutput -cne 'buffered-stdout' -or $result.StandardError -cne 'buffered-stderr' -or $result.ExitCode -ne 42 -or $result.TimedOut -ne ($scenario -ne 'completed')) { throw 'Process completion lost buffered evidence or status' }
 	}
 	$expectedEvents = "read:stdout;read:stderr;wait:$($processPort.ExpectedWait)"
 	if ($scenario -like 'diagnostic*') { $expectedEvents += ';diagnostic;kill:True;wait:3000' }
-	elseif ($scenario -eq 'debugger-timeout') { $expectedEvents += ';kill:True;wait:500' }
+	elseif ($scenario -eq 'debugger-timeout') { $expectedEvents += ';kill:True;wait:1000' }
 	elseif ($scenario -ne 'completed') { $expectedEvents += ';kill:True;wait:5000' }
 	if (($events -join ';') -cne $expectedEvents) { throw 'Process completion changed the bound or reap ordering' }
 }

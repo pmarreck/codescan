@@ -73,6 +73,12 @@ function New-CdbStartInfo([string] $Debugger, [int] $TargetId, [string] $Symbols
 	return $info
 }
 
+function Complete-StackCapture($Process) {
+	# SDK startup/attachment has its own failure-only budget. This cannot
+	# change the cancellation process's already-recorded timeout verdict.
+	return Complete-CancellationProcess $Process -WaitMilliseconds 10000 -ReapMilliseconds 1000
+}
+
 function Get-CancellationStacks([int] $TargetId, [string] $Architecture, [string] $Symbols, [string] $WorkDirectory) {
 	$debugArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'x64' }
 	$programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
@@ -85,7 +91,7 @@ function Get-CancellationStacks([int] $TargetId, [string] $Architecture, [string
 		$debugProcess.StartInfo = New-CdbStartInfo $debugger $TargetId $Symbols $WorkDirectory
 		$debugStarted = $debugProcess.Start()
 		if (-not $debugStarted) { throw 'SDK debugger did not start' }
-		$trace = Complete-CancellationProcess $debugProcess -WaitMilliseconds 1500 -ReapMilliseconds 500
+		$trace = Complete-StackCapture $debugProcess
 		return "SDK stack capture: exit=$($trace.ExitCode) timedOut=$($trace.TimedOut)`n$($trace.StandardOutput)`n$($trace.StandardError)"
 	} finally {
 		if ($debugStarted -and -not $debugProcess.HasExited) { $debugProcess.Kill($true); $null = $debugProcess.WaitForExit(500) }
