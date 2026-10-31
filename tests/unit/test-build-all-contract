@@ -23,10 +23,8 @@ nix() {
 		printf 'controlled Nix build failure\n' >&2
 		return 19
 	fi
-	if [ -n "$link" ]; then
-		mkdir -p "$(dirname "$link")" || return 1
-		ln -s "$SCOPE_OUTPUT" "$link" || return 1
-	else printf '%s\n' "$SCOPE_OUTPUT"; fi
+	# Retained-link writes belong to Nix; assert the requested operation above.
+	if [ -z "$link" ]; then printf '%s\n' "$SCOPE_OUTPUT"; fi
 }
 zig() { printf 'forbidden direct compiler\n' >> "$SCOPE_EVENTS"; return 99; }
 export -f nix zig

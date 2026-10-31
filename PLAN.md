@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify the build-scope request-adapter refactor on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host/component runs pass 775 unit cases and all 18 scope controls with unchanged assertions and exclusions.
 - [ ] Verify consolidated build-scope flags on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 775 unit cases and all 18 behavioral target/profile, alias, failure-preservation, and output-escape scenarios.
 - [x] Verify repeated incremental-index ownership characterization on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for f3fdcdf0, following 775 passing local unit cases and 24 controlled service passes. (done 2026-10-31 05:07 EDT; commit f3fdcdf0)
 - [x] Verify lexical identifier candidate normalization and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 9deaba9a, following 774 passing local unit cases and the candidate-set, CLI, and ownership controls. (done 2026-10-31 05:07 EDT; commit 9deaba9a)
 - [x] Verify packaging-suite lane reuse on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 1532513d, following 772 passing local unit cases and all 16 scheduling/failure scenarios. (done 2026-10-31 04:27 EDT; commit 1532513d)
 - [x] Verify automatic symbol-discovery root handling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 370067d9, following 772 passing local unit cases and actual CLI/MCP discovery controls. (done 2026-10-31 04:27 EDT; commit 370067d9)
-- [x] Verify shared scanner ignore preparation and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for aef038b1, following 771 passing local unit cases and 2,050 paired CLI output checks. (done 2026-10-31 04:07 EDT; commit aef038b1)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -30,7 +30,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 6.43-second execution lower bound and 5.42-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 6.34-second execution lower bound and 5.02-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+	- [x] Remove unasserted retained-link simulation from the build-scope request adapter; all 18 controls and assertions remain, complete Nix and fresh host/component checks pass 775 unit cases, and the measured scope span decreases from 0.63 to 0.53 seconds without a complete budget pass. (done 2026-10-31 05:14 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Move CI architecture/publication into the freed unit lane after a failing FIFO-overlap regression; all 16 scheduling/failure scenarios and 772 unit cases pass, with 4.53-second component elapsed execution and a retained two-suite limit. (done 2026-10-31 04:12 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
