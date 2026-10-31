@@ -163,6 +163,7 @@ annotate=[
 	src/watcher.zig = Native/polling loops with readiness, bounded retries, and durable daemon failures
 	src/watcher_mgmt.zig = Cross-project watcher inventory; its numeric project PID fields keep unsupported Windows commands compilable while Unix parses ps and lsof output.
 	src/weights.zig = Parses .codescan/weights.toml ([default] plus per-language vector/lexical weights and metadata boosts) and resolves them with explicit-override precedence
+	src/zig_signature.zig = Declared Zig signature-query parsing and exact type matching
 	test = Master test runner: accumulates failures across the unit, CLI, HTTP, and integration layers and exits with their combined status
 	test_jina = Live acceptance gate proving fully local Ollama serves 1536-dimensional Jina embeddings
 	test_jina_omlx = Live acceptance gate for the remote Tailscale Mac oMLX Jina fallback

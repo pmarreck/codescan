@@ -179,6 +179,17 @@ with any parameter types. `Dec.ceil : -> Dec` restricts the associated name;
 between type tokens, while `->` and `=>` remain distinct. This searches
 explicit Roc annotations, not inferred types or resolved type aliases.
 
+Zig accepts the same form: `ceil : -> f64` finds declarations returning `f64`,
+while `ceil : f64 -> f64` also checks the input types. Native signature queries
+work too: `fn ceil(...) f64` leaves inputs unspecified, `fn ceil() f64` requires
+zero inputs, and `fn ceil(value: f64) f64` checks the input type but not its name.
+Qualified shared names such as `Math.ceil` restrict the indexed name path.
+Nested type expressions, pointer/slice qualifiers, and error/optional returns
+retain their token boundaries. ABI/alignment attributes and outer parameter names
+are not type constraints. These are declared-type lookups without inference,
+alias resolution, or generic unification. Nesting beyond 64 delimiters is
+rejected, and existing language/path/kind filters still apply.
+
 Full indexing (`codescan init` and `codescan index`) prepares files in parallel,
 using up to eight CPU workers by default. Incremental preparation in
 `codescan update` and watcher events is still sequential.

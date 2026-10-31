@@ -122,6 +122,28 @@ main() {
 		done
 	done
 
+	zig_signature_root="$DB_DIR/zig-signatures"
+	mkdir -p "$zig_signature_root/.git" || fail 'Zig signature fixture setup'
+	printf '%s\n' 'pub fn ceil(value: f64) f64 { return value; }' \
+		'pub fn ceiling(value: f64) f64 { return value; }' > "$zig_signature_root/input.zig"
+	printf '%s\n' 'pub fn ceil() f64 { return 1; }' > "$zig_signature_root/zero.zig"
+	printf '%s\n' 'pub fn ceil(value: f32) f32 { return value; }' > "$zig_signature_root/other.zig"
+	capture "$BIN" index --root "$zig_signature_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "Zig signature fixture index failed: $err"
+	zig_signature_queries=('ceil : -> f64' 'fn ceil(...) f64' 'ceil : f64 -> f64' 'fn ceil(renamed: f64) f64' 'fn ceil() f64' 'ceil : -> f32' 'ceil : -> f16')
+	zig_signature_expected=('input.zig zero.zig' 'input.zig zero.zig' 'input.zig' 'input.zig' 'zero.zig' 'other.zig' '')
+	for i in "${!zig_signature_queries[@]}"; do
+		capture "$BIN" search "${zig_signature_queries[$i]}" --root "$zig_signature_root" --mode lexical --top 20 --json
+		[ "$rc" -eq 0 ] || fail "Zig signature query failed: $err"
+		actual="$(printf '%s' "$out" | jq -r '[.results[] | select(.name == "ceil" and .language == "zig") | .file_path | split("/")[-1]] | sort | join(" ")')" || fail 'invalid Zig signature result paths'
+		[ "$actual" = "${zig_signature_expected[$i]}" ] || fail "Zig signature query returned the wrong set (${zig_signature_queries[$i]}): $out"
+		printf '%s' "$out" | jq -e 'all(.results[]; .name == "ceil" and .language == "zig" and .lexical_sources.name and .lexical_sources.signature)' >/dev/null || \
+			fail "Zig signature query broadened the name or omitted matching evidence: $out"
+	done
+	capture "$BIN" search 'ceil : -> f64' --root "$zig_signature_root" --mode lexical --lang roc --json
+	[ "$rc" -eq 0 ] || fail 'Zig signature language exclusion failed'
+	printf '%s' "$out" | jq -e '.results == []' >/dev/null || fail 'signature query ignored the language filter'
+
 	c_file="$DB_DIR/functions with spaces.c"
 	printf '%s\n' '// Adds two values.' 'int add(int left, int right) {' \
 		$'\treturn left + right;' '}' 'int prototype(int value);' 'static void adjacent(void) {}' > "$c_file"
