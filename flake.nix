@@ -234,7 +234,7 @@
 					nativeBuildInputs = [ pkgs.powershell ];
 					source = pkgs.lib.fileset.toSource {
 						root = ./.;
-						fileset = pkgs.lib.fileset.unions [ ./scripts/ci-test-windows.ps1 ./tests/unit/test-windows-cancellation.ps1 ];
+						fileset = pkgs.lib.fileset.unions [ ./scripts/ci-test-windows.ps1 ./tests/unit/test-windows-cancellation.ps1 ./.github/workflows/native-windows.yml ];
 					};
 				} ''
 					umask 077

@@ -62,4 +62,8 @@ jobs:
         run: ./tests/unit/test-windows-cancellation.ps1
       - name: Execute native cancellation tests
         shell: pwsh
-        run: ./scripts/ci-test-windows.ps1 -Architecture "${{ matrix.arch }}" -Executable "./cancellation/codescan-cancellation-tests.exe"
+        run: |
+          foreach ($iteration in 1..20) {
+            Write-Output "Native cancellation iteration $iteration/20"
+            ./scripts/ci-test-windows.ps1 -Architecture "${{ matrix.arch }}" -Executable "./cancellation/codescan-cancellation-tests.exe"
+          }

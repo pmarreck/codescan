@@ -51,4 +51,72 @@ foreach ($invalid in @('', 'All 0 tests passed.', 'All 2 tests passed.', $valid.
 }
 Expect-Rejection { Assert-CancellationEvidence 42 '' $valid }
 Expect-Rejection { Assert-CancellationEvidence 0 'unexpected' $valid }
+
+# Process ports make timeout/reaping behavior deterministic without sleeps or
+# launching a child. Completed tasks model buffered output available at EOF.
+foreach ($scenario in @('completed', 'timeout', 'reap-failure')) {
+	$events = [Collections.Generic.List[string]]::new()
+	$streams = @()
+	foreach ($label in @('stdout', 'stderr')) {
+		$stream = [pscustomobject]@{ Events = $events; Label = $label }
+		$stream | Add-Member ScriptMethod ReadToEndAsync {
+			$this.Events.Add("read:$($this.Label)")
+			return [Threading.Tasks.Task]::FromResult([string] "buffered-$($this.Label)")
+		}
+		$streams += $stream
+	}
+	$processPort = [pscustomobject]@{
+		Events = $events; Completes = ($scenario -eq 'completed'); Reaps = ($scenario -ne 'reap-failure')
+		StandardOutput = $streams[0]; StandardError = $streams[1]; ExitCode = 42
+	}
+	$processPort | Add-Member ScriptMethod WaitForExit {
+		param([int] $Milliseconds)
+		$this.Events.Add("wait:$Milliseconds")
+		if ($Milliseconds -eq 30000) { return $this.Completes }
+		if ($Milliseconds -eq 5000) { return $this.Reaps }
+		throw 'Unexpected process bound'
+	}
+	$processPort | Add-Member ScriptMethod Kill {
+		param([bool] $EntireTree)
+		$this.Events.Add("kill:$EntireTree")
+	}
+	if ($scenario -eq 'reap-failure') {
+		Expect-Rejection { Complete-CancellationProcess $processPort }
+	} else {
+		$result = Complete-CancellationProcess $processPort
+		if ($result.StandardOutput -cne 'buffered-stdout' -or $result.StandardError -cne 'buffered-stderr' -or $result.ExitCode -ne 42 -or $result.TimedOut -ne ($scenario -eq 'timeout')) { throw 'Process completion lost buffered evidence or status' }
+	}
+	$expectedEvents = 'read:stdout;read:stderr;wait:30000'
+	if ($scenario -ne 'completed') { $expectedEvents += ';kill:True;wait:5000' }
+	if (($events -join ';') -cne $expectedEvents) { throw 'Process completion changed the bound or reap ordering' }
+}
+
+# Execute the workflow's actual loop with a recorded request port. One failed
+# process must abort the fixed campaign, not be retried until a later pass.
+$workflow = [IO.File]::ReadAllText("$PSScriptRoot/../../.github/workflows/native-windows.yml")
+$match = [regex]::Match($workflow, '(?m)^      - name: Execute native cancellation tests\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<body>(?:          [^\n]*(?:\n|$))+)')
+if (-not $match.Success) { throw 'Missing bounded native workflow body' }
+$body = [regex]::Replace($match.Groups['body'].Value, '(?m)^ {10}', '')
+$body = $body.Replace('${{ matrix.arch }}', 'arm64').Replace('./scripts/ci-test-windows.ps1', 'Invoke-RecordedCancellation')
+function Invoke-RecordedCancellation([string] $Architecture, [string] $Executable) {
+	if ($Architecture -cne 'arm64' -or $Executable -cne './cancellation/codescan-cancellation-tests.exe') { throw 'Wrong native request' }
+	$script:iterationCalls++
+	if ($script:iterationCalls -eq $script:failIteration) { throw 'controlled cancellation failure' }
+}
+function Assert-IterationCampaign([string] $Body) {
+	foreach ($script:failIteration in @(0, 1, 10, 20)) {
+		$script:iterationCalls = 0
+		$threw = $false
+		try { & ([scriptblock]::Create($Body)) | Out-Null } catch {
+			if ($_.Exception.Message -cne 'controlled cancellation failure') { throw }
+			$threw = $true
+		}
+		$expectedCalls = if ($script:failIteration -eq 0) { 20 } else { $script:failIteration }
+		if ($script:iterationCalls -ne $expectedCalls -or $threw -ne ($script:failIteration -ne 0)) { throw 'Campaign skipped requests or hid the first failure' }
+	}
+}
+Assert-IterationCampaign $body
+Expect-Rejection { Assert-IterationCampaign $body.Replace('1..20', '1..1') }
+$swallowed = $body.Replace('Invoke-RecordedCancellation -Architecture "arm64" -Executable "./cancellation/codescan-cancellation-tests.exe"', 'try { Invoke-RecordedCancellation -Architecture "arm64" -Executable "./cancellation/codescan-cancellation-tests.exe" } catch {}')
+Expect-Rejection { Assert-IterationCampaign $swallowed }
 Write-Output 'Windows architecture, PE corruption, and test evidence controls passed'

@@ -29,6 +29,22 @@ function Assert-CancellationEvidence([int] $ExitCode, [string] $StandardOutput, 
 	}
 }
 
+function Complete-CancellationProcess($Process) {
+	$stdoutTask = $Process.StandardOutput.ReadToEndAsync()
+	$stderrTask = $Process.StandardError.ReadToEndAsync()
+	$timedOut = -not $Process.WaitForExit(30000)
+	if ($timedOut) {
+		$Process.Kill($true)
+		if (-not $Process.WaitForExit(5000)) { throw 'Cancellation process tree did not exit after termination' }
+	}
+	return [pscustomobject]@{
+		TimedOut = $timedOut
+		ExitCode = $Process.ExitCode
+		StandardOutput = $stdoutTask.GetAwaiter().GetResult()
+		StandardError = $stderrTask.GetAwaiter().GetResult()
+	}
+}
+
 # Dot-sourcing exposes the pure controls without launching any process.
 if ($MyInvocation.InvocationName -eq '.') { return }
 if (-not $IsWindows -or $env:GITHUB_ACTIONS -cne 'true' -or -not $env:RUNNER_TEMP) {
@@ -64,14 +80,11 @@ try {
 	$process.StartInfo = $start
 	$started = $process.Start()
 	if (-not $started) { throw 'Cancellation process did not start' }
-	$stdoutTask = $process.StandardOutput.ReadToEndAsync()
-	$stderrTask = $process.StandardError.ReadToEndAsync()
-	if (-not $process.WaitForExit(30000)) { throw 'Cancellation process exceeded 30 seconds' }
-	$stdout = $stdoutTask.GetAwaiter().GetResult()
-	$stderr = $stderrTask.GetAwaiter().GetResult()
-	Write-Output $stdout
-	Write-Output $stderr
-	Assert-CancellationEvidence $process.ExitCode $stdout $stderr
+	$result = Complete-CancellationProcess $process
+	Write-Output $result.StandardOutput
+	Write-Output $result.StandardError
+	if ($result.TimedOut) { throw 'Cancellation process exceeded 30 seconds; buffered test progress is shown above' }
+	Assert-CancellationEvidence $result.ExitCode $result.StandardOutput $result.StandardError
 } finally {
 	try {
 		if ($started -and -not $process.HasExited) {
