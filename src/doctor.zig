@@ -29,10 +29,12 @@ pub const Report = struct {
 	}
 
 	pub fn add(self: *Report, status: Status, name: []const u8, message: []const u8) !void {
+		const owned_message = try self.allocator.dupe(u8, message);
+		errdefer self.allocator.free(owned_message);
 		try self.checks.append(self.allocator, .{
 			.name = name,
 			.status = status,
-			.message = try self.allocator.dupe(u8, message),
+			.message = owned_message,
 		});
 	}
 
@@ -90,6 +92,25 @@ pub fn render(allocator: std.mem.Allocator, root_path: []const u8, checks: []con
 	}
 
 	return out.toOwnedSlice();
+}
+
+fn exerciseReportOwnership(allocator: std.mem.Allocator) !void {
+	var report = Report.init(allocator);
+	defer report.deinit();
+	for (0..20) |index| {
+		const addition = report.add(.note, "Watcher", "stopped");
+		try std.testing.expectEqual(if (addition) |_| index + 1 else |_| index, report.checks.items.len);
+		for (report.checks.items) |check| {
+			try std.testing.expectEqual(Status.note, check.status);
+			try std.testing.expectEqualStrings("Watcher", check.name);
+			try std.testing.expectEqualStrings("stopped", check.message);
+		}
+		try addition;
+	}
+}
+
+test "report add releases message ownership at every allocation failure" {
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, exerciseReportOwnership, .{});
 }
 
 test "a stopped watcher is a note rather than a doctor failure" {

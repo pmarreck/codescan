@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [x] Verify the byte-identical C grammar source pin on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 522d5f49, following 776 passing local unit cases, the source-boundary classifier, and old/new CLI range/body controls. (done 2026-10-31 06:42 EDT; commit 522d5f49)
 - [x] Verify redundant C-source retirement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 34d4176b, with all 24 package identities unchanged, 776 passing local unit cases, and attribution retained. (done 2026-10-31 06:42 EDT; commit 34d4176b)
 - [x] Verify shared CLI/MCP root JSON reporting on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for bc335257, following 778 passing local unit cases, all 20 path/state/adapter cases, and allocation-failure cleanup. (done 2026-10-31 07:06 EDT; commit bc335257)
 - [x] Verify Nix-declared Zig build-job forwarding on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for d750e0a8, following six real-phase controls, all 778 passing unit cases, and three byte-identical executables. (done 2026-10-31 07:30 EDT; commit d750e0a8)
-- [ ] Verify batched immutable Nix gates on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix/fresh host checks pass all 778 unit cases, both gate targets, and independent failure-continuation controls.
+- [x] Verify batched immutable Nix gates on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 472e443a, following 778 passing unit cases, both gate targets, and failure-continuation controls. (done 2026-10-31 07:34 EDT; commit 472e443a)
 - [ ] Verify complete native retained products on exact-commit Mechatron Prime CI and GitHub Actions; all 778 unit cases and complete available checks pass locally, including mapped profiles, resource/foreign coexistence, retries, and path refusal controls.
+- [ ] Verify doctor-report allocation ownership on exact-commit Mechatron Prime CI and GitHub Actions; the standard allocator exposes the original seven-byte leak, and complete Nix/fresh host checks pass 779 unit cases after the fix.
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -30,7 +30,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 5.46-second execution lower bound and 3.87-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.42-second execution lower bound and 3.87-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Forward Nix's declared job count in both Zig build phases after all six real-phase controls fail; complete Nix/fresh host checks pass 778 unit cases, all three rebuilt executables are byte-identical, and the measured compilation cost remains explicit without a host-cause or speedup claim. (done 2026-10-31 07:08 EDT; context: docs/plan_context/build_conformance.md)
 	- [x] Batch both immutable Nix gates after a failing request-vector regression; both targets and independent failure-continuation controls pass complete checks, and paired one-/twelve-CPU requests favor batching without a whole-suite budget pass. (done 2026-10-31 07:19 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
@@ -49,11 +49,11 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [ ] Prove conformance through failing behavioral regressions in `./test`, real binary-header/ABI checks, host/foreign/profile coexistence, and native execution where available; report unavailable target checks without claiming full conformance.
 - [ ] Move update database preparation/freshness into the shared service after characterization tests prove CLI/MCP/HTTP behavior remains identical.
 - [ ] Extract one CLI command/scorer component at a time behind existing behavioral tests; begin with command orchestration rather than rewriting scoring policy.
+	- [x] Repair doctor report message ownership after the standard allocator exposes a seven-byte leak on failed array growth; all 24 allocation boundaries preserve earlier entries and pass complete Nix/fresh host checks with 779 passing unit cases and unchanged healthy output. (done 2026-10-31 07:39 EDT; context: docs/plan_context/inference_availability.md)
 	- [x] Fix CLI/MCP root JSON after independent actual-adapter failures on quoted paths; a shared pure renderer passes all 20 path/state/adapter cases, metadata and allocation-failure controls, complete Nix, and fresh confined host checks with 778 passing unit cases. (done 2026-10-31 06:44 EDT; context: docs/plan_context/inference_availability.md)
 - [ ] Add `codescan symbols --depth N` with explicit root-depth, invalid-value, and JSON/human truncation tests.
 	- [ ] Resolve whether depth is relative to matched symbols with child expansion or an absolute file-root limit that also excludes deeper name matches; existing design text lists the flag without defining its semantics, and independent work continues pending the answer.
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
-	- [x] Retire four unused C parser/header copies recoverably from pushed commit 522d5f49 while retaining the unchanged license; all 24 package derivation identities remain identical and complete Nix/fresh host/component checks pass 776 unit cases. (done 2026-10-31 06:26 EDT; context: docs/plan_context/build_conformance.md)
 
 ## Tabled (not actionable)
 
