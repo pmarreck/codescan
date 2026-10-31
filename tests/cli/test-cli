@@ -252,6 +252,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==3 and .body==["def add (a b : Nat) : Nat :=","\ta + b"]' >/dev/null || \
 		fail "Lean grammar changed the exact definition body: $out"
 
+	nim_file="$DB_DIR/procedures with spaces.nim"
+	printf '%s\n' '## Adds two values.' 'proc add(a: int, b: int): int = a + b' \
+		'proc adjacent(): int = 42' > "$nim_file"
+	capture "$BIN" symbols --file "$nim_file" --json
+	[ "$rc" -eq 0 ] || fail "Nim symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"add",kind:"fn",start_line:2,end_line:2},{name:"adjacent",kind:"fn",start_line:3,end_line:3}]' >/dev/null || \
+		fail "Nim grammar changed the complete procedure set or source ranges: $out"
+	capture "$BIN" symbols add --file "$nim_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Nim procedure body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==2 and .body==["proc add(a: int, b: int): int = a + b"]' >/dev/null || \
+		fail "Nim grammar changed the exact procedure body: $out"
+
 	python_root="$DB_DIR/python project"
 	mkdir -p "$python_root/.git" "$python_root/.venv" "$python_root/package"
 	python_file="$python_root/client with spaces.py"

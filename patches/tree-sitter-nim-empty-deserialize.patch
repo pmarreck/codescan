@@ -1,0 +1,15 @@
+Preserve the existing null/empty-buffer guard during the source-pin migration.
+Remove this patch when the pinned upstream scanner supplies an equivalent guard.
+
+diff --git a/src/scanner.c b/src/scanner.c
+--- a/src/scanner.c
++++ b/src/scanner.c
+@@ -1105,4 +1105,8 @@ void tree_sitter_nim_external_scanner_deserialize(
+     return;
+   }
++  if (!buffer || length == 0) {
++    DBG("no buffer, skipping");
++    return;
++  }
+   state_deserialize((struct state*)payload, buffer, length);
+ }

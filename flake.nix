@@ -24,6 +24,7 @@
 						(pkgs.lib.fileset.unions [
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 						]);
 				};
 				projectSource = compiledSource ./.;
@@ -59,6 +60,13 @@
 				grammar-lean = grammarSource "Julian" "tree-sitter-lean"
 					"efe6b87145608d12f5996bd7f0cf6095a0e82261"
 					"sha256-MF+LRzhDw3V/l/h11ZTyWCUCm3b+g0oyOdaCZMVlJc4=";
+				grammar-nim = pkgs.applyPatches {
+					name = "codescan-nim-source";
+					src = grammarSource "alaviss" "tree-sitter-nim"
+						"9b4ede21a6ca866d29263f6b66c070961bc622b4"
+						"sha256-3BHcQrLNcXe1RMkV7ECCMzzEukgTlARH3+DDo2M5b0w=";
+					patches = [ ./patches/tree-sitter-nim-empty-deserialize.patch ];
+				};
 				grammar-fish = grammarSource "ram02z" "tree-sitter-fish"
 					"f435b0bd772578c70e5d158b85267bb886316f88"
 					"sha256-9an4YAz2QKC3yAJ5/tOfmqOJViGATz7+NhKuZpr4oC4=";
@@ -104,6 +112,7 @@
 				grammarSources = pkgs.linkFarm "codescan-tree-sitter-grammars" [
 					{ name = "c"; path = "${grammar-c}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
+					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "fish"; path = "${grammar-fish}/src"; }
 					{ name = "nu"; path = "${grammar-nu}/src"; }
 					{ name = "powershell"; path = "${grammar-powershell}/src"; }

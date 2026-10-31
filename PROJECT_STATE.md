@@ -93,7 +93,8 @@
   - Static init in `src/storage.zig` calls `sqlite3_vec_init` (no runtime extension loading).
 - SQLite amalgamation path is provided via `SQLITE_VEC_SQLITE_AMALGAMATION_DIR` (set in `flake.nix`).
 - The tree-sitter runtime and remaining older grammars are vendored under `deps/` and built as static libraries.
-- Fifteen grammars, including C and Lean, are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`. C is pinned at `tree-sitter/tree-sitter-c@7fa1be1b694b6e763686793d97da01f36a0e5c12`; Lean is pinned at `Julian/tree-sitter-lean@efe6b87145608d12f5996bd7f0cf6095a0e82261`. Both match the retired source copies byte-for-byte, with unchanged licenses retained in their dependency directories. Source-boundary fixtures reject reintroduced legacy parser inputs. `deps/tree-sitter-nim/src/scanner.c` retains its null-buffer guard for Zig's runtime checks.
+- Sixteen grammars, including C, Lean, and Nim, are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`. C is pinned at `tree-sitter/tree-sitter-c@7fa1be1b694b6e763686793d97da01f36a0e5c12`; Lean is pinned at `Julian/tree-sitter-lean@efe6b87145608d12f5996bd7f0cf6095a0e82261`. Both match the retired source copies byte-for-byte, with unchanged licenses retained in their dependency directories. Source-boundary fixtures reject reintroduced legacy parser inputs.
+- Nim is pinned at `alaviss/tree-sitter-nim@9b4ede21a6ca866d29263f6b66c070961bc622b4`, with its existing null/empty-buffer scanner guard preserved by `patches/tree-sitter-nim-empty-deserialize.patch`. All fourteen source/attribution files match the former copies after patching; the original license and six attribution sidecars remain tracked.
 - PCRE2 is required for glob matching and is built as a Zig dependency (`qaptoR-support/pcre2`).
 
 ## Known behaviors

@@ -1,0 +1,1 @@
+/* Legacy vendored Nim sources must not enter a pinned build. */
