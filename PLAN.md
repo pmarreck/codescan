@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify atomic full-index schema replacement on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 767 unit cases, width migration, rollback, retained semantic search, and retry.
+- [ ] Verify pending-file vector incompatibility advice on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 769 unit cases, three wrong-width MCP responses, retained file/vector operations, and a real SQLite-failure control.
+- [x] Verify atomic full-index schema replacement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for b12c183b, following 767 passing local unit cases plus rollback, retained semantic search, and retry controls. (done 2026-10-31 02:40 EDT; commit b12c183b)
 - [x] Verify shared Nix source evaluation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for e1f04179, with all 24 package identities unchanged and 765 passing local unit cases. (done 2026-10-31 02:20 EDT; commit e1f04179)
 - [x] Verify query-vector compatibility guards on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 8aa45c33, following 765 passing local unit cases and genuine database-failure controls. (done 2026-10-31 02:20 EDT; commit 8aa45c33)
 - [x] Verify embedding-cardinality guards on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for ed111195, following 764 passing local unit cases. (done 2026-10-31 02:04 EDT; commit ed111195)
 - [x] Verify HTTP embedding-rejection preservation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 34cae751, following 761 passing local unit cases and real HTTP preservation/fallback controls. (done 2026-10-31 01:33 EDT; commit 34cae751)
-- [x] Verify provider-response cleanup and rejected-replacement preservation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for f1211cf8, following 761 passing local unit cases. (done 2026-10-31 01:21 EDT; commit f1211cf8)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
@@ -29,20 +29,20 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 8.71-second execution lower bound and 5.38-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 6.52-second execution lower bound and 4.67-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Record current prepared components in one admitted job: 22 spans, 765 passing unit cases, 7.14 seconds elapsed/13.28 seconds summed work; largest spans are units, orchestration, CLI, source copy, and packaging, without establishing a single cause for broad slowdown. (done 2026-10-31 02:04 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Share the filtered Nix project source across package outputs; all 24 package identities stay unchanged, evaluation measures 5.54 seconds versus a 9.79-second reverse control, and the full fresh host runner passes all available checks. (done 2026-10-31 02:04 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
-	- [x] Validate response cardinality before accepting embeddings or dimension probes; three regressions failed first, then 18 wire-count combinations, eight HTTP-embedder/search controls, six probe controls, and 764 unit cases passed in complete Nix and fresh confined host runs. (done 2026-10-31 01:28 EDT; context: docs/plan_context/inference_availability.md)
 	- [x] Preserve lexical fallback for empty/narrow/wide query vectors in both HTTP dialects; six cases first failed with SQL errors, then all 765 unit cases and genuine SQLite/metadata failure controls passed in complete Nix and fresh confined host runs. (done 2026-10-31 01:49 EDT; context: docs/plan_context/inference_availability.md)
 	- [x] Rebuild full-index vector schemas at the detected width and roll back failed preparation; two regressions first failed with stale table widths, lost symbols, and a leak, then complete Nix and fresh confined host checks passed 767 unit cases plus restored semantic search and retry. (done 2026-10-31 02:25 EDT; context: docs/plan_context/inference_availability.md)
-	- [ ] Characterize pending-file freshness advice when the provider changes vector width; prove behavior through the MCP boundary before changing failure classification and preserve genuine SQLite errors. (context: docs/plan_context/inference_availability.md)
+	- [x] Preserve pending-file inference advice for incompatible vector widths; all three valid wrong-width responses first omitted the warning, then complete Nix and fresh confined host checks passed 769 unit cases, retained vectors/file reads, pending markers, and a real SQLite-trigger control. (done 2026-10-31 02:40 EDT; context: docs/plan_context/inference_availability.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
 
 ## Architecture and features
 
+- [ ] Characterize MCP file operations launched outside the configured project root; verify relative paths target that root, absolute paths retain their meaning, and unrelated launch-directory files stay unchanged before adjusting handlers.
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
 	- [ ] Consolidate legacy `build_all` into thin Nix-required `./build` scope flags/aliases and exact-product `./run`/`./test`; remove direct-build fallbacks and prepare compiled tests through Nix; add canonical-implementation selection only if multiple executable implementations exist.

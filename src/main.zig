@@ -2950,7 +2950,7 @@ const SearchFreshnessContext = struct {
 		defer if (embedding_failure) |err| {
 			if (err != error.OutOfMemory) self.inference_unavailable = true;
 		};
-		try runUpdateWithInvocation(
+		runUpdateWithInvocation(
 			self.allocator,
 			self.settings,
 			self.registry,
@@ -2958,7 +2958,10 @@ const SearchFreshnessContext = struct {
 			null,
 			.pre_search,
 			&embedding_failure,
-		);
+		) catch |err| {
+			if (err == error.EmbeddingDimMismatch) self.inference_unavailable = true;
+			return err;
+		};
 	}
 
 		fn usableIndex(context: *anyopaque) bool {

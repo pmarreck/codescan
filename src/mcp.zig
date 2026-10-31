@@ -1556,6 +1556,7 @@ test "MCP search reports inference fallback while returning an existing index" {
 
 const HeldInferenceFixture = struct {
 	listener: *std.Io.net.Server,
+	embedding_body: ?[]const u8 = null,
 	entered: std.Io.Event = .unset,
 	release: std.Io.Event = .unset,
 	probes: usize = 0,
@@ -1594,10 +1595,13 @@ const HeldInferenceFixture = struct {
 			}
 			var buffer: [128]u8 = undefined;
 			var writer = stream.writer(io, &buffer);
-			try writer.interface.writeAll(if (probe)
-				"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
-			else
-				"HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+			if (probe) {
+				try writer.interface.writeAll("HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+			} else if (self.embedding_body) |body| {
+				try writer.interface.print("HTTP/1.1 200 OK\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ body.len, body });
+			} else {
+				try writer.interface.writeAll("HTTP/1.1 404 Not Found\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+			}
 			try writer.interface.flush();
 			if (post) return;
 		}
@@ -1617,6 +1621,29 @@ const HeldSearchCall = struct {
 };
 
 test "MCP search waits for a pending-file embedding before falling back after rejection" {
+	try expectPendingEmbeddingFallback(null, false);
+}
+
+test "MCP search reports incompatible pending-file vectors as unusable inference" {
+	var failures: usize = 0;
+	for ([_][]const u8{
+		"{\"data\":[{\"index\":0,\"embedding\":[]}]}",
+		"{\"data\":[{\"index\":0,\"embedding\":[1]}]}",
+		"{\"data\":[{\"index\":0,\"embedding\":[1,0,0]}]}",
+	}) |body| {
+		expectPendingEmbeddingFallback(body, false) catch |err| {
+			std.debug.print("pending-file vector response {s} returned {s}\n", .{ body, @errorName(err) });
+			failures += 1;
+		};
+	}
+	try std.testing.expectEqual(@as(usize, 0), failures);
+}
+
+test "MCP pending-file SQLite failures are not reported as inference failures" {
+	try expectPendingEmbeddingFallback(null, true);
+}
+
+fn expectPendingEmbeddingFallback(embedding_body: ?[]const u8, sqlite_failure: bool) !void {
 	const allocator = std.testing.allocator;
 	const io = io_singleton.getOrInit();
 	var tmp = std.testing.tmpDir(.{});
@@ -1642,6 +1669,11 @@ test "MCP search waits for a pending-file embedding before falling back after re
 			.end_line = 1,
 		});
 		try storage.insertEmbedding(db, allocator, id, &.{ 1.0, 0.0 });
+		if (sqlite_failure) {
+			try std.testing.expectEqual(storage.sqlite.SQLITE_OK, storage.sqlite.sqlite3_exec(db,
+				"CREATE TRIGGER reject_fixture_insert BEFORE INSERT ON symbols BEGIN SELECT RAISE(ABORT, 'fixture SQLite failure'); END;",
+				null, null, null));
+		}
 	}
 	const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
 	var listener = try address.listen(io, .{ .reuse_address = true });
@@ -1651,7 +1683,7 @@ test "MCP search waits for a pending-file embedding before falling back after re
 	defer allocator.free(url);
 	const provider = try allocator.create(HeldInferenceFixture);
 	defer allocator.destroy(provider);
-	provider.* = .{ .listener = &listener };
+	provider.* = .{ .listener = &listener, .embedding_body = embedding_body };
 	var provider_task = try std.Io.concurrent(io, HeldInferenceFixture.run, .{provider});
 	defer _ = provider_task.cancel(io) catch {};
 	var params = try std.json.parseFromSlice(std.json.Value, allocator,
@@ -1671,34 +1703,59 @@ test "MCP search waits for a pending-file embedding before falling back after re
 		provider.release.set(io);
 		if (search_task.cancel(io)) |response| allocator.free(response) else |_| {}
 	}
-	try provider.entered.wait(io);
-	try std.testing.expect(provider.probes > 0);
-	try std.testing.expect(provider.body_len > 0);
-	try std.testing.expect(!call.finished.load(.acquire));
-	var request = try std.json.parseFromSlice(std.json.Value, allocator, provider.body[0..provider.body_len], .{});
-	defer request.deinit();
-	const inputs = request.value.object.get("input").?.array.items;
-	var pending_file_embedded = false;
-	for (inputs) |input| {
-		if (std.mem.indexOf(u8, input.string, "pendingFixtureSymbol") != null) pending_file_embedded = true;
-		try std.testing.expect(!std.mem.eql(u8, input.string, "existingFixtureSymbol"));
+	if (!sqlite_failure) {
+		try provider.entered.wait(io);
+		try std.testing.expect(provider.probes > 0);
+		try std.testing.expect(provider.body_len > 0);
+		try std.testing.expect(!call.finished.load(.acquire));
+		var request = try std.json.parseFromSlice(std.json.Value, allocator, provider.body[0..provider.body_len], .{});
+		defer request.deinit();
+		const inputs = request.value.object.get("input").?.array.items;
+		var pending_file_embedded = false;
+		for (inputs) |input| {
+			if (std.mem.indexOf(u8, input.string, "pendingFixtureSymbol") != null) pending_file_embedded = true;
+			try std.testing.expect(!std.mem.eql(u8, input.string, "existingFixtureSymbol"));
+		}
+		try std.testing.expect(pending_file_embedded);
+		provider.release.set(io);
 	}
-	try std.testing.expect(pending_file_embedded);
-	provider.release.set(io);
 	const response = try search_task.await(io);
-	try provider_task.await(io);
+	if (sqlite_failure) {
+		provider_task.cancel(io) catch |err| switch (err) {
+			error.Canceled => {},
+			else => return err,
+		};
+		try std.testing.expect(provider.probes > 0);
+		try std.testing.expectEqual(@as(usize, 0), provider.body_len);
+	} else try provider_task.await(io);
 	try std.testing.expect(call.finished.load(.acquire));
 	var envelope = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
 	defer envelope.deinit();
 	const text = envelope.value.object.get("result").?.object.get("content").?.array.items[0].object.get("text").?.string;
 	var result = try std.json.parseFromSlice(std.json.Value, allocator, text, .{});
 	defer result.deinit();
-	try std.testing.expect(result.value.object.get("inference_unavailable").?.bool);
+	try std.testing.expectEqual(!sqlite_failure, result.value.object.get("inference_unavailable").?.bool);
 	var retained = false;
 	for (result.value.object.get("results").?.array.items) |item| {
 		if (std.mem.eql(u8, item.object.get("name").?.string, "existingFixtureSymbol")) retained = true;
 	}
 	try std.testing.expect(retained);
+	try std.testing.expectEqual(!sqlite_failure, std.mem.indexOf(u8, text, "Start or repair the server") != null);
+	const retained_db = try storage.openFileWithVec(allocator, db_path);
+	defer storage.close(retained_db);
+	try std.testing.expectEqual(@as(i64, 1), try storage.countRows(retained_db, allocator, "embeddings"));
+	try std.testing.expectEqual(@as(?i64, null), try storage.getIndexedFileMtime(retained_db, "pending.zig"));
+	const read_path = try std.fs.path.join(allocator, &.{ root, "pending.zig" });
+	defer allocator.free(read_path);
+	const read_json = try std.json.Stringify.valueAlloc(allocator, .{
+		.name = "read_file", .arguments = .{ .file = read_path },
+	}, .{});
+	defer allocator.free(read_json);
+	var read_params = try std.json.parseFromSlice(std.json.Value, allocator, read_json, .{});
+	defer read_params.deinit();
+	const read_response = try handleToolsCall(allocator, .{ .integer = 2 }, read_params.value, call.settings);
+	defer allocator.free(read_response);
+	try std.testing.expect(std.mem.indexOf(u8, read_response, "pendingFixtureSymbol") != null);
 }
 
 test "getArgInt parses integer and string arguments" {
