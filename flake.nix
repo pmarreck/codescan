@@ -248,11 +248,42 @@
 					touch "$out"
 				'';
 
+				checks.swift-scanner-shifts = pkgs.runCommand "codescan-swift-scanner-shifts" {
+					source = pkgs.lib.fileset.toSource {
+						root = ./deps/tree-sitter-swift/src;
+						fileset = pkgs.lib.fileset.unions [ ./deps/tree-sitter-swift/src/scanner.c ./deps/tree-sitter-swift/src/tree_sitter ];
+					};
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
+				} ''
+					export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+					for target in ${nativeZigTarget} x86_64-windows-gnu aarch64-windows-gnu; do
+						zig cc -target "$target" -std=c11 -I "$source" -Werror=shift-count-overflow \
+							-c "$source/scanner.c" -o "$TMPDIR/$target.o" || exit "$?"
+						test -s "$TMPDIR/$target.o" || exit 1
+					done
+					cp "$source/scanner.c" overflow.c || exit "$?"
+					substituteInPlace overflow.c --replace-fail '1ULL << FAKE_TRY_BANG' '1UL << FAKE_TRY_BANG' || exit "$?"
+					for target in x86_64-windows-gnu aarch64-windows-gnu; do
+						if zig cc -target "$target" -std=c11 -I "$source" -Werror=shift-count-overflow \
+							-c overflow.c -o "$TMPDIR/overflow-$target.o" > diagnostic 2>&1; then
+							echo "Swift shift control failed to reject $target overflow" >&2
+							exit 1
+						else
+							status=$?
+							[ "$status" -eq 1 ] || exit "$status"
+						fi
+						grep -F 'shift count >= width of type' diagnostic >/dev/null || { cat diagnostic >&2; exit 1; }
+					done
+					echo "Swift scanner: three ABI compilations and both overflow mutations passed"
+					touch "$out"
+				'';
+
 				checks.source-closure =
 					let
 						fixturePackage = mkCodescan { sourceRoot = ./tests/fixtures/source-closure; };
 						expected = [ "build.zig" "build.zig.zon" "deps/parser/future.h" "deps/parser/parser.c" "src/docs/data.txt" "src/future/module.zig" "src/main.zig" ];
 					in pkgs.runCommand "codescan-source-closure" {
+						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
 						expectedFiles = pkgs.writeText "codescan-expected-source-files" (pkgs.lib.concatStringsSep "\n" expected + "\n");
@@ -335,6 +366,7 @@
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
+					swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 					src = ./.;
 					nativeBuildInputs = runtimeTools;
 					dontConfigure = true;
