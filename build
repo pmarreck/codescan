@@ -27,6 +27,33 @@ if [ "$all_platforms" -eq 1 ] && [ "$attribute" != default ]; then
 fi
 command -v nix >/dev/null 2>&1 || { printf 'error: Nix is required; install Nix before building codescan\n' >&2; exit 127; }
 cd "$root" || exit 1
+validate_retention() {
+	local prefix="$1" directory="${1%/*}" parent
+	for parent in .nix-out "$directory" "${directory%/*}"; do
+		if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
+			printf 'error: refusing retained output through unexpected symlink/file: %s\n' "$parent" >&2
+			return 1
+		fi
+	done
+	if [ -e "$prefix" ] && [ ! -L "$prefix" ]; then
+		printf 'error: refusing to replace a non-link retained output: %s\n' "$prefix" >&2
+		return 1
+	fi
+}
+native_options=(--no-link)
+if [ "$attribute" != test-binaries ]; then
+	case "$(uname -s)/$(uname -m)" in
+		Linux/x86_64) native_namespace=linux-amd64/musl ;;
+		Linux/aarch64) native_namespace=linux-arm64/musl ;;
+		Darwin/arm64) native_namespace=macos-arm64 ;;
+		*) printf 'error: native Nix builds support Linux x86_64/aarch64 and macOS arm64\n' >&2; exit 69 ;;
+	esac
+	profile=ReleaseFast
+	[ "$attribute" != debug ] || profile=Debug
+	native_prefix=".nix-out/$native_namespace/$profile"
+	validate_retention "$native_prefix" || exit 1
+	native_options=(--out-link "$native_prefix")
+fi
 if [ "$all_platforms" -eq 1 ]; then
 	targets=(macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64)
 	prefixes=()
@@ -39,12 +66,7 @@ if [ "$all_platforms" -eq 1 ]; then
 		esac
 		prefix=".nix-out/$target/${variant}ReleaseFast"
 		prefixes+=("$prefix")
-		for parent in .nix-out ".nix-out/$target" "${prefix%/*}"; do
-			if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
-				printf 'error: refusing retained output through unexpected symlink/file: %s\n' "$parent" >&2
-				exit 1
-			fi
-		done
+		validate_retention "$prefix" || exit 1
 	done
 	for index in "${!targets[@]}"; do
 		prefix="${prefixes[$index]}"
@@ -53,7 +75,8 @@ if [ "$all_platforms" -eq 1 ]; then
 	done
 fi
 # Native publication remains last, so a failed cross-build cannot replace it.
-if output="$(nix build --no-link --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
+if [ "$attribute" != test-binaries ]; then mkdir -p "${native_prefix%/*}" || exit 1; fi
+if output="$(nix build "${native_options[@]}" --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
 if [ "$attribute" = test-binaries ]; then
 	printf 'Prepared test artifacts: %s\n' "$output" >&2
 	exit 0

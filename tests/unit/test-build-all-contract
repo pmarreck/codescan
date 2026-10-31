@@ -9,11 +9,12 @@ fail() { printf 'FAIL build scopes: %s\n' "$1" >&2; exit 1; }
 nix() {
 	[ "${1:-}" = build ] || return 64
 	shift
-	local attribute='' link='' next_link=0 argument
+	local attribute='' link='' next_link=0 argument print_paths=0
 	for argument in "$@"; do
 		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
 		case "$argument" in
 			--out-link) next_link=1 ;;
+			--print-out-paths) print_paths=1 ;;
 			'.#'*) attribute="$argument" ;;
 		esac
 	done
@@ -24,13 +25,20 @@ nix() {
 		return 19
 	fi
 	# Retained-link writes belong to Nix; assert the requested operation above.
-	if [ -z "$link" ]; then printf '%s\n' "$SCOPE_OUTPUT"; fi
+	if [ "$print_paths" -eq 1 ]; then printf '%s\n' "$SCOPE_OUTPUT"; fi
 }
 zig() { printf 'forbidden direct compiler\n' >> "$SCOPE_EVENTS"; return 99; }
 export -f nix zig
 
+case "$(uname -s)/$(uname -m)" in
+	Linux/x86_64) native_namespace=linux-amd64/musl ;;
+	Linux/aarch64) native_namespace=linux-arm64/musl ;;
+	Darwin/arm64) native_namespace=macos-arm64 ;;
+	*) fail 'unsupported test host' ;;
+esac
+native_request=$(printf '.#default\t.nix-out/%s/ReleaseFast' "$native_namespace")
 all_requests="$(printf '%s\n' \
-	$'.#default\t' \
+	"$native_request" \
 	$'.#release-macos-arm64\t.nix-out/macos-arm64/ReleaseFast' \
 	$'.#release-linux-arm64\t.nix-out/linux-arm64/musl/ReleaseFast' \
 	$'.#release-linux-amd64\t.nix-out/linux-amd64/musl/ReleaseFast' \
@@ -45,7 +53,7 @@ for scenario in all default implementations-short implementations-long platforms
 	chmod +x "$project/prepared/bin/codescan" || fail 'fixture executable'
 	: > "$project/events"
 	args=()
-	expected=$'.#default\t'
+	expected="$native_request"
 	expected_rc=0
 	fail_attribute=''
 	case "$scenario" in
@@ -57,7 +65,7 @@ for scenario in all default implementations-short implementations-long platforms
 		combined) args=(--all-impls --all-plats); expected="$all_requests" ;;
 		reverse) args=(--all-platforms --all-implementations); expected="$all_requests" ;;
 		repeated) args=(--all --all-plats --all-implementations --all); expected="$all_requests" ;;
-		debug) args=(--all-impls --debug); expected=$'.#debug\t' ;;
+		debug) args=(--all-impls --debug); expected=$(printf '.#debug\t.nix-out/%s/Debug' "$native_namespace") ;;
 		test) args=(--test --all-implementations); expected=$'.#test-binaries\t' ;;
 		invalid-debug) args=(--all-platforms --debug); expected=''; expected_rc=64 ;;
 		invalid-test) args=(--test --all); expected=''; expected_rc=64 ;;

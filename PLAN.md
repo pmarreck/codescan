@@ -4,12 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [x] Verify overlapping cache-inheritance checks on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 456d7192, following 776 passing local unit cases, both real shell assertions, and all three barrier/failure/join scenarios. (done 2026-10-31 06:26 EDT; commit 456d7192)
 - [x] Verify the byte-identical C grammar source pin on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 522d5f49, following 776 passing local unit cases, the source-boundary classifier, and old/new CLI range/body controls. (done 2026-10-31 06:42 EDT; commit 522d5f49)
 - [x] Verify redundant C-source retirement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 34d4176b, with all 24 package identities unchanged, 776 passing local unit cases, and attribution retained. (done 2026-10-31 06:42 EDT; commit 34d4176b)
 - [x] Verify shared CLI/MCP root JSON reporting on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for bc335257, following 778 passing local unit cases, all 20 path/state/adapter cases, and allocation-failure cleanup. (done 2026-10-31 07:06 EDT; commit bc335257)
-- [ ] Verify Nix-declared Zig build-job forwarding on exact-commit Mechatron Prime CI and GitHub Actions; six real-phase controls and complete Nix/fresh host checks pass, with all 778 unit cases and three byte-identical executables.
+- [x] Verify Nix-declared Zig build-job forwarding on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for d750e0a8, following six real-phase controls, all 778 passing unit cases, and three byte-identical executables. (done 2026-10-31 07:30 EDT; commit d750e0a8)
 - [ ] Verify batched immutable Nix gates on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix/fresh host checks pass all 778 unit cases, both gate targets, and independent failure-continuation controls.
+- [ ] Verify complete native retained products on exact-commit Mechatron Prime CI and GitHub Actions; all 778 unit cases and complete available checks pass locally, including mapped profiles, resource/foreign coexistence, retries, and path refusal controls.
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -30,7 +30,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 15.97-second execution lower bound and 7.74-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.46-second execution lower bound and 3.87-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Forward Nix's declared job count in both Zig build phases after all six real-phase controls fail; complete Nix/fresh host checks pass 778 unit cases, all three rebuilt executables are byte-identical, and the measured compilation cost remains explicit without a host-cause or speedup claim. (done 2026-10-31 07:08 EDT; context: docs/plan_context/build_conformance.md)
 	- [x] Batch both immutable Nix gates after a failing request-vector regression; both targets and independent failure-continuation controls pass complete checks, and paired one-/twelve-CPU requests favor batching without a whole-suite budget pass. (done 2026-10-31 07:19 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
@@ -41,6 +41,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
+		- [x] Retain complete native release/debug products after a failing namespaced-product regression; all three declared Nix-host mappings, two profiles, resources, foreign coexistence, retries, eight path refusals, and four unsupported-host cases pass complete Nix/fresh confined host checks without live publication or PATH changes. (done 2026-10-31 07:29 EDT; context: docs/plan_context/build_conformance.md)
 	- [x] Consolidate legacy `build_all` into Nix-required build scope flags and exact-product run/test entrypoints; direct fallbacks are absent, Zig is the sole implementation, and the active guide now matches the verified interfaces without rewriting dated records. (done 2026-10-31 06:54 EDT; context: docs/plan_context/build_conformance.md)
 		- [x] Add an explicit `./run` after a failing entrypoint regression; all eight launcher controls and a real prepared CLI pass complete Nix and fresh confined host checks, preserving stdin/arguments/caller directory/process identity/status without publication or stale PATH execution. (done 2026-10-31 05:53 EDT; context: docs/plan_context/build_conformance.md)
 		- [x] Align the active guide with Nix-only build/run/test interfaces, incremental updates, explicit primary-language scope, and the canonical config filename; historical receipts remain intact. (done 2026-10-31 06:54 EDT)
@@ -52,7 +53,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Add `codescan symbols --depth N` with explicit root-depth, invalid-value, and JSON/human truncation tests.
 	- [ ] Resolve whether depth is relative to matched symbols with child expansion or an absolute file-root limit that also excludes deeper name matches; existing design text lists the flag without defining its semantics, and independent work continues pending the answer.
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
-	- [x] Pin the C grammar to byte-identical upstream revision 7fa1be1b after a failing source-closure classifier; legacy parser files cannot enter compiled inputs, attribution remains tracked, and complete Nix/fresh confined host checks pass 776 unit cases plus old/new CLI range/body controls. (done 2026-10-31 06:15 EDT; context: docs/plan_context/build_conformance.md)
 	- [x] Retire four unused C parser/header copies recoverably from pushed commit 522d5f49 while retaining the unchanged license; all 24 package derivation identities remain identical and complete Nix/fresh host/component checks pass 776 unit cases. (done 2026-10-31 06:26 EDT; context: docs/plan_context/build_conformance.md)
 
 ## Tabled (not actionable)

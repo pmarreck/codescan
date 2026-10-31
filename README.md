@@ -66,6 +66,11 @@ implementation, it selects the same implementation as the default. Scope flags
 are order-independent and repeatable. All-platform builds are ReleaseFast-only;
 debug/test products are native-only. There is no direct compiler fallback.
 
+Native release/debug builds also retain their complete Nix products under
+`.nix-out/<PF>/[<VARIANT>/]<profile>` (`ReleaseFast` or `Debug`), so profiles and
+foreign products coexist. Legacy `zig-out/bin/codescan` publication remains in
+place pending verified `bin/<PF>/` publication and a coordinated PATH cutover.
+
 Use `./run ARGS...` to build the current checkout's native release package and
 execute that exact Nix output. It preserves your working directory, arguments,
 stdin, and exit status without publishing a command or using a stale PATH binary.

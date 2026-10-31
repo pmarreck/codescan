@@ -13,6 +13,7 @@
 
 ## Build + test
 - Build and publish the native release CLI: `./build` (Nix is required).
+- Native release/debug products are retained under `.nix-out/<PF>/[<VARIANT>/]<profile>`; legacy command publication remains until the separate verified-publication/PATH migration.
 - Build current source and execute the exact native output without publication: `./run ARGS...`.
 - Prepare exact Nix artifacts and run the complete available suite: `./test` (includes units, CLI, HTTP, and integration checks; live-provider exclusions are reported explicitly).
 - Prepare compiled test prerequisites without publication: `./build --test`.

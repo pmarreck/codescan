@@ -7,6 +7,12 @@ fail() { printf 'FAIL Nix build: %s\n' "$1" >&2; exit 1; }
 nix() {
 	printf '%s\n' "$*" >> "$BUILD_EVENTS"
 	[ "$BUILD_STATUS" -eq 0 ] || return "$BUILD_STATUS"
+	local link='' argument next_link=0
+	for argument in "$@"; do
+		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
+		[ "$argument" != --out-link ] || next_link=1
+	done
+	if [ -n "$link" ]; then ln -sfn "$BUILD_OUTPUT" "$link" || return 1; fi
 	printf '%s\n' "$BUILD_OUTPUT"
 }
 zig() { printf 'forbidden compiler\n' >> "$BUILD_EVENTS"; return 99; }
@@ -64,6 +70,96 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	esac
 	if grep -Fq 'forbidden compiler' "$project/events"; then fail "$mode fell back to direct compilation"; fi
 done
+
+# Native products coexist by target and profile; the complete output is retained.
+uname() {
+	case "$1" in
+		-s) printf '%s\n' "$BUILD_OS" ;;
+		-m) printf '%s\n' "$BUILD_ARCH" ;;
+		*) command uname "$@" ;;
+	esac
+}
+export -f uname
+for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darwin:arm64:macos-arm64; do
+	IFS=: read -r os arch namespace <<< "$mapping"
+	project="$fixture/native-$os-$arch/project with spaces"
+	mkdir -p "$project/zig-out/bin" "$project/release/bin" "$project/release/share" "$project/debug/bin" "$project/debug/lib" || fail 'native retention setup'
+	cp "$root/build" "$project/build" || fail 'native retention wrapper'
+	mkdir -p "$project/foreign/share" "$project/.nix-out/mswin-arm64/gnu" || fail 'foreign coexistence setup'
+	printf foreign > "$project/foreign/share/resource"
+	ln -s "$project/foreign" "$project/.nix-out/mswin-arm64/gnu/ReleaseFast" || fail 'foreign coexistence link'
+	printf release > "$project/release/bin/codescan"
+	printf resource > "$project/release/share/resource"
+	printf debug > "$project/debug/bin/codescan"
+	printf library > "$project/debug/lib/runtime"
+	chmod +x "$project/release/bin/codescan" "$project/debug/bin/codescan" || fail 'native retention executables'
+	printf old > "$project/zig-out/bin/codescan"
+	: > "$project/events"
+	for profile in ReleaseFast Debug; do
+		args=(); product=release
+		if [ "$profile" = Debug ]; then args=(--debug); product=debug; fi
+		if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" PF=conflicting VARIANT=conflicting \
+			BUILD_EVENTS="$project/events" BUILD_STATUS=0 BUILD_OUTPUT="$project/$product" \
+			"$BASH" ./build "${args[@]}") > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+		[ "$rc" -eq 0 ] || fail "$mapping $profile failed"
+		[ -L "$project/.nix-out/$namespace/$profile" ] && [ "$(readlink "$project/.nix-out/$namespace/$profile")" = "$project/$product" ] || fail "$mapping $profile did not retain the exact complete Nix product"
+		[ "$(< "$project/zig-out/bin/codescan")" = "$product" ] || fail 'native retention changed legacy publication'
+	done
+	[ "$(< "$project/.nix-out/$namespace/ReleaseFast/share/resource")" = resource ] || fail 'debug build lost release resources'
+	[ "$(< "$project/.nix-out/$namespace/Debug/lib/runtime")" = library ] || fail 'release build lost debug resources'
+	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=19 BUILD_OUTPUT="$project/debug" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 19 ] && [ "$(< "$project/zig-out/bin/codescan")" = debug ] || fail 'failed native rebuild changed legacy selection'
+	[ "$(readlink "$project/.nix-out/$namespace/ReleaseFast")" = "$project/release" ] || fail 'failed native rebuild changed retained release'
+	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=0 BUILD_OUTPUT="$project/release" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = release ] || fail 'native retry did not reuse the retained product'
+	[ "$(readlink "$project/.nix-out/$namespace/Debug")" = "$project/debug" ] || fail 'native retry changed the other profile'
+	[ "$(readlink "$project/.nix-out/mswin-arm64/gnu/ReleaseFast")" = "$project/foreign" ] && [ "$(< "$project/.nix-out/mswin-arm64/gnu/ReleaseFast/share/resource")" = foreign ] || fail 'native builds changed a foreign retained product'
+done
+for obstacle in root-link platform-link variant-link root-file platform-file variant-file leaf-file leaf-directory; do
+	project="$fixture/native-$obstacle/project with spaces"
+	mkdir -p "$project/zig-out/bin" "$project/protected" || fail 'native refusal setup'
+	cp "$root/build" "$project/build" || fail 'native refusal wrapper'
+	printf old > "$project/zig-out/bin/codescan"
+	printf unchanged > "$project/protected/sentinel"
+	case "$obstacle" in
+		root-*) blocked="$project/.nix-out" ;;
+		platform-*) blocked="$project/.nix-out/linux-amd64" ;;
+		variant-*) blocked="$project/.nix-out/linux-amd64/musl" ;;
+		leaf-*) blocked="$project/.nix-out/linux-amd64/musl/ReleaseFast" ;;
+	esac
+	mkdir -p "$(dirname "$blocked")" || fail 'native refusal parent'
+	case "$obstacle" in
+		*-link) ln -s "$project/protected" "$blocked" || fail 'native refusal link' ;;
+		*-file) printf unchanged > "$blocked" ;;
+		leaf-directory) mkdir "$blocked" && cp "$project/protected/sentinel" "$blocked/sentinel" || fail 'native refusal directory' ;;
+	esac
+	: > "$project/events"
+	if (cd "$project" && env BUILD_OS=Linux BUILD_ARCH=x86_64 BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=0 BUILD_OUTPUT="$project/protected" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 1 ] && [ ! -s "$project/events" ] && [ -s "$project/err" ] || fail "$obstacle did not refuse before building"
+	[ "$(< "$project/zig-out/bin/codescan")" = old ] && [ "$(< "$project/protected/sentinel")" = unchanged ] || fail "$obstacle changed existing data"
+	[ "$(find "$project/protected" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || fail "$obstacle wrote through an unexpected parent"
+	case "$obstacle" in
+		*-link) [ "$(readlink "$blocked")" = "$project/protected" ] || fail 'native refusal retargeted a link' ;;
+		*-file) [ "$(< "$blocked")" = unchanged ] || fail 'native refusal overwrote a file' ;;
+		leaf-directory) [ "$(< "$blocked/sentinel")" = unchanged ] || fail 'native refusal overwrote a directory' ;;
+	esac
+done
+for mapping in Darwin:x86_64 Linux:riscv64 Plan9:amd64 MINGW64_NT:x86_64; do
+	IFS=: read -r os arch <<< "$mapping"
+	project="$fixture/unsupported-$os-$arch"
+	mkdir -p "$project/zig-out/bin" || fail 'unsupported host setup'
+	cp "$root/build" "$project/build" || fail 'unsupported host wrapper'
+	printf old > "$project/zig-out/bin/codescan"
+	: > "$project/events"
+	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=0 BUILD_OUTPUT=unused "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 69 ] && [ ! -s "$project/events" ] && [ -s "$project/err" ] || fail "$mapping was not rejected before building"
+	[ ! -e "$project/.nix-out" ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'unsupported host changed products'
+done
+unset -f uname
 
 # Explicit source execution must not select a stale PATH or published command.
 nix() {
