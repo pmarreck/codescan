@@ -6,6 +6,7 @@ const hashline = @import("hashline.zig");
 const simd = @import("simd.zig");
 const roc_signature = @import("roc_signature.zig");
 const zig_signature = @import("zig_signature.zig");
+const rust_signature = @import("rust_signature.zig");
 
 const sqlite = storage.sqlite;
 
@@ -523,17 +524,20 @@ pub fn search(
 const SignatureQuery = struct {
 	roc: ?roc_signature.Query,
 	zig: ?zig_signature.Query,
+	rust: ?rust_signature.Query,
 
 	fn parse(text: []const u8) ?SignatureQuery {
 		const roc = roc_signature.Query.parse(text);
 		const zig = zig_signature.Query.parse(text);
-		if (roc == null and zig == null) return null;
-		return .{ .roc = roc, .zig = zig };
+		const rust = rust_signature.Query.parse(text);
+		if (roc == null and zig == null and rust == null) return null;
+		return .{ .roc = roc, .zig = zig, .rust = rust };
 	}
 
 	fn matches(self: SignatureQuery, language: []const u8, name: []const u8, signature: []const u8) bool {
 		if (std.mem.eql(u8, language, "roc")) return if (self.roc) |query| query.matches(name, signature) else false;
 		if (std.mem.eql(u8, language, "zig")) return if (self.zig) |query| query.matches(name, signature) else false;
+		if (std.mem.eql(u8, language, "rust")) return if (self.rust) |query| query.matches(name, signature) else false;
 		return false;
 	}
 };
@@ -546,7 +550,7 @@ fn searchSignature(allocator: std.mem.Allocator, db: storage.Db, query: Signatur
 	}
 	if (options.comments_only or options.min_score > 1) return .{ .results = try results.toOwnedSlice(allocator), .total_relevant = 0 };
 	const sql = "SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, " ++
-		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, 0.0 FROM symbols WHERE lang IN ('roc', 'zig') ORDER BY file_path, start_line, id";
+		"symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, 0.0 FROM symbols WHERE lang IN ('roc', 'zig', 'rust') ORDER BY file_path, start_line, id";
 	var stmt: ?*sqlite.sqlite3_stmt = null;
 	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) return error.SqlPrepareFailed;
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
@@ -2205,6 +2209,46 @@ test "Zig partial signature search classifies complete declaration sets without 
 		defer freeResults(allocator, excluded.results);
 		try std.testing.expectEqual(@as(usize, 0), excluded.total_relevant);
 	}
+}
+
+test "Rust partial signature search classifies declarations and filters without inference" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	const cases = [_]struct { name: []const u8 = "ceil", signature: []const u8, language: []const u8 = "rust", matches: bool }{
+		.{ .signature = "pub fn ceil(value: f64) -> f64", .matches = true },
+		.{ .name = "Math/ceil", .signature = "fn ceil(&self, value: f64) -> f64", .matches = true },
+		.{ .signature = "fn ceil() -> f64", .matches = true },
+		.{ .signature = "fn ceil(value: f64) -> f32", .matches = false },
+		.{ .signature = "fn ceil(value: f64) -> Option<f64>", .matches = false },
+		.{ .name = "ceiling", .signature = "fn ceiling(value: f64) -> f64", .matches = false },
+		.{ .signature = "const ceil: f64 = 1.0;", .matches = false },
+		.{ .signature = "fn ceil(value: f64) -> f64", .language = "c", .matches = false },
+	};
+	for (cases, 0..) |case, i| {
+		const path = try std.fmt.allocPrint(allocator, "{d}.rs", .{i});
+		defer allocator.free(path);
+		_ = try storage.insertSymbol(db, .{ .language = case.language, .file_path = path, .name = case.name, .signature = case.signature, .doc_comment = null, .start_line = 1, .end_line = 3 });
+	}
+	for ([_][]const u8{ "ceil : -> f64", "fn ceil(...) -> f64" }) |query| {
+		const result = try search(allocator, db, embedding.NullEmbedder.embedder(), query, .{ .top_n = 20 });
+		defer freeResults(allocator, result.results);
+		try std.testing.expectEqual(@as(usize, 3), result.total_relevant);
+		var found: [cases.len]bool = @splat(false);
+		for (result.results) |hit| {
+			const i = try std.fmt.parseInt(usize, std.fs.path.stem(hit.symbol.file_path), 10);
+			found[i] = true;
+			try std.testing.expect(hit.lexical_sources.name and hit.lexical_sources.signature);
+		}
+		for (cases, found) |case, matched| try std.testing.expectEqual(case.matches, matched);
+	}
+	const qualified = try search(allocator, db, embedding.NullEmbedder.embedder(), "Math::ceil : -> f64", .{ .allowed_paths = &.{"1.rs"} });
+	defer freeResults(allocator, qualified.results);
+	try std.testing.expectEqual(@as(usize, 1), qualified.total_relevant);
+	const excluded = try search(allocator, db, embedding.NullEmbedder.embedder(), "ceil : -> f64", .{ .allowed_langs = &.{"zig"} });
+	defer freeResults(allocator, excluded.results);
+	try std.testing.expectEqual(@as(usize, 0), excluded.total_relevant);
 }
 
 test "search vector mode returns nearest symbol" {

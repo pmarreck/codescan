@@ -4,8 +4,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify native/shared Zig signature queries on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined host entry point pass 784 unit cases, complete-set constraints, and actual CLI queries after the original recognition and empty-result failures.
-- [x] Verify root-command extraction on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for b1d5fc34, following 779 passing unit cases and unchanged handler behavior in all existing actual-adapter controls. (done 2026-10-31 08:18 EDT; commit b1d5fc34)
+- [ ] Verify native/shared Rust signature queries on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix/fresh confined host checks pass 790 unit cases and ten actual CLI query forms after recognition, empty-result, grouped-input, and malformed-tail failures.
+- [x] Verify native/shared Zig signature queries on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 5fe609d2, including all five release targets, native macOS smoke checks, and five nonempty canonical archives after 784 passing local unit cases and the original CLI failure. (done 2026-10-31 09:23 EDT; commit 5fe609d2)
 - [x] Verify read-file orchestration extraction on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 9b2b1cfb, following 779 passing unit cases and the existing actual CLI/MCP controls. (done 2026-10-31 08:54 EDT; commit 9b2b1cfb)
 - [x] Verify all five canonical archive jobs and uploaded artifacts on exact-commit GitHub Actions plus all five Mechatron Prime release builds; bc6b35b9 passes both services with exactly five nonempty, unexpired canonical archives, without creating a tag or release. (done 2026-10-31 08:54 EDT; commit bc6b35b9)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
@@ -24,13 +24,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Extend partial signature queries in the selected language order, beginning with the existing partial-signature acceptance example. (decision 2026-10-20)
 	- [x] Resolve the signature-query syntax choice; Answer: accept both native language signatures and the shared Roc-style form, preserving the approved Zig, Rust, then TypeScript implementation order. (done 2026-10-31 08:41 EDT)
 	- [x] Add native/shared Zig signature queries after failing recognition and actual CLI regressions; complete Nix/fresh confined host checks pass 784 unit cases, exact declaration sets, nested types, qualifiers, name boundaries, and seven actual CLI query forms without inference or live-index changes. (done 2026-10-31 09:10 EDT)
-	- [ ] Add Rust signature-query matching for functions/methods with type constraints and actual CLI coverage.
-	- [ ] Add TypeScript signature-query matching for typed functions/methods with actual CLI coverage.
+	- [x] Add native/shared Rust signature queries for functions/methods with explicit generic/where constraints, receivers, lifetimes, nested types, and actual CLI coverage after failing regressions; complete Nix/fresh confined host checks pass 790 unit cases without inference or live-index changes. (done 2026-10-31 09:31 EDT)
+	- [ ] Add TypeScript signature-query matching for typed functions/methods with actual CLI coverage, including mixed-language shared matches and native-syntax isolation.
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 6.48-second execution lower bound and 5.08-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
-	- [x] Test sharing the pure source fileset across Nix systems; Answer: all 24 package derivations remain identical, but paired one-/twelve-CPU times overlap and vary, so the candidate is reverted and measurements retained without a speedup or baseline claim. (done 2026-10-31 08:05 EDT; context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 6.36-second execution lower bound and 4.01-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.

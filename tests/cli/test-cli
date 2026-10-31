@@ -144,6 +144,27 @@ main() {
 	[ "$rc" -eq 0 ] || fail 'Zig signature language exclusion failed'
 	printf '%s' "$out" | jq -e '.results == []' >/dev/null || fail 'signature query ignored the language filter'
 
+	rust_signature_root="$DB_DIR/rust-signatures"
+	mkdir -p "$rust_signature_root/.git" || fail 'Rust signature fixture setup'
+	printf '%s\n' 'pub fn ceil(value: f64) -> f64 { value }' \
+		'pub fn ceiling(value: f64) -> f64 { value }' > "$rust_signature_root/input.rs"
+	printf '%s\n' 'pub fn ceil() -> f64 { 1.0 }' > "$rust_signature_root/zero.rs"
+	printf '%s\n' 'pub fn ceil(value: f32) -> f32 { value }' > "$rust_signature_root/other.rs"
+	printf '%s\n' 'pub struct Rounder;' 'impl Rounder {' \
+		'pub fn ceil(&self, value: f64) -> f64 { value }' '}' > "$rust_signature_root/method.rs"
+	printf '%s\n' 'pub fn identity<T: Copy>(value: T) -> T where T: Send { value }' > "$rust_signature_root/generic.rs"
+	capture "$BIN" index --root "$rust_signature_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "Rust signature fixture index failed: $err"
+	rust_signature_queries=('ceil : -> f64' 'fn ceil(...) -> f64' 'ceil : f64 -> f64' 'fn ceil(renamed: f64) -> f64' 'fn ceil() -> f64' 'ceil : &Self, f64 -> f64' 'ceil : -> f16' 'identity : -> T' 'fn identity<T: Copy>(...) -> T where T: Send' 'fn identity<T: Clone>(...) -> T where T: Send')
+	rust_signature_expected=('input.rs method.rs zero.rs' 'input.rs method.rs zero.rs' 'input.rs' 'input.rs' 'zero.rs' 'method.rs' '' 'generic.rs' 'generic.rs' '')
+	for i in "${!rust_signature_queries[@]}"; do
+		capture "$BIN" search "${rust_signature_queries[$i]}" --root "$rust_signature_root" --mode lexical --top 20 --json
+		[ "$rc" -eq 0 ] || fail "Rust signature query failed: $err"
+		actual="$(printf '%s' "$out" | jq -r '[.results[].file_path | split("/")[-1]] | sort | join(" ")')" || fail 'invalid Rust signature result paths'
+		[ "$actual" = "${rust_signature_expected[$i]}" ] || fail "Rust signature query returned the wrong set (${rust_signature_queries[$i]}): $out"
+		printf '%s' "$out" | jq -e 'all(.results[]; .language == "rust" and .lexical_sources.name and .lexical_sources.signature)' >/dev/null || fail "Rust signature query omitted matching evidence: $out"
+	done
+
 	c_file="$DB_DIR/functions with spaces.c"
 	printf '%s\n' '// Adds two values.' 'int add(int left, int right) {' \
 		$'\treturn left + right;' '}' 'int prototype(int value);' 'static void adjacent(void) {}' > "$c_file"

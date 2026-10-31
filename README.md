@@ -190,6 +190,18 @@ are not type constraints. These are declared-type lookups without inference,
 alias resolution, or generic unification. Nesting beyond 64 delimiters is
 rejected, and existing language/path/kind filters still apply.
 
+Rust also accepts `ceil : -> f64` and native `fn ceil(...) -> f64` queries.
+Native `()` requires zero inputs; an omitted native return type means `()`.
+Receivers count as inputs: `ceil : &Self, f64 -> f64` matches a method taking
+`&self` and an `f64`, preserving `&mut` and written lifetimes. Outer parameter
+names and function modifiers are ignored. Native generic bounds and `where` clauses,
+when supplied, constrain their written tokens, for example
+`fn identity<T: Copy>(...) -> T where T: Send`. Omitted bounds leave them open;
+this does not prove traits, rename generic variables, or reorder predicates.
+Parenthesize function-type inputs in the shared form so their arrows stay
+inside the type: `decode : (fn(u8) -> u8) -> Result<u8, Error>`.
+Use `--lang rust` to exclude matching declarations from other languages.
+
 Full indexing (`codescan init` and `codescan index`) prepares files in parallel,
 using up to eight CPU workers by default. Incremental preparation in
 `codescan update` and watcher events is still sequential.
