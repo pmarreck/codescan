@@ -4,18 +4,17 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify isolated component timing on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined component run pass 759 unit cases with unchanged exclusions.
+- [ ] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined component run pass 759 unit cases with unchanged exclusions.
+- [x] Verify isolated component timing on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 07ff0838, following 759 passing local unit cases. (done 2026-10-31 00:40 EDT; commit 07ff0838)
 - [x] Verify optional host test phase recording on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for dc3e41cd, following 759 passing local unit cases. (done 2026-10-31 00:18 EDT)
 - [x] Verify owned release staging and ZIP dependencies on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for c391ec2b, following 759 passing local unit cases. (done 2026-10-31 00:01 EDT)
 - [x] Verify the recursive-directory glob fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 54440026, following 759 passing local unit cases. (done 2026-10-30 23:32 EDT)
 - [x] Verify the empty language/type intersection fix on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 488fef10, following 758 passing local unit cases. (done 2026-10-30 23:16 EDT)
-- [x] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; all five release builds and native macOS smoke checks pass for f3cad46c, following 757 passing local unit cases. (done 2026-10-30 22:46 EDT)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
 
 - [ ] Reproduce slow MCP semantic search in a disposable fixture with pending freshness work and bounded requests; October 27 root/status calls responded with the watcher stopped, but the historical cause remains unestablished. (context: docs/plan_context/inference_availability.md)
-	- [x] Characterize a held pending-file embedding through the real MCP handler and HTTP transport; wire input identifies reconciliation, search remains pending until release, and rejection restores lexical results plus provider advice; complete Nix and fresh confined host checks pass 757 unit cases. (done 2026-10-30 22:28 EDT; context: docs/plan_context/inference_availability.md)
 	- [ ] Decide whether pre-search reconciliation should have a total wait budget with lexical fallback while explicit indexing retains cold-model waits; no budget or request-policy change has been selected. (context: docs/plan_context/inference_availability.md)
 	- [ ] Decide whether failed incremental embedding should retain new lexical rows as pending work or roll them back; the private fixture grew from four symbols/four vectors to five/four while retaining working search and file reads. (context: docs/plan_context/inference_availability.md)
 - [ ] Identify the historical watcher cause only if a new reproducer or underlying SQLite record becomes available; currently blocked on evidence and not on further recollection. (context: docs/plan_context/watcher_sqlite_failures.md)
@@ -33,7 +32,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Reduce the attributed ReleaseSafe host runner's 7.33-second execution lower bound and 8.40-second flake-evaluation span; retain safety, coverage, and exclusions without widening the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Add opt-in shared-profiler spans to the real test entry point, preserving task scratch across Nix shell entry and keeping parent jobs out of nested suites; complete Nix and fresh profiled host checks pass 759 unit cases. (done 2026-10-31 00:01 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Attribute the isolated suite with 22 exact component spans and private record export; 759 unit cases pass, and the current run records 7.49 seconds elapsed versus 10.14 seconds summed work without changing either lane. (done 2026-10-31 00:18 EDT; context: docs/plan_context/test_latency.md)
-	- [ ] Reduce redundant orchestration-fixture I/O while preserving all barrier/failure cases and separate real source-copy adapter coverage; retain changes only with measured evidence. (context: docs/plan_context/test_latency.md)
+	- [x] Reduce redundant orchestration-fixture processes while retaining all ten barrier/failure scenarios and real source-copy coverage; the component fell from 2.22 to 1.46 seconds, without establishing an overall budget improvement. (done 2026-10-31 00:40 EDT; context: docs/plan_context/test_latency.md)
+	- [ ] Reuse the second suite slot after the unit process finishes; prove bounded concurrency, independent-suite overlap, source-copy ordering, complete failure accumulation, and child cleanup before measuring. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.

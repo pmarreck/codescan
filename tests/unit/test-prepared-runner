@@ -37,7 +37,10 @@ fail() { printf 'FAIL prepared runner: %s\n' "$1" >&2; exit 1; }
 source_project="$fixture/source"
 mkdir -p "$source_project/tests/lib" || fail setup
 cp "$root/tests/run-prepared" "$source_project/tests/run-prepared" || fail 'runner fixture'
-cp "$root/tests/lib/capture.bash" "$source_project/tests/lib/" || fail 'adapter fixtures'
+# These command adapters emit no streams. Exercise process status and barriers
+# here; test-capture and the complete real runner cover stream capture itself.
+printf '%s\n' 'capture() { out= err=; if "$@" >/dev/null 2>/dev/null; then rc=0; else rc="$?"; fi; }' \
+	> "$source_project/tests/lib/capture.bash" || fail 'capture adapter fixture'
 export HARNESS_ADAPTER="$root/tests/unit/test-prepared-runner"
 export HARNESS_COPY_SOURCE="$root/tests/lib/copy-source"
 performance-profile() {
@@ -59,14 +62,14 @@ performance-profile() {
 	"$@"
 }
 export -f performance-profile
-printf '#!%s\nexec "$HARNESS_ADAPTER" --copy-adapter "$@"\n' "$BASH" > "$source_project/tests/lib/copy-source"
+printf '#!%s\nsource "$HARNESS_ADAPTER" --copy-adapter "$@"\n' "$BASH" > "$source_project/tests/lib/copy-source"
 chmod +x "$source_project/tests/lib/copy-source" || fail 'copy adapter permissions'
 run_case() {
 	shift
 	if [ "$1" = bash ]; then shift; fi
 	local adapter="$source_project/${1#"$source_project/"}"
 	mkdir -p "$(dirname "$adapter")" || fail 'adapter directory'
-	printf '#!%s\nexec "$HARNESS_ADAPTER" --adapter "$0"\n' "$BASH" > "$adapter"
+	printf '#!%s\nsource "$HARNESS_ADAPTER" --adapter "$0"\n' "$BASH" > "$adapter"
 	chmod +x "$adapter" || fail 'adapter permissions'
 }
 source_root="$source_project"
