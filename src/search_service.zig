@@ -133,8 +133,8 @@ pub fn execute(
 	};
 }
 
-/// Runs the requested search and, only when an embedding request becomes
-/// unavailable, repeats it lexically without mutating the existing index.
+/// Repeats searches lexically when embeddings are unavailable or incompatible
+/// with the index. Database failures still propagate without provider advice.
 pub fn executeWithInferenceFallback(
 	allocator: std.mem.Allocator,
 	db: storage.Db,
@@ -143,7 +143,7 @@ pub fn executeWithInferenceFallback(
 	request: Request,
 ) !FallbackExecution {
 	const execution = execute(allocator, db, registry, embedder, request) catch |err| {
-		if (err != error.EmbeddingUnavailable or request.mode == .lexical) return err;
+		if (request.mode == .lexical or (err != error.EmbeddingUnavailable and err != error.EmbeddingDimensionMismatch)) return err;
 		var lexical_request = request;
 		lexical_request.mode = .lexical;
 		return .{
@@ -473,10 +473,16 @@ test "HTTP response failures preserve lexical fallback without rejecting valid e
 		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,0],[0,1]]}" },
 		.{ .dialect = .ollama, .body = "{\"embeddings\":[false]}" },
 		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,0]]}", .fallback = false },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[]]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1]]}" },
+		.{ .dialect = .ollama, .body = "{\"embeddings\":[[1,0,0]]}" },
 		.{ .dialect = .openai, .body = "{\"data\":[]}" },
 		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1,0]},{\"index\":1,\"embedding\":[0,1]}]}" },
 		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":-1,\"embedding\":[1,0]}]}" },
 		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1,0]}]}", .fallback = false },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1]}]}" },
+		.{ .dialect = .openai, .body = "{\"data\":[{\"index\":0,\"embedding\":[1,0,0]}]}" },
 	};
 	const allocator = std.testing.allocator;
 	const db = try storage.openMemoryWithVec(allocator);
@@ -488,16 +494,22 @@ test "HTTP response failures preserve lexical fallback without rejecting valid e
 		.signature = "fn retainedSearch() void", .doc_comment = null, .start_line = 1, .end_line = 1,
 	});
 	try storage.insertEmbedding(db, allocator, id, &.{ 1, 0 });
-	for (cases) |case| {
+	const request = Request{
+		.query = "retainedSearch", .top_n = 5, .mode = .hybrid, .fusion = .weighted_sum,
+		.rrf_k = 60, .fts_mode = .broad, .weight_vector = 0.5, .weight_lexical = 0.5, .min_score = 0,
+	};
+	var unexpected_errors: usize = 0;
+	for (cases, 0..) |case, case_index| {
 		var reply = Reply{ .body = case.body };
 		var adapter = embedding.HttpEmbedder{
 			.transport = .{ .ctx = &reply, .send = Reply.send },
 			.base_url = "http://provider.invalid", .model = "fixture-model", .dialect = case.dialect,
 		};
-		var execution = try executeWithInferenceFallback(allocator, db, plugin.defaultRegistry(), adapter.embedder(), .{
-			.query = "retainedSearch", .top_n = 5, .mode = .hybrid, .fusion = .weighted_sum,
-			.rrf_k = 60, .fts_mode = .broad, .weight_vector = 0.5, .weight_lexical = 0.5, .min_score = 0,
-		});
+		var execution = executeWithInferenceFallback(allocator, db, plugin.defaultRegistry(), adapter.embedder(), request) catch |err| {
+			std.debug.print("provider response case {d} returned {s} instead of usable results\n", .{ case_index, @errorName(err) });
+			unexpected_errors += 1;
+			continue;
+		};
 		defer execution.deinit();
 		try std.testing.expectEqual(case.fallback, execution.used_lexical_fallback);
 		try std.testing.expectEqual(@as(usize, 1), reply.calls);
@@ -506,4 +518,27 @@ test "HTTP response failures preserve lexical fallback without rejecting valid e
 		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "symbols"));
 		try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, "embeddings"));
 	}
+	try std.testing.expectEqual(@as(usize, 0), unexpected_errors);
+
+	// A genuine database failure must not be relabeled as an inference outage,
+	// even though the surviving lexical index could satisfy the query.
+	try std.testing.expectEqual(storage.sqlite.SQLITE_OK, storage.sqlite.sqlite3_exec(db, "DROP TABLE embeddings;", null, null, null));
+	var reply = Reply{ .body = "{\"embeddings\":[[1,0]]}" };
+	var adapter = embedding.HttpEmbedder{
+		.transport = .{ .ctx = &reply, .send = Reply.send },
+		.base_url = "http://provider.invalid", .model = "fixture-model", .dialect = .ollama,
+	};
+	if (executeWithInferenceFallback(allocator, db, plugin.defaultRegistry(), adapter.embedder(), request)) |value| {
+		var unexpected = value;
+		unexpected.deinit();
+		return error.DatabaseFailureWasHidden;
+	} else |err| try std.testing.expectEqual(error.SqlPrepareFailed, err);
+	var lexical_request = request;
+	lexical_request.mode = .lexical;
+	var lexical = try executeWithInferenceFallback(allocator, db, plugin.defaultRegistry(), adapter.embedder(), lexical_request);
+	defer lexical.deinit();
+	try std.testing.expect(!lexical.used_lexical_fallback);
+	try std.testing.expectEqual(@as(usize, 1), reply.calls);
+	try std.testing.expectEqual(@as(usize, 1), lexical.execution.result.results.len);
+	try std.testing.expectEqualStrings("retainedSearch", lexical.execution.result.results[0].symbol.name);
 }

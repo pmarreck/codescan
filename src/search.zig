@@ -244,6 +244,7 @@ fn gatherCandidates(
 	const embeddings = embedder.embed(embedder.ctx, allocator, &inputs) catch return error.EmbeddingUnavailable;
 	defer embedder.free(embedder.ctx, allocator, embeddings);
 	if (embeddings.len != 1) return error.InvalidEmbeddingCount;
+	if (embeddings[0].len != try storage.embeddingDimension(db, allocator)) return error.EmbeddingDimensionMismatch;
 
 	const limit = options.top_n * options.candidate_multiplier;
 	const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only);

@@ -970,6 +970,32 @@ fn ensureColumnExists(
 	try exec(db, alter_sql);
 }
 
+/// Reads the positive vector width recorded for an initialized index.
+pub fn embeddingDimension(db: Db, allocator: std.mem.Allocator) !usize {
+	const value = try metaValue(db, allocator, "embedding_dim") orelse return error.InvalidEmbeddingMetadata;
+	defer allocator.free(value);
+	const dimension = std.fmt.parseInt(usize, value, 10) catch return error.InvalidEmbeddingMetadata;
+	if (dimension == 0) return error.InvalidEmbeddingMetadata;
+	return dimension;
+}
+
+test "embeddingDimension validates metadata and preserves SQLite failures" {
+	const allocator = std.testing.allocator;
+	const db = try openMemoryWithVec(allocator);
+	defer close(db);
+	var schema = try initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+	try std.testing.expectEqual(@as(usize, 2), try embeddingDimension(db, allocator));
+	for ([_][]const u8{ "", "bad", "0", "-1", "1.5", "18446744073709551616" }) |invalid| {
+		try setMetaValue(db, "embedding_dim", invalid);
+		try std.testing.expectError(error.InvalidEmbeddingMetadata, embeddingDimension(db, allocator));
+	}
+	try exec(db, "DELETE FROM meta WHERE key = 'embedding_dim';");
+	try std.testing.expectError(error.InvalidEmbeddingMetadata, embeddingDimension(db, allocator));
+	try exec(db, "DROP TABLE meta;");
+	try std.testing.expectError(error.SqlPrepareFailed, embeddingDimension(db, allocator));
+}
+
 fn metaValue(db: Db, allocator: std.mem.Allocator, key: []const u8) !?[]u8 {
 	const sql: [:0]const u8 = "SELECT value FROM meta WHERE key = ?1 LIMIT 1;\x00";
 	var stmt: ?*c.sqlite3_stmt = null;
