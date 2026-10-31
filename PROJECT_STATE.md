@@ -89,7 +89,7 @@
   - Static init in `src/storage.zig` calls `sqlite3_vec_init` (no runtime extension loading).
 - SQLite amalgamation path is provided via `SQLITE_VEC_SQLITE_AMALGAMATION_DIR` (set in `flake.nix`).
 - The tree-sitter runtime and remaining older grammars are vendored under `deps/` and built as static libraries.
-- Fourteen grammars, including C, are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`. C is pinned at `tree-sitter/tree-sitter-c@7fa1be1b694b6e763686793d97da01f36a0e5c12`, byte-identical to the existing parser, headers, and license; legacy C parser files are excluded from compiled source inputs. `deps/tree-sitter-nim/src/scanner.c` retains its null-buffer guard for Zig's runtime checks.
+- Fourteen grammars, including C, are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`. C is pinned at `tree-sitter/tree-sitter-c@7fa1be1b694b6e763686793d97da01f36a0e5c12`, byte-identical to the retired parser/header copies; its unchanged license remains in `deps/tree-sitter-c/LICENSE`. A source-boundary fixture rejects reintroduced legacy C parser inputs. `deps/tree-sitter-nim/src/scanner.c` retains its null-buffer guard for Zig's runtime checks.
 - PCRE2 is required for glob matching and is built as a Zig dependency (`qaptoR-support/pcre2`).
 
 ## Known behaviors

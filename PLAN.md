@@ -8,9 +8,9 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [x] Verify the build-scope request-adapter refactor on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 232f2e73, following 775 passing local unit cases and unchanged scope assertions. (done 2026-10-31 05:43 EDT; commit 232f2e73)
 - [x] Verify source-fixture streaming on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for c53ae6c6, following 776 passing local unit cases, exact-copy checks, and both pipeline failure controls. (done 2026-10-31 06:03 EDT; commit c53ae6c6)
 - [x] Verify exact-product `./run` on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 5b4aee34, following 776 passing local unit cases, all eight launcher scenarios, and seven retained build controls. (done 2026-10-31 06:10 EDT; commit 5b4aee34)
-- [ ] Verify overlapping cache-inheritance checks on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 776 unit cases, both real shell assertions, and all three barrier/failure/join scenarios.
+- [x] Verify overlapping cache-inheritance checks on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 456d7192, following 776 passing local unit cases, both real shell assertions, and all three barrier/failure/join scenarios. (done 2026-10-31 06:26 EDT; commit 456d7192)
 - [ ] Verify the byte-identical C grammar source pin on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 776 unit cases, the source-boundary classifier, and both old/new CLI symbol-range/body controls.
-- [x] Verify consolidated build-scope flags on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for a4429bdd, following 775 passing local unit cases and all 18 scope/failure/escape scenarios. (done 2026-10-31 05:27 EDT; commit a4429bdd)
+- [ ] Verify redundant C-source retirement on exact-commit Mechatron Prime CI and GitHub Actions; all 24 package identities remain unchanged and complete Nix/fresh host/component runs pass 776 unit cases with attribution retained.
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -31,7 +31,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 7.44-second execution lower bound and 6.09-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 18.01-second execution lower bound and 12.11-second flake-evaluation span; the component run also slows broadly to 19.13 seconds without compiled changes, and coverage/exclusions/the five-second budget remain unchanged. (context: docs/plan_context/test_latency.md)
 	- [x] Overlap the two independent real Nix cache-inheritance checks after a failing FIFO-barrier regression; both real assertions and all three failure/join controls pass, and paired real checks favor overlap under one- and twelve-CPU affinity without a complete budget pass. (done 2026-10-31 06:04 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Stream source-fixture payloads without a whole-archive scratch file after a failing scratch-limit regression; exact-copy and both pipeline failure controls pass, and the one permitted paired repeat favors streaming under one- and twelve-CPU affinity without a complete budget pass. (done 2026-10-31 05:47 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
@@ -40,7 +40,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Architecture and features
 
-- [x] Report matched-field provenance for recognized identifier aliases after a failing real CLI evidence assertion; all 776 unit cases, 20 field classifications, and six CLI query/mode checks pass complete Nix and fresh confined host verification; README defaults now match existing language-filter behavior. (done 2026-10-31 05:27 EDT; context: docs/plan_context/filter_classifiers.md)
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
 	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
 	- [ ] Consolidate legacy `build_all` into thin Nix-required `./build` scope flags/aliases and exact-product `./run`/`./test`; remove direct-build fallbacks and prepare compiled tests through Nix; add canonical-implementation selection only if multiple executable implementations exist.
@@ -53,6 +52,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [ ] Resolve whether depth is relative to matched symbols with child expansion or an absolute file-root limit that also excludes deeper name matches; existing design text lists the flag without defining its semantics, and independent work continues pending the answer.
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
 	- [x] Pin the C grammar to byte-identical upstream revision 7fa1be1b after a failing source-closure classifier; legacy parser files cannot enter compiled inputs, attribution remains tracked, and complete Nix/fresh confined host checks pass 776 unit cases plus old/new CLI range/body controls. (done 2026-10-31 06:15 EDT; context: docs/plan_context/build_conformance.md)
+	- [x] Retire four unused C parser/header copies recoverably from pushed commit 522d5f49 while retaining the unchanged license; all 24 package derivation identities remain identical and complete Nix/fresh host/component checks pass 776 unit cases. (done 2026-10-31 06:26 EDT; context: docs/plan_context/build_conformance.md)
 
 ## Tabled (not actionable)
 
