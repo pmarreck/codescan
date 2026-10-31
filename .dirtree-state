@@ -8,7 +8,7 @@ close=[
 
 annotate=[
 	.codescan-fixtures = Gitignored fixture repository clones for integration tests
-	.github/workflows/build.yml = GitHub Actions build plus release-artifact workflow
+	.github/workflows/build.yml = Native dual-Linux checks, five canonical archives, and native Mac full-suite release gate
 	.github/workflows/native-windows.yml = Nix-prepared cancellation tests executed on disposable native Windows x64 and ARM64 runners
 	.gitignore = Ignored paths for build outputs and local indexes
 	INTENT.md = Canonical product scope and verification requirements
@@ -195,7 +195,7 @@ annotate=[
 	tests/unit/test-cancellation-artifacts = Validate native cancellation execution and both Windows executable headers
 	tests/unit/test-capture = Text capture stream/status and shell-metacharacter regressions
 	tests/unit/test-ci-architecture = Confined release target, header, staging ownership, invalid argument, tar/ZIP payload, and partial-archive failure regressions
-	tests/unit/test-ci-runner-contract = Complete CI runner/target/artifact matrix and required test-command contract
+	tests/unit/test-ci-runner-contract = Native Linux host-refusal corpus, five-archive matrix, and native Windows workflow contracts
 	tests/unit/test-dev-shell-cache = Regression proving nix develop preserves inherited nonempty Zig cache paths
 	tests/unit/test-isolation = Forbidden-write canaries, concurrent namespace barriers, private state and exit-status qualification
 	tests/unit/test-no-committed-secrets = Security regression rejecting tracked literal oMLX embedding API keys without echoing secrets

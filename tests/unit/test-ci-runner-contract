@@ -31,6 +31,14 @@ if [ "$actual" != "$expected" ]; then
 	fail "CI runner/target/artifact matrix differs from the supported contract"
 fi
 
+actual_test_runners="$(awk '
+	/^  test:/ { in_tests = 1; next }
+	/^  build:/ { in_tests = 0 }
+	in_tests && $1 == "-" && $2 == "os:" { os = $3 }
+	in_tests && $1 == "system:" { print os "\t" $2 }
+' "$workflow" | LC_ALL=C sort)"
+[ "$actual_test_runners" = $'ubuntu-24.04-arm\taarch64-linux\nubuntu-latest\tx86_64-linux' ] || fail 'Complete Linux tests must run on both native architectures'
+
 actual_commands="$(awk '
 	/^      - name: Run tests$/ { in_tests = 1; next }
 	/^  build:/ { in_tests = 0 }
@@ -38,8 +46,42 @@ actual_commands="$(awk '
 ' "$workflow" | LC_ALL=C sort)"
 expected_commands="$(printf '%s\n' \
 	'nix flake check --no-build --all-systems' \
-	'nix build .#checks.x86_64-linux.test .#checks.x86_64-linux.source-closure --no-link' | LC_ALL=C sort)"
+	'nix build .#checks.${{ matrix.system }}.test .#checks.${{ matrix.system }}.source-closure --no-link' | LC_ALL=C sort)"
 [ "$actual_commands" = "$expected_commands" ] || fail "GitHub test job must run the CI contracts and all-system flake evaluation before building artifacts"
+
+# Exercise the real workflow body with recording process ports, including every
+# unsupported host pair. Runner labels alone do not prove native execution.
+test_body="$(awk '
+	/^      - name: Run tests$/ { in_step = 1; next }
+	in_step && /^        run: \|$/ { in_body = 1; next }
+	in_body && /^          / { print substr($0,11); next }
+	in_body && NF { exit }
+' "$workflow")"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-ci-linux.XXXXXXXX")" || exit 1
+trap 'rm -rf -- "$fixture"' EXIT
+uname() {
+	case "$1" in -s) printf '%s\n' "$CI_TEST_OS" ;; -m) printf '%s\n' "$CI_TEST_ARCH" ;; *) return 64 ;; esac
+}
+nix() { printf '%s\n' "$*" >> "$CI_TEST_EVENTS"; }
+export -f uname nix
+for system in x86_64-linux aarch64-linux; do
+	for os in Linux Darwin MINGW64_NT unknown; do
+		for arch in x86_64 aarch64 arm64 AMD64 unknown; do
+			template='${{ matrix.system }}'
+			body="${test_body//$template/$system}"
+			: > "$fixture/events"
+			if env CI_TEST_OS="$os" CI_TEST_ARCH="$arch" CI_TEST_EVENTS="$fixture/events" bash -c "$body" > "$fixture/out" 2> "$fixture/err"; then status=0; else status="$?"; fi
+			case "$system:$os/$arch" in
+				x86_64-linux:Linux/x86_64|aarch64-linux:Linux/aarch64)
+					[ "$status" -eq 0 ] || fail 'native Linux runner was refused'
+					expected_events="$(printf 'flake check --no-build --all-systems\nbuild .#checks.%s.test .#checks.%s.source-closure --no-link' "$system" "$system")"
+					[ "$(< "$fixture/events")" = "$expected_events" ] || fail 'native Linux checks were omitted, duplicated, or misdirected'
+					;;
+				*) [ "$status" -eq 69 ] && [ ! -s "$fixture/events" ] || fail "foreign host reached Linux checks: $system on $os/$arch" ;;
+				esac
+			done
+	done
+done
 
 actual_packaging="$(awk '
 	/^      - name: Build ReleaseFast$/ { in_package = 1; next }
