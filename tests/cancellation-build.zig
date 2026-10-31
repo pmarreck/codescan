@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
 	const optimize = b.standardOptimizeOption(.{});
 	const tests = b.addTest(.{
 		.name = "codescan-cancellation-tests",
-		.filters = &.{"cancel"},
+		.filters = &.{ "cancel", "send errors close" },
 		.root_module = b.createModule(.{
 			.root_source_file = b.path("embedding_http.zig"),
 			.target = target,

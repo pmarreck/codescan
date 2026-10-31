@@ -43,10 +43,10 @@ foreach ($architecture in @('amd64', 'arm64')) {
 		Expect-Rejection { Get-PeMachine $bad }
 	}
 }
-$valid = "1/4 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK`n2/4 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP headers...OK`n3/4 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP body...OK`n4/4 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK`nAll 4 tests passed.`n"
+$valid = "1/5 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK`n2/5 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP headers...OK`n3/5 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP body...OK`n4/5 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK`n5/5 embedding_http.test.StdHttpTransport send errors close the connection before response headers...OK`nAll 5 tests passed.`n"
 Assert-CancellationEvidence 0 '' $valid
 Assert-CancellationEvidence 0 '' $valid.Replace("`n", "`r`n")
-foreach ($invalid in @('', 'All 0 tests passed.', 'All 4 tests passed.', $valid.Replace('...OK', '...SKIP'), $valid.Replace('All 4', 'All 1'), "$valid`nextra")) {
+foreach ($invalid in @('', 'All 0 tests passed.', 'All 5 tests passed.', $valid.Replace('...OK', '...SKIP'), $valid.Replace('All 5', 'All 1'), "$valid`nextra")) {
 	Expect-Rejection { Assert-CancellationEvidence 0 '' $invalid }
 }
 Expect-Rejection { Assert-CancellationEvidence 42 '' $valid }

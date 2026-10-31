@@ -465,6 +465,11 @@ pub const StdHttpTransport = struct {
 			.extra_headers = req.headers,
 		});
 		defer request.deinit();
+		errdefer {
+			// An error before receiveHead leaves the reader ready for reuse.
+			// Never pool an incomplete request, including an early cancellation.
+			if (request.connection) |connection| connection.closing = true;
+		}
 
 		if (method.requestHasBody()) {
 			const payload = try allocator.dupe(u8, req.body);
@@ -789,6 +794,34 @@ fn testHeldExchangeCancellation(phase: HeldExchange.Phase) !void {
 	try peer.ready.wait(io);
 	try std.testing.expectError(error.Canceled, request_task.cancel(io));
 	try peer_task.await(io);
+}
+
+test "StdHttpTransport send errors close the connection before response headers" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+	var server = try address.listen(io, .{ .reuse_address = true });
+	defer server.socket.close(io);
+	const port = switch (server.socket.address) {
+		.ip4 => |a| a.port,
+		.ip6 => |a| a.port,
+	};
+	const url = try std.fmt.allocPrint(allocator, "http://127.0.0.1:{d}/hold", .{port});
+	defer allocator.free(url);
+	var http = StdHttpTransport.init(allocator);
+	defer http.deinit();
+	// The client owns connection allocation separately. Fail the payload copy
+	// after acquisition, before receiveHead can mark a failed connection closed.
+	var payload_allocator = std.testing.FailingAllocator.init(allocator, .{ .fail_index = 0 });
+	const transport = http.transport();
+	try std.testing.expectError(error.OutOfMemory, transport.send(transport.ctx, payload_allocator.allocator(), .{
+		.method = "POST",
+		.url = url,
+		.headers = &.{.{ .name = "Connection", .value = "close" }},
+		.body = "payload",
+	}));
+	try std.testing.expectEqual(@as(usize, 0), http.client.connection_pool.free_len);
+	try std.testing.expect(http.client.connection_pool.used.first == null);
 }
 
 /// Transport stub that yields one caller-chosen outcome, so reachability can be

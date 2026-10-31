@@ -30,7 +30,7 @@ for control in swapped-windows foreign-native linked-native empty partial skippe
 		foreign-native) args[0]="$fixture/foreign"; expected='native product has the wrong executable header' ;;
 		linked-native) args[0]="$fixture/link"; expected='missing regular executable:' ;;
 		failed) expected='native cancellation tests returned 42' ;;
-		*) expected='expected all four passing cancellation cases' ;;
+		*) expected='expected all five passing transport cases' ;;
 	esac
 	capture env CANCELLATION_CONTROL="$control" bash "$checker" "${args[@]}"
 	[ "$rc" -eq 1 ] || fail "$control returned $rc instead of refusal"
