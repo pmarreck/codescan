@@ -44,6 +44,11 @@ artifacts from the latest CI build:
 
 > Note: GitHub requires you to be signed in to download workflow artifacts.
 
+CI publishes archives for all five declared targets using canonical platform
+names (`linux-amd64`, `linux-arm64`, `macos-arm64`, `mswin-amd64`, and
+`mswin-arm64`). Windows ZIPs are cross-built on Linux; native Windows runtime
+qualification remains separate from build success.
+
 ### Build from source
 
 ```bash

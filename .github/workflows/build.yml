@@ -36,8 +36,8 @@ jobs:
             target: x86_64-linux-musl
             archive: tar
             ext: ""
-            artifact: codescan-linux-x86_64.tar.gz
-            pkgdir: codescan-linux-x86_64
+            artifact: codescan-linux-amd64.tar.gz
+            pkgdir: codescan-linux-amd64
           - os: ubuntu-latest
             target: aarch64-linux-musl
             archive: tar
@@ -50,6 +50,18 @@ jobs:
             ext: ""
             artifact: codescan-macos-arm64.tar.gz
             pkgdir: codescan-macos-arm64
+          - os: ubuntu-latest
+            target: x86_64-windows-gnu
+            archive: zip
+            ext: ".exe"
+            artifact: codescan-mswin-amd64.zip
+            pkgdir: codescan-mswin-amd64
+          - os: ubuntu-latest
+            target: aarch64-windows-gnu
+            archive: zip
+            ext: ".exe"
+            artifact: codescan-mswin-arm64.zip
+            pkgdir: codescan-mswin-arm64
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -64,7 +76,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          ./scripts/ci-build "${{ matrix.target }}" "${{ matrix.pkgdir }}" "${{ matrix.artifact }}" "${{ matrix.ext }}"
+          nix develop -c ./scripts/ci-build "${{ matrix.target }}" "${{ matrix.pkgdir }}" "${{ matrix.artifact }}" "${{ matrix.ext }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v6
@@ -87,7 +99,9 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            dist/**/codescan-linux-x86_64.tar.gz
+            dist/**/codescan-linux-amd64.tar.gz
             dist/**/codescan-linux-arm64.tar.gz
             dist/**/codescan-macos-arm64.tar.gz
+            dist/**/codescan-mswin-amd64.zip
+            dist/**/codescan-mswin-arm64.zip
           generate_release_notes: true

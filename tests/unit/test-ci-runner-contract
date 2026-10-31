@@ -13,16 +13,19 @@ fail() {
 actual="$(awk '
 	/^  build:/ { in_build = 1; next }
 	in_build && /^  [^ ]/ { in_build = 0 }
-	in_build && $1 == "-" && $2 == "os:" { os = $3 }
+	in_build && $1 == "-" && $2 == "os:" { os = $3; target = archive = extension = artifact = "" }
 	in_build && $1 == "target:" { target = $2 }
 	in_build && $1 == "archive:" { archive = $2 }
+	in_build && $1 == "ext:" { extension = $2; gsub(/^"|"$/, "", extension) }
 	in_build && $1 == "artifact:" { artifact = $2 }
-	in_build && $1 == "pkgdir:" { print os "\t" target "\t" archive "\t" artifact "\t" $2 }
+	in_build && $1 == "pkgdir:" { print os "\t" target "\t" archive "\t" extension "\t" artifact "\t" $2 }
 ' "$workflow" | LC_ALL=C sort)"
 expected="$(printf '%s\n' \
-	$'ubuntu-latest\tx86_64-linux-musl\ttar\tcodescan-linux-x86_64.tar.gz\tcodescan-linux-x86_64' \
-	$'ubuntu-latest\taarch64-linux-musl\ttar\tcodescan-linux-arm64.tar.gz\tcodescan-linux-arm64' \
-	$'macos-15\taarch64-macos\ttar\tcodescan-macos-arm64.tar.gz\tcodescan-macos-arm64' | LC_ALL=C sort)"
+	$'ubuntu-latest\tx86_64-linux-musl\ttar\t\tcodescan-linux-amd64.tar.gz\tcodescan-linux-amd64' \
+	$'ubuntu-latest\taarch64-linux-musl\ttar\t\tcodescan-linux-arm64.tar.gz\tcodescan-linux-arm64' \
+	$'macos-15\taarch64-macos\ttar\t\tcodescan-macos-arm64.tar.gz\tcodescan-macos-arm64' \
+	$'ubuntu-latest\tx86_64-windows-gnu\tzip\t.exe\tcodescan-mswin-amd64.zip\tcodescan-mswin-amd64' \
+	$'ubuntu-latest\taarch64-windows-gnu\tzip\t.exe\tcodescan-mswin-arm64.zip\tcodescan-mswin-arm64' | LC_ALL=C sort)"
 if [ "$actual" != "$expected" ]; then
 	printf '%s\n' "$actual" >&2
 	fail "CI runner/target/artifact matrix differs from the supported contract"
@@ -38,8 +41,28 @@ expected_commands="$(printf '%s\n' \
 	'nix build .#checks.x86_64-linux.test .#checks.x86_64-linux.source-closure --no-link' | LC_ALL=C sort)"
 [ "$actual_commands" = "$expected_commands" ] || fail "GitHub test job must run the CI contracts and all-system flake evaluation before building artifacts"
 
+actual_packaging="$(awk '
+	/^      - name: Build ReleaseFast$/ { in_package = 1; next }
+	in_package && /^      - name:/ { in_package = 0 }
+	in_package && /\.\/scripts\/ci-build/ { sub(/^[[:space:]]+/, ""); print }
+' "$workflow")"
+expected_packaging='nix develop -c ./scripts/ci-build "${{ matrix.target }}" "${{ matrix.pkgdir }}" "${{ matrix.artifact }}" "${{ matrix.ext }}"'
+[ "$actual_packaging" = "$expected_packaging" ] || fail 'CI packaging must use the pinned Nix environment for archive tools'
+
 actual_timeouts="$(awk '/^  [a-z_-]+:$/ { job = $1; sub(/:$/, "", job) } /^    timeout-minutes:/ { print job "\t" $2 }' "$workflow" | LC_ALL=C sort)"
 expected_timeouts=$'build\t30\nrelease\t30\ntest\t30'
 [ "$actual_timeouts" = "$expected_timeouts" ] || fail "Every CI job must retain its 30-minute execution bound"
+
+actual_assets="$(awk '
+	/^  release:/ { in_release = 1; next }
+	in_release && $1 ~ /^dist\/\*\*\// { print $1 }
+' "$workflow" | LC_ALL=C sort)"
+expected_assets="$(printf '%s\n' \
+	'dist/**/codescan-linux-amd64.tar.gz' \
+	'dist/**/codescan-linux-arm64.tar.gz' \
+	'dist/**/codescan-macos-arm64.tar.gz' \
+	'dist/**/codescan-mswin-amd64.zip' \
+	'dist/**/codescan-mswin-arm64.zip' | LC_ALL=C sort)"
+[ "$actual_assets" = "$expected_assets" ] || fail 'Release uploads must include exactly the five canonical PF archives'
 
 printf 'CI runner contract passed\n'
