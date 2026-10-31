@@ -11,20 +11,27 @@ git -C "$source_project" init -q || fail 'Git setup'
 printf 'ignored*\n' > "$source_project/.gitignore"
 printf 'ordinary marker\n' > "$source_project/source with spaces.zig"
 printf 'ignored marker\n' > "$source_project/ignored-tracked.zig"
+printf 'newline marker\n' > "$source_project/"$'source\nwith newline.zig'
+printf 'removed marker\n' > "$source_project/removed unstaged.zig"
+ln -s 'absent target' "$source_project/broken link" || fail 'broken-link setup'
 git -C "$source_project" add . || fail 'source inventory'
 git -C "$source_project" add --force ignored-tracked.zig || fail 'forced source inventory'
+mv "$source_project/removed unstaged.zig" "$fixture/removed-original.zig" || fail 'unstaged deletion setup'
+git -C "$source_project" ls-files --error-unmatch 'removed unstaged.zig' > "$fixture/out" 2> "$fixture/err" || fail 'deletion must remain unstaged'
 printf 'private untracked marker\n' > "$source_project/untracked.zig"
 printf 'private ignored marker\n' > "$source_project/ignored-untracked.zig"
 bash "$root/tests/lib/copy-source" "$source_project" "$copy" > "$fixture/out" 2> "$fixture/err" || fail 'copy failed'
-git -C "$source_project" ls-files -z > "$fixture/expected" || fail 'expected inventory'
+printf '%s\0' .gitignore 'broken link' ignored-tracked.zig 'source with spaces.zig' $'source\nwith newline.zig' | LC_ALL=C sort -z > "$fixture/expected"
 git -C "$copy" ls-files -z > "$fixture/actual" || fail 'copied inventory'
 cmp -s "$fixture/expected" "$fixture/actual" || fail 'copy lost tracked paths or included untracked paths'
-for path in .gitignore 'source with spaces.zig' ignored-tracked.zig; do
+for path in .gitignore 'source with spaces.zig' ignored-tracked.zig $'source\nwith newline.zig'; do
 	cmp -s "$source_project/$path" "$copy/$path" || fail "content changed: $path"
 done
 [ ! -e "$copy/untracked.zig" ] && [ ! -e "$copy/ignored-untracked.zig" ] || fail 'private files copied'
-git -C "$copy" grep -lF 'marker' > "$fixture/matches" || fail 'copied content is not searchable'
-printf '%s\n' ignored-tracked.zig 'source with spaces.zig' > "$fixture/expected-matches"
+[ ! -e "$copy/removed unstaged.zig" ] || fail 'deleted source resurrected'
+[ -L "$copy/broken link" ] && [ "$(readlink "$copy/broken link")" = 'absent target' ] || fail 'broken link lost or changed'
+git -C "$copy" grep -zlF 'marker' > "$fixture/matches" || fail 'copied content is not searchable'
+printf '%s\0' ignored-tracked.zig 'source with spaces.zig' $'source\nwith newline.zig' | LC_ALL=C sort -z > "$fixture/expected-matches"
 cmp -s "$fixture/expected-matches" "$fixture/matches" || fail 'Git search missed tracked content'
 if bash "$root/tests/lib/copy-source" "$source_project" "$copy" > "$fixture/out" 2> "$fixture/err"; then
 	fail 'copy overwrote an existing destination'
@@ -47,10 +54,23 @@ if (
 fi
 git -C "$limited_copy" ls-files -z > "$fixture/actual" || fail 'streamed inventory'
 cmp -s "$fixture/expected" "$fixture/actual" || fail 'streaming changed the tracked inventory'
-for path in .gitignore 'source with spaces.zig' ignored-tracked.zig; do
+for path in .gitignore 'source with spaces.zig' ignored-tracked.zig $'source\nwith newline.zig'; do
 	cmp -s "$source_project/$path" "$limited_copy/$path" || fail "streaming changed content: $path"
 done
 [ ! -e "$limited_copy/untracked.zig" ] && [ ! -e "$limited_copy/ignored-untracked.zig" ] || fail 'streaming copied private files'
+[ ! -e "$limited_copy/removed unstaged.zig" ] || fail 'streaming resurrected deleted source'
+[ -L "$limited_copy/broken link" ] && [ "$(readlink "$limited_copy/broken link")" = 'absent target' ] || fail 'streaming lost or changed broken link'
+
+empty_source="$fixture/empty source"
+empty_copy="$fixture/empty copy"
+mkdir "$empty_source" || fail 'empty source setup'
+git -C "$empty_source" init -q || fail 'empty Git setup'
+printf 'removed marker\n' > "$empty_source/removed.zig"
+git -C "$empty_source" add removed.zig || fail 'empty source inventory'
+mv "$empty_source/removed.zig" "$fixture/empty-removed-original.zig" || fail 'complete deletion setup'
+bash "$root/tests/lib/copy-source" "$empty_source" "$empty_copy" > "$fixture/out" 2> "$fixture/err" || fail 'empty snapshot failed'
+git -C "$empty_copy" ls-files -z > "$fixture/actual" || fail 'empty snapshot inventory'
+[ ! -s "$fixture/actual" ] || fail 'empty snapshot resurrected tracked files'
 
 for failure in producer consumer; do
 	failed_copy="$fixture/$failure failure"
