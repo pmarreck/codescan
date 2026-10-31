@@ -287,7 +287,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP symbols: runSymbols failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "replace_symbol")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const pattern = getArg(args, "pattern").?;
 		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
@@ -295,7 +296,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP replace_symbol: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_after")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const pattern = getArg(args, "pattern").?;
 		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
@@ -303,7 +305,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP insert_after: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_before")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const pattern = getArg(args, "pattern").?;
 		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
@@ -311,7 +314,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP insert_before: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "replace_lines")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "from", "to", "body" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const from = getArg(args, "from").?;
 		const to = getArg(args, "to").?;
 		const body = getArg(args, "body").?;
@@ -320,7 +324,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP replace_lines: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "insert_at")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "ref", "body" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const ref = getArg(args, "ref").?;
 		const body = getArg(args, "body").?;
 		const ver = getArg(args, "version");
@@ -351,27 +356,31 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		} else {
 			// Single-file mode
 			try checkRequiredArgs(allocator, name, args, &.{"file"}, err_detail);
-			const file = getArg(args, "file").?;
+			const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+			defer allocator.free(file);
 			const ver = getArg(args, "version");
 			main.runReplaceContent(allocator, file, needle, regex, all, body_arg, ver, &out.writer) catch |err|
 				return toolError("MCP replace_content: failed on '{s}': {}\n", .{ file, err });
 		}
 	} else if (std.mem.eql(u8, name, "read_file")) {
 		try checkRequiredArgs(allocator, name, args, &.{"file"}, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const from = getArgInt(args, "from");
 		const to = getArgInt(args, "to");
 		main.runReadFile(allocator, file, from, to, .json, &out.writer) catch |err|
 			return toolError("MCP read_file: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "create_file")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "body" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const body = getArg(args, "body").?;
 		main.runCreateFile(allocator, file, body, &out.writer) catch |err|
 			return toolError("MCP create_file: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "destroy_file")) {
 		try checkRequiredArgs(allocator, name, args, &.{"file"}, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const version = getArg(args, "version");
 		main.runDestroyFile(allocator, file, version, &out.writer) catch |err|
 			return toolError("MCP destroy_file: failed on '{s}': {}\n", .{ file, err });
@@ -381,13 +390,15 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			return toolError("MCP diff: failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "references")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const pattern = getArg(args, "pattern").?;
 		main.runReferences(allocator, file, pattern, .json, settings.root_path, settings.lsp_overrides, &out.writer) catch |err|
 			return toolError("MCP references: failed on '{s}': {}\n", .{ file, err });
 	} else if (std.mem.eql(u8, name, "rename")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "to" }, err_detail);
-		const file = getArg(args, "file").?;
+		const file = try main.resolveProjectFilePath(allocator, settings.root_path, getArg(args, "file").?);
+		defer allocator.free(file);
 		const pattern = getArg(args, "pattern").?;
 		const to = getArg(args, "to").?;
 		const dry_run = getArgBool(args, "dry_run");

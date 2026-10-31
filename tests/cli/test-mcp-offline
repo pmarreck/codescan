@@ -51,6 +51,82 @@ capture timeout 15 "$binary" mcp-serve --root "$fixture" <<< "$requests"
 [ "$rc" -eq 0 ] || fail 'versioned offline edit session failed'
 printf '%s\n' "$out" | jq -se 'map(.id) == [1,2,3] and all(.error == null) and (.[2].result.content[0].text | contains("after"))' >/dev/null || fail 'versioned edit/read failed'
 [ "$(< editable.zig)" = 'const after = 1;' ] || fail 'file edits were not retained'
+
+# The configured root, not the launch directory, owns relative file arguments.
+# Shadow files stay test-owned and excluded from indexing in both directories.
+scope_root="$fixture/.codescan/file-operation-root"
+scope_prefix=.codescan/path-targets
+scope_tools=(read_file create_file replace_content replace_symbol insert_before insert_after replace_lines insert_at destroy_file)
+mkdir -p "$scope_root/$scope_prefix" "$fixture/$scope_prefix" || fail 'file-root fixture setup'
+cp .codescan/config.ini "$scope_root/.codescan/config.ini" || fail 'file-root fixture config'
+printf 'pub fn old() void {}\n' > "$scope_root/.codescan/baseline.zig"
+for scope_mode in relative absolute; do
+	for scope_tool in "${scope_tools[@]}"; do
+		scope_relative="$scope_prefix/$scope_mode-$scope_tool.zig"
+		printf 'pub fn launchCanary() void {}\n' > "$fixture/$scope_relative"
+		if [ "$scope_tool" != create_file ]; then
+			printf 'pub fn old() void {}\n' > "$scope_root/$scope_relative"
+		fi
+	done
+done
+capture "$binary" read-file "$scope_root/.codescan/baseline.zig" --json
+[ "$rc" -eq 0 ] || fail 'file-root baseline read'
+scope_version="$(printf '%s' "$out" | jq -er '.version')" || fail 'file-root version'
+scope_ref="$(printf '%s' "$out" | jq -er '.content | split("\n")[0] | split("|")[0]')" || fail 'file-root hashline'
+scope_requests="$(jq -cn --arg root "$scope_root" --arg prefix "$scope_prefix" \
+	--arg version "$scope_version" --arg ref "$scope_ref" '
+	[{method:"initialize"},
+	 (["relative","absolute"][] as $mode | $ARGS.positional[] as $tool |
+	  ($prefix + "/" + $mode + "-" + $tool + ".zig") as $relative |
+	  (if $mode == "absolute" then $root + "/" + $relative else $relative end) as $file |
+	  ({file:$file} +
+	   if $tool == "read_file" then {}
+	   elif $tool == "create_file" then {body:"pub fn new() void {}"}
+	   elif $tool == "destroy_file" then {version:$version}
+	   elif $tool == "replace_content" then {version:$version,needle:"old",body:"new"}
+	   elif $tool == "replace_lines" then {version:$version,from:$ref,to:$ref,body:"pub fn new() void {}"}
+	   elif $tool == "insert_at" then {version:$version,ref:$ref,body:"pub fn new() void {}"}
+	   else {version:$version,pattern:"old",body:"pub fn new() void {}"} end) as $arguments |
+	  {method:"tools/call",params:{name:$tool,arguments:$arguments}})] |
+	to_entries[] | .value + {jsonrpc:"2.0",id:(.key + 1)}
+	' --args "${scope_tools[@]}")" || fail 'file-root request encoding'
+capture timeout 15 "$binary" mcp-serve --root "$scope_root" <<< "$scope_requests"
+[ "$rc" -eq 0 ] || fail "file-root session stopped (exit $rc): $err"
+scope_responses="$out"
+printf '%s\n' "$scope_responses" | jq -se \
+	'map(.id) == [range(1;20)] and all(.error == null and .result != null)' >/dev/null || fail "file-root protocol failed: $scope_responses"
+scope_failed=0
+scope_id=2
+for scope_mode in relative absolute; do
+	for scope_tool in "${scope_tools[@]}"; do
+		scope_relative="$scope_prefix/$scope_mode-$scope_tool.zig"
+		scope_target="$scope_root/$scope_relative"
+		[ "$(< "$fixture/$scope_relative")" = 'pub fn launchCanary() void {}' ] || fail "$scope_mode $scope_tool changed a launch-directory file"
+		scope_ok=true
+		case "$scope_tool" in
+			read_file)
+				printf '%s\n' "$scope_responses" | jq -e --argjson id "$scope_id" '
+					select(.id == $id) | .result.content[0].text | fromjson |
+					.content | contains("pub fn old()") and (contains("launchCanary") | not)
+				' >/dev/null || scope_ok=false ;;
+			destroy_file) [ ! -e "$scope_target" ] || scope_ok=false ;;
+			*)
+				case "$scope_tool" in
+					insert_before) scope_expected=$'pub fn new() void {}\npub fn old() void {}' ;;
+					insert_after|insert_at) scope_expected=$'pub fn old() void {}\npub fn new() void {}' ;;
+					*) scope_expected='pub fn new() void {}' ;;
+				esac
+				if [ ! -f "$scope_target" ] || [ "$(< "$scope_target")" != "$scope_expected" ]; then scope_ok=false; fi ;;
+		esac
+		if [ "$scope_ok" != true ]; then
+			printf '%s\n' "$scope_mode $scope_tool did not target the configured project root" >&2
+			scope_failed=$((scope_failed + 1))
+		fi
+		scope_id=$((scope_id + 1))
+	done
+done
+[ "$scope_failed" -eq 0 ] || fail "$scope_failed file-root cases failed"
+
 capture "$binary" status --json --root "$fixture"
 [ "$rc" -eq 0 ] || fail 'could not inspect the index before the rejected indexing request'
 before="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid pre-request index status'

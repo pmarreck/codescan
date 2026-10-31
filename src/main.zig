@@ -4290,7 +4290,7 @@ fn lineByteOffsets(source: []const u8, allocator: std.mem.Allocator) ![]usize {
 
 /// Gives semantic-editing reads the same project-root contract as indexed
 /// commands while leaving explicitly absolute filesystem paths untouched.
-fn resolveProjectFilePath(allocator: std.mem.Allocator, root_path: []const u8, file_path: []const u8) ![]u8 {
+pub fn resolveProjectFilePath(allocator: std.mem.Allocator, root_path: []const u8, file_path: []const u8) ![]u8 {
 	if (std.fs.path.isAbsolute(file_path)) return allocator.dupe(u8, file_path);
 	return std.fs.path.join(allocator, &.{ root_path, file_path });
 }
