@@ -21,6 +21,7 @@
 					inherit root;
 					fileset = pkgs.lib.fileset.unions [ (root + "/src") (root + "/deps") (root + "/build.zig") (root + "/build.zig.zon") ];
 				};
+				projectSource = compiledSource ./.;
 				sqlite-amalgamation = pkgs.fetchzip {
 					url = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
 					sha256 = "sha256-F50oTmmcPIl0AZJbsWAR3tbNAPV3pQLf+CNITzhmXfI=";
@@ -123,7 +124,7 @@
 					pname = "codescan" + pkgs.lib.optionalString (pf != null) "-${pf}" + pkgs.lib.optionalString (profile != "ReleaseFast") "-${profile}";
 					version = "0.1.0";
 
-					src = compiledSource sourceRoot;
+					src = if sourceRoot == ./. then projectSource else compiledSource sourceRoot;
 
 					nativeBuildInputs = [ pkgs.zig_0_16 ];
 
@@ -193,7 +194,7 @@
 				packages.test-binaries = pkgs.stdenv.mkDerivation {
 					pname = "codescan-test-binaries";
 					version = "0.1.0";
-					src = compiledSource ./.;
+					src = projectSource;
 					nativeBuildInputs = [ pkgs.zig_0_16 ];
 					dontConfigure = true;
 					dontInstall = true;

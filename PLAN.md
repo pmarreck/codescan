@@ -4,12 +4,11 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify shared Nix source evaluation on exact-commit Mechatron Prime CI and GitHub Actions; all 24 package identities remain unchanged, and the fresh host runner passes 765 unit cases and source-closure controls.
 - [ ] Verify query-vector compatibility guards on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 765 unit cases, incompatible-vector fallback, and genuine database-failure controls.
-- [ ] Verify embedding-cardinality guards on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 764 unit cases with unchanged exclusions.
+- [x] Verify embedding-cardinality guards on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for ed111195, following 764 passing local unit cases. (done 2026-10-31 02:04 EDT; commit ed111195)
 - [x] Verify HTTP embedding-rejection preservation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 34cae751, following 761 passing local unit cases and real HTTP preservation/fallback controls. (done 2026-10-31 01:33 EDT; commit 34cae751)
-- [x] Verify freed-unit-lane scheduling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fa8630cd, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit fa8630cd)
 - [x] Verify provider-response cleanup and rejected-replacement preservation on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for f1211cf8, following 761 passing local unit cases. (done 2026-10-31 01:21 EDT; commit f1211cf8)
-- [x] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 134812b3, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit 134812b3)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
 ## Watcher reliability
@@ -29,9 +28,9 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 11.02-second execution lower bound and 15.67-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
-	- [ ] Attribute the latest slowdown with fresh prepared-component spans over retained artifacts in one admitted job; distinguish command execution from evaluation/setup and retain every required control. (context: docs/plan_context/test_latency.md)
-	- [x] Reuse the freed unit lane for independent harness checks; a FIFO regression failed on the old runner, and fourteen scenarios now cover two-suite concurrency, source-copy ordering, lane failures, and joins; fresh component execution fell from 7.77 to 4.83 seconds. (done 2026-10-31 00:47 EDT; context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 8.11-second execution lower bound and 5.54-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
+	- [x] Record current prepared components in one admitted job: 22 spans, 765 passing unit cases, 7.14 seconds elapsed/13.28 seconds summed work; largest spans are units, orchestration, CLI, source copy, and packaging, without establishing a single cause for broad slowdown. (done 2026-10-31 02:04 EDT; context: docs/plan_context/test_latency.md)
+	- [x] Share the filtered Nix project source across package outputs; all 24 package identities stay unchanged, evaluation measures 5.54 seconds versus a 9.79-second reverse control, and the full fresh host runner passes all available checks. (done 2026-10-31 02:04 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
