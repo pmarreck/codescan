@@ -4,7 +4,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Diagnose the native Windows ARM64 cancellation hang: c7b31b61's first process passes generic cancel/join then hangs in the combined real HTTP/TLS test; separate header/body/TLS cases preserve its assertions and pass locally, but the stalled phase and underlying cause still require native evidence.
+- [ ] Fix the native Windows ARM64 HTTP-header cancellation hang: e789bbb6's seventh process stalls after six complete passes; local bounded SDK stack-capture/process controls and matching-PDB export are implemented, but actual thread stacks and the root cause remain pending.
 - [x] Verify focused cancellation prerequisites on exact-commit GitHub Actions and Mechatron Prime CI; both pass for c914cbff, including complete native Mac checks, both selected cancellation cases, eight rejection controls, all five release targets, and exactly five nonempty canonical archives. (done 2026-10-31 13:41 EDT; commit c914cbff)
 - [x] Finish complete CI verification for cd3002f4; both services and the native Windows workflow pass, including full native Mac checks, actual x64/ARM64 cancellation execution, and exactly five nonempty canonical archives; the later ARM64 hang is tracked separately rather than erasing this result. (done 2026-10-31 14:03 EDT; commit cd3002f4)
 - [x] Verify native Linux ARM64 full-suite gating for 8295fd41: the GitHub build workflow and Mechatron Prime CI pass, actual native Linux x64/ARM64 checks finish before all five archives, and the artifact API confirms exactly five nonempty canonical archives; the separate Windows ARM64 runtime failure remains open. (done 2026-10-31 14:21 EDT; commit 8295fd41)

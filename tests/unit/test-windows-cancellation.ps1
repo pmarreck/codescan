@@ -54,7 +54,7 @@ Expect-Rejection { Assert-CancellationEvidence 0 'unexpected' $valid }
 
 # Process ports make timeout/reaping behavior deterministic without sleeps or
 # launching a child. Completed tasks model buffered output available at EOF.
-foreach ($scenario in @('completed', 'timeout', 'reap-failure')) {
+foreach ($scenario in @('completed', 'timeout', 'reap-failure', 'diagnostic', 'diagnostic-failure', 'diagnostic-exit', 'debugger-timeout')) {
 	$events = [Collections.Generic.List[string]]::new()
 	$streams = @()
 	foreach ($label in @('stdout', 'stderr')) {
@@ -68,28 +68,50 @@ foreach ($scenario in @('completed', 'timeout', 'reap-failure')) {
 	$processPort = [pscustomobject]@{
 		Events = $events; Completes = ($scenario -eq 'completed'); Reaps = ($scenario -ne 'reap-failure')
 		StandardOutput = $streams[0]; StandardError = $streams[1]; ExitCode = 42
+		HasExited = ($scenario -eq 'completed'); ExitsDuringKill = ($scenario -eq 'diagnostic-exit')
+		ExpectedWait = $(if ($scenario -eq 'debugger-timeout') { 1500 } else { 30000 })
+		ExpectedReap = $(if ($scenario -eq 'debugger-timeout') { 500 } elseif ($scenario -like 'diagnostic*') { 3000 } else { 5000 })
 	}
 	$processPort | Add-Member ScriptMethod WaitForExit {
 		param([int] $Milliseconds)
 		$this.Events.Add("wait:$Milliseconds")
-		if ($Milliseconds -eq 30000) { return $this.Completes }
-		if ($Milliseconds -eq 5000) { return $this.Reaps }
+		if ($Milliseconds -eq $this.ExpectedWait) { return $this.Completes }
+		if ($Milliseconds -eq $this.ExpectedReap) { return $this.Reaps }
 		throw 'Unexpected process bound'
 	}
 	$processPort | Add-Member ScriptMethod Kill {
 		param([bool] $EntireTree)
 		$this.Events.Add("kill:$EntireTree")
+		if ($this.ExitsDuringKill) { $this.HasExited = $true; throw 'process already exited' }
 	}
 	if ($scenario -eq 'reap-failure') {
 		Expect-Rejection { Complete-CancellationProcess $processPort }
 	} else {
-		$result = Complete-CancellationProcess $processPort
-		if ($result.StandardOutput -cne 'buffered-stdout' -or $result.StandardError -cne 'buffered-stderr' -or $result.ExitCode -ne 42 -or $result.TimedOut -ne ($scenario -eq 'timeout')) { throw 'Process completion lost buffered evidence or status' }
+		if ($scenario -like 'diagnostic*') {
+			$processPort | Add-Member NoteProperty DiagnosticFails ($scenario -eq 'diagnostic-failure')
+			$result = Complete-CancellationProcess $processPort -ReapMilliseconds 3000 -TimeoutDiagnostics {
+				param($Target)
+				$Target.Events.Add('diagnostic')
+				if ($Target.DiagnosticFails) { throw 'controlled stack capture failure' }
+				return 'captured stack'
+			}
+			if ($scenario -eq 'diagnostic' -and $result.Diagnostics -cne 'captured stack') { throw 'Lost stack capture' }
+			if ($scenario -eq 'diagnostic-failure' -and $result.Diagnostics -notlike '*controlled stack capture failure*') { throw 'Lost stack failure diagnostic' }
+		} elseif ($scenario -eq 'debugger-timeout') { $result = Complete-CancellationProcess $processPort -WaitMilliseconds 1500 -ReapMilliseconds 500 }
+		else { $result = Complete-CancellationProcess $processPort }
+		if ($result.StandardOutput -cne 'buffered-stdout' -or $result.StandardError -cne 'buffered-stderr' -or $result.ExitCode -ne 42 -or $result.TimedOut -ne ($scenario -ne 'completed')) { throw 'Process completion lost buffered evidence or status' }
 	}
-	$expectedEvents = 'read:stdout;read:stderr;wait:30000'
-	if ($scenario -ne 'completed') { $expectedEvents += ';kill:True;wait:5000' }
+	$expectedEvents = "read:stdout;read:stderr;wait:$($processPort.ExpectedWait)"
+	if ($scenario -like 'diagnostic*') { $expectedEvents += ';diagnostic;kill:True;wait:3000' }
+	elseif ($scenario -eq 'debugger-timeout') { $expectedEvents += ';kill:True;wait:500' }
+	elseif ($scenario -ne 'completed') { $expectedEvents += ';kill:True;wait:5000' }
 	if (($events -join ';') -cne $expectedEvents) { throw 'Process completion changed the bound or reap ordering' }
 }
+$debugInfo = New-CdbStartInfo 'C:/debugger/cdb.exe' 4242 'C:/symbols with spaces' 'C:/private scratch'
+if ($debugInfo.FileName -cne 'C:/debugger/cdb.exe' -or $debugInfo.WorkingDirectory -cne 'C:/private scratch' -or $debugInfo.UseShellExecute -or -not $debugInfo.RedirectStandardOutput -or -not $debugInfo.RedirectStandardError) { throw 'Wrong debugger process setup' }
+if (($debugInfo.ArgumentList -join '|') -cne '-pv|-pd|-p|4242|-y|C:/symbols with spaces|-c|~* k; qd') { throw 'Debugger must attach only to the owned PID, capture all stacks, and detach' }
+if ($debugInfo.Environment['_NT_SYMBOL_PATH'] -cne 'C:/symbols with spaces' -or $debugInfo.Environment['DBGHELP_HOMEDIR'] -cne 'C:/private scratch') { throw 'Debugger state escaped private paths' }
+if ($debugInfo.Environment['TEMP'] -cne 'C:/private scratch' -or $debugInfo.Environment['USERPROFILE'] -cne 'C:/private scratch') { throw 'Debugger temporary/user state is not private' }
 
 # Execute the workflow's actual loop with a recorded request port. One failed
 # process must abort the fixed campaign, not be retried until a later pass.

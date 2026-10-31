@@ -24,8 +24,12 @@ jobs:
         run: |
           nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64
           mkdir -p cancellation-mswin-amd64 cancellation-mswin-arm64
-          cp "$(nix path-info .#cancellation-mswin-amd64)/bin/codescan-cancellation-tests.exe" cancellation-mswin-amd64/
-          cp "$(nix path-info .#cancellation-mswin-arm64)/bin/codescan-cancellation-tests.exe" cancellation-mswin-arm64/
+          for arch in amd64 arm64; do
+            product="$(nix path-info ".#cancellation-mswin-$arch")"
+            for extension in exe pdb; do
+              cp "$product/bin/codescan-cancellation-tests.$extension" "cancellation-mswin-$arch/"
+            done
+          done
       - uses: actions/upload-artifact@v6
         with:
           name: cancellation-mswin-amd64

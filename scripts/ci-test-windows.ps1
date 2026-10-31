@@ -29,19 +29,67 @@ function Assert-CancellationEvidence([int] $ExitCode, [string] $StandardOutput, 
 	}
 }
 
-function Complete-CancellationProcess($Process) {
+function Complete-CancellationProcess($Process, [scriptblock] $TimeoutDiagnostics, [int] $WaitMilliseconds = 30000, [int] $ReapMilliseconds = 5000) {
 	$stdoutTask = $Process.StandardOutput.ReadToEndAsync()
 	$stderrTask = $Process.StandardError.ReadToEndAsync()
-	$timedOut = -not $Process.WaitForExit(30000)
+	$timedOut = -not $Process.WaitForExit($WaitMilliseconds)
+	$diagnostics = ''
 	if ($timedOut) {
-		$Process.Kill($true)
-		if (-not $Process.WaitForExit(5000)) { throw 'Cancellation process tree did not exit after termination' }
+		if ($TimeoutDiagnostics) {
+			try { $diagnostics = & $TimeoutDiagnostics $Process } catch { $diagnostics = "Stack capture failed: $($_.Exception.Message)" }
+		}
+		try { $Process.Kill($true) } catch {
+			# Exiting during stack capture must retain the timeout verdict and
+			# buffered evidence, not replace them with an already-exited error.
+			if (-not $Process.HasExited) { throw }
+		}
+		if (-not $Process.WaitForExit($ReapMilliseconds)) { throw 'Cancellation process tree did not exit after termination' }
 	}
 	return [pscustomobject]@{
 		TimedOut = $timedOut
+		Diagnostics = $diagnostics
 		ExitCode = $Process.ExitCode
 		StandardOutput = $stdoutTask.GetAwaiter().GetResult()
 		StandardError = $stderrTask.GetAwaiter().GetResult()
+	}
+}
+
+function New-CdbStartInfo([string] $Debugger, [int] $TargetId, [string] $Symbols, [string] $WorkDirectory) {
+	$info = [Diagnostics.ProcessStartInfo]::new($Debugger)
+	$info.UseShellExecute = $false
+	$info.RedirectStandardOutput = $true
+	$info.RedirectStandardError = $true
+	$info.WorkingDirectory = $WorkDirectory
+	$info.Environment.Clear()
+	foreach ($name in @('SystemRoot', 'WINDIR', 'SystemDrive')) {
+		$value = [Environment]::GetEnvironmentVariable($name)
+		if ($value) { $info.Environment[$name] = $value }
+	}
+	$info.Environment['_NT_SYMBOL_PATH'] = $Symbols
+	$info.Environment['_NT_ALT_SYMBOL_PATH'] = ''
+	$info.Environment['DBGHELP_HOMEDIR'] = $WorkDirectory
+	foreach ($name in @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR')) { $info.Environment[$name] = $WorkDirectory }
+	foreach ($argument in @('-pv', '-pd', '-p', [string] $TargetId, '-y', $Symbols, '-c', '~* k; qd')) { $info.ArgumentList.Add($argument) }
+	return $info
+}
+
+function Get-CancellationStacks([int] $TargetId, [string] $Architecture, [string] $Symbols, [string] $WorkDirectory) {
+	$debugArchitecture = if ($Architecture -eq 'arm64') { 'arm64' } else { 'x64' }
+	$programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+	$debugger = Join-Path $programFiles "Windows Kits/10/Debuggers/$debugArchitecture/cdb.exe"
+	if (-not (Test-Path -LiteralPath $debugger -PathType Leaf)) { return "Stack capture unavailable: missing SDK debugger $debugger" }
+	if (-not (Test-Path -LiteralPath (Join-Path $Symbols 'codescan-cancellation-tests.pdb') -PathType Leaf)) { return 'Stack capture unavailable: missing matching PDB' }
+	$debugProcess = [Diagnostics.Process]::new()
+	$debugStarted = $false
+	try {
+		$debugProcess.StartInfo = New-CdbStartInfo $debugger $TargetId $Symbols $WorkDirectory
+		$debugStarted = $debugProcess.Start()
+		if (-not $debugStarted) { throw 'SDK debugger did not start' }
+		$trace = Complete-CancellationProcess $debugProcess -WaitMilliseconds 1500 -ReapMilliseconds 500
+		return "SDK stack capture: exit=$($trace.ExitCode) timedOut=$($trace.TimedOut)`n$($trace.StandardOutput)`n$($trace.StandardError)"
+	} finally {
+		if ($debugStarted -and -not $debugProcess.HasExited) { $debugProcess.Kill($true); $null = $debugProcess.WaitForExit(500) }
+		$debugProcess.Dispose()
 	}
 }
 
@@ -80,7 +128,11 @@ try {
 	$process.StartInfo = $start
 	$started = $process.Start()
 	if (-not $started) { throw 'Cancellation process did not start' }
-	$result = Complete-CancellationProcess $process
+	$result = Complete-CancellationProcess $process -ReapMilliseconds 3000 -TimeoutDiagnostics {
+		param($Target)
+		Get-CancellationStacks $Target.Id $Architecture $binary.DirectoryName $fixture
+	}
+	if ($result.Diagnostics) { Write-Output $result.Diagnostics }
 	Write-Output $result.StandardOutput
 	Write-Output $result.StandardError
 	if ($result.TimedOut) { throw 'Cancellation process exceeded 30 seconds; buffered test progress is shown above' }
