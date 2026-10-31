@@ -1,0 +1,1 @@
+/* Pinned Swift parser sources must not be read from the checkout. */

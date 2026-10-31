@@ -45,7 +45,7 @@ pub fn build(b: *std.Build) void {
 	const ts_ruby = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ruby", "deps/tree-sitter-ruby/src", true);
 	const ts_erlang = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_erlang", "deps/tree-sitter-erlang/src", true);
 	const ts_ocaml = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ocaml", "deps/tree-sitter-ocaml/src", true);
-	const ts_swift = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_swift", "deps/tree-sitter-swift/src", true);
+	const ts_swift = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_swift", b.fmt("{s}/swift", .{grammar_root}), true);
 	const ts_llvm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_llvm", "deps/tree-sitter-llvm/src", false);
 	const ts_clojure = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_clojure", "deps/tree-sitter-clojure/src", false);
 	const ts_asm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_asm", "deps/tree-sitter-asm/src", false);

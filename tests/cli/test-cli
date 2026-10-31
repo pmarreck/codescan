@@ -264,6 +264,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==2 and .body==["proc add(a: int, b: int): int = a + b"]' >/dev/null || \
 		fail "Nim grammar changed the exact procedure body: $out"
 
+	swift_file="$DB_DIR/functions with spaces.swift"
+	printf '%s\n' '// Forces a throwing call.' 'func force() -> Int {' \
+		$'\treturn try! load()' '}' 'func adjacent() -> Int { 42 }' > "$swift_file"
+	capture "$BIN" symbols --file "$swift_file" --json
+	[ "$rc" -eq 0 ] || fail "Swift symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"force",kind:"fn",start_line:2,end_line:4},{name:"adjacent",kind:"fn",start_line:5,end_line:5}]' >/dev/null || \
+		fail "Swift grammar changed the complete function set or source ranges: $out"
+	capture "$BIN" symbols force --file "$swift_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Swift function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="force" and .start_line==2 and .end_line==4 and .body==["func force() -> Int {","\treturn try! load()","}"]' >/dev/null || \
+		fail "Swift grammar changed the exact function body: $out"
+
 	python_root="$DB_DIR/python project"
 	mkdir -p "$python_root/.git" "$python_root/.venv" "$python_root/package"
 	python_file="$python_root/client with spaces.py"

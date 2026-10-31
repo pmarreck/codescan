@@ -25,6 +25,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
 						]);
 				};
 				projectSource = compiledSource ./.;
@@ -89,6 +90,75 @@
 				grammar-fish = grammarSource "ram02z" "tree-sitter-fish"
 					"f435b0bd772578c70e5d158b85267bb886316f88"
 					"sha256-9an4YAz2QKC3yAJ5/tOfmqOJViGATz7+NhKuZpr4oC4=";
+				# These native generator assets reproduce the existing ABI-15 source.
+				# Updating this tool intentionally requires revalidating SOURCE_SHA256.
+				swiftGeneratorAsset = {
+					x86_64-linux = { name = "linux-x64"; hash = "sha256-wuDlmnAKniDDBNRndjMjuJuDWh5eNcCOc+31fblzs90="; };
+					aarch64-linux = { name = "linux-arm64"; hash = "sha256-N/9IZASXm/HnoTgR0G9EvyuZ3quLc6hncseptIo/u7s="; };
+					aarch64-darwin = { name = "macos-arm64"; hash = "sha256-lu2yuue4qxZsFw1qtWroDMAtVqerPxkbct+IMXCb3EY="; };
+				}.${system};
+				swiftGenerator = pkgs.stdenvNoCC.mkDerivation {
+					pname = "codescan-swift-generator";
+					version = "0.26.4";
+					src = pkgs.fetchurl {
+						url = "https://github.com/tree-sitter/tree-sitter/releases/download/v0.26.4/tree-sitter-${swiftGeneratorAsset.name}.gz";
+						hash = swiftGeneratorAsset.hash;
+					};
+					strictDeps = true;
+					nativeBuildInputs = [ pkgs.gzip pkgs.file ] ++ pkgs.lib.optional pkgs.stdenv.isLinux pkgs.autoPatchelfHook;
+					buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.glibc pkgs.stdenv.cc.cc.lib ];
+					dontUnpack = true;
+					dontConfigure = true;
+					dontBuild = true;
+					dontStrip = true;
+					installPhase = ''
+						mkdir -p "$out/bin" || exit "$?"
+						gzip -dc "$src" > "$out/bin/tree-sitter" || exit "$?"
+						chmod +x "$out/bin/tree-sitter" || exit "$?"
+					'';
+					doInstallCheck = true;
+					installCheckPhase = ''
+						file --brief "$out/bin/tree-sitter" || exit "$?"
+						[ "$("$out/bin/tree-sitter" --version)" = 'tree-sitter 0.26.4' ] || exit 1
+					'';
+				};
+				grammar-swift = pkgs.runCommand "codescan-swift-source-0.7.1" {
+					source = pkgs.applyPatches {
+						name = "codescan-swift-patched-source";
+						src = pkgs.fetchzip {
+							url = "https://registry.npmjs.org/tree-sitter-swift/-/tree-sitter-swift-0.7.1.tgz";
+							hash = "sha256-pyCOUT30u2t/1lzFPT4In/EHWbNmQS15ZP+LGJahxPE=";
+						};
+						# Retain these until the selected upstream scanner supplies both
+						# unsigned 64-bit shifts; the source oracle must still match.
+						patches = [ ./patches/swift-scanner-unsigned-shifts.patch ];
+						patchFlags = [ "-p1" "--fuzz=0" ];
+					};
+					nativeBuildInputs = [ swiftGenerator pkgs.nodejs ];
+				} ''
+					umask 077
+					export HOME="$TMPDIR/home" XDG_CONFIG_HOME="$TMPDIR/config" XDG_CACHE_HOME="$TMPDIR/cache"
+					export XDG_DATA_HOME="$TMPDIR/data" XDG_STATE_HOME="$TMPDIR/state" XDG_RUNTIME_DIR="$TMPDIR/runtime"
+					export RAYON_NUM_THREADS="$NIX_BUILD_CORES"
+					mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR" || exit "$?"
+					cp -R "$source" work || exit "$?"
+					chmod -R u+w work || exit "$?"
+					cd work || exit "$?"
+					if tree-sitter generate --abi 15 > "$TMPDIR/generation.log" 2>&1; then :; else
+						status=$?
+						cat "$TMPDIR/generation.log" >&2
+						exit "$status"
+					fi
+					umask 022
+					mkdir -p "$out/src/tree_sitter" || exit "$?"
+					for path in parser.c scanner.c grammar.json node-types.json tree_sitter/parser.h tree_sitter/alloc.h tree_sitter/array.h; do
+						cp "src/$path" "$out/src/$path" || exit "$?"
+					done
+					cp "$source/LICENSE" "$out/LICENSE" || exit "$?"
+					cmp "$out/LICENSE" ${./deps/tree-sitter-swift/LICENSE} || exit "$?"
+					cd "$out" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-swift/SOURCE_SHA256} || exit "$?"
+				'';
 				grammar-nu = grammarSource "nushell" "tree-sitter-nu"
 					"d694570aa26b53d0d642460a0430e8aa07dcbea0"
 					"sha256-eWHAcV8bPCnL9y4PtPn6cJRylGQ2KMxCUoUGwDVigkg=";
@@ -132,6 +202,7 @@
 					{ name = "c"; path = "${grammar-c}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
+					{ name = "swift"; path = "${grammar-swift}/src"; }
 					{ name = "fish"; path = "${grammar-fish}/src"; }
 					{ name = "nu"; path = "${grammar-nu}/src"; }
 					{ name = "powershell"; path = "${grammar-powershell}/src"; }
@@ -248,11 +319,9 @@
 					touch "$out"
 				'';
 
+				checks.swift-source = grammar-swift;
 				checks.swift-scanner-shifts = pkgs.runCommand "codescan-swift-scanner-shifts" {
-					source = pkgs.lib.fileset.toSource {
-						root = ./deps/tree-sitter-swift/src;
-						fileset = pkgs.lib.fileset.unions [ ./deps/tree-sitter-swift/src/scanner.c ./deps/tree-sitter-swift/src/tree_sitter ];
-					};
+					source = "${grammar-swift}/src";
 					nativeBuildInputs = [ pkgs.zig_0_16 ];
 				} ''
 					export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
