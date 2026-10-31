@@ -145,6 +145,7 @@
 						mkdir -p "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"
 
 						zig build \
+							-j"$NIX_BUILD_CORES" \
 							--system ${zigPkgCache} \
 							-Doptimize=${profile} \
 							${pkgs.lib.optionalString (target != null) "-Dtarget=${target}"} \
@@ -210,15 +211,50 @@
 						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
 						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-						zig build test-artifacts --system ${zigPkgCache} -Dtarget=${nativeZigTarget} -Doptimize=ReleaseSafe --prefix "$out" --color off
+						zig build test-artifacts -j"$NIX_BUILD_CORES" --system ${zigPkgCache} -Dtarget=${nativeZigTarget} -Doptimize=ReleaseSafe --prefix "$out" --color off
 					'';
 				};
+
+				checks.compiler-concurrency = pkgs.runCommand "codescan-compiler-concurrency" {
+					cliPhase = self.packages.${system}.default.buildPhase;
+					unitPhase = self.packages.${system}.test-binaries.buildPhase;
+					passAsFile = [ "cliPhase" "unitPhase" ];
+					nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
+				} ''
+					set +e
+					set -u
+					zig() {
+						[ "$1" = build ] || return 64
+						printf 'call\n' >> "$PROBE_CALLS"
+						local argument
+						for argument in "$@"; do
+							case "$argument" in -j*) printf '%s\n' "$argument" >> "$PROBE_JOBS" ;; esac
+						done
+					}
+					export -f zig
+					failed=0
+					for phase in "$cliPhasePath" "$unitPhasePath"; do
+						for cores in 1 4 12; do
+							export PROBE_CALLS="$TMPDIR/calls" PROBE_JOBS="$TMPDIR/jobs"
+							: > "$PROBE_CALLS"
+							: > "$PROBE_JOBS"
+							if env NIX_BUILD_CORES="$cores" out="$TMPDIR/probe-product" bash "$phase"; then :; else failed=1; fi
+							if [ "$(< "$PROBE_CALLS")" != call ] || [ "$(< "$PROBE_JOBS")" != "-j$cores" ]; then
+								printf 'compiler phase did not request exactly one -j%s build\n' "$cores" >&2
+								failed=1
+							fi
+						done
+					done
+					[ "$failed" -eq 0 ] || exit 1
+					touch "$out"
+				'';
 
 				# Reuse the complete prepared runtime suite inside the Nix sandbox.
 				# Compilation stays in separate reusable artifact derivations.
 				checks.test = pkgs.stdenv.mkDerivation {
 					pname = "codescan-test";
 					version = "0.1.0";
+					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
 					src = ./.;
 					nativeBuildInputs = runtimeTools;
 					dontConfigure = true;

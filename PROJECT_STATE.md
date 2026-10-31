@@ -7,37 +7,40 @@
 - **Type**: high-level content kind (`code`, `doc`, `text`, `log`).
 - **Language**: plugin language id (e.g., `zig`, `elixir`, `c`).
 - **Extension**: file suffix filter (e.g., `zig`, `md`).
-- **Primary language**: most common code extension in the repo; used as default search scope.
+- **Primary language**: optional configured search restriction; default searches include all code languages when it is unset.
 - **Docs**: markdown + README (README with or without extension).
 - **Comments**: doc comments extracted by language plugins (searchable via comment-only mode).
 
 ## Build + test
-- Build: `nix develop -c zig build`
-- Unit tests: `./test`
-- CLI test: `nix develop -c ./tests/cli/test-cli`
-- HTTP test: `nix develop -c ./tests/http/test-http`
+- Build and publish the native release CLI: `./build` (Nix is required).
+- Build current source and execute the exact native output without publication: `./run ARGS...`.
+- Prepare exact Nix artifacts and run the complete available suite: `./test` (includes units, CLI, HTTP, and integration checks; live-provider exclusions are reported explicitly).
+- Prepare compiled test prerequisites without publication: `./build --test`.
+- Selected suites require the prepared artifact environment supplied by the harness; they do not replace `./test`.
+- The host filesystem boundary is qualified on Linux; native Nix checks and macOS release smoke checks are separate evidence, not a claim of full native Windows test execution.
+- Dated plans under `docs/superpowers/` are historical records, not current build instructions.
 
 ## Run (CLI)
 - Config:
-  - `./zig-out/bin/codescan config` (show)
-  - `./zig-out/bin/codescan config edit`
+  - `./run config` (show)
+  - `./run config edit`
 - Index (creates `.codescan/index.sqlite3` under the root):
-  - `./zig-out/bin/codescan index --root <path>`
-- Update (full reindex for now):
-  - `./zig-out/bin/codescan update --root <path>`
+  - `./run index --root <path>`
+- Update (incremental; incompatible schema/model settings can require a verified rebuild):
+  - `./run update --root <path>`
 - Search:
-  - `./zig-out/bin/codescan search "<query>" --root <path>`
+  - `./run search "<query>" --root <path>`
   - Optional knobs: `--mode <vector|lexical|hybrid>`, `--weight-vector`, `--weight-lexical`, `--top`
   - Filters: `--ext <csv>`, `--type <csv>`, `--lang <csv>`, `--include-docs`, `--docs/--only-docs`, `--comments/--only-comments`
   - Output: `--show-comments`/`--verbose` to display doc comments in human output
 - If `--root` is omitted, codescan searches upward from the current directory for a `.codescan/` directory and uses that root (else current dir).
 
 ## Run (HTTP)
-- `./zig-out/bin/codescan serve --root <path> --http-host 127.0.0.1 --http-port 8123`
+- `./run serve --root <path> --http-host 127.0.0.1 --http-port 8123`
 - Endpoints: `/health`, `/help`, `/index`, `/search` (see `src/server.zig` for request shape)
 
-## Config (.codescan/config)
-- Load path: `<root>/.codescan/config`
+## Config (.codescan/config.ini)
+- Canonical path: `<root>/.codescan/config.ini`; the legacy `config` filename remains a fallback.
 - Keys: `output`, `top`, `root`, `db`, `ollama_url`, `ollama_model` (or env `OLLAMA_MODEL`), `embedding_dim`, `batch_size`,
   `max_file_size` (default 2097152), `search_mode`, `weight_vector`, `weight_lexical`, `min_score`, `http_host`, `http_port`,
   `index_ext`, `index_type`, `search_ext`, `search_type`, `search_lang`, `primary_lang`, `include_docs`, `docs_only`, `comments_only`,

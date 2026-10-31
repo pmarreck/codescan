@@ -96,7 +96,7 @@ run_case disabled '' none 0
 [ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/disabled.events")" -eq 0 ] || fail 'disabled recording invoked the profiler'
 run_case profiled fixture-job none 0
 actual="$(awk -F '\t' '$1 == "span" { print $2 "\t" $3 "\t" $4 }' "$fixture/profiled.events")"
-expected=$'fixture-job\tsetup\tdev-shell cache preservation shell entry\nfixture-job\texecute\tdev-shell cache preservation\nfixture-job\tnix_eval\tall-system flake evaluation\nfixture-job\tmixed\tcompiled source closure\nfixture-job\tsetup\tpreventive filesystem boundary shell entry\nfixture-job\texecute\tpreventive filesystem boundary\nfixture-job\tsetup\tisolated complete suite shell entry\nfixture-job\texecute\tisolated complete suite'
+expected=$'fixture-job\tsetup\tdev-shell cache preservation shell entry\nfixture-job\texecute\tdev-shell cache preservation\nfixture-job\tnix_eval\tall-system flake evaluation\nfixture-job\tmixed\tcompiler concurrency contract\nfixture-job\tmixed\tcompiled source closure\nfixture-job\tsetup\tpreventive filesystem boundary shell entry\nfixture-job\texecute\tpreventive filesystem boundary\nfixture-job\tsetup\tisolated complete suite shell entry\nfixture-job\texecute\tisolated complete suite'
 [ "$actual" = "$expected" ] || fail 'the real runner did not record the complete ordered phase set'
 [ "$(awk -F '\t' '$1 == "span" && $3 == "setup" && $5 == 123 { n++ } END { print n+0 }' "$fixture/profiled.events")" -eq 3 ] || fail 'shell-entry spans lost their pre-entry stamps'
 run_case recorder-failure fixture-job recorder 1
@@ -104,9 +104,9 @@ run_case recorder-failure fixture-job recorder 1
 run_case stamp-failure fixture-job stamp 1
 [ "$(awk '$1 == "test" { n++ } END { print n+0 }' "$fixture/stamp-failure.events")" -eq 0 ] || fail 'a failed clock recorder still launched test execution'
 run_case test-failure fixture-job test 1
-[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/test-failure.events")" -eq 8 ] || fail 'a failed test dropped later required phase records'
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/test-failure.events")" -eq 9 ] || fail 'a failed test dropped later required phase records'
 run_case boundary-failure fixture-job boundary 1
-[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/boundary-failure.events")" -eq 6 ] || fail 'a failed isolation check still launched the complete suite'
+[ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/boundary-failure.events")" -eq 7 ] || fail 'a failed isolation check still launched the complete suite'
 run_case artifact-preparation fixture-job none 0 prepare
 [ "$(awk -F '\t' '$1 == "span" && $3 == "mixed" && $4 == "artifact preparation" { n++ } END { print n+0 }' "$fixture/artifact-preparation.events")" -eq 1 ] || fail 'Nix preparation was omitted or misclassified as pure compilation'
 
