@@ -4,13 +4,12 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify packaging-suite lane reuse on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host/component runs pass 772 unit cases and all 16 scheduling/failure scenarios, retaining two lanes and unchanged exclusions.
-- [ ] Verify automatic symbol-discovery root handling on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 772 unit cases and the CLI/MCP root regressions.
+- [ ] Verify lexical identifier candidate normalization and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 774 unit cases, 132 candidate-membership decisions, four comment-only controls, and six CLI query/mode cases.
+- [x] Verify packaging-suite lane reuse on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 1532513d, following 772 passing local unit cases and all 16 scheduling/failure scenarios. (done 2026-10-31 04:27 EDT; commit 1532513d)
+- [x] Verify automatic symbol-discovery root handling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 370067d9, following 772 passing local unit cases and actual CLI/MCP discovery controls. (done 2026-10-31 04:27 EDT; commit 370067d9)
 - [x] Verify shared scanner ignore preparation and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for aef038b1, following 771 passing local unit cases and 2,050 paired CLI output checks. (done 2026-10-31 04:07 EDT; commit aef038b1)
 - [x] Verify MCP project-relative file targeting on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 0df165c1, following all 18 local file-operation cases and 769 passing unit cases. (done 2026-10-31 03:11 EDT; commit 0df165c1)
 - [x] Verify pending-file vector incompatibility advice on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fb68fa55, following 769 passing local unit cases and the independent SQLite-failure control. (done 2026-10-31 03:11 EDT; commit fb68fa55)
-- [x] Verify atomic full-index schema replacement on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for b12c183b, following 767 passing local unit cases plus rollback, retained semantic search, and retry controls. (done 2026-10-31 02:40 EDT; commit b12c183b)
-- [x] Verify query-vector compatibility guards on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 8aa45c33, following 765 passing local unit cases and genuine database-failure controls. (done 2026-10-31 02:20 EDT; commit 8aa45c33)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -31,15 +30,11 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 5.81-second execution lower bound and 4.58-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.28-second execution lower bound and 3.85-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
 	- [x] Move CI architecture/publication into the freed unit lane after a failing FIFO-overlap regression; all 16 scheduling/failure scenarios and 772 unit cases pass, with 4.53-second component elapsed execution and a retained two-suite limit. (done 2026-10-31 04:12 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Compile shared scanner ignore rules once per discovery; a leaking allocation-failure sweep failed first, then 771 unit cases, 136 classifier decisions, and 2,050 paired CLI checks passed; identical one-file discovery batches improved in both CPU-affinity modes. (done 2026-10-31 03:50 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
-- [x] Test controlled provider-model failure paths for compatibility and preserved lexical/file operations; rejected replacements, malformed/count/width responses, pending-file advice, and independent SQLite controls pass with 769 unit cases; ranking-quality comparisons remain tabled. (done 2026-10-31 02:49 EDT; context: docs/plan_context/inference_availability.md)
-	- [x] Preserve lexical fallback for empty/narrow/wide query vectors in both HTTP dialects; six cases first failed with SQL errors, then all 765 unit cases and genuine SQLite/metadata failure controls passed in complete Nix and fresh confined host runs. (done 2026-10-31 01:49 EDT; context: docs/plan_context/inference_availability.md)
-	- [x] Rebuild full-index vector schemas at the detected width and roll back failed preparation; two regressions first failed with stale table widths, lost symbols, and a leak, then complete Nix and fresh confined host checks passed 767 unit cases plus restored semantic search and retry. (done 2026-10-31 02:25 EDT; context: docs/plan_context/inference_availability.md)
-	- [x] Preserve pending-file inference advice for incompatible vector widths; all three valid wrong-width responses first omitted the warning, then complete Nix and fresh confined host checks passed 769 unit cases, retained vectors/file reads, pending markers, and a real SQLite-trigger control. (done 2026-10-31 02:40 EDT; context: docs/plan_context/inference_availability.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
 
 ## Architecture and features
@@ -54,7 +49,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Move update database preparation/freshness into the shared service after characterization tests prove CLI/MCP/HTTP behavior remains identical.
 - [ ] Extract one CLI command/scorer component at a time behind existing behavioral tests; begin with command orchestration rather than rewriting scoring policy.
 - [ ] Add `codescan symbols --depth N` with explicit root-depth, invalid-value, and JSON/human truncation tests.
-- [ ] Add lexical fixtures proving camelCase/snake_case cross-matching without unrelated matches, then normalize at the candidate-selection boundary.
+- [x] Normalize camelCase/snake_case identifier candidates in FTS and SQL fallback after failing set/CLI regressions; all 774 unit cases, 132 membership decisions, four comment-only controls, six CLI lookups, and allocation-failure cleanup pass complete Nix and fresh confined host checks. (done 2026-10-31 04:37 EDT; context: docs/plan_context/filter_classifiers.md)
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
 
 ## Tabled (not actionable)

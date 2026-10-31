@@ -257,6 +257,9 @@ codescan "hash functions" --root <path>
 codescan search "hash functions" --root <path> --show-comments
 # comment-only search (doc comments only)
 codescan search "hash functions" --root <path> --comments
+# lexical identifier lookup matches camelCase and snake_case names/signatures
+codescan search "parseHttpResponse" --mode lexical
+codescan search "parse_http_response" --mode lexical
 # include markdown/README when using default search scope
 codescan search "design doc" --include-docs
 # only markdown/README results

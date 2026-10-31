@@ -891,35 +891,54 @@ fn likeCandidates(
 ) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
-	const pattern = try std.fmt.allocPrint(allocator, "%{s}%", .{query});
+	var variants = try identifierVariants(allocator, query);
+	defer if (variants) |*value| value.deinit(allocator);
+	const escaped = if (variants != null) try escapeLikeIdentifier(allocator, query) else null;
+	defer if (escaped) |value| allocator.free(value);
+	const literal_query = escaped orelse query;
+	const escape_clause: []const u8 = if (variants != null) " ESCAPE '\\'" else "";
+	const camel = if (variants) |value| try identifierLikePattern(allocator, value.camel) else null;
+	defer if (camel) |value| allocator.free(value);
+	const snake = if (variants) |value| try identifierLikePattern(allocator, value.snake) else null;
+	defer if (snake) |value| allocator.free(value);
+
+	const pattern = try std.fmt.allocPrint(allocator, "%{s}%", .{literal_query});
 	defer allocator.free(pattern);
 	const pattern_z = try allocator.dupeZ(u8, pattern);
 	defer allocator.free(pattern_z);
 
-	const query_z = try allocator.dupeZ(u8, query);
+	const query_z = try allocator.dupeZ(u8, literal_query);
 	defer allocator.free(query_z);
-	const prefix = try std.fmt.allocPrint(allocator, "{s}%", .{query});
+	const prefix = try std.fmt.allocPrint(allocator, "{s}%", .{literal_query});
 	defer allocator.free(prefix);
 	const prefix_z = try allocator.dupeZ(u8, prefix);
 	defer allocator.free(prefix_z);
 
-	// ?1 = %query% (LIKE pattern), ?2 = query (exact), ?3 = query% (prefix), ?4 = limit
-	const sql: [:0]const u8 =
+	// Alternate spellings apply only to names/signatures, not comments or bodies.
+	const sql = try allocPrintZ(allocator,
 		"SELECT id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
 		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, "
 		++ "1e999 AS distance "
 		++ "FROM symbols "
-		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE "
-		++ "OR signature LIKE ?1 COLLATE NOCASE "
-		++ "OR doc_comment LIKE ?1 COLLATE NOCASE "
-		++ "OR body LIKE ?1 COLLATE NOCASE "
+		++ "WHERE symbol_name LIKE ?1 COLLATE NOCASE{s} "
+		++ "OR signature LIKE ?1 COLLATE NOCASE{s} "
+		++ "OR doc_comment LIKE ?1 COLLATE NOCASE{s} "
+		++ "OR body LIKE ?1 COLLATE NOCASE{s} "
+		++ "OR symbol_name LIKE ?5 COLLATE NOCASE ESCAPE '\\' "
+		++ "OR signature LIKE ?5 COLLATE NOCASE ESCAPE '\\' "
+		++ "OR symbol_name LIKE ?6 COLLATE NOCASE ESCAPE '\\' "
+		++ "OR signature LIKE ?6 COLLATE NOCASE ESCAPE '\\' "
 		++ "ORDER BY "
-		++ "CASE WHEN symbol_name LIKE ?2 COLLATE NOCASE THEN 0 "
-		++ "WHEN symbol_name LIKE ?3 COLLATE NOCASE THEN 1 "
-		++ "WHEN symbol_name LIKE ?1 COLLATE NOCASE THEN 2 "
-		++ "WHEN signature LIKE ?1 COLLATE NOCASE THEN 3 "
+		++ "CASE WHEN symbol_name LIKE ?2 COLLATE NOCASE{s} THEN 0 "
+		++ "WHEN symbol_name LIKE ?3 COLLATE NOCASE{s} THEN 1 "
+		++ "WHEN symbol_name LIKE ?1 COLLATE NOCASE{s} THEN 2 "
+		++ "WHEN signature LIKE ?1 COLLATE NOCASE{s} THEN 3 "
 		++ "ELSE 4 END "
-		++ "LIMIT ?4;\x00";
+		++ "LIMIT ?4;",
+		.{ escape_clause, escape_clause, escape_clause, escape_clause,
+			escape_clause, escape_clause, escape_clause, escape_clause },
+	);
+	defer allocator.free(sql);
 
 	var stmt: ?*sqlite.sqlite3_stmt = null;
 	if (sqlite.sqlite3_prepare_v2(db, sql, -1, &stmt, null) != sqlite.SQLITE_OK) {
@@ -928,9 +947,11 @@ fn likeCandidates(
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
 
 	_ = sqlite.sqlite3_bind_text(stmt.?, 1, pattern_z.ptr, @intCast(pattern.len), null);
-	_ = sqlite.sqlite3_bind_text(stmt.?, 2, query_z.ptr, @intCast(query.len), null);
+	_ = sqlite.sqlite3_bind_text(stmt.?, 2, query_z.ptr, @intCast(literal_query.len), null);
 	_ = sqlite.sqlite3_bind_text(stmt.?, 3, prefix_z.ptr, @intCast(prefix.len), null);
 	_ = sqlite.sqlite3_bind_int64(stmt.?, 4, @intCast(limit));
+	if (camel) |value| try bindText(stmt.?, 5, value);
+	if (snake) |value| try bindText(stmt.?, 6, value);
 
 	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
@@ -1014,7 +1035,7 @@ fn ftsCandidates(
 ) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
-	const fts_query = try buildFtsQueryMode(allocator, query, fts_mode);
+	const fts_query = try buildCandidateFtsQuery(allocator, query, fts_mode);
 	defer allocator.free(fts_query);
 
 	const sql_ranked: [:0]const u8 =
@@ -1578,7 +1599,7 @@ fn splitCamelSnake(allocator: std.mem.Allocator, token: []const u8) ![][]u8 {
 	while (i < token.len) : (i += 1) {
 		if (token[i] == '_') {
 			if (i > start) {
-				try parts.append(allocator, try toLowerDupe(allocator, token[start..i]));
+				try appendLowercasePart(allocator, &parts, token[start..i]);
 			}
 			start = i + 1;
 			continue;
@@ -1587,20 +1608,26 @@ fn splitCamelSnake(allocator: std.mem.Allocator, token: []const u8) ![][]u8 {
 			// Check if this is start of a new word or an uppercase run
 			if (!std.ascii.isUpper(token[i - 1])) {
 				// camelCase boundary: "nameR" → split before 'R'
-				try parts.append(allocator, try toLowerDupe(allocator, token[start..i]));
+				try appendLowercasePart(allocator, &parts, token[start..i]);
 				start = i;
 			} else if (i + 1 < token.len and !std.ascii.isUpper(token[i + 1]) and token[i + 1] != '_') {
 				// End of uppercase run: "HTTPServer" → split before 'S' to get "HTTP" + "Server"
-				try parts.append(allocator, try toLowerDupe(allocator, token[start..i]));
+				try appendLowercasePart(allocator, &parts, token[start..i]);
 				start = i;
 			}
 		}
 	}
 	if (start < token.len) {
-		try parts.append(allocator, try toLowerDupe(allocator, token[start..]));
+		try appendLowercasePart(allocator, &parts, token[start..]);
 	}
 
 	return parts.toOwnedSlice(allocator);
+}
+
+fn appendLowercasePart(allocator: std.mem.Allocator, parts: *std.ArrayListUnmanaged([]u8), value: []const u8) !void {
+	const owned = try toLowerDupe(allocator, value);
+	errdefer allocator.free(owned);
+	try parts.append(allocator, owned);
 }
 
 fn toLowerDupe(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
@@ -1800,6 +1827,89 @@ fn joinPartsAsSnake(allocator: std.mem.Allocator, parts: []const []const u8) ![]
 		try buf.appendSlice(allocator, part);
 	}
 	return buf.toOwnedSlice(allocator);
+}
+
+const IdentifierVariants = struct {
+	camel: []u8,
+	snake: []u8,
+
+	fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+		allocator.free(self.camel);
+		allocator.free(self.snake);
+	}
+};
+
+fn identifierVariants(allocator: std.mem.Allocator, query: []const u8) !?IdentifierVariants {
+	const trimmed = std.mem.trim(u8, query, " \t\r\n");
+	if (trimmed.len == 0) return null;
+	for (trimmed) |ch| {
+		if (!std.ascii.isAlphanumeric(ch) and ch != '_') return null;
+	}
+	const parts = try splitCamelSnake(allocator, trimmed);
+	defer {
+		for (parts) |part| allocator.free(part);
+		allocator.free(parts);
+	}
+	if (parts.len < 2) return null;
+	const camel = try joinPartsAsCamel(allocator, parts);
+	errdefer allocator.free(camel);
+	return .{ .camel = camel, .snake = try joinPartsAsSnake(allocator, parts) };
+}
+
+fn escapeLikeIdentifier(allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+	var escaped: std.ArrayListUnmanaged(u8) = .empty;
+	errdefer escaped.deinit(allocator);
+	for (value) |ch| {
+		if (ch == '_' or ch == '%' or ch == '\\') try escaped.append(allocator, '\\');
+		try escaped.append(allocator, ch);
+	}
+	return escaped.toOwnedSlice(allocator);
+}
+
+fn identifierLikePattern(allocator: std.mem.Allocator, value: []const u8) ![:0]u8 {
+	const escaped = try escapeLikeIdentifier(allocator, value);
+	defer allocator.free(escaped);
+	return allocPrintZ(allocator, "%{s}%", .{escaped});
+}
+
+fn buildCandidateFtsQuery(allocator: std.mem.Allocator, query: []const u8, mode: FtsMode) ![]u8 {
+	const original = try buildFtsQueryMode(allocator, query, mode);
+	var variants = (identifierVariants(allocator, query) catch |err| {
+		allocator.free(original);
+		return err;
+	}) orelse return original;
+	defer allocator.free(original);
+	defer variants.deinit(allocator);
+	var expanded: std.ArrayListUnmanaged(u8) = .empty;
+	errdefer expanded.deinit(allocator);
+	try expanded.append(allocator, '(');
+	try expanded.appendSlice(allocator, original);
+	try expanded.append(allocator, ')');
+	for ([_][]const u8{ variants.camel, variants.snake }) |alternate| {
+		if (std.ascii.eqlIgnoreCase(std.mem.trim(u8, query, " \t\r\n"), alternate)) continue;
+		try expanded.appendSlice(allocator, " OR {symbol_name signature} : \"");
+		try expanded.appendSlice(allocator, alternate);
+		try expanded.append(allocator, '"');
+	}
+	return expanded.toOwnedSlice(allocator);
+}
+
+test "identifier variants retain ownership through allocation failures" {
+	const Fixture = struct {
+		fn run(allocator: std.mem.Allocator) !void {
+			for ([_][]const u8{ "parseHTTP_responseValue", "simple", "two word phrase" }) |query| {
+				const fts = try buildCandidateFtsQuery(allocator, query, .broad);
+				defer allocator.free(fts);
+				if (try identifierVariants(allocator, query)) |value| {
+					var variants = value;
+					defer variants.deinit(allocator);
+					const pattern = try identifierLikePattern(allocator, variants.snake);
+					defer allocator.free(pattern);
+				}
+			}
+		}
+	};
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, Fixture.run, .{});
 }
 
 fn buildFtsQuery(allocator: std.mem.Allocator, query: []const u8) ![]u8 {
@@ -2989,6 +3099,62 @@ test "splitCamelSnake handles trailing acronym" {
 	try std.testing.expectEqual(@as(usize, 2), parts.len);
 	try std.testing.expectEqualStrings("parse", parts[0]);
 	try std.testing.expectEqualStrings("json", parts[1]);
+}
+
+test "lexical candidate sets preserve complete cross-case identifiers" {
+	const allocator = std.testing.allocator;
+	const cases = [_]struct {
+		name: []const u8,
+		signature: []const u8 = "fn unrelated() void",
+		comment: ?[]const u8 = null,
+		body: ?[]const u8 = null,
+		matches: [2]bool = .{ false, false },
+	}{
+		.{ .name = "parseHttpResponse", .matches = .{ true, true } },
+		.{ .name = "parse_http_response", .matches = .{ true, true } },
+		.{ .name = "invoke", .signature = "fn invoke(value: parseHttpResponse) void", .matches = .{ true, true } },
+		.{ .name = "parseHttpRequest" },
+		.{ .name = "renderHttpResponse" },
+		.{ .name = "parseResponse" },
+		.{ .name = "parseAhttpBresponse" },
+		.{ .name = "camelComment", .comment = "parseHttpResponse", .matches = .{ true, false } },
+		.{ .name = "snakeComment", .comment = "parse_http_response", .matches = .{ false, true } },
+		.{ .name = "camelBody", .body = "parseHttpResponse", .matches = .{ true, false } },
+		.{ .name = "snakeBody", .body = "parse_http_response", .matches = .{ false, true } },
+	};
+	for ([_]bool{ true, false }) |with_fts| {
+		const db = try storage.openMemoryWithVec(allocator);
+		defer storage.close(db);
+		var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+		defer schema.deinit(allocator);
+		for (cases) |case| {
+			_ = try storage.insertSymbol(db, .{
+				.language = "zig", .file_path = "fixture.zig", .name = case.name,
+				.signature = case.signature, .doc_comment = case.comment, .body = case.body,
+				.start_line = 1, .end_line = 1,
+			});
+		}
+		if (!with_fts) try std.testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_exec(db, "DROP TABLE symbols_fts;", null, null, null));
+		for ([_][]const u8{ "parseHttpResponse", "parse_http_response" }, 0..) |query, query_index| {
+			for ([_]FtsMode{ .broad, .balanced, .strict }) |mode| {
+				const rows = try lexicalCandidates(allocator, db, query, 20, false, mode);
+				defer freeResults(allocator, rows);
+				try std.testing.expectEqual(@as(usize, 5), rows.len);
+				for (rows) |row| try std.testing.expect(if (with_fts) row.bm25 < 0 else row.bm25 == 0);
+				for (cases) |case| {
+					var occurrences: usize = 0;
+					for (rows) |row| {
+						if (std.mem.eql(u8, case.name, row.symbol.name)) occurrences += 1;
+					}
+					try std.testing.expectEqual(@as(usize, if (case.matches[query_index]) 1 else 0), occurrences);
+				}
+			}
+			const comments = try lexicalCandidates(allocator, db, query, 20, true, .broad);
+			defer freeResults(allocator, comments);
+			try std.testing.expectEqual(@as(usize, 1), comments.len);
+			try std.testing.expectEqualStrings(if (query_index == 0) "camelComment" else "snakeComment", comments[0].symbol.name);
+		}
+	}
 }
 
 test "lexicalScore cross-case matching camelCase query vs snake_case name" {

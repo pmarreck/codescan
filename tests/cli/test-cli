@@ -99,6 +99,27 @@ main() {
 	[ "$(printf '%s' "$out" | jq -r '.freshness')" = reconciled ] || fail "fresh search omitted reconciled metadata"
 	[ ! -e "$fresh_root/.codescan/watcher.pid" ] || fail "fresh search implicitly started a watcher"
 
+	cross_case_root="$DB_DIR/cross-case-identifiers"
+	mkdir -p "$cross_case_root/.git" || fail 'cross-case fixture setup'
+	printf '%s\n' \
+		'pub fn parseHttpResponse() void {}' \
+		'pub fn parse_http_response() void {}' \
+		'pub fn invoke(callback: @TypeOf(parseHttpResponse)) void { _ = callback; }' \
+		'pub fn parseHttpRequest() void {}' \
+		'pub fn renderHttpResponse() void {}' \
+		'pub fn parseResponse() void {}' \
+		'pub fn parseAhttpBresponse() void {}' > "$cross_case_root/cases.zig"
+	capture "$BIN" index --root "$cross_case_root" --lexical-only
+	[ "$rc" -eq 0 ] || fail "cross-case fixture index failed: $err"
+	for query in parseHttpResponse parse_http_response; do
+		for fts_mode in broad balanced strict; do
+			capture "$BIN" search "$query" --root "$cross_case_root" --mode lexical --fts-mode "$fts_mode" --top 20 --json
+			[ "$rc" -eq 0 ] || fail "cross-case search failed: $err"
+			printf '%s' "$out" | jq -e '[.results[].name] | sort == ["invoke", "parseHttpResponse", "parse_http_response"]' >/dev/null || \
+				fail "cross-case search lost a complete identifier or added unrelated symbols ($query/$fts_mode): $out"
+		done
+	done
+
 	python_root="$DB_DIR/python project"
 	mkdir -p "$python_root/.git" "$python_root/.venv" "$python_root/package"
 	python_file="$python_root/client with spaces.py"
