@@ -122,6 +122,18 @@ main() {
 		done
 	done
 
+	c_file="$DB_DIR/functions with spaces.c"
+	printf '%s\n' '// Adds two values.' 'int add(int left, int right) {' \
+		$'\treturn left + right;' '}' 'int prototype(int value);' 'static void adjacent(void) {}' > "$c_file"
+	capture "$BIN" symbols --file "$c_file" --json
+	[ "$rc" -eq 0 ] || fail "C symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"add",kind:"fn",start_line:2,end_line:4},{name:"adjacent",kind:"fn",start_line:6,end_line:6}]' >/dev/null || \
+		fail "C grammar changed the complete function set or source ranges: $out"
+	capture "$BIN" symbols add --file "$c_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "C function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==4 and .body==["int add(int left, int right) {","\treturn left + right;","}"]' >/dev/null || \
+		fail "C grammar changed the exact function body: $out"
+
 	python_root="$DB_DIR/python project"
 	mkdir -p "$python_root/.git" "$python_root/.venv" "$python_root/package"
 	python_file="$python_root/client with spaces.py"

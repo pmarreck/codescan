@@ -88,8 +88,8 @@
 - sqlite-vec fork: `pmarreck/sqlite-vec` is used via `build.zig.zon` and statically linked.
   - Static init in `src/storage.zig` calls `sqlite3_vec_init` (no runtime extension loading).
 - SQLite amalgamation path is provided via `SQLITE_VEC_SQLITE_AMALGAMATION_DIR` (set in `flake.nix`).
-- tree-sitter runtime + tree-sitter-c grammar are vendored under `deps/` and built as static libs.
-- New tree-sitter grammars are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`; older grammars remain under `deps/`. `deps/tree-sitter-nim/src/scanner.c` includes a null-buffer guard for Zig's runtime checks.
+- The tree-sitter runtime and remaining older grammars are vendored under `deps/` and built as static libraries.
+- Fourteen grammars, including C, are pinned Nix fetches exposed through `CODESCAN_GRAMMAR_ROOT`. C is pinned at `tree-sitter/tree-sitter-c@7fa1be1b694b6e763686793d97da01f36a0e5c12`, byte-identical to the existing parser, headers, and license; legacy C parser files are excluded from compiled source inputs. `deps/tree-sitter-nim/src/scanner.c` retains its null-buffer guard for Zig's runtime checks.
 - PCRE2 is required for glob matching and is built as a Zig dependency (`qaptoR-support/pcre2`).
 
 ## Known behaviors
@@ -99,7 +99,7 @@
 - `min_score` filters low-scoring results after ranking (default `0.0`).
 - Indexed symbols are enriched with inferred metadata when extractors do not provide it (`symbol_kind`, `symbol_visibility`, `symbol_scope`, `symbol_arity`).
 - Interactive index/update shows a compact per-file progress counter on stderr (TTY only).
-- Search defaults to the primary code language by file count unless filters are supplied.
+- Search defaults to all code languages; a configured primary language restricts that default only when explicitly selected in settings.
 - `--include-docs` (or `include_docs=true`) adds markdown/README results to the default search.
 - `--docs`/`--only-docs` restrict results to markdown/README only.
 - `--comments`/`--only-comments` restrict results to doc comments only.
@@ -117,7 +117,8 @@
 
 ## CI / Releases
 - GitHub Actions workflow: `.github/workflows/build.yml`
-- Builds ReleaseFast artifacts for macOS arm64, Linux x86_64 (musl), Windows x86_64.
+- GitHub Actions builds ReleaseFast artifacts for macOS ARM64 and Linux AMD64/ARM64 (musl); native macOS packaging includes header/about smoke checks.
+- Mechatron Prime CI additionally builds the declared Windows AMD64/ARM64 release packages; cross-build success does not establish native Windows execution.
 - Tag pushes (`v*`) create a GitHub Release with attached artifacts.
 - CI helpers: `scripts/ci-setup-nix`, `scripts/ci-build`.
 - Local CI runner: `scripts/ci-local` (uses `act`, Linux-only).

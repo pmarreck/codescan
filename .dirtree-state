@@ -168,6 +168,7 @@ annotate=[
 	tests/cli/test-mcp-offline = Actual stdio MCP fallback, file/edit, and rejected-provider session regressions
 	tests/cli/test-watcher-schema-preservation = Native CLI regression preserving an existing index after a rejected schema write
 	tests/fixtures/source-closure = Read-only accepted/rejected input corpus for actual Nix package source filtering
+	tests/fixtures/source-closure/deps/tree-sitter-c/src/parser.c = Negative source-closure control for the separately pinned C grammar
 	tests/http/test-http = Live HTTP adapter test; bounded Ollama preflight skips by default and strict mode requires it.
 	tests/integration/test-integration = RAM-backed live integration test; bounded Ollama preflight skips by default and strict mode requires it.
 	tests/lib/capture.bash = Portable RAM-only stdout/stderr/status capture for test scripts

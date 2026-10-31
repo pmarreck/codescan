@@ -1,0 +1,1 @@
+/* Legacy C grammar source must not enter the compiled project source closure. */

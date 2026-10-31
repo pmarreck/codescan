@@ -28,7 +28,9 @@ pub fn build(b: *std.Build) void {
 	});
 	const pcre2_lib = pcre2_dep.artifact("pcre2-8");
 	const ts_lib = buildTreeSitter(b, target, optimize);
-	const tsc_lib = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_c", "deps/tree-sitter-c/src", false);
+	const grammar_root = b.graph.environ_map.get("CODESCAN_GRAMMAR_ROOT") orelse
+		@panic("CODESCAN_GRAMMAR_ROOT is unset; build codescan through its Nix flake");
+	const tsc_lib = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_c", b.fmt("{s}/c", .{grammar_root}), false);
 	const ts_typescript = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_typescript", "deps/tree-sitter-typescript/typescript/src", true);
 	const ts_tsx = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_tsx", "deps/tree-sitter-typescript/tsx/src", true);
 	const ts_rust = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_rust", "deps/tree-sitter-rust/src", true);
@@ -47,8 +49,6 @@ pub fn build(b: *std.Build) void {
 	const ts_llvm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_llvm", "deps/tree-sitter-llvm/src", false);
 	const ts_clojure = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_clojure", "deps/tree-sitter-clojure/src", false);
 	const ts_asm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_asm", "deps/tree-sitter-asm/src", false);
-	const grammar_root = b.graph.environ_map.get("CODESCAN_GRAMMAR_ROOT") orelse
-		@panic("CODESCAN_GRAMMAR_ROOT is unset; build codescan through its Nix flake");
 	const ts_fish = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_fish", b.fmt("{s}/fish", .{grammar_root}), true);
 	const ts_nu = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nu", b.fmt("{s}/nu", .{grammar_root}), true);
 	const ts_powershell = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_powershell", b.fmt("{s}/powershell", .{grammar_root}), true);

@@ -19,7 +19,9 @@
 				nativeZigTarget = { x86_64-linux = "x86_64-linux-musl"; aarch64-linux = "aarch64-linux-musl"; aarch64-darwin = "aarch64-macos"; }.${system};
 				compiledSource = root: pkgs.lib.fileset.toSource {
 					inherit root;
-					fileset = pkgs.lib.fileset.unions [ (root + "/src") (root + "/deps") (root + "/build.zig") (root + "/build.zig.zon") ];
+					fileset = pkgs.lib.fileset.difference
+						(pkgs.lib.fileset.unions [ (root + "/src") (root + "/deps") (root + "/build.zig") (root + "/build.zig.zon") ])
+						(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"));
 				};
 				projectSource = compiledSource ./.;
 				sqlite-amalgamation = pkgs.fetchzip {
@@ -48,6 +50,9 @@
 				grammarSource = owner: repo: rev: hash: pkgs.fetchFromGitHub {
 					inherit owner repo rev hash;
 				};
+				grammar-c = grammarSource "tree-sitter" "tree-sitter-c"
+					"7fa1be1b694b6e763686793d97da01f36a0e5c12"
+					"sha256-gmzbdwvrKSo6C1fqTJFGxy8x0+T+vUTswm7F5sojzKc=";
 				grammar-fish = grammarSource "ram02z" "tree-sitter-fish"
 					"f435b0bd772578c70e5d158b85267bb886316f88"
 					"sha256-9an4YAz2QKC3yAJ5/tOfmqOJViGATz7+NhKuZpr4oC4=";
@@ -91,6 +96,7 @@
 				# One immutable root keeps build.zig independent of Nix's individual
 				# store paths while preserving exact source provenance in this flake.
 				grammarSources = pkgs.linkFarm "codescan-tree-sitter-grammars" [
+					{ name = "c"; path = "${grammar-c}/src"; }
 					{ name = "fish"; path = "${grammar-fish}/src"; }
 					{ name = "nu"; path = "${grammar-nu}/src"; }
 					{ name = "powershell"; path = "${grammar-powershell}/src"; }
