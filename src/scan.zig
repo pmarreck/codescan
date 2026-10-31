@@ -22,6 +22,11 @@ const IgnoreSet = struct {
 	patterns: []IgnorePattern,
 };
 
+const IgnoreSets = struct {
+	common: []IgnorePattern,
+	languages: []IgnoreSet,
+};
+
 const node_modules_pattern = "**/node_modules/**";
 const bin_pattern = "**/bin/**";
 const max_shebang_line_bytes = 256;
@@ -178,7 +183,7 @@ fn appendEligibleFile(
 	allocator: std.mem.Allocator,
 	dir: std.Io.Dir,
 	registry: plugin.Registry,
-	ignore_sets: []IgnoreSet,
+	ignore_sets: IgnoreSets,
 	path: []const u8,
 	results: *std.ArrayListUnmanaged([]const u8),
 	progress: ?FileProgress,
@@ -458,7 +463,21 @@ fn buildIgnoreSets(
 	registry: plugin.Registry,
 	ignore_cfg: IgnoreConfig,
 	skip_bin_ignore: bool,
-) ![]IgnoreSet {
+) !IgnoreSets {
+	if (registry.extractors.len == 0) return .{ .common = &.{}, .languages = &.{} };
+	var common: std.ArrayListUnmanaged(IgnorePattern) = .empty;
+	errdefer {
+		for (common.items) |*pattern| pattern.pattern.deinit();
+		common.deinit(allocator);
+	}
+	try appendDefaultPatterns(allocator, &common, ignore_cfg.include_node_modules, skip_bin_ignore);
+	try appendPatterns(allocator, &common, ignore_cfg.global);
+	const common_patterns = try common.toOwnedSlice(allocator);
+	errdefer {
+		for (common_patterns) |*pattern| pattern.pattern.deinit();
+		allocator.free(common_patterns);
+	}
+
 	var sets = @as(std.ArrayListUnmanaged(IgnoreSet), .empty);
 	errdefer {
 		for (sets.items) |*set| {
@@ -469,26 +488,22 @@ fn buildIgnoreSets(
 	}
 
 	for (registry.extractors) |extractor| {
+		try sets.append(allocator, .{ .language = extractor.language, .patterns = &.{} });
 		var patterns = @as(std.ArrayListUnmanaged(IgnorePattern), .empty);
 		errdefer {
 			for (patterns.items) |*pat| pat.pattern.deinit();
 			patterns.deinit(allocator);
 		}
 
-		try appendDefaultPatterns(allocator, &patterns, ignore_cfg.include_node_modules, skip_bin_ignore);
-		try appendPatterns(allocator, &patterns, ignore_cfg.global);
 		try appendPatterns(allocator, &patterns, extractor.ignore_patterns);
 		if (findOverrides(ignore_cfg.per_language, extractor.language)) |override| {
 			try appendPatterns(allocator, &patterns, override.patterns.items);
 		}
 
-		try sets.append(allocator, .{
-			.language = extractor.language,
-			.patterns = try patterns.toOwnedSlice(allocator),
-		});
+		sets.items[sets.items.len - 1].patterns = try patterns.toOwnedSlice(allocator);
 	}
 
-	return sets.toOwnedSlice(allocator);
+	return .{ .common = common_patterns, .languages = try sets.toOwnedSlice(allocator) };
 }
 
 fn appendPatterns(
@@ -519,7 +534,8 @@ fn appendPattern(
 	patterns: *std.ArrayListUnmanaged(IgnorePattern),
 	raw: []const u8,
 ) !void {
-	const compiled = try filter.compile(allocator, raw);
+	var compiled = try filter.compile(allocator, raw);
+	errdefer compiled.deinit();
 	try patterns.append(allocator, .{
 		.pattern = compiled,
 		.root_anchored = std.mem.startsWith(u8, raw, "/"),
@@ -538,24 +554,25 @@ fn findOverrides(
 
 fn shouldIgnore(
 	allocator: std.mem.Allocator,
-	ignore_sets: []IgnoreSet,
+	ignore_sets: IgnoreSets,
 	language: []const u8,
 	rel_path: []const u8,
 ) bool {
-	const set = findIgnoreSet(ignore_sets, language) orelse return false;
-	if (set.patterns.len == 0) return false;
+	const set = findIgnoreSet(ignore_sets.languages, language) orelse return false;
 
 	var root_rel: ?[]u8 = null;
 	defer if (root_rel) |value| allocator.free(value);
 
-	for (set.patterns) |*pat| {
-		const candidate = if (pat.root_anchored) blk: {
-			if (root_rel == null) {
-				root_rel = std.fmt.allocPrint(allocator, "/{s}", .{rel_path}) catch return false;
-			}
-			break :blk root_rel.?;
-		} else rel_path;
-		if (pat.pattern.matches(candidate)) return true;
+	for ([_][]IgnorePattern{ ignore_sets.common, set.patterns }) |patterns| {
+		for (patterns) |*pat| {
+			const candidate = if (pat.root_anchored) blk: {
+				if (root_rel == null) {
+					root_rel = std.fmt.allocPrint(allocator, "/{s}", .{rel_path}) catch return false;
+				}
+				break :blk root_rel.?;
+			} else rel_path;
+			if (pat.pattern.matches(candidate)) return true;
+		}
 	}
 
 	return false;
@@ -568,12 +585,81 @@ fn findIgnoreSet(ignore_sets: []IgnoreSet, language: []const u8) ?*IgnoreSet {
 	return null;
 }
 
-fn deinitIgnoreSets(allocator: std.mem.Allocator, ignore_sets: []IgnoreSet) void {
-	for (ignore_sets) |*set| {
+fn deinitIgnoreSets(allocator: std.mem.Allocator, ignore_sets: IgnoreSets) void {
+	for (ignore_sets.common) |*pattern| pattern.pattern.deinit();
+	allocator.free(ignore_sets.common);
+	for (ignore_sets.languages) |*set| {
 		for (set.patterns) |*pat| pat.pattern.deinit();
 		allocator.free(set.patterns);
 	}
-	allocator.free(ignore_sets);
+	allocator.free(ignore_sets.languages);
+}
+
+test "ignore pattern append frees compiled ownership on allocation failure" {
+	const Fixture = struct {
+		fn run(allocator: std.mem.Allocator) !void {
+			var patterns: std.ArrayListUnmanaged(IgnorePattern) = .empty;
+			defer {
+				for (patterns.items) |*pattern| pattern.pattern.deinit();
+				patterns.deinit(allocator);
+			}
+			try appendPattern(allocator, &patterns, "**/fixture-cache/**");
+		}
+	};
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, Fixture.run, .{});
+}
+
+test "ignore rules classify global and language sets independently under discovery options" {
+	const allocator = std.testing.allocator;
+	const defaults = plugin.defaultRegistry();
+	const extractors = [_]plugin.Extractor{
+		.{ .language = "zig", .kind = .code, .extensions = &.{".zig"}, .ignore_patterns = &.{"**/zig-plugin/**"}, .extract = defaults.findByLanguage("zig").?.extract },
+		.{ .language = "bash", .kind = .code, .extensions = &.{".sh"}, .ignore_patterns = &.{"**/bash-plugin/**"}, .extract = defaults.findByLanguage("bash").?.extract },
+	};
+	const registry = plugin.Registry{ .extractors = &extractors };
+	var overrides = [_]config.IgnoreOverride{ .{ .language = "zig" }, .{ .language = "bash" } };
+	defer for (&overrides) |*entry| entry.patterns.deinit(allocator);
+	try overrides[0].patterns.append(allocator, "**/zig-user/**");
+	try overrides[1].patterns.append(allocator, "**/bash-user/**");
+	const cases = [_]struct {
+		path: []const u8, common: bool = false, zig: bool = false, bash: bool = false,
+		node_modules: bool = false, bin: bool = false,
+	}{
+		.{ .path = "src/ordinary.zig" },
+		.{ .path = "nested/shared-fixture/hidden.zig", .common = true },
+		.{ .path = "nested/shared-fixture-extra/visible.zig" },
+		.{ .path = "root-only/hidden.zig", .common = true },
+		.{ .path = "nested/root-only/visible.zig" },
+		.{ .path = "nested/zig-plugin/hidden.zig", .zig = true },
+		.{ .path = "nested/bash-plugin/hidden.sh", .bash = true },
+		.{ .path = "nested/zig-user/hidden.zig", .zig = true },
+		.{ .path = "nested/bash-user/hidden.sh", .bash = true },
+		.{ .path = "dist/hidden.zig", .common = true },
+		.{ .path = "mydist/visible.zig" },
+		.{ .path = "node_modules/optional.zig", .node_modules = true },
+		.{ .path = "nested/node_modules/optional.zig", .node_modules = true },
+		.{ .path = "node_modules-extra/visible.zig" },
+		.{ .path = "bin/optional.sh", .bin = true },
+		.{ .path = "nested/bin/optional.sh", .bin = true },
+		.{ .path = "mybin/visible.sh" },
+	};
+	for ([_]bool{ false, true }) |include_node_modules| {
+		for ([_]bool{ false, true }) |skip_bin_ignore| {
+			const sets = try buildIgnoreSets(allocator, registry, .{
+				.global = &.{ "**/shared-fixture/**", "/root-only/**" }, .per_language = &overrides,
+				.include_node_modules = include_node_modules,
+			}, skip_bin_ignore);
+			defer deinitIgnoreSets(allocator, sets);
+			for ([_][]const u8{ "zig", "bash" }) |language| {
+				for (cases) |case| {
+					const ignored = case.common or (case.node_modules and !include_node_modules) or
+						(case.bin and !skip_bin_ignore) or (case.zig and std.mem.eql(u8, language, "zig")) or
+						(case.bash and std.mem.eql(u8, language, "bash"));
+					try std.testing.expectEqual(ignored, shouldIgnore(allocator, sets, language, case.path));
+				}
+			}
+		}
+	}
 }
 
 test "findFiles finds supported extensions" {
