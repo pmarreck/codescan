@@ -37,6 +37,13 @@ nix() {
 		"$@"
 		return "$?"
 	fi
+	if [ "${1-}" = build ] && [ "${3-}" = --keep-going ]; then
+		printf 'native-checks\t%s\t%s\n' "$#" "$*" >> "$CI_CASE_EVENTS"
+		if [ "${CI_CASE_CHECK_RC:-0}" -ne 0 ]; then
+			printf 'fixture native tests failed\n' >&2
+		fi
+		return "${CI_CASE_CHECK_RC:-0}"
+	fi
 	[ "${1-}" = build ] && [ "${2-}" = --no-link ] && [ "${3-}" = --print-out-paths ] || return 64
 	printf 'build\t%s\n' "$*" >> "$CI_CASE_EVENTS"
 	if [ "$CI_CASE_BUILD_RC" -ne 0 ]; then
@@ -129,6 +136,8 @@ run_case() {
 			;;
 		valid-mac)
 			[ "$(awk '$1 == "binary" && $2 == "--about" { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail "native Mac binary was not smoke-executed"
+			[ "$(awk -F '\t' '$1 == "native-checks" { print $2 "\t" $3 }' "$case_dir/events")" = $'6\tbuild --no-link --keep-going -L .#checks.aarch64-darwin.test .#checks.aarch64-darwin.source-closure' ] || fail 'native Mac publication omitted or changed the complete native checks'
+			[ "$(awk '$1 == "native-checks" || $1 == "build" { print $1 }' "$case_dir/events")" = $'native-checks\nbuild' ] || fail 'native Mac checks must finish before release selection'
 			;;
 		binary-failure)
 			[ "$(awk '/^error:/ { n++ } END { print n+0 }' "$case_dir/stderr")" -gt 0 ] || fail "native smoke failure had no error diagnostic"
@@ -137,6 +146,9 @@ run_case() {
 			[ "$(awk '$1 == "uname" || $1 == "file" || $1 == "binary" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "Linux cross-build unexpectedly required a native Mac runner"
 			;;
 	esac
+	if [ "$target" != aarch64-macos ] || [ "$name" = wrong-os ] || [ "$name" = wrong-host-cpu ]; then
+		[ "$(awk '$1 == "native-checks" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail "$name: native Mac checks ran for the wrong target or host"
+	fi
 	if [ "$name" != wrong-os ] && [ "$name" != wrong-host-cpu ]; then
 		local attribute
 		case "$target" in
@@ -151,6 +163,30 @@ run_case() {
 	fi
 }
 
+reject_native_checks() {
+	local case_dir="$fixture_root/native-checks-failure/project with spaces" rc
+	mkdir -p "$case_dir/package dir" || fail 'native-check failure setup'
+	printf 'previous staging\n' > "$case_dir/package dir/previous"
+	printf 'previous archive\n' > "$case_dir/artifact.tar.gz"
+	printf 'fixture README\n' > "$case_dir/README.md"
+	printf 'fixture license\n' > "$case_dir/LICENSE"
+	: > "$case_dir/events"
+	if (
+		cd "$case_dir" || exit 1
+		env CI_CASE_EVENTS="$case_dir/events" CI_CASE_OS=Darwin CI_CASE_ARCH=arm64 \
+			CI_CASE_FORMAT='Mach-O 64-bit arm64 executable' CI_CASE_BUILD_RC=0 \
+			CI_CASE_FILE_RC=0 CI_CASE_BINARY_RC=0 CI_CASE_CHECK_RC=23 \
+			bash "$root/scripts/ci-build" aarch64-macos 'package dir' artifact.tar.gz
+	) > "$case_dir/stdout" 2> "$case_dir/stderr"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 23 ] || fail "failed native tests did not stop publication with their status: $rc"
+	[ "$(<"$case_dir/artifact.tar.gz")" = 'previous archive' ] || fail 'failed native tests replaced the previous archive'
+	[ "$(<"$case_dir/package dir/previous")" = 'previous staging' ] || fail 'failed native tests changed caller staging'
+	[ "$(awk '$1 == "native-checks" { n++ } END { print n+0 }' "$case_dir/events")" -eq 1 ] || fail 'native checks were not requested exactly once'
+	[ "$(awk '$1 == "build" || $1 == "binary" { n++ } END { print n+0 }' "$case_dir/events")" -eq 0 ] || fail 'failed native tests reached release selection or execution'
+	rg -F 'fixture native tests failed' "$case_dir/stderr" >/dev/null || fail 'native test failure diagnostic was lost'
+}
+
+reject_native_checks
 run_case wrong-os Linux arm64 'Mach-O 64-bit arm64 executable' reject aarch64-macos
 run_case wrong-host-cpu Darwin x86_64 'Mach-O 64-bit arm64 executable' reject aarch64-macos
 run_case wrong-binary Darwin arm64 'Mach-O 64-bit x86_64 executable' reject aarch64-macos

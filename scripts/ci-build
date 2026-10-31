@@ -37,6 +37,8 @@ fi
 
 if [ "$TARGET" = aarch64-macos ]; then
 	"$ci_mac_verifier" || exit "$?"
+	nix build --no-link --keep-going -L \
+		'.#checks.aarch64-darwin.test' '.#checks.aarch64-darwin.source-closure' || exit "$?"
 fi
 output="$(nix build --no-link --print-out-paths ".#$attribute")" || exit "$?"
 
