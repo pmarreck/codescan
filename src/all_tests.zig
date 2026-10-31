@@ -46,6 +46,7 @@ const _kind = @import("kind.zig");
 const _last_index = @import("last_index.zig");
 const _scan = @import("scan.zig");
 const _retirement = @import("retirement.zig");
+const _root_report = @import("root_report.zig");
 const _search = @import("search.zig");
 const _search_service = @import("search_service.zig");
 const _update_service = @import("update_service.zig");
@@ -115,6 +116,7 @@ test {
 	_ = _last_index;
 	_ = _scan;
 	_ = _retirement;
+	_ = _root_report;
 	_ = _search;
 	_ = _search_service;
 	_ = _update_service;

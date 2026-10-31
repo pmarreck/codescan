@@ -400,6 +400,40 @@ main() {
 	[ "$rc" -ne 0 ] || fail "root discovery crossed a nested Git boundary"
 	printf '%s' "$out" | jq -e '.root == null' >/dev/null || \
 		fail "root boundary failure did not emit its JSON diagnostic"
+	for component in ordinary 'quoted"path' 'backslash\path' $'line\nbreak\ttab\rcarriage' 'unicode-λ-雪'; do
+		for state in found missing; do
+			root_case="$DB_DIR/root-json/$state/$component"
+			mkdir -p "$root_case/.git" || fail 'root JSON fixture setup'
+			if [ "$state" = found ]; then mkdir "$root_case/.codescan" || fail 'root marker setup'; fi
+			for adapter in mcp cli; do
+				expected_rc=0
+				if [ "$adapter" = mcp ]; then
+					root_requests="$(printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"root","arguments":{}}}')"
+					capture timeout 15 "$BIN" mcp-serve --root "$root_case" <<< "$root_requests"
+					[ "$rc" -eq 0 ] || fail "MCP root session failed: $err"
+					expected_root_log="$(printf 'codescan mcp: server started (root: %s)\ncodescan mcp: stdin closed, shutting down' "$root_case")"
+					[ "$err" = "$expected_root_log" ] || fail 'MCP root session changed its captured lifecycle diagnostics'
+					root_payload="$(printf '%s\n' "$out" | jq -cse 'if map(.id)==[1,2] and all(.error==null and .result!=null) then .[1].result.content[0].text | fromjson else error("invalid root protocol") end' 2> "$DB_DIR/root-parse-error")" || \
+						fail "MCP root emitted a malformed report for [$component]"
+					out="$root_payload"
+				else
+					capture bash -c 'cd "$1" && "$2" root --json' _ "$root_case" "$BIN"
+					[ "$state" != missing ] || expected_rc=1
+				fi
+				[ "$rc" -eq "$expected_rc" ] || fail "$adapter root JSON $state changed its exit contract"
+				if [ "$adapter" = cli ]; then [ -z "$err" ] || fail 'root CLI emitted an unexpected diagnostic'; fi
+				if [ "$state" = found ]; then
+					printf '%s' "$out" | jq -e --arg path "$root_case" \
+						'.project_root==$path and .root==($path+"/.codescan") and .db_path==($path+"/.codescan/index.sqlite3") and .watcher_pid==null and .watcher_status=="stopped" and .walk_up_steps==0' \
+						>/dev/null 2> "$DB_DIR/root-parse-error" || fail "$adapter root JSON did not preserve discovered component [$component]: $out"
+				else
+					printf '%s' "$out" | jq -e --arg path "$root_case" \
+						'.root==null and .error==("no .codescan/ directory found walking up from "+$path)' \
+						>/dev/null 2> "$DB_DIR/root-parse-error" || fail "$adapter root JSON did not preserve missing component [$component]: $out"
+				fi
+			done
+		done
+	done
 
 	# Give the February timestamp its own fixture, independent of files indexed
 	# by earlier edit tests. This checks the ISO8601 off-by-one-month regression.

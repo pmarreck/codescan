@@ -146,6 +146,7 @@ annotate=[
 	src/progress.zig = Watcher progress file kept as a symlink into TMPDIR for low disk wear; codescan status reads it to report watcher activity
 	src/retirement.zig = Pure watcher-retirement policy: shouldRetire over an injected clock, activity classification, idle-limit parsing (0/never disable) and duration formatting
 	src/roc_signature.zig = Pure matching of partial Roc declaration signatures
+	src/root_report.zig = Pure shared CLI/MCP root JSON rendering with path escaping and allocation-failure controls
 	src/scan.zig = Git-aware source discovery, complete-set ignore boundaries, and extensionless shebang detection
 	src/search.zig = Candidate gathering and ranking, including explicit empty language constraints and query-embedding failure classification
 	src/search_service.zig = Transport-neutral search application service for filters, weights, execution, and lexical retry when query embeddings become unavailable.

@@ -37,6 +37,7 @@ const setup_model_text = @import("setup_model_text.zig");
 const preflight = @import("preflight.zig");
 const search_service = @import("search_service.zig");
 const update_service = @import("update_service.zig");
+const root_report = @import("root_report.zig");
 const retirement = @import("retirement.zig");
 const mcp_install = @import("mcp_install.zig");
 const io_singleton = @import("io_singleton.zig");
@@ -6790,7 +6791,10 @@ pub fn runRoot(
 
 	const info = info_opt orelse {
 		if (format == .json) {
-			try writer.print("{{\"root\":null,\"error\":\"no .codescan/ directory found walking up from {s}\"}}\n", .{cwd_path});
+			const rendered = try root_report.missing(allocator, cwd_path);
+			defer allocator.free(rendered);
+			try writer.writeAll(rendered);
+			try writer.writeAll("\n");
 		} else {
 			try writer.print("error: no .codescan/ directory found walking up from {s}\n", .{cwd_path});
 		}
@@ -6819,18 +6823,14 @@ pub fn runRoot(
 	else
 		"stopped";
 
-	try writer.writeAll("{");
-	try writer.print("\"project_root\":\"{s}\",", .{info.project_root});
-	try writer.print("\"root\":\"{s}\",", .{info.codescan_dir});
-	try writer.print("\"db_path\":\"{s}\",", .{db_path});
-	if (pid_opt) |pid| {
-		try writer.print("\"watcher_pid\":{d},", .{pid});
-	} else {
-		try writer.writeAll("\"watcher_pid\":null,");
-	}
-	try writer.print("\"watcher_status\":\"{s}\",", .{watcher_status});
-	try writer.print("\"walk_up_steps\":{d}", .{info.walk_up_steps});
-	try writer.writeAll("}\n");
+	const rendered = try root_report.found(allocator, .{
+		.project_root = info.project_root, .root = info.codescan_dir, .db_path = db_path,
+		.watcher_pid = if (pid_opt) |pid| @intCast(pid) else null,
+		.watcher_status = watcher_status, .walk_up_steps = info.walk_up_steps,
+	});
+	defer allocator.free(rendered);
+	try writer.writeAll(rendered);
+	try writer.writeAll("\n");
 }
 
 /// Outcome of running one agent CLI. A failed spawn is kept distinct from a

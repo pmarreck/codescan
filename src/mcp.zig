@@ -9,6 +9,7 @@ const embedding = @import("embedding.zig");
 const indexer = @import("indexer.zig");
 const index_service = @import("index_service.zig");
 const update_service = @import("update_service.zig");
+const root_report = @import("root_report.zig");
 const search = @import("search.zig");
 const output = @import("output.zig");
 const embedding_http = @import("embedding_http.zig");
@@ -763,20 +764,17 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			else
 				"stopped";
 
-			try out.writer.writeAll("{");
-			try out.writer.print("\"project_root\":\"{s}\",", .{info.project_root});
-			try out.writer.print("\"root\":\"{s}\",", .{info.codescan_dir});
-			try out.writer.print("\"db_path\":\"{s}\",", .{db_path});
-			if (pid_opt) |pid| {
-				try out.writer.print("\"watcher_pid\":{d},", .{pid});
-			} else {
-				try out.writer.writeAll("\"watcher_pid\":null,");
-			}
-			try out.writer.print("\"watcher_status\":\"{s}\",", .{watcher_status});
-			try out.writer.print("\"walk_up_steps\":{d}", .{info.walk_up_steps});
-			try out.writer.writeAll("}");
+			const rendered = try root_report.found(allocator, .{
+				.project_root = info.project_root, .root = info.codescan_dir, .db_path = db_path,
+				.watcher_pid = if (pid_opt) |pid| @intCast(pid) else null,
+				.watcher_status = watcher_status, .walk_up_steps = info.walk_up_steps,
+			});
+			defer allocator.free(rendered);
+			try out.writer.writeAll(rendered);
 		} else {
-			try out.writer.print("{{\"root\":null,\"error\":\"no .codescan/ directory found walking up from {s}\"}}", .{settings.root_path});
+			const rendered = try root_report.missing(allocator, settings.root_path);
+			defer allocator.free(rendered);
+			try out.writer.writeAll(rendered);
 		}
 	} else {
 		return error.UnknownTool;
