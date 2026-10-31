@@ -109,4 +109,57 @@ run_case boundary-failure fixture-job boundary 1
 [ "$(awk '$1 == "span" { n++ } END { print n+0 }' "$fixture/boundary-failure.events")" -eq 6 ] || fail 'a failed isolation check still launched the complete suite'
 run_case artifact-preparation fixture-job none 0 prepare
 [ "$(awk -F '\t' '$1 == "span" && $3 == "mixed" && $4 == "artifact preparation" { n++ } END { print n+0 }' "$fixture/artifact-preparation.events")" -eq 1 ] || fail 'Nix preparation was omitted or misclassified as pure compilation'
+
+# Keep both real shell-entry assertions; this port tests only their scheduling.
+mkdir "$fixture/cache-tools" || fail 'cache scheduling setup'
+{
+	printf '#!%s\n' "$BASH"
+	printf '%s\n' \
+		'[ "$1" = develop ] && [ "$2" = -c ] || exit 64' \
+		'if [ -n "$ZIG_GLOBAL_CACHE_DIR" ]; then name=inherited; else name=default; fi' \
+		'printf "start:%s\n" "$name" >> "$CACHE_EVENTS"' \
+		'if [ "$name" = inherited ]; then' \
+		'	printf "ready\n" > "$CACHE_READY" || exit 1' \
+		'	read -r release < "$CACHE_RELEASE" || exit 1' \
+		'	[ "$release" = go ] || exit 1' \
+		'	printf "%s\n%s" "$ZIG_GLOBAL_CACHE_DIR" "$ZIG_LOCAL_CACHE_DIR"' \
+		'else' \
+		'	read -r ready < "$CACHE_READY" || exit 1' \
+		'	[ "$ready" = ready ] || exit 1' \
+		'	printf "go\n" > "$CACHE_RELEASE" || exit 1' \
+		'	printf "%s\n%s" "$CACHE_DEFAULT_GLOBAL" "$CACHE_DEFAULT_LOCAL"' \
+		'fi' \
+		'printf "end:%s\n" "$name" >> "$CACHE_EVENTS"' \
+		'case "$CACHE_FAILURE:$name" in inherited:inherited) exit 17 ;; default:default) exit 19 ;; esac'
+} > "$fixture/cache-tools/nix"
+chmod +x "$fixture/cache-tools/nix" || fail 'cache scheduling adapter permissions'
+wait() {
+	local status
+	if builtin wait "$@"; then status=0; else status="$?"; fi
+	printf '%s:%s\n' "$1" "$status" >> "$CACHE_WAITS"
+	return "$status"
+}
+export -f wait
+for failure in none inherited default; do
+	case_root="$fixture/cache-$failure"
+	mkdir "$case_root" || fail 'cache case setup'
+	mkfifo "$case_root/ready" "$case_root/release" || fail 'cache barriers'
+	: > "$case_root/events"
+	: > "$case_root/waits"
+	if env PATH="$fixture/cache-tools:$PATH" CACHE_FAILURE="$failure" CACHE_EVENTS="$case_root/events" \
+		CACHE_WAITS="$case_root/waits" CACHE_READY="$case_root/ready" CACHE_RELEASE="$case_root/release" \
+		CACHE_DEFAULT_GLOBAL="$HOME/.cache/zig" CACHE_DEFAULT_LOCAL="$PWD/zig-cache" \
+		timeout 10 bash "$root/tests/unit/test-dev-shell-cache" > "$case_root/out" 2> "$case_root/err"; then rc=0; else rc="$?"; fi
+	expected=1
+	[ "$failure" != none ] || expected=0
+	[ "$rc" -eq "$expected" ] || fail "cache $failure returned $rc instead of $expected; both shell entries must overlap"
+	printf '%s\n' end:default end:inherited start:default start:inherited > "$case_root/expected"
+	LC_ALL=C sort "$case_root/events" > "$case_root/actual" || fail 'cache event sort'
+	cmp -s "$case_root/expected" "$case_root/actual" || fail "cache $failure omitted or duplicated a check"
+	awk -F: -v failed="$failure" '
+		{ if ($1 !~ /^[0-9]+$/ || seen[$1]++) exit 1; status[$2]++; n++ }
+		END { if (n!=2 || (failed=="none" ? status[0]!=2 : (status[0]!=1 || status[1]!=1))) exit 1 }
+	' "$case_root/waits" || fail "cache $failure did not join both real child statuses"
+done
+unset -f wait
 printf 'Optional test phase recording preserves execution and failure contracts\n'

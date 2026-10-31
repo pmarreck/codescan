@@ -6,11 +6,10 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 - [x] Verify identifier-alias matched-field provenance on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 01529aab, following 776 passing local unit cases and all matched-field evidence controls. (done 2026-10-31 05:51 EDT; commit 01529aab)
 - [x] Verify the build-scope request-adapter refactor on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 232f2e73, following 775 passing local unit cases and unchanged scope assertions. (done 2026-10-31 05:43 EDT; commit 232f2e73)
-- [ ] Verify source-fixture streaming on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host/component runs pass 776 unit cases, exact-copy checks, and both pipeline failure controls.
+- [x] Verify source-fixture streaming on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for c53ae6c6, following 776 passing local unit cases, exact-copy checks, and both pipeline failure controls. (done 2026-10-31 06:03 EDT; commit c53ae6c6)
 - [ ] Verify exact-product `./run` on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 776 unit cases, all eight new launcher scenarios, and the retained seven build controls.
+- [ ] Verify overlapping cache-inheritance checks on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 776 unit cases, both real shell assertions, and all three barrier/failure/join scenarios.
 - [x] Verify consolidated build-scope flags on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for a4429bdd, following 775 passing local unit cases and all 18 scope/failure/escape scenarios. (done 2026-10-31 05:27 EDT; commit a4429bdd)
-- [x] Verify repeated incremental-index ownership characterization on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for f3fdcdf0, following 775 passing local unit cases and 24 controlled service passes. (done 2026-10-31 05:07 EDT; commit f3fdcdf0)
-- [x] Verify lexical identifier candidate normalization and allocation-failure cleanup on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 9deaba9a, following 774 passing local unit cases and the candidate-set, CLI, and ownership controls. (done 2026-10-31 05:07 EDT; commit 9deaba9a)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Report shared build-budget literal-argument expansion to its owner once contact is approved; systemd-run expands Bash parameter expressions before launch, and diagnostic commands currently avoid those expressions without bypassing resource limits.
 
@@ -31,7 +30,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 7.16-second execution lower bound and 5.37-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 14.02-second execution lower bound and 8.36-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget despite substantial host timing variation. (context: docs/plan_context/test_latency.md)
+	- [x] Overlap the two independent real Nix cache-inheritance checks after a failing FIFO-barrier regression; both real assertions and all three failure/join controls pass, and paired real checks favor overlap under one- and twelve-CPU affinity without a complete budget pass. (done 2026-10-31 06:04 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Stream source-fixture payloads without a whole-archive scratch file after a failing scratch-limit regression; exact-copy and both pipeline failure controls pass, and the one permitted paired repeat favors streaming under one- and twelve-CPU affinity without a complete budget pass. (done 2026-10-31 05:47 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Remove unasserted retained-link simulation from the build-scope request adapter; all 18 controls and assertions remain, complete Nix and fresh host/component checks pass 775 unit cases, and the measured scope span decreases from 0.63 to 0.53 seconds without a complete budget pass. (done 2026-10-31 05:14 EDT; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
@@ -51,6 +51,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Move update database preparation/freshness into the shared service after characterization tests prove CLI/MCP/HTTP behavior remains identical.
 - [ ] Extract one CLI command/scorer component at a time behind existing behavioral tests; begin with command orchestration rather than rewriting scoring policy.
 - [ ] Add `codescan symbols --depth N` with explicit root-depth, invalid-value, and JSON/human truncation tests.
+	- [ ] Resolve whether depth is relative to matched symbols with child expansion or an absolute file-root limit that also excludes deeper name matches; existing design text lists the flag without defining its semantics, and independent work continues pending the answer.
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
 
 ## Tabled (not actionable)

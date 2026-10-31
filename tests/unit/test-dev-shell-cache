@@ -35,12 +35,19 @@ assert_develop_paths \
 	"nonempty inherited values" \
 	"$inherited_global" \
 	"$inherited_local" \
-	env ZIG_GLOBAL_CACHE_DIR="$inherited_global" ZIG_LOCAL_CACHE_DIR="$inherited_local"
+	env ZIG_GLOBAL_CACHE_DIR="$inherited_global" ZIG_LOCAL_CACHE_DIR="$inherited_local" &
+inherited_pid=$!
 
 assert_develop_paths \
 	"empty values use defaults" \
 	"$HOME/.cache/zig" \
 	"$PWD/zig-cache" \
-	env ZIG_GLOBAL_CACHE_DIR= ZIG_LOCAL_CACHE_DIR=
+	env ZIG_GLOBAL_CACHE_DIR= ZIG_LOCAL_CACHE_DIR= &
+default_pid=$!
+
+failed=0
+if ! wait "$inherited_pid"; then failed=1; fi
+if ! wait "$default_pid"; then failed=1; fi
+[ "$failed" -eq 0 ] || exit 1
 
 printf 'PASS Zig cache path inheritance and defaults\n'
