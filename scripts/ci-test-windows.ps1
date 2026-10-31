@@ -69,7 +69,7 @@ function New-CdbStartInfo([string] $Debugger, [int] $TargetId, [string] $Symbols
 	$info.Environment['_NT_ALT_SYMBOL_PATH'] = ''
 	$info.Environment['DBGHELP_HOMEDIR'] = $WorkDirectory
 	foreach ($name in @('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'XDG_CACHE_HOME', 'XDG_RUNTIME_DIR')) { $info.Environment[$name] = $WorkDirectory }
-	foreach ($argument in @('-pv', '-pd', '-p', [string] $TargetId, '-y', $Symbols, '-c', '~* k; qd')) { $info.ArgumentList.Add($argument) }
+	foreach ($argument in @('-pv', '-p', [string] $TargetId, '-y', $Symbols, '-c', '~* k; qd')) { $info.ArgumentList.Add($argument) }
 	return $info
 }
 

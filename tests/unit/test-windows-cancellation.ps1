@@ -109,7 +109,7 @@ foreach ($scenario in @('completed', 'timeout', 'reap-failure', 'diagnostic', 'd
 }
 $debugInfo = New-CdbStartInfo 'C:/debugger/cdb.exe' 4242 'C:/symbols with spaces' 'C:/private scratch'
 if ($debugInfo.FileName -cne 'C:/debugger/cdb.exe' -or $debugInfo.WorkingDirectory -cne 'C:/private scratch' -or $debugInfo.UseShellExecute -or -not $debugInfo.RedirectStandardOutput -or -not $debugInfo.RedirectStandardError) { throw 'Wrong debugger process setup' }
-if (($debugInfo.ArgumentList -join '|') -cne '-pv|-pd|-p|4242|-y|C:/symbols with spaces|-c|~* k; qd') { throw 'Debugger must attach only to the owned PID, capture all stacks, and detach' }
+if (($debugInfo.ArgumentList -join '|') -cne '-pv|-p|4242|-y|C:/symbols with spaces|-c|~* k; qd') { throw 'Debugger must attach noninvasively to the owned PID and use qd, not the ARM64-unsupported detach-on-exit flag' }
 if ($debugInfo.Environment['_NT_SYMBOL_PATH'] -cne 'C:/symbols with spaces' -or $debugInfo.Environment['DBGHELP_HOMEDIR'] -cne 'C:/private scratch') { throw 'Debugger state escaped private paths' }
 if ($debugInfo.Environment['TEMP'] -cne 'C:/private scratch' -or $debugInfo.Environment['USERPROFILE'] -cne 'C:/private scratch') { throw 'Debugger temporary/user state is not private' }
 
