@@ -631,6 +631,15 @@ echo 'new impl' | codescan replace-content 'fn old\(.*?\)' --file src/lib.zig --
 ```
 
 ### Symbol-based editing
+
+`codescan symbols [pattern] --depth N` limits child metadata, not name lookup.
+Depth 0 still finds a deeply nested match; depth 1 includes its immediate
+children. Without a pattern, depth starts at each file's top-level declarations.
+Omitting the option preserves full unfiltered listings and match-only filtered
+output. JSON and human output use the same limit. `--include-body` still returns
+the complete matched source and unchanged hashes. MCP's `symbols` tool accepts
+the corresponding nonnegative integer `depth` argument.
+
 ```bash
 echo 'new body' | codescan replace-symbol MyStruct/init --file src/lib.zig
 echo 'new code' | codescan insert-after MyStruct --file src/lib.zig

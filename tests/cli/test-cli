@@ -192,6 +192,42 @@ main() {
 	[ "$rc" -eq 0 ] || fail 'TypeScript signature language filter failed'
 	printf '%s' "$out" | jq -e '[.results[].language] == ["typescript"]' >/dev/null || fail 'mixed signature query ignored the TypeScript language filter'
 
+	depth_file="$DB_DIR/symbol-depth.zig"
+	printf '%s\n' 'pub const Outer = struct {' \
+		$'\tpub const Inner = struct {' $'\t\tpub const Leaf = struct {' \
+		$'\t\t\tpub fn target() void {}' $'\t\t};' \
+		$'\t\tpub fn adjacentInner() void {}' $'\t};' \
+		$'\tpub fn adjacentOuter() void {}' '};' 'pub fn sibling() void {}' > "$depth_file"
+	capture "$BIN" symbols Outer/Inner --file "$depth_file" --depth 0 --json
+	[ "$rc" -eq 0 ] || fail "match-relative depth 0 rejected a deep name: $err"
+	printf '%s' "$out" | jq -e '.name_path == "Outer/Inner" and ((.children // []) | length == 0)' >/dev/null || fail "depth 0 excluded the deep match or expanded children: $out"
+	capture "$BIN" symbols Outer/Inner --file "$depth_file" --depth 1 --json
+	[ "$rc" -eq 0 ] || fail "match-relative depth 1 failed: $err"
+	printf '%s' "$out" | jq -e '.name_path == "Outer/Inner" and ([.children[].name] == ["Leaf", "adjacentInner"]) and all(.children[]; (.children // []) | length == 0)' >/dev/null || fail "depth 1 returned the wrong expansion: $out"
+	capture "$BIN" symbols Outer/Inner --file "$depth_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail 'baseline symbol body lookup failed'
+	depth_body_baseline="$(printf '%s' "$out" | jq -c '{name_path,start_line,end_line,start_hash,end_hash,body}')" || fail 'invalid baseline body JSON'
+	capture "$BIN" symbols Outer/Inner --file "$depth_file" --depth 0 --include-body --json
+	[ "$rc" -eq 0 ] || fail 'bounded symbol body lookup failed'
+	[ "$(printf '%s' "$out" | jq -c '{name_path,start_line,end_line,start_hash,end_hash,body}')" = "$depth_body_baseline" ] || fail 'depth changed source body, ranges, or hashes'
+	capture "$BIN" symbols Outer/Inner --file "$depth_file" --depth 1
+	[ "$rc" -eq 0 ] || fail 'human depth expansion failed'
+	[ "$(printf '%s\n' "$out" | awk '{print $2}' | paste -sd ' ' -)" = 'Outer/Inner Leaf adjacentInner' ] || fail "human depth expansion returned the wrong symbol set: $out"
+	depth_other_file="$DB_DIR/other-symbol-depth.zig"
+	cp "$depth_file" "$depth_other_file" || fail 'multi-file depth fixture setup failed'
+	capture "$BIN" symbols Outer/Inner --file "$depth_file" --file "$depth_other_file" --depth 1 --json
+	[ "$rc" -eq 0 ] || fail 'multi-file bounded symbol lookup failed'
+	printf '%s' "$out" | jq -e 'length == 2 and ([.[].file] | unique | length == 2) and all(.[]; .name_path == "Outer/Inner" and [.children[].name] == ["Leaf", "adjacentInner"] and all(.children[]; (.children // []) | length == 0))' >/dev/null || fail "multi-file depth expansion returned the wrong sets: $out"
+	capture "$BIN" symbols --file "$depth_file" --depth 0 --json
+	[ "$rc" -eq 0 ] || fail 'file-root depth 0 failed'
+	printf '%s' "$out" | jq -e '[.[].name] == ["Outer", "sibling"] and all(.[]; (.children // []) | length == 0)' >/dev/null || fail "unfiltered depth 0 returned the wrong roots: $out"
+	for invalid_depth in -1 invalid 1.5 18446744073709551616; do
+		capture "$BIN" symbols --file "$depth_file" --depth "$invalid_depth" --json
+		[ "$rc" -eq 64 ] && [ -z "$out" ] || fail "invalid depth did not fail cleanly: $invalid_depth"
+	done
+	capture "$BIN" symbols --file "$depth_file" --depth
+	[ "$rc" -eq 64 ] && [ -z "$out" ] || fail 'missing depth did not fail cleanly'
+
 	c_file="$DB_DIR/functions with spaces.c"
 	printf '%s\n' '// Adds two values.' 'int add(int left, int right) {' \
 		$'\treturn left + right;' '}' 'int prototype(int value);' 'static void adjacent(void) {}' > "$c_file"

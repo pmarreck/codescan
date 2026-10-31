@@ -300,7 +300,7 @@ pub fn main(init: std.process.Init) !void {
 			});
 		},
 		.symbols => {
-			try runSymbols(allocator, parsed.symbols_files.items, parsed.pattern, parsed.include_body, parsed.output, stdout, settings.root_path);
+			try runSymbols(allocator, parsed.symbols_files.items, parsed.pattern, parsed.include_body, parsed.output, stdout, settings.root_path, parsed.symbol_depth);
 			try stdout.flush();
 		},
 		.replace_symbol => {
@@ -3801,6 +3801,7 @@ pub fn runSymbols(
 	out_fmt: cli.OutputFormat,
 	writer: *std.Io.Writer,
 	root_path: ?[]const u8,
+	max_depth: ?usize,
 ) !void {
 	// If no files specified, discover all code files under root
 	var discovered_files: ?[]const []const u8 = null;
@@ -3875,11 +3876,11 @@ pub fn runSymbols(
 				if (multi) {
 					// In multi-file JSON, each match is a separate object with file field
 					for (tree.symbols) |*sym| {
-						try findAndPrintMatchMulti(allocator, sym, pat, null, include_body, lines, all_hashes, file_path, out_fmt, writer, &found, &first_file);
+						try findAndPrintMatchMulti(allocator, sym, pat, null, include_body, lines, all_hashes, file_path, out_fmt, writer, &found, &first_file, max_depth);
 					}
 				} else {
 					for (tree.symbols) |*sym| {
-						try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+						try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found, max_depth);
 					}
 				}
 			} else {
@@ -3895,12 +3896,12 @@ pub fn runSymbols(
 					if (file_found) {
 						try writer.print("\n==> {s} <==\n", .{file_path});
 						for (tree.symbols) |*sym| {
-							try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+							try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found, max_depth);
 						}
 					}
 				} else {
 					for (tree.symbols) |*sym| {
-						try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found);
+						try findAndPrintMatch(allocator, sym, pat, null, include_body, lines, all_hashes, out_fmt, writer, &found, max_depth);
 					}
 				}
 			}
@@ -3915,16 +3916,22 @@ pub fn runSymbols(
 					try writer.writeAll("{\"file\":");
 					try writeJsonString(file_path, writer);
 					try writer.writeAll(",\"symbols\":");
-					try writeSymbolsJson(tree.symbols, all_hashes, writer);
+					const rendered = try renderSymbolsJson(allocator, tree.symbols, all_hashes, max_depth);
+					defer allocator.free(rendered);
+					try writer.writeAll(rendered);
 					try writer.writeAll("}");
 				} else {
-					try writeSymbolsJson(tree.symbols, all_hashes, writer);
+					const rendered = try renderSymbolsJson(allocator, tree.symbols, all_hashes, max_depth);
+					defer allocator.free(rendered);
+					try writer.writeAll(rendered);
 				}
 			} else {
 				if (multi) {
 					try writer.print("\n==> {s} <==\n", .{file_path});
 				}
-				try formatSymbolsWithHashes(tree.symbols, all_hashes, writer, 0);
+				const rendered = try renderSymbolsHuman(allocator, tree.symbols, all_hashes, 0, max_depth);
+				defer allocator.free(rendered);
+				try writer.writeAll(rendered);
 			}
 		}
 	}
@@ -3959,7 +3966,7 @@ test "runSymbols resolves discovered files from absolute and relative project ro
 	for ([_][]const u8{ root, relative_root }) |root_arg| {
 		var rendered: std.Io.Writer.Allocating = .init(allocator);
 		defer rendered.deinit();
-		try runSymbols(allocator, &.{}, null, false, .json, &rendered.writer, root_arg);
+		try runSymbols(allocator, &.{}, null, false, .json, &rendered.writer, root_arg, null);
 		var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered.written(), .{});
 		defer parsed.deinit();
 		try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
@@ -3990,6 +3997,7 @@ test "runSymbols resolves explicit relative files from the supplied root" {
 		.human,
 		&out.writer,
 		root,
+		null,
 	);
 	const rendered = try out.toOwnedSlice();
 	defer allocator.free(rendered);
@@ -4007,6 +4015,7 @@ fn findAndPrintMatch(
 	out_fmt: cli.OutputFormat,
 	writer: *std.Io.Writer,
 	found: *bool,
+	max_depth: ?usize,
 ) !void {
 	const name_path = try sym.namePath(allocator, parent_path);
 	defer allocator.free(name_path);
@@ -4016,6 +4025,8 @@ fn findAndPrintMatch(
 
 	if (matchesNamePath(pattern, name_path, sym.name)) {
 		found.* = true;
+		const child_output = try renderMatchedChildren(allocator, sym, all_hashes, out_fmt, max_depth);
+		defer if (child_output) |bytes| allocator.free(bytes);
 		if (out_fmt == .json) {
 			try writer.writeAll("{\"name_path\":");
 			try writeJsonString(name_path, writer);
@@ -4037,6 +4048,10 @@ fn findAndPrintMatch(
 					try writeJsonString(line, writer);
 				}
 				try writer.writeAll("]");
+			}
+			if (child_output) |bytes| {
+				try writer.writeAll(",\"children\":");
+				try writer.writeAll(bytes);
 			}
 			try writer.writeAll("}\n");
 		} else {
@@ -4069,11 +4084,12 @@ fn findAndPrintMatch(
 					try writer.writeAll("\n");
 				}
 			}
+			if (child_output) |bytes| try writer.writeAll(bytes);
 		}
 	}
 
 	for (sym.children) |*child| {
-		try findAndPrintMatch(allocator, child, pattern, name_path, include_body, lines, all_hashes, out_fmt, writer, found);
+		try findAndPrintMatch(allocator, child, pattern, name_path, include_body, lines, all_hashes, out_fmt, writer, found, max_depth);
 	}
 }
 
@@ -4091,6 +4107,7 @@ fn findAndPrintMatchMulti(
 	writer: *std.Io.Writer,
 	found: *bool,
 	first_file: *bool,
+	max_depth: ?usize,
 ) !void {
 	_ = out_fmt;
 	const name_path = try sym.namePath(allocator, parent_path);
@@ -4101,6 +4118,8 @@ fn findAndPrintMatchMulti(
 
 	if (matchesNamePath(pattern, name_path, sym.name)) {
 		found.* = true;
+		const child_output = try renderMatchedChildren(allocator, sym, all_hashes, .json, max_depth);
+		defer if (child_output) |bytes| allocator.free(bytes);
 		if (!first_file.*) try writer.writeAll(",");
 		first_file.* = false;
 		try writer.writeAll("{\"file\":");
@@ -4126,11 +4145,15 @@ fn findAndPrintMatchMulti(
 			}
 			try writer.writeAll("]");
 		}
+		if (child_output) |bytes| {
+			try writer.writeAll(",\"children\":");
+			try writer.writeAll(bytes);
+		}
 		try writer.writeAll("}");
 	}
 
 	for (sym.children) |*child| {
-		try findAndPrintMatchMulti(allocator, child, pattern, name_path, include_body, lines, all_hashes, file_path, .json, writer, found, first_file);
+		try findAndPrintMatchMulti(allocator, child, pattern, name_path, include_body, lines, all_hashes, file_path, .json, writer, found, first_file, max_depth);
 	}
 }
 
@@ -5705,7 +5728,130 @@ fn matchesDottedNamePathSuffix(pattern: []const u8, name_path: []const u8) bool 
 	return true;
 }
 
-fn formatSymbolsWithHashes(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer, depth: usize) !void {
+test "symbols depth truncates JSON child expansion rather than name lookup" {
+	const allocator = std.testing.allocator;
+	const source = "const Outer = struct { const Inner = struct { fn target() void {} }; fn adjacent() void {} }; fn sibling() void {}";
+	var tree = try symbol_tree.extractZig(allocator, source);
+	defer tree.deinit(allocator);
+	const Collector = struct {
+		fn names(a: std.mem.Allocator, collected: *std.ArrayListUnmanaged([]const u8), nodes: []const std.json.Value) std.mem.Allocator.Error!void {
+			for (nodes) |node| {
+				try collected.append(a, node.object.get("name").?.string);
+				if (node.object.get("children")) |children| try names(a, collected, children.array.items);
+			}
+		}
+	};
+	const cases = [_]struct { depth: ?usize, names: []const []const u8 }{
+		.{ .depth = 0, .names = &.{ "Outer", "sibling" } },
+		.{ .depth = 1, .names = &.{ "Outer", "Inner", "adjacent", "sibling" } },
+		.{ .depth = 2, .names = &.{ "Outer", "Inner", "target", "adjacent", "sibling" } },
+		.{ .depth = null, .names = &.{ "Outer", "Inner", "target", "adjacent", "sibling" } },
+		.{ .depth = std.math.maxInt(usize), .names = &.{ "Outer", "Inner", "target", "adjacent", "sibling" } },
+	};
+	for (cases) |case| {
+		const rendered = try renderSymbolsJson(allocator, tree.symbols, &.{}, case.depth);
+		defer allocator.free(rendered);
+		var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered, .{});
+		defer parsed.deinit();
+		var actual: std.ArrayListUnmanaged([]const u8) = .empty;
+		defer actual.deinit(allocator);
+		try Collector.names(allocator, &actual, parsed.value.array.items);
+		try std.testing.expectEqual(case.names.len, actual.items.len);
+		for (case.names, actual.items) |expected, name| try std.testing.expectEqualStrings(expected, name);
+	}
+}
+
+test "symbols depth expands children relative to a deeply matched symbol" {
+	const allocator = std.testing.allocator;
+	const source = "const Outer = struct { const Inner = struct { fn target() void {} }; };";
+	var tree = try symbol_tree.extractZig(allocator, source);
+	defer tree.deinit(allocator);
+	const cases = [_]struct { depth: ?usize, children: usize }{
+		.{ .depth = 0, .children = 0 }, .{ .depth = 1, .children = 1 }, .{ .depth = null, .children = 0 },
+	};
+	for (cases) |case| {
+		var rendered: std.Io.Writer.Allocating = .init(allocator);
+		defer rendered.deinit();
+		var found = false;
+		try findAndPrintMatch(allocator, &tree.symbols[0], "Outer/Inner", null, false, &.{source}, &.{}, .json, &rendered.writer, &found, case.depth);
+		try std.testing.expect(found);
+		var parsed = try std.json.parseFromSlice(std.json.Value, allocator, rendered.written(), .{});
+		defer parsed.deinit();
+		try std.testing.expectEqualStrings("Outer/Inner", parsed.value.object.get("name_path").?.string);
+		const children = parsed.value.object.get("children");
+		try std.testing.expectEqual(case.children, if (children) |value| value.array.items.len else @as(usize, 0));
+		if (children) |value| try std.testing.expectEqualStrings("target", value.array.items[0].object.get("name").?.string);
+	}
+}
+
+test "symbols depth truncates human child expansion" {
+	const allocator = std.testing.allocator;
+	const source = "const Outer = struct { const Inner = struct { fn target() void {} }; fn adjacent() void {} }; fn sibling() void {}";
+	var tree = try symbol_tree.extractZig(allocator, source);
+	defer tree.deinit(allocator);
+	const cases = [_]struct { depth: ?usize, names: []const []const u8 }{
+		.{ .depth = 0, .names = &.{ "Outer", "sibling" } },
+		.{ .depth = 1, .names = &.{ "Outer", "Inner", "adjacent", "sibling" } },
+		.{ .depth = 2, .names = &.{ "Outer", "Inner", "target", "adjacent", "sibling" } },
+		.{ .depth = null, .names = &.{ "Outer", "Inner", "target", "adjacent", "sibling" } },
+		.{ .depth = std.math.maxInt(usize), .names = &.{ "Outer", "Inner", "target", "adjacent", "sibling" } },
+	};
+	for (cases) |case| {
+		const rendered = try renderSymbolsHuman(allocator, tree.symbols, &.{}, 0, case.depth);
+		defer allocator.free(rendered);
+		var names: std.ArrayListUnmanaged([]const u8) = .empty;
+		defer names.deinit(allocator);
+		var rows = std.mem.splitScalar(u8, rendered, '\n');
+		while (rows.next()) |row| {
+			var fields = std.mem.tokenizeAny(u8, row, " \t");
+			if (fields.next() == null) continue;
+			try names.append(allocator, fields.next() orelse return error.TestUnexpectedResult);
+		}
+		try std.testing.expectEqual(case.names.len, names.items.len);
+		for (case.names, names.items) |expected, name| try std.testing.expectEqualStrings(expected, name);
+	}
+}
+
+test "symbols depth render buffers retain allocation failure ownership" {
+	const allocator = std.testing.allocator;
+	var tree = try symbol_tree.extractZig(allocator, "const Outer = struct { fn child() void {} };");
+	defer tree.deinit(allocator);
+	const Check = struct {
+		fn render(a: std.mem.Allocator, nodes: []const symbol_tree.SymbolNode) !void {
+			const json = try renderSymbolsJson(a, nodes, &.{}, 1);
+			defer a.free(json);
+			const human = try renderSymbolsHuman(a, nodes, &.{}, 0, 1);
+			defer a.free(human);
+		}
+	};
+	try std.testing.checkAllAllocationFailures(allocator, Check.render, .{tree.symbols});
+}
+
+fn renderMatchedChildren(allocator: std.mem.Allocator, sym: *const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, out_fmt: cli.OutputFormat, max_depth: ?usize) !?[]u8 {
+	const depth = max_depth orelse return null; // Preserve legacy match-only output.
+	if (depth == 0 or sym.children.len == 0) return null;
+	return if (out_fmt == .json)
+		try renderSymbolsJson(allocator, sym.children, all_hashes, depth - 1)
+	else
+		try renderSymbolsHuman(allocator, sym.children, all_hashes, 1, depth - 1);
+}
+
+fn renderSymbolsHuman(allocator: std.mem.Allocator, symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, indent: usize, max_depth: ?usize) std.mem.Allocator.Error![]u8 {
+	var rendered: std.Io.Writer.Allocating = .init(allocator);
+	defer rendered.deinit();
+	// Allocating writers have no I/O failure: their WriteFailed means OOM.
+	formatSymbolsWithHashes(symbols, all_hashes, &rendered.writer, indent, max_depth) catch return error.OutOfMemory;
+	return rendered.toOwnedSlice();
+}
+
+fn renderSymbolsJson(allocator: std.mem.Allocator, symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, max_depth: ?usize) std.mem.Allocator.Error![]u8 {
+	var rendered: std.Io.Writer.Allocating = .init(allocator);
+	defer rendered.deinit();
+	writeSymbolsJson(symbols, all_hashes, &rendered.writer, max_depth) catch return error.OutOfMemory;
+	return rendered.toOwnedSlice();
+}
+
+fn formatSymbolsWithHashes(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer, depth: usize, max_depth: ?usize) !void {
 	for (symbols) |*sym| {
 		for (0..depth) |_| try writer.writeAll("  ");
 
@@ -5734,22 +5880,22 @@ fn formatSymbolsWithHashes(symbols: []const symbol_tree.SymbolNode, all_hashes: 
 			}
 		}
 
-		if (sym.children.len > 0) {
-			try formatSymbolsWithHashes(sym.children, all_hashes, writer, depth + 1);
+		if (sym.children.len > 0 and (max_depth == null or max_depth.? > 0)) {
+			try formatSymbolsWithHashes(sym.children, all_hashes, writer, depth + 1, if (max_depth) |limit| limit - 1 else null);
 		}
 	}
 }
 
-fn writeSymbolsJson(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer) !void {
+fn writeSymbolsJson(symbols: []const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer, max_depth: ?usize) !void {
 	try writer.writeAll("[");
 	for (symbols, 0..) |*sym, i| {
 		if (i > 0) try writer.writeAll(",");
-		try writeSymbolJson(sym, all_hashes, writer);
+		try writeSymbolJson(sym, all_hashes, writer, max_depth);
 	}
 	try writer.writeAll("]\n");
 }
 
-fn writeSymbolJson(sym: *const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer) !void {
+fn writeSymbolJson(sym: *const symbol_tree.SymbolNode, all_hashes: []const hashline.Hash, writer: *std.Io.Writer, max_depth: ?usize) !void {
 	try writer.writeAll("{\"name\":");
 	try writeJsonString(sym.name, writer);
 	try writer.print(",\"kind\":\"{s}\",\"start_line\":{d},\"end_line\":{d}", .{
@@ -5763,11 +5909,11 @@ fn writeSymbolJson(sym: *const symbol_tree.SymbolNode, all_hashes: []const hashl
 	if (end_idx < all_hashes.len) {
 		try writer.print(",\"end_hash\":\"{s}\"", .{&all_hashes[end_idx]});
 	}
-	if (sym.children.len > 0) {
+	if (sym.children.len > 0 and (max_depth == null or max_depth.? > 0)) {
 		try writer.writeAll(",\"children\":[");
 		for (sym.children, 0..) |*child, i| {
 			if (i > 0) try writer.writeAll(",");
-			try writeSymbolJson(child, all_hashes, writer);
+			try writeSymbolJson(child, all_hashes, writer, if (max_depth) |limit| limit - 1 else null);
 		}
 		try writer.writeAll("]");
 	}
@@ -5956,7 +6102,11 @@ const usage_symbols =
     \\Options:
     \\  --file <path>            Restrict to file (repeatable)
     \\  --include-body           Include source body with hashlines
+	\\  --depth <n>              Limit child expansion (0 = matched/root nodes only)
     \\  --json                   JSON output
+	\\Depth is relative to each match, or file roots without a pattern.
+	\\Name lookup and complete source bodies are not truncated.
+	\\Omitting depth preserves existing listing/match behavior.
     \\
     \\Name path patterns:
     \\  init                     Match any symbol named 'init'

@@ -284,7 +284,8 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 		}
 		const pattern = getArg(args, "pattern");
 		const include_body = getArgBool(args, "include_body");
-		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path) catch |err|
+		const depth = symbolDepth(args) catch return toolErrorDetail(allocator, err_detail, "MCP symbols: depth must be a nonnegative integer within the platform range", .{});
+		main.runSymbols(allocator, files.items, pattern, include_body, .json, &out.writer, settings.root_path, depth) catch |err|
 			return toolError("MCP symbols: runSymbols failed: {}\n", .{err});
 	} else if (std.mem.eql(u8, name, "replace_symbol")) {
 		try checkRequiredArgs(allocator, name, args, &.{ "file", "pattern", "body" }, err_detail);
@@ -833,6 +834,60 @@ fn getArgBool(args: ?std.json.ObjectMap, key: []const u8) bool {
 	};
 }
 
+fn symbolDepth(args: ?std.json.ObjectMap) error{InvalidSymbolDepth}!?usize {
+	const value = (args orelse return null).get("depth") orelse return null;
+	switch (value) {
+		.integer => |number| return std.math.cast(usize, number) orelse error.InvalidSymbolDepth,
+		.float => |number| {
+			const upper_exclusive: f64 = @as(f64, @floatFromInt(std.math.maxInt(usize))) + 1;
+			if (!std.math.isFinite(number) or number < 0 or number >= upper_exclusive or @floor(number) != number) return error.InvalidSymbolDepth;
+			return @as(usize, @intFromFloat(number));
+		},
+		else => return error.InvalidSymbolDepth,
+	}
+}
+
+test "MCP symbols depth validates nonnegative integral values without silent fallback" {
+	const allocator = std.testing.allocator;
+	const cases = [_]struct { json: []const u8, expected: ?usize = null, invalid: bool = false }{
+		.{ .json = "{}" },
+		.{ .json = "{\"depth\":0}", .expected = 0 },
+		.{ .json = "{\"depth\":1}", .expected = 1 },
+		.{ .json = "{\"depth\":1.0}", .expected = 1 },
+		.{ .json = "{\"depth\":-1}", .invalid = true },
+		.{ .json = "{\"depth\":1.5}", .invalid = true },
+		.{ .json = "{\"depth\":\"1\"}", .invalid = true },
+		.{ .json = "{\"depth\":true}", .invalid = true },
+		.{ .json = "{\"depth\":null}", .invalid = true },
+		.{ .json = "{\"depth\":18446744073709551616}", .invalid = true },
+	};
+	for (cases) |case| {
+		var parsed = try std.json.parseFromSlice(std.json.Value, allocator, case.json, .{});
+		defer parsed.deinit();
+		if (case.invalid) {
+			try std.testing.expectError(error.InvalidSymbolDepth, symbolDepth(parsed.value.object));
+		} else try std.testing.expectEqual(case.expected, try symbolDepth(parsed.value.object));
+	}
+}
+
+test "MCP symbols depth schema declares the expansion limit" {
+	const allocator = std.testing.allocator;
+	const response = try handleToolsList(allocator, .{ .integer = 1 });
+	defer allocator.free(response);
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+	defer parsed.deinit();
+	for (parsed.value.object.get("result").?.object.get("tools").?.array.items) |tool| {
+		if (!std.mem.eql(u8, tool.object.get("name").?.string, "symbols")) continue;
+		const properties = tool.object.get("inputSchema").?.object.get("properties").?.object;
+		try std.testing.expect(properties.contains("depth"));
+		const schema = properties.get("depth").?.object;
+		try std.testing.expectEqualStrings("integer", schema.get("type").?.string);
+		try std.testing.expectEqual(@as(i64, 0), schema.get("minimum").?.integer);
+		return;
+	}
+	return error.TestUnexpectedResult;
+}
+
 fn getArgInt(args: ?std.json.ObjectMap, key: []const u8) ?usize {
 	const a = args orelse return null;
 	const val = a.get(key) orelse return null;
@@ -960,7 +1015,7 @@ const tools_list_json =
 	\\{"name":"search","description":"Semantic code search across indexed repository","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided for browse mode)"},"kind":{"type":"string","description":"Symbol kind filter: fn, struct, enum, union, class, const, var, declaration, definition, test, type, macro, mod"},"path":{"type":"string","description":"Glob pattern for file path filtering (e.g. src/*.zig)"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter (e.g. zig, typescript, rust)"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"ignore_case":{"type":"boolean","description":"Case-insensitive matching (applies to regex search)"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
 	\\{"name":"query","description":"Alias for search. Semantic code search.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Search query (optional when kind is provided)"},"kind":{"type":"string","description":"Symbol kind filter"},"path":{"type":"string","description":"Glob pattern for file path filtering"},"file":{"type":"string","description":"Exact file path filter"},"lang":{"type":"string","description":"Language filter"},"top":{"type":"integer","description":"Max results (default 20)"},"regex":{"type":"boolean","description":"Treat query as PCRE2 regex pattern (skips semantic search)"},"ignore_case":{"type":"boolean","description":"Case-insensitive matching"},"context":{"type":"integer","description":"Total lines of context around matches (including match line)"}}}},
 	\\{"name":"index","description":"Index or reindex a repository for semantic search (requires the embedding server)","inputSchema":{"type":"object","properties":{}}},
-	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"}}}},
+	\\{"name":"symbols","description":"List or find symbols in files. Omit file to scan all project files. Omit pattern to list all symbols.","inputSchema":{"type":"object","properties":{"file":{"oneOf":[{"type":"string"},{"type":"array","items":{"type":"string"}}],"description":"File path(s), optional"},"pattern":{"type":"string","description":"Symbol name path pattern, optional"},"include_body":{"type":"boolean","description":"Include symbol source code"},"depth":{"type":"integer","minimum":0,"description":"Child expansion depth relative to each match, or file roots without a pattern; 0 returns only matched/root symbols, 1 includes immediate children. Deep name lookup and full source bodies remain unchanged. Omit to preserve existing output."}}}},
 	\\{"name":"replace_symbol","description":"Replace a symbol's entire body with new code","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"New symbol body"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
 	\\{"name":"insert_after","description":"Insert code after a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},
 	\\{"name":"insert_before","description":"Insert code before a symbol","inputSchema":{"type":"object","properties":{"file":{"type":"string","description":"File path"},"pattern":{"type":"string","description":"Symbol name path"},"body":{"type":"string","description":"Code to insert"},"version":{"type":"string","description":"File version hash from read_file (prevents race conditions)"}},"required":["file","pattern","body"]}},

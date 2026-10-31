@@ -145,6 +145,33 @@ if [ "$rc" -eq 0 ] && [ -n "$out" ] && printf '%s' "$out" | jq -e '
 fi
 [ "$discovery_failed" -eq 0 ] || fail 'automatic symbol discovery must read its supplied root'
 
+printf '%s\n' 'const Outer = struct { const Inner = struct { fn target() void {} }; };' > .codescan/depth.zig
+depth_requests="$(printf '%s\n' \
+	'{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+	'{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+	'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","pattern":"Outer/Inner","depth":0}}}' \
+	'{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","pattern":"Outer/Inner","depth":1}}}' \
+	'{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","depth":0}}}' \
+	'{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","depth":-1}}}' \
+	'{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","depth":"1"}}}' \
+	'{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","pattern":"Outer/Inner","depth":1.0}}}' \
+	'{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig"}}}' \
+	'{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"symbols","arguments":{"file":".codescan/depth.zig","pattern":"Outer/Inner"}}}')"
+capture timeout 15 "$binary" mcp-serve --root "$fixture" <<< "$depth_requests"
+[ "$rc" -eq 0 ] || fail "depth protocol session failed: $err"
+printf '%s\n' "$out" | jq -se '
+	map(.id) == [1,2,3,4,5,6,7,8,9,10] and (.[0:5] + .[7:10] | all(.error == null)) and
+	(.[1].result.tools | map(select(.name == "symbols"))[0].inputSchema.properties.depth | .type == "integer" and .minimum == 0) and
+	(.[2].result.content[0].text | fromjson | .name_path == "Outer/Inner" and (.children // []) == []) and
+	(.[3].result.content[0].text | fromjson | [.children[].name] == ["target"]) and
+	(.[4].result.content[0].text | fromjson | length == 1 and .[0].name == "Outer" and (.[0].children // []) == []) and
+	(.[5].error.code == -32603 and (.[5].error.message | contains("depth"))) and
+	(.[6].error.code == -32603 and (.[6].error.message | contains("depth"))) and
+	(.[7].result.content[0].text | fromjson | [.children[].name] == ["target"]) and
+	(.[8].result.content[0].text | fromjson | .[0].children[0].children[0].name == "target") and
+	(.[9].result.content[0].text | fromjson | .name_path == "Outer/Inner" and (.children // []) == [])
+' >/dev/null || fail "depth protocol contract differed: $(printf '%s\n' "$out" | jq -sc 'map(select(.id >= 3) | {id,error,text:.result.content[0].text})')"
+
 capture "$binary" status --json --root "$fixture"
 [ "$rc" -eq 0 ] || fail 'could not inspect the index before the rejected indexing request'
 before="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid pre-request index status'

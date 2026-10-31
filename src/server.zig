@@ -465,7 +465,7 @@ fn handleRequest(
 
 		var out: std.Io.Writer.Allocating = .init(allocator);
 		defer out.deinit();
-		main.runSymbols(allocator, files.items, pattern_owned, include_body_flag, .json, &out.writer, settings.root_path) catch {
+		main.runSymbols(allocator, files.items, pattern_owned, include_body_flag, .json, &out.writer, settings.root_path, null) catch {
 			try req.respond("{\"error\":\"failed to extract symbols\"}\n", .{ .status = .internal_server_error });
 			return;
 		};

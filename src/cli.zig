@@ -145,6 +145,7 @@ pub const Parsed = struct {
 	symbols_files: std.ArrayListUnmanaged([]const u8),
 	pattern: ?[]const u8,
 	include_body: bool,
+	symbol_depth: ?usize,
 	from_ref: ?[]const u8,
 	to_ref: ?[]const u8,
 	from_line: ?usize,
@@ -270,6 +271,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.symbols_files = .empty,
 		.pattern = null,
 		.include_body = false,
+		.symbol_depth = null,
 		.from_ref = null,
 		.to_ref = null,
 		.from_line = null,
@@ -304,6 +306,7 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		.log_limit = null,
 		.seen = .{},
 	};
+	errdefer parsed.deinit(allocator);
 
 	var query_parts: std.ArrayList([]const u8) = undefined;
 	var query_parts_inited = false;
@@ -855,6 +858,19 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		}
 		if (std.mem.eql(u8, arg, "--include-body")) {
 			parsed.include_body = true;
+			i += 1;
+			continue;
+		}
+		if (parsed.command == .symbols and std.mem.eql(u8, arg, "--depth")) {
+			i += 1;
+			if (i >= args.len) {
+				last_err_context = arg;
+				return error.MissingValue;
+			}
+			parsed.symbol_depth = std.fmt.parseInt(usize, args[i], 10) catch {
+				last_err_context = arg;
+				return error.InvalidNumber;
+			};
 			i += 1;
 			continue;
 		}
@@ -1585,6 +1601,50 @@ test "parse clear -y" {
 	defer parsed.deinit(std.testing.allocator);
 	try std.testing.expectEqual(CommandTag.clean, parsed.command);
 	try std.testing.expect(parsed.confirm);
+}
+
+test "parse symbols depth retains deep name lookup" {
+	const args = [_][]const u8{ "codescan", "symbols", "Outer/Inner", "--depth", "0" };
+	var parsed = try parse(std.testing.allocator, &args);
+	defer parsed.deinit(std.testing.allocator);
+	try std.testing.expectEqual(CommandTag.symbols, parsed.command);
+	try std.testing.expectEqualStrings("Outer/Inner", parsed.pattern.?);
+	try std.testing.expectEqual(@as(?usize, 0), parsed.symbol_depth);
+}
+
+test "parse symbols depth classifies explicit limits aliases and omitted defaults" {
+	defer last_err_context = "";
+	const cases = [_]struct { args: []const []const u8, depth: ?usize }{
+		.{ .args = &.{ "codescan", "symbols", "--depth", "1", "Outer/Inner" }, .depth = 1 },
+		.{ .args = &.{ "codescan", "find-symbol", "Outer", "--depth", "2" }, .depth = 2 },
+		.{ .args = &.{ "codescan", "symbols", "--file", "source.zig", "--depth", "0" }, .depth = 0 },
+		.{ .args = &.{ "codescan", "symbols", "Outer" }, .depth = null },
+		.{ .args = &.{ "codescan", "symbols" }, .depth = null },
+	};
+	for (cases) |case| {
+		last_err_context = "";
+		var parsed = try parse(std.testing.allocator, case.args);
+		defer parsed.deinit(std.testing.allocator);
+		try std.testing.expectEqual(case.depth, parsed.symbol_depth);
+		try std.testing.expectEqualStrings("", last_err_context);
+	}
+}
+
+test "parse symbols depth rejects invalid values and other command scopes" {
+	defer last_err_context = "";
+	for ([_][]const u8{ "-1", "word", "1.5", "18446744073709551616" }) |value| {
+		try std.testing.expectError(error.InvalidNumber, parse(std.testing.allocator, &.{ "codescan", "symbols", "--depth", value }));
+		try std.testing.expectError(error.InvalidNumber, parse(std.testing.allocator, &.{ "codescan", "symbols", "--file", "source.zig", "--depth", value }));
+	}
+	try std.testing.expectError(error.MissingValue, parse(std.testing.allocator, &.{ "codescan", "symbols", "--depth" }));
+	try std.testing.expectError(error.UnknownFlag, parse(std.testing.allocator, &.{ "codescan", "search", "needle", "--depth", "1" }));
+	const Check = struct {
+		fn parseOwned(a: std.mem.Allocator) !void {
+			var parsed = try parse(a, &.{ "codescan", "symbols", "--file", "source.zig", "--path", "src/**", "--depth", "1" });
+			defer parsed.deinit(a);
+		}
+	};
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.parseOwned, .{});
 }
 
 test "parse find-symbol with --file before pattern" {
