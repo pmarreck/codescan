@@ -53,6 +53,23 @@ main() {
 	cd "$DB_DIR" || fail "could not enter the private fixture directory"
 	[ "$PWD" -ef "$DB_DIR" ] || fail "CLI test commands must run in their private fixture directory, not the caller's index root"
 
+	for query in checksum ''; do
+		for constraint in zig:doc markdown:code; do
+			language="${constraint%:*}"
+			content_type="${constraint#*:}"
+			capture "$BIN" search "$query" --db "$DB" --mode lexical --lang "$language" --type "$content_type" --json
+			[ "$rc" -eq 0 ] || fail "contradictory language/type filters failed instead of returning an empty set: $err"
+			printf '%s' "$out" | jq -e '.results == []' >/dev/null || \
+				fail "contradictory language/type filters broadened the candidate set: $out"
+		done
+	done
+	capture "$BIN" search checksum_fn --db "$DB" --mode lexical --lang zig --type code --json
+	[ "$rc" -eq 0 ] || fail 'matching code filters failed'
+	printf '%s' "$out" | jq -e '[.results[].name] == ["checksum_fn"]' >/dev/null || fail 'matching code filters returned the wrong set'
+	capture "$BIN" search checksum --db "$DB" --mode lexical --lang markdown --type doc --json
+	[ "$rc" -eq 0 ] || fail 'matching document filters failed'
+	printf '%s' "$out" | jq -e '[.results[].name] == ["Checksum Docs"]' >/dev/null || fail 'matching document filters returned the wrong set'
+
 	# A bad log duration is a CLI usage error. Keep stdout available for log
 	# records so shell callers do not have to strip a diagnostic from their data.
 	capture "$BIN" log --root "$DB_DIR" --since 0h

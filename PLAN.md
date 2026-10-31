@@ -4,9 +4,9 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 757 unit cases.
+- [ ] Verify the empty language/type intersection fix on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 758 unit cases.
+- [x] Verify the held-MCP characterization shipment on exact-commit Mechatron Prime CI and GitHub Actions; all five release builds and native macOS smoke checks pass for f3cad46c, following 757 passing local unit cases. (done 2026-10-30 22:46 EDT)
 - [x] Verify the FTS prerequisite and real-socket cancellation shipments on exact-commit Mechatron Prime CI and GitHub Actions, including native macOS CLI smoke checks; all pass for 591c07a8 and b2d2ebd9. (done 2026-10-28 12:32 EDT)
-- [x] Repair the native macOS profiler-fixture failure without disabling checks; Mechatron Prime CI and GitHub Actions run 40638927693 pass, including native macOS ARM64 build/header/about execution. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/test_latency.md)
 - [x] Verify the shared tokenizer repair in 9c935fb: the exact installed blob accepts escaped cache interpolation, rejects unsafe dependencies, and honors staged content in both disagreement directions inside a disposable consumer fixture. (done 2026-10-28 02:36 EDT; context: docs/plan_context/staged_dependency_parser.md)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 
@@ -17,13 +17,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 	- [ ] Decide whether pre-search reconciliation should have a total wait budget with lexical fallback while explicit indexing retains cold-model waits; no budget or request-policy change has been selected. (context: docs/plan_context/inference_availability.md)
 	- [x] Preserve inference-unavailable advice after a reachable server rejects embeddings; complete Nix/fresh host checks pass 754 unit cases, and exact-commit Mechatron Prime CI plus GitHub Actions run 40644259465 pass, including native macOS CLI smoke checks. (done 2026-10-28 02:49 EDT; commit 28602f00; context: docs/plan_context/inference_availability.md)
 	- [ ] Decide whether failed incremental embedding should retain new lexical rows as pending work or roll them back; the private fixture grew from four symbols/four vectors to five/four while retaining working search and file reads. (context: docs/plan_context/inference_availability.md)
-- [x] Finish SQLite watcher diagnostics across controlled open/write/read/cursor failures while preserving the index and retry policy; complete Linux Nix/fresh host checks, five-target builds, and native macOS CLI smoke checks pass. (done 2026-10-28 01:52 EDT; commit 784da056; context: docs/plan_context/watcher_sqlite_failures.md)
-	- [x] Preserve symbol-body preparation diagnostics after an authorizer regression reported expected 23, found 0; complete Nix and fresh host runners now pass 753 unit cases, with one optional skip and unchanged live-provider exclusions. (done 2026-10-28 01:00 EDT)
-	- [x] Ship shared cursor error handling after complete Nix/fresh host checks; Mechatron Prime CI and GitHub Actions run 40626218384 pass, including native macOS ARM64 execution. (done 2026-10-27 23:33 EDT; commit 85bf226a)
-	- [x] Verify the populated-index guard and error-path ownership fixes after private regressions reproduced metadata replacement and 14 unfreed bytes; complete Nix and fresh host runners pass without changing retry policy. (done 2026-10-28 00:02 EDT)
-	- [x] Require ReleaseSafe correctness artifacts after a failing runtime-safety control exposed disabled allocator leak checks; explicit byte accounting and 752 passing unit cases verify cleanup, with one optional skip. (done 2026-10-28 00:02 EDT)
-	- [x] Pass the complete ReleaseSafe runner with compatible sqlite-vec cleanup callbacks and explicit scanner creation prototypes; real insertion and Bash parsing regressions exposed the callback failures first. (done 2026-10-28 00:02 EDT; context: docs/plan_context/sqlite_vec_callback_safety.md)
-	- [x] Ship the populated-index, ownership, and callback-safety fixes; exact-commit Mechatron Prime CI and GitHub Actions run 40630870526 pass, including native macOS ARM64 execution. (done 2026-10-28 00:24 EDT; commit 75172eb4)
 - [ ] Identify the historical watcher cause only if a new reproducer or underlying SQLite record becomes available; currently blocked on evidence and not on further recollection. (context: docs/plan_context/watcher_sqlite_failures.md)
 
 ## After shipping
@@ -43,7 +36,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; record allocation ownership before changing it.
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live index writes; do not infer a new all-project sweep.
-- [ ] Cover the remaining inventoried discovery/search classifiers one bounded suite at a time, beginning with exact language/type intersections. (context: docs/plan_context/filter_classifiers.md)
+- [ ] Cover the remaining inventoried discovery/search classifiers one bounded suite at a time, continuing with ignored-directory boundaries and similarly named allowed neighbors. (context: docs/plan_context/filter_classifiers.md)
+	- [x] Preserve empty language/type intersections without bypassing existing validation; 48 search-mode/filter combinations, weight controls, and six real-CLI checks pass in complete Nix and fresh confined host runs with 758 passing unit cases. (done 2026-10-30 23:00 EDT; context: docs/plan_context/filter_classifiers.md)
 	- [x] Repair standalone path filtering after the vector regression returned four candidates instead of two; all 16 path-set/search-mode combinations and 756 unit cases pass in the complete Nix check and fresh confined host runner. (done 2026-10-28 12:33 EDT; context: docs/plan_context/filter_classifiers.md)
 
 ## Architecture and features

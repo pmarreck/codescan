@@ -114,7 +114,7 @@ pub fn execute(
 		request.weight_lexical,
 		request.explicit_weight_override,
 	);
-	const options = resolveOptions(
+	var options = resolveOptions(
 		request,
 		filter_lists.langs.items,
 		filter_lists.exts.items,
@@ -122,6 +122,7 @@ pub fn execute(
 		resolved_weights,
 		filter_lists.langs_are_default,
 	);
+	options.no_matching_languages = filter_lists.kinds.items.len > 0 and filter_lists.langs.items.len == 0;
 	const result = try search.search(allocator, db, embedder, request.query, options);
 
 	return .{
@@ -250,6 +251,152 @@ test "execute owns filter resolution and returns searchable results" {
 	try std.testing.expectEqualStrings("rollbackDelete", execution.result.results[0].symbol.name);
 	try std.testing.expectEqual(@as(usize, 1), execution.options.allowed_langs.len);
 	try std.testing.expectEqualStrings("zig", execution.options.allowed_langs[0]);
+}
+
+test "language and content-type intersections classify complete candidate sets" {
+	const FixedEmbedder = struct {
+		fn embed(_: *anyopaque, allocator: std.mem.Allocator, _: []const []const u8) ![][]f32 {
+			const rows = try allocator.alloc([]f32, 1);
+			errdefer allocator.free(rows);
+			rows[0] = try allocator.dupe(f32, &.{ 1.0, 0.0 });
+			return rows;
+		}
+		fn free(_: *anyopaque, allocator: std.mem.Allocator, rows: [][]f32) void {
+			for (rows) |row| allocator.free(row);
+			allocator.free(rows);
+		}
+	};
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+	const fixtures = [_]struct { language: []const u8, path: []const u8 }{
+		.{ .language = "zig", .path = "src/main.zig" },
+		.{ .language = "bash", .path = "scripts/helper.sh" },
+		.{ .language = "markdown", .path = "README.md" },
+		.{ .language = "text", .path = "notes.txt" },
+		.{ .language = "log", .path = "trace.log" },
+	};
+	for (fixtures) |fixture| {
+		const id = try storage.insertSymbol(db, .{
+			.language = fixture.language,
+			.file_path = fixture.path,
+			.name = "needle",
+			.signature = "needle",
+			.doc_comment = null,
+			.start_line = 1,
+			.end_line = 1,
+		});
+		try storage.insertEmbedding(db, allocator, id, &.{ 1.0, 0.0 });
+	}
+	const cases = [_]struct { langs: ?[]const u8 = null, types: ?[]const u8 = null, expected: [fixtures.len]bool }{
+		.{ .expected = .{ true, true, false, false, false } },
+		.{ .types = "code", .expected = .{ true, true, false, false, false } },
+		.{ .types = "doc", .expected = .{ false, false, true, false, false } },
+		.{ .types = "text", .expected = .{ false, false, false, true, false } },
+		.{ .types = "log", .expected = .{ false, false, false, false, true } },
+		.{ .langs = "zig,markdown", .types = "code", .expected = .{ true, false, false, false, false } },
+		.{ .langs = "zig,markdown", .types = "doc", .expected = .{ false, false, true, false, false } },
+		.{ .langs = "zig", .types = "doc", .expected = .{ false, false, false, false, false } },
+		.{ .langs = "markdown", .types = "code", .expected = .{ false, false, false, false, false } },
+		.{ .langs = "text,log", .types = "text", .expected = .{ false, false, false, true, false } },
+		.{ .langs = "markdown,text", .expected = .{ false, false, true, true, false } },
+		.{ .types = "code,doc,text,log", .expected = .{ true, true, true, true, true } },
+	};
+	const Invocation = enum { vector, hybrid, lexical, browse };
+	for (std.enums.values(Invocation)) |invocation| {
+		for (cases) |case| {
+			var execution = try execute(allocator, db, plugin.defaultRegistry(), .{
+				.ctx = @ptrFromInt(1), .embed = FixedEmbedder.embed, .free = FixedEmbedder.free,
+			}, .{
+				.query = if (invocation == .browse) "" else "needle",
+				.top_n = fixtures.len,
+				.mode = switch (invocation) {
+					.vector => .vector,
+					.hybrid => .hybrid,
+					.lexical, .browse => .lexical,
+				},
+				.fusion = .weighted_sum,
+				.rrf_k = 60,
+				.fts_mode = .broad,
+				.weight_vector = 0.7,
+				.weight_lexical = 0.3,
+				.min_score = 0,
+				.search_lang = case.langs,
+				.search_type = case.types,
+			});
+			defer execution.deinit();
+			var actual: [fixtures.len]bool = @splat(false);
+			for (execution.result.results) |item| {
+				const index = found: {
+					for (fixtures, 0..) |fixture, i| {
+						if (std.mem.eql(u8, fixture.path, item.symbol.file_path)) break :found i;
+					}
+					return error.UnexpectedCandidate;
+				};
+				try std.testing.expect(!actual[index]);
+				actual[index] = true;
+			}
+			try std.testing.expectEqualSlices(bool, &case.expected, &actual);
+			try std.testing.expectEqual(execution.result.results.len, execution.result.total_relevant);
+		}
+	}
+	const invalid_weights = [_]struct { vector: f32, lexical: f32 }{
+		.{ .vector = -1, .lexical = 1 },
+		.{ .vector = 1, .lexical = -1 },
+		.{ .vector = 0, .lexical = 0 },
+	};
+	for (invalid_weights) |pair| {
+		if (execute(allocator, db, plugin.defaultRegistry(), .{
+			.ctx = @ptrFromInt(1), .embed = FixedEmbedder.embed, .free = FixedEmbedder.free,
+		}, .{
+			.query = "needle",
+			.top_n = fixtures.len,
+			.mode = .hybrid,
+			.fusion = .weighted_sum,
+			.rrf_k = 60,
+			.fts_mode = .broad,
+			.weight_vector = pair.vector,
+			.weight_lexical = pair.lexical,
+			.explicit_weight_override = true,
+			.min_score = 0,
+			.search_lang = "zig",
+			.search_type = "doc",
+		})) |value| {
+			var unexpected = value;
+			defer unexpected.deinit();
+			return error.ExpectedInvalidWeights;
+		} else |err| {
+			try std.testing.expectEqual(error.InvalidWeights, err);
+		}
+		// Browse, zero-result limits, and signature queries retain their existing
+		// exemption from hybrid weight validation.
+		const exempt_cases = [_]struct { query: []const u8, top_n: usize }{
+			.{ .query = "", .top_n = fixtures.len },
+			.{ .query = "needle", .top_n = 0 },
+			.{ .query = "ceil : -> Dec", .top_n = fixtures.len },
+		};
+		for (exempt_cases) |case| {
+			var execution = try execute(allocator, db, plugin.defaultRegistry(), embedding.NullEmbedder.embedder(), .{
+				.query = case.query,
+				.top_n = case.top_n,
+				.mode = .hybrid,
+				.fusion = .weighted_sum,
+				.rrf_k = 60,
+				.fts_mode = .broad,
+				.weight_vector = pair.vector,
+				.weight_lexical = pair.lexical,
+				.explicit_weight_override = true,
+				.min_score = 0,
+				.search_lang = "zig",
+				.search_type = "doc",
+			});
+			defer execution.deinit();
+			try std.testing.expectEqual(@as(usize, 0), execution.result.results.len);
+			try std.testing.expectEqual(@as(usize, 0), execution.result.total_relevant);
+		}
+	}
 }
 
 test "executeWithInferenceFallback returns lexical results after an embedding failure" {

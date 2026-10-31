@@ -67,6 +67,8 @@ pub const Options = struct {
 	min_score: f32 = 0.0,
 	score_dropoff: f32 = 0.3,
 	allowed_langs: []const []const u8 = &[_][]const u8{},
+	/// An empty required language intersection, not an unrestricted list.
+	no_matching_languages: bool = false,
 	/// True when `allowed_langs` is the implicit "every code language" default.
 	/// Filtering is unaffected; this exists so diagnostics can distinguish a
 	/// caller-requested language restriction from the default corpus scope.
@@ -124,6 +126,10 @@ pub const SearchResult = struct {
 	results: []Result,
 	total_relevant: usize,
 };
+
+fn emptyResults(allocator: std.mem.Allocator) !SearchResult {
+	return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
+}
 
 const strong_vector_evidence: f32 = 0.5;
 const strong_lexical_evidence: f32 = 0.5;
@@ -295,6 +301,7 @@ pub fn search(
 	options: Options,
 ) !SearchResult {
 	if (query.len == 0) {
+		if (options.no_matching_languages) return emptyResults(allocator);
 		if (options.allowed_symbol_kinds.len == 0 and
 			options.allowed_langs.len == 0 and
 			options.allowed_exts.len == 0 and
@@ -304,8 +311,11 @@ pub fn search(
 		}
 		return browseSymbols(allocator, db, options);
 	}
-	if (options.top_n == 0) return .{ .results = try allocator.alloc(Result, 0), .total_relevant = 0 };
-	if (roc_signature.Query.parse(query)) |signature| return searchRocSignature(allocator, db, signature, options);
+	if (options.top_n == 0) return emptyResults(allocator);
+	if (roc_signature.Query.parse(query)) |signature| {
+		if (options.no_matching_languages) return emptyResults(allocator);
+		return searchRocSignature(allocator, db, signature, options);
+	}
 
 	var weight_vector = options.weight_vector;
 	var weight_lexical = options.weight_lexical;
@@ -316,6 +326,7 @@ pub fn search(
 		weight_vector /= sum;
 		weight_lexical /= sum;
 	}
+	if (options.no_matching_languages) return emptyResults(allocator);
 
 	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
