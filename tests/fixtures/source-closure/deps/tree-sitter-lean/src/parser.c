@@ -1,0 +1,1 @@
+/* Legacy vendored Lean sources must not enter a pinned build. */

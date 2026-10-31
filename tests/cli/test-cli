@@ -240,6 +240,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==4 and .body==["int add(int left, int right) {","\treturn left + right;","}"]' >/dev/null || \
 		fail "C grammar changed the exact function body: $out"
 
+	lean_file="$DB_DIR/definitions with spaces.lean"
+	printf '%s\n' '-- Adds two values.' 'def add (a b : Nat) : Nat :=' \
+		$'\ta + b' 'def adjacent : Nat := 42' > "$lean_file"
+	capture "$BIN" symbols --file "$lean_file" --json
+	[ "$rc" -eq 0 ] || fail "Lean symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"add",kind:"fn",start_line:2,end_line:3},{name:"adjacent",kind:"fn",start_line:4,end_line:4}]' >/dev/null || \
+		fail "Lean grammar changed the complete definition set or source ranges: $out"
+	capture "$BIN" symbols add --file "$lean_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Lean definition body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==3 and .body==["def add (a b : Nat) : Nat :=","\ta + b"]' >/dev/null || \
+		fail "Lean grammar changed the exact definition body: $out"
+
 	python_root="$DB_DIR/python project"
 	mkdir -p "$python_root/.git" "$python_root/.venv" "$python_root/package"
 	python_file="$python_root/client with spaces.py"

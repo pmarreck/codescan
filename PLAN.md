@@ -4,7 +4,8 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [ ] Verify match-relative symbols depth and parser error cleanup on exact-commit Mechatron Prime CI and GitHub Actions, including all five release builds and canonical archives after 804 passing local unit cases and actual CLI/MCP controls.
+- [ ] Verify the byte-identical Lean grammar pin and recoverable source retirement on exact-commit Mechatron Prime CI and GitHub Actions, including all five builds and archives after 804 passing local unit cases and actual definition/range/body controls.
+- [x] Verify match-relative symbols depth and parser error cleanup on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 3dca2123, including all five release builds, native macOS smoke checks, and exactly five nonempty canonical archives after 804 passing local unit cases and actual CLI/MCP controls. (done 2026-10-31 11:32 EDT; commit 3dca2123)
 - [x] Verify native/shared TypeScript signature queries and mixed-language isolation on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 88ae2a2e, including all five release targets, native macOS smoke checks, and five nonempty canonical archives after 795 passing local unit cases and fourteen actual CLI forms. (done 2026-10-31 10:35 EDT; commit 88ae2a2e)
 - [x] Verify native/shared Rust signature queries on exact-commit Mechatron Prime CI and GitHub Actions; both pass for d9c166a3, including all five release targets, native macOS smoke checks, and five nonempty canonical archives after 790 passing local unit cases and ten actual CLI queries. (done 2026-10-31 09:45 EDT; commit d9c166a3)
 - [x] Verify native/shared Zig signature queries on exact-commit Mechatron Prime CI and GitHub Actions; both pass for 5fe609d2, including all five release targets, native macOS smoke checks, and five nonempty canonical archives after 784 passing local unit cases and the original CLI failure. (done 2026-10-31 09:23 EDT; commit 5fe609d2)
@@ -12,7 +13,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [x] Verify all five canonical archive jobs and uploaded artifacts on exact-commit GitHub Actions plus all five Mechatron Prime release builds; bc6b35b9 passes both services with exactly five nonempty, unexpired canonical archives, without creating a tag or release. (done 2026-10-31 08:54 EDT; commit bc6b35b9)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Verify the infrastructure owner's build-budget literal-argument repair; the owner acknowledged the request and confirmed the source/installed-helper defect, but implementation remains queued, with the resource envelope and equivalent-syntax workaround unchanged.
-	- [x] May the infrastructure owner receive the build-budget fix request? Answer: yes; send the request for literal Bash argument preservation without changing resource policy here. (done 2026-10-31 08:41 EDT)
 
 ## Watcher reliability
 
@@ -31,7 +31,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 6.30-second execution lower bound and 4.14-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 6.36-second execution lower bound and 3.75-second flake-evaluation span; retain prior broad variation and the delayed diagnostic finalization without accepting a baseline or changing coverage, exclusions, or the five-second budget. (context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
 - [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
@@ -51,6 +51,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [x] Add `codescan symbols --depth N` with match-relative child expansion and preserved deep lookup, bodies, and hashes; failing parser/rendering/MCP controls drive the implementation and allocation cleanup, then complete Nix/fresh confined host checks pass 804 unit cases and actual CLI/MCP sessions. (done 2026-10-31 11:15 EDT)
 	- [x] Resolve symbols depth semantics; Answer: match-relative depth preserves deep name lookup, depth 0 returns a matched symbol without children, and depth 1 includes its immediate children. (done 2026-10-31 08:41 EDT)
 - [ ] Migrate one remaining vendored grammar at a time to an exact reproducible source pin, retaining local patches and symbol/range regressions.
+	- [x] Pin the byte-identical Lean grammar at efe6b871 after a failing source-boundary control; retire five source copies recoverably, preserve the original license, and pass complete Nix/fresh confined host checks with 804 unit cases and exact CLI definition/range/body controls. (done 2026-10-31 11:32 EDT)
 
 ## Tabled (not actionable)
 

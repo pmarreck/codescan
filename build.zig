@@ -38,7 +38,7 @@ pub fn build(b: *std.Build) void {
 	const ts_lua = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lua", "deps/tree-sitter-lua/src", true);
 	const ts_nix = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nix", "deps/tree-sitter-nix/src", true);
 	const ts_nim = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nim", "deps/tree-sitter-nim/src", true);
-	const ts_lean = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lean", "deps/tree-sitter-lean/src", true);
+	const ts_lean = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lean", b.fmt("{s}/lean", .{grammar_root}), true);
 	const ts_idris = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_idris2", "deps/tree-sitter-idris2/src", false);
 	const ts_haskell = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_haskell", "deps/tree-sitter-haskell/src", true);
 	const ts_go = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_go", "deps/tree-sitter-go/src", false);

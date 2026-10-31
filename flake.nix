@@ -21,7 +21,10 @@
 					inherit root;
 					fileset = pkgs.lib.fileset.difference
 						(pkgs.lib.fileset.unions [ (root + "/src") (root + "/deps") (root + "/build.zig") (root + "/build.zig.zon") ])
-						(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"));
+						(pkgs.lib.fileset.unions [
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
+						]);
 				};
 				projectSource = compiledSource ./.;
 				sqlite-amalgamation = pkgs.fetchzip {
@@ -53,6 +56,9 @@
 				grammar-c = grammarSource "tree-sitter" "tree-sitter-c"
 					"7fa1be1b694b6e763686793d97da01f36a0e5c12"
 					"sha256-gmzbdwvrKSo6C1fqTJFGxy8x0+T+vUTswm7F5sojzKc=";
+				grammar-lean = grammarSource "Julian" "tree-sitter-lean"
+					"efe6b87145608d12f5996bd7f0cf6095a0e82261"
+					"sha256-MF+LRzhDw3V/l/h11ZTyWCUCm3b+g0oyOdaCZMVlJc4=";
 				grammar-fish = grammarSource "ram02z" "tree-sitter-fish"
 					"f435b0bd772578c70e5d158b85267bb886316f88"
 					"sha256-9an4YAz2QKC3yAJ5/tOfmqOJViGATz7+NhKuZpr4oC4=";
@@ -97,6 +103,7 @@
 				# store paths while preserving exact source provenance in this flake.
 				grammarSources = pkgs.linkFarm "codescan-tree-sitter-grammars" [
 					{ name = "c"; path = "${grammar-c}/src"; }
+					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "fish"; path = "${grammar-fish}/src"; }
 					{ name = "nu"; path = "${grammar-nu}/src"; }
 					{ name = "powershell"; path = "${grammar-powershell}/src"; }
