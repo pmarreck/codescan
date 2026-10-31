@@ -376,7 +376,13 @@ fn handleRequest(
 		// Routed through the application service so the HTTP surface cannot
 		// drift from the CLI on filter, ignore, batching, or dimension
 		// semantics — they differed here until 2026-07-28.
-		const effective_dim = update_service.probeEmbeddingDim(allocator, embedder) orelse settings.embedding_dim;
+		const effective_dim = update_service.probeEmbeddingDim(allocator, embedder) orelse {
+			try req.respond(
+				"{\"error\":\"embedding provider could not produce a usable embedding; the existing index was left unchanged. Check the model, credentials, and server, then retry.\"}\n",
+				.{ .status = .service_unavailable },
+			);
+			return;
+		};
 		const index_result = try index_service.execute(
 			allocator,
 			db,

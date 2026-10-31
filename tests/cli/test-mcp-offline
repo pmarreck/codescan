@@ -5,15 +5,18 @@ binary="${CODESCAN_TEST_BIN:?prepared CLI required}"
 fixture_db="${CODESCAN_TEST_DB_BIN:?prepared fixture tool required}"
 fixture="$(mktemp -d "${TMPDIR:?}/codescan-mcp-offline.XXXXXX")" || exit 1
 provider_pid=
+service_pid=
 cleanup() {
-	local status="$?" provider_status
-	if [ -n "$provider_pid" ]; then
-		if kill -0 "$provider_pid" 2>/dev/null; then
-			kill -TERM "$provider_pid" || status=1
+	local status="$?" provider_status fixture_pid
+	for fixture_pid in "$service_pid" "$provider_pid"; do
+		if [ -n "$fixture_pid" ]; then
+			if kill -0 "$fixture_pid" 2>/dev/null; then
+				kill -TERM "$fixture_pid" || status=1
+			fi
+			if wait "$fixture_pid"; then provider_status=0; else provider_status="$?"; fi
+			case "$provider_status" in 0|143) ;; *) status=1 ;; esac
 		fi
-		if wait "$provider_pid"; then provider_status=0; else provider_status="$?"; fi
-		case "$provider_status" in 0|143) ;; *) status=1 ;; esac
-	fi
+	done
 	rm -rf -- "$fixture" || status=1
 	exit "$status"
 }
@@ -178,4 +181,59 @@ printf '%s\n' "$out" | jq -se '
 	(.[1].result.content[0].text | fromjson | .inference_unavailable and (.results | any(.name == "checksum_fn"))) and
 	(.[2].result.content[0].text | contains("after"))
 ' >/dev/null || fail 'rejected replacement lost usable lexical search or file reads'
+
+# Exercise HTTP replacement against the same responding/rejecting provider.
+capture "$fixture_db" --db .codescan/index.sqlite3 --embedding-dim 2
+[ "$rc" -eq 0 ] || fail 'HTTP fixture creation failed'
+service_port=8126
+mkfifo .codescan/service-stderr || fail 'HTTP readiness channel'
+exec {service_stderr}<>.codescan/service-stderr
+"$binary" serve --root "$fixture" --http-host 127.0.0.1 --http-port "$service_port" \
+	> .codescan/service-stdout 2>&"$service_stderr" &
+service_pid=$!
+ready=false
+while IFS= read -r -t 15 line <&"$service_stderr"; do
+	case "$line" in
+		"codescan serve: listening on http://127.0.0.1:$service_port/") ready=true; break ;;
+		error:*) fail "HTTP fixture startup: $line" ;;
+	esac
+done
+[ "$ready" = true ] || fail 'HTTP fixture did not report readiness'
+http_failed=0
+for endpoint in /index /update; do
+	capture "$fixture_db" --db .codescan/index.sqlite3 --embedding-dim 2
+	[ "$rc" -eq 0 ] || fail 'HTTP replacement fixture reset failed'
+	capture "$binary" status --json --root "$fixture"
+	[ "$rc" -eq 0 ] || fail 'HTTP pre-replacement status failed'
+	index_before="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid HTTP fixture status'
+	capture sqlite3 -readonly -json .codescan/index.sqlite3 'SELECT * FROM symbols ORDER BY id;'
+	[ "$rc" -eq 0 ] || fail 'could not record HTTP fixture rows'
+	rows_before="$out"
+	capture curl --connect-timeout 1 --max-time 10 -sS -w '\n%{http_code}' \
+		-H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:$service_port$endpoint"
+	[ "$rc" -eq 0 ] || fail "$endpoint transport failed: $err"
+	http_status="${out##*$'\n'}"
+	if [ "$http_status" != 503 ]; then
+		printf '%s\n' "$endpoint returned $http_status instead of service-unavailable advice" >&2
+		http_failed=1
+	else
+		printf '%s' "${out%$'\n'*}" | jq -e '.error | contains("existing index") and contains("unchanged")' >/dev/null || fail "$endpoint lost the preservation advice"
+	fi
+	capture "$binary" status --json --root "$fixture"
+	[ "$rc" -eq 0 ] || fail 'HTTP left an unreadable index'
+	index_after="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid HTTP result status'
+	capture sqlite3 -readonly -json .codescan/index.sqlite3 'SELECT * FROM symbols ORDER BY id;'
+	[ "$rc" -eq 0 ] || fail 'could not inspect HTTP result rows'
+	if [ "$index_after" != "$index_before" ] || [ "$out" != "$rows_before" ]; then
+		printf '%s\n' "$endpoint rejected embeddings changed the index: $index_before -> $index_after" >&2
+		http_failed=1
+	fi
+done
+[ "$http_failed" -eq 0 ] || fail 'HTTP embedding rejection must preserve the existing index'
+capture curl --connect-timeout 1 --max-time 10 -fsS "http://127.0.0.1:$service_port/health"
+[ "$rc" -eq 0 ] || fail 'HTTP stopped after rejecting embeddings'
+capture curl --connect-timeout 1 --max-time 10 -fsS -H 'Content-Type: application/json' \
+	--data '{"query":"checksum_fn"}' "http://127.0.0.1:$service_port/search"
+[ "$rc" -eq 0 ] || fail 'HTTP search stopped after rejecting embeddings'
+printf '%s' "$out" | jq -e '.inference_unavailable and (.results | any(.name == "checksum_fn"))' >/dev/null || fail 'HTTP rejection lost lexical results or inference advice'
 printf 'MCP offline session contract passed\n'

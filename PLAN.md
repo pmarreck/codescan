@@ -4,6 +4,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Verify HTTP embedding-rejection preservation on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and fresh confined host checks pass 761 unit cases, retained rows/vectors, HTTP 503 advice, health, and lexical fallback.
 - [x] Verify freed-unit-lane scheduling on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for fa8630cd, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit fa8630cd)
 - [ ] Verify provider-response cleanup and rejected-replacement preservation on exact-commit Mechatron Prime CI and GitHub Actions; complete Nix and the fresh confined host runner pass 761 unit cases with unchanged exclusions.
 - [x] Verify the orchestration-fixture optimization on exact-commit Mechatron Prime CI and GitHub Actions; all five release targets and native macOS smoke checks pass for 134812b3, following 759 passing local unit cases. (done 2026-10-31 00:59 EDT; commit 134812b3)
@@ -28,8 +29,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## Validation and performance
 
-- [ ] Reduce the latest ReleaseSafe host runner's 6.00-second execution lower bound and 8.61-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
-	- [x] Add opt-in shared-profiler spans to the real test entry point, preserving task scratch across Nix shell entry and keeping parent jobs out of nested suites; complete Nix and fresh profiled host checks pass 759 unit cases. (done 2026-10-31 00:01 EDT; context: docs/plan_context/test_latency.md)
+- [ ] Reduce the latest ReleaseSafe host runner's 5.92-second execution lower bound and 8.16-second flake-evaluation span; retain safety, coverage, exclusions, and the five-second budget. (context: docs/plan_context/test_latency.md)
 	- [x] Attribute the isolated suite with 22 exact component spans and private record export; 759 unit cases pass, and the current run records 7.49 seconds elapsed versus 10.14 seconds summed work without changing either lane. (done 2026-10-31 00:18 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Reduce redundant orchestration-fixture processes while retaining all ten barrier/failure scenarios and real source-copy coverage; the component fell from 2.22 to 1.46 seconds, without establishing an overall budget improvement. (done 2026-10-31 00:40 EDT; context: docs/plan_context/test_latency.md)
 	- [x] Reuse the freed unit lane for independent harness checks; a FIFO regression failed on the old runner, and fourteen scenarios now cover two-suite concurrency, source-copy ordering, lane failures, and joins; fresh component execution fell from 7.77 to 4.83 seconds. (done 2026-10-31 00:47 EDT; context: docs/plan_context/test_latency.md)
@@ -38,7 +38,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Test provider-model failure paths for index/provider compatibility and preserved lexical/file operations; ranking-quality comparisons depend on the tabled independently judged corpus.
 	- [x] Reject malformed embedding rows and invalid OpenAI index mappings without trapping or leaking; the ReleaseSafe regression first aborted during cleanup, and ten malformed-response cases plus allocation-failure sweeps now pass. (done 2026-10-31 00:59 EDT; context: docs/plan_context/inference_availability.md)
 	- [x] Preserve the index when a responding provider rejects full-index embeddings; CLI and MCP regressions first lost all six vectors, then passed exact symbol-row/vector-count checks, actionable advice, and continued lexical/file operations. (done 2026-10-31 00:59 EDT; context: docs/plan_context/inference_availability.md)
-	- [ ] Characterize HTTP `/index` and `/update` against a responding provider that rejects embeddings; prevent entry into index reset and return actionable service-unavailable advice.
+	- [x] Preserve HTTP `/index` and `/update` against responding-provider embedding rejection; both regressions first returned 500 and lost all six vectors, then passed 503 advice, exact retained rows/counts, health, and lexical fallback. (done 2026-10-31 01:12 EDT; context: docs/plan_context/inference_availability.md)
 	- [ ] Validate response cardinality at the embedding boundary so zero or extra vectors for a single input cannot authorize replacement or bypass lexical fallback; retain valid batching and malformed-response fallback controls through the actual HTTP embedder/search service.
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; the available July handoff/static bookkeeping cannot establish the later completion state or authorize a new all-project sweep.
 
