@@ -41,6 +41,16 @@ validate_retention() {
 	fi
 }
 native_options=(--no-link)
+retention_work=''
+publication=''
+cleanup_publication() {
+	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication"; fi
+	if [ -n "$retention_work" ]; then
+		if [ -L "$retention_work/result" ]; then unlink "$retention_work/result"; fi
+		rmdir "$retention_work"
+	fi
+}
+trap cleanup_publication EXIT
 if [ "$attribute" != test-binaries ]; then
 	case "$(uname -s)/$(uname -m)" in
 		Linux/x86_64) native_namespace=linux-amd64/musl ;;
@@ -52,7 +62,6 @@ if [ "$attribute" != test-binaries ]; then
 	[ "$attribute" != debug ] || profile=Debug
 	native_prefix=".nix-out/$native_namespace/$profile"
 	validate_retention "$native_prefix" || exit 1
-	native_options=(--out-link "$native_prefix")
 fi
 if [ "$all_platforms" -eq 1 ]; then
 	targets=(macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64)
@@ -75,7 +84,11 @@ if [ "$all_platforms" -eq 1 ]; then
 	done
 fi
 # Native publication remains last, so a failed cross-build cannot replace it.
-if [ "$attribute" != test-binaries ]; then mkdir -p "${native_prefix%/*}" || exit 1; fi
+if [ "$attribute" != test-binaries ]; then
+	mkdir -p "${native_prefix%/*}" || exit 1
+	retention_work="$(mktemp -d "$root/${native_prefix%/*}/.candidate.XXXXXXXX")" || exit 1
+	native_options=(--out-link "$retention_work/result")
+fi
 if output="$(nix build "${native_options[@]}" --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
 if [ "$attribute" = test-binaries ]; then
 	printf 'Prepared test artifacts: %s\n' "$output" >&2
@@ -88,6 +101,8 @@ if [ -L zig-out ] || [ -L zig-out/bin ] || [ -d zig-out/bin/codescan ]; then
 fi
 mkdir -p zig-out/bin || exit 1
 publication="$(mktemp "$root/zig-out/bin/.codescan.XXXXXX")" || exit 1
-trap 'rm -f -- "$publication"' EXIT
 install -m755 "$output/bin/codescan" "$publication" || exit 1
+# Keep the candidate GC root until Nix registers the verified complete product.
+# Renaming a GC root would invalidate its separately registered retention path.
+nix-store --add-root "$native_prefix" --realise "$output" >/dev/null || exit "$?"
 mv -f -- "$publication" zig-out/bin/codescan || exit 1

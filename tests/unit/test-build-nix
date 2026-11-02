@@ -15,8 +15,13 @@ nix() {
 	if [ -n "$link" ]; then ln -sfn "$BUILD_OUTPUT" "$link" || return 1; fi
 	printf '%s\n' "$BUILD_OUTPUT"
 }
+nix-store() {
+	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] && [ "$4" = "$BUILD_OUTPUT" ] || return 64
+	[ "${BUILD_RETAIN_STATUS:-0}" -eq 0 ] || return "$BUILD_RETAIN_STATUS"
+	ln -sfn "$4" "$2"
+}
 zig() { printf 'forbidden compiler\n' >> "$BUILD_EVENTS"; return 99; }
-export -f nix zig
+export -f nix nix-store zig
 for mode in default debug test failure missing-nix output-symlink real-publication; do
 	project="$fixture/$mode/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" "$project/tools" || fail setup
@@ -115,6 +120,16 @@ for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darw
 		BUILD_STATUS=0 BUILD_OUTPUT="$project/release" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
 	[ "$rc" -eq 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = release ] || fail 'native retry did not reuse the retained product'
 	[ "$(readlink "$project/.nix-out/$namespace/Debug")" = "$project/debug" ] || fail 'native retry changed the other profile'
+	mkdir -p "$project/incomplete/bin" || fail 'incomplete product fixture'
+	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=0 BUILD_OUTPUT="$project/incomplete" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -ne 0 ] && [ "$(readlink "$project/.nix-out/$namespace/ReleaseFast")" = "$project/release" ] || fail 'invalid successful build replaced the previous retained product'
+	[ "$(< "$project/zig-out/bin/codescan")" = release ] || fail 'invalid successful build changed the previous command'
+	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=0 BUILD_RETAIN_STATUS=23 BUILD_OUTPUT="$project/debug" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 23 ] && [ "$(readlink "$project/.nix-out/$namespace/ReleaseFast")" = "$project/release" ] || fail 'failed root registration changed the previous retained product or status'
+	[ "$(< "$project/zig-out/bin/codescan")" = release ] || fail 'failed root registration changed the previous command'
+	[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'native build left a temporary retention root'
 	[ "$(readlink "$project/.nix-out/mswin-arm64/gnu/ReleaseFast")" = "$project/foreign" ] && [ "$(< "$project/.nix-out/mswin-arm64/gnu/ReleaseFast/share/resource")" = foreign ] || fail 'native builds changed a foreign retained product'
 done
 for obstacle in root-link platform-link variant-link root-file platform-file variant-file leaf-file leaf-directory; do
@@ -241,4 +256,48 @@ for mode in run run-child-failure run-build-failure run-missing-product run-none
 		*) [ ! -e "$project/pid" ] && [ ! -s "$project/stdout" ] || fail "$mode invoked a stale or invalid command" ;;
 	esac
 done
+
+# Use a real, wholly test-owned local Nix store: no daemon or live GC roots.
+unset -f nix nix-store
+export NIX_REMOTE="local?store=$fixture/private-nix/store&state=$fixture/private-nix/state&log=$fixture/private-nix/log"
+export NIX_CONFIG=$'substituters =\nbuild-users-group =\n'
+mkdir -p "$fixture/retention-source/bin" "$fixture/retention-source/share" || fail 'private store source'
+printf '#!/usr/bin/env bash\nexit 0\n' > "$fixture/retention-source/bin/codescan"
+printf 'retained runtime resource\n' > "$fixture/retention-source/share/resource"
+chmod +x "$fixture/retention-source/bin/codescan" || fail 'private source mode'
+if retention_product="$(command nix-store --add "$fixture/retention-source" 2> "$fixture/nix-error")"; then :; else
+	sed -n '1,20p' "$fixture/nix-error" >&2; fail 'private Nix store initialization'
+fi
+nix() {
+	[ "$1" = build ] || return 64
+	local link='' argument next_link=0
+	for argument in "$@"; do
+		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
+		[ "$argument" != --out-link ] || next_link=1
+	done
+	[ -n "$link" ] && [ "$next_link" -eq 0 ] || return 64
+	command nix-store --add-root "$link" --realise "$RETENTION_PRODUCT" >/dev/null || return "$?"
+	printf '%s\n' "$RETENTION_PRODUCT"
+}
+export -f nix
+project="$fixture/real-retention/project with spaces"
+mkdir -p "$project" || fail 'real retention fixture'
+cp "$root/build" "$project/build" || fail 'real retention wrapper'
+if (cd "$project" && env RETENTION_PRODUCT="$retention_product" "$BASH" ./build) > "$project/out" 2> "$project/err"; then :; else
+	sed -n '1,20p' "$project/err" >&2; fail 'real Nix retention failed'
+fi
+case "$(uname -s)/$(uname -m)" in
+	Linux/x86_64) namespace=linux-amd64/musl ;;
+	Linux/aarch64) namespace=linux-arm64/musl ;;
+	Darwin/arm64) namespace=macos-arm64 ;;
+	*) fail 'unsupported retention host' ;;
+esac
+retained_root="$project/.nix-out/$namespace/ReleaseFast"
+[ "$(readlink "$retained_root")" = "$retention_product" ] || fail 'real Nix root points at another product'
+if command nix-store --query --roots "$retention_product" > "$project/roots" 2> "$project/nix-error"; then :; else fail 'real root query'; fi
+awk -v root="$retained_root" 'index($0, root " -> ") == 1 { n++ } END { exit n != 1 }' "$project/roots" || fail 'selected product lacks its registered GC root'
+[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'temporary retention root leaked'
+if command nix-store --gc > "$project/gc-out" 2> "$project/gc-error"; then :; else fail 'private store GC'; fi
+cmp -s "$fixture/retention-source/share/resource" "$retained_root/share/resource" || fail 'GC lost retained runtime resources'
+cmp -s "$fixture/retention-source/bin/codescan" "$project/zig-out/bin/codescan" || fail 'real retention changed the legacy command bytes'
 printf 'Nix-required build adapter passed\n'

@@ -1972,11 +1972,13 @@ test "indexIncremental indexes new files and skips unchanged" {
 	const marker = try tmp.dir.statFile(io_singleton.getOrInit(), ".codescan/last_index_datetime", .{});
 	try std.testing.expectEqual(std.Io.File.Kind.file, marker.kind);
 	try std.testing.expectEqual(@as(u64, 0), marker.size);
-	try tmp.dir.setTimestamps(
-		io_singleton.getOrInit(),
-		".codescan/last_index_datetime",
-		.{ .modify_timestamp = .{ .new = .{ .nanoseconds = 123_456_789_000 } } },
-	);
+	{
+		const marker_file = try tmp.dir.openFile(io_singleton.getOrInit(), ".codescan/last_index_datetime", .{ .mode = .read_write });
+		defer marker_file.close(io_singleton.getOrInit());
+		try marker_file.setTimestamps(io_singleton.getOrInit(), .{
+			.modify_timestamp = .{ .new = .{ .nanoseconds = 123_456_789_000 } },
+		});
+	}
 
 	// Second incremental index: everything unchanged (same mtime at second resolution)
 	const stats2 = try indexIncremental(allocator, db, root, plugin.defaultRegistry(), fake.embedder(), .{
@@ -2159,11 +2161,13 @@ test "indexAll does not mark a file complete before its final comment embedding 
 		.sub_path = ".codescan/last_index_datetime",
 		.data = "",
 	});
-	try tmp.dir.setTimestamps(
-		io_singleton.getOrInit(),
-		".codescan/last_index_datetime",
-		.{ .modify_timestamp = .{ .new = .{ .nanoseconds = 123_456_789_000 } } },
-	);
+	{
+		const marker_file = try tmp.dir.openFile(io_singleton.getOrInit(), ".codescan/last_index_datetime", .{ .mode = .read_write });
+		defer marker_file.close(io_singleton.getOrInit());
+		try marker_file.setTimestamps(io_singleton.getOrInit(), .{
+			.modify_timestamp = .{ .new = .{ .nanoseconds = 123_456_789_000 } },
+		});
+	}
 	const marker_before = try tmp.dir.statFile(
 		io_singleton.getOrInit(),
 		".codescan/last_index_datetime",

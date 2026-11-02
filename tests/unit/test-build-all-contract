@@ -19,6 +19,12 @@ nix() {
 		esac
 	done
 	[ -n "$attribute" ] && [ "$next_link" -eq 0 ] || return 64
+	case "$attribute" in
+		'.#default'|'.#debug')
+			case "$link" in "$PWD/.nix-out/$SCOPE_NAMESPACE"/.candidate.????????/result) ;; *) return 77 ;; esac
+			ln -s "$SCOPE_OUTPUT" "$link" || return 1
+			link='<candidate>' ;;
+	esac
 	printf '%s\t%s\n' "$attribute" "$link" >> "$SCOPE_EVENTS"
 	if [ "$attribute" = "$SCOPE_FAIL_ATTRIBUTE" ]; then
 		printf 'controlled Nix build failure\n' >&2
@@ -27,8 +33,13 @@ nix() {
 	# Retained-link writes belong to Nix; assert the requested operation above.
 	if [ "$print_paths" -eq 1 ]; then printf '%s\n' "$SCOPE_OUTPUT"; fi
 }
+nix-store() {
+	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] && [ "$4" = "$SCOPE_OUTPUT" ] || return 64
+	printf '%s\t%s\n' "$2" "$4" >> "$SCOPE_ROOTS"
+	ln -sfn "$4" "$2"
+}
 zig() { printf 'forbidden direct compiler\n' >> "$SCOPE_EVENTS"; return 99; }
-export -f nix zig
+export -f nix nix-store zig
 
 case "$(uname -s)/$(uname -m)" in
 	Linux/x86_64) native_namespace=linux-amd64/musl ;;
@@ -36,7 +47,7 @@ case "$(uname -s)/$(uname -m)" in
 	Darwin/arm64) native_namespace=macos-arm64 ;;
 	*) fail 'unsupported test host' ;;
 esac
-native_request=$(printf '.#default\t.nix-out/%s/ReleaseFast' "$native_namespace")
+native_request=$'.#default\t<candidate>'
 all_requests="$(printf '%s\n' \
 	"$native_request" \
 	$'.#release-macos-arm64\t.nix-out/macos-arm64/ReleaseFast' \
@@ -65,7 +76,7 @@ for scenario in all default implementations-short implementations-long platforms
 		combined) args=(--all-impls --all-plats); expected="$all_requests" ;;
 		reverse) args=(--all-platforms --all-implementations); expected="$all_requests" ;;
 		repeated) args=(--all --all-plats --all-implementations --all); expected="$all_requests" ;;
-		debug) args=(--all-impls --debug); expected=$(printf '.#debug\t.nix-out/%s/Debug' "$native_namespace") ;;
+		debug) args=(--all-impls --debug); expected=$'.#debug\t<candidate>' ;;
 		test) args=(--test --all-implementations); expected=$'.#test-binaries\t' ;;
 		invalid-debug) args=(--all-platforms --debug); expected=''; expected_rc=64 ;;
 		invalid-test) args=(--test --all); expected=''; expected_rc=64 ;;
@@ -84,7 +95,7 @@ for scenario in all default implementations-short implementations-long platforms
 			ln -s "$project/protected" "$link" || fail 'retained escape fixture'
 			;;
 	esac
-	if (cd "$project" && env SCOPE_EVENTS="$project/events" SCOPE_OUTPUT="$project/prepared" \
+	if (cd "$project" && env SCOPE_EVENTS="$project/events" SCOPE_OUTPUT="$project/prepared" SCOPE_ROOTS="$project/roots" SCOPE_NAMESPACE="$native_namespace" \
 		SCOPE_FAIL_ATTRIBUTE="$fail_attribute" "$BASH" "$project/build" "${args[@]}") > "$project/stdout" 2> "$project/stderr"; then
 		rc=0
 	else rc="$?"; fi
@@ -103,6 +114,13 @@ for scenario in all default implementations-short implementations-long platforms
 			*) [ "$(< "$project/zig-out/bin/codescan")" = new ] || fail "$scenario omitted native publication" ;;
 		esac
 	fi
+	case "$scenario" in
+		test|invalid-debug|invalid-test|unknown|failure|retention-*-symlink) [ ! -e "$project/roots" ] || fail "$scenario promoted a native root" ;;
+		*)
+			profile=ReleaseFast; [ "$scenario" != debug ] || profile=Debug
+			[ "$(< "$project/roots")" = "$(printf '.nix-out/%s/%s\t%s' "$native_namespace" "$profile" "$project/prepared")" ] || fail "$scenario did not register the exact selected product once"
+			;;
+	esac
 	case "$scenario" in retention-*-symlink)
 		[ "$(< "$project/protected/sentinel")" = unchanged ] || fail 'retained output escaped into caller data'
 		[ "$(find "$project/protected" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || fail 'retained output wrote through a symlink'

@@ -160,23 +160,37 @@ pub fn findFilesWithProgress(
 		const is_file = entry.kind == .file or
 			(entry.kind == .sym_link and isSymlinkToFile(dir, entry.path));
 		if (!is_file) continue;
+		const rel_path = if (@import("builtin").os.tag == .windows) blk: {
+			const owned = try allocator.dupe(u8, entry.path);
+			normalizeRelativePath(owned, true);
+			break :blk owned;
+		} else entry.path;
+		defer if (@import("builtin").os.tag == .windows) allocator.free(rel_path);
 		// Check if file is in always_include (overrides gitignore)
 		const force_included = blk: {
 			if (entry.kind == .sym_link) break :blk true; // symlinks always included
 			for (ignore_cfg.always_include) |pattern| {
-				if (globMatch(entry.path, pattern)) break :blk true;
+				if (globMatch(rel_path, pattern)) break :blk true;
 			}
 			break :blk false;
 		};
 		if (!force_included) {
 			if (git_allow) |*set| {
-				if (!set.contains(entry.path)) continue;
+				if (!set.contains(rel_path)) continue;
 			}
 		}
-		try appendEligibleFile(allocator, dir, registry, ignore_sets, entry.path, &results, progress);
+		try appendEligibleFile(allocator, dir, registry, ignore_sets, rel_path, &results, progress);
 	}
 
 	return results.toOwnedSlice(allocator);
+}
+
+// Index-relative paths use '/'; a backslash remains a legal POSIX filename byte.
+// Windows separator aliases intentionally collapse. Work is linear in path bytes.
+fn normalizeRelativePath(path: []u8, windows_paths: bool) void {
+	if (windows_paths) for (path) |*byte| {
+		if (byte.* == '\\') byte.* = '/';
+	};
 }
 
 fn appendEligibleFile(
@@ -774,6 +788,56 @@ test "findFiles classifies extensionless scripts from text executable shebangs" 
 	try std.testing.expect(found_lua);
 	try std.testing.expect(found_ruby);
 	try std.testing.expect(!found_false_positive);
+}
+
+test "native relative path normalization classifies every byte and is idempotent" {
+	for ([_]bool{ false, true }) |windows_paths| {
+		for (0..256) |value| {
+			var path = [_]u8{@intCast(value)};
+			normalizeRelativePath(&path, windows_paths);
+			const expected: u8 = if (windows_paths and value == '\\') '/' else @intCast(value);
+			try std.testing.expectEqual(expected, path[0]);
+			normalizeRelativePath(&path, windows_paths);
+			try std.testing.expectEqual(expected, path[0]);
+		}
+	}
+	var nested = "path with spaces\\caf\xc3\xa9\\module.zig".*;
+	normalizeRelativePath(&nested, true);
+	try std.testing.expectEqualStrings("path with spaces/caf\xc3\xa9/module.zig", &nested);
+}
+
+test "discovery preserves the native source path set and POSIX literal backslashes" {
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const allocator = std.testing.allocator;
+	const cases = [_]struct { path: []const u8, included: bool }{
+		.{ .path = "src/main.zig", .included = true },
+		.{ .path = ".codescan/generated.zig", .included = false },
+		.{ .path = if (@import("builtin").os.tag == .windows) "src/other.zig" else ".codescan\\literal.zig", .included = true },
+	};
+	for (cases) |case| {
+		if (std.fs.path.dirname(case.path)) |parent| try tmp.dir.createDirPath(io_singleton.getOrInit(), parent);
+		try tmp.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = case.path, .data = "" });
+	}
+	const root = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), ".", allocator);
+	defer allocator.free(root);
+	const files = try findFiles(allocator, root, plugin.defaultRegistry(), .{
+		.global = &.{}, .per_language = &.{}, .include_node_modules = false,
+	});
+	defer {
+		for (files) |path| allocator.free(path);
+		allocator.free(files);
+	}
+	var seen = [_]bool{false} ** cases.len;
+	for (files) |path| {
+		const index = found: {
+			for (cases, 0..) |case, i| if (std.mem.eql(u8, case.path, path)) break :found i;
+			return error.UnexpectedDiscoveredFile;
+		};
+		try std.testing.expect(!seen[index]);
+		seen[index] = true;
+	}
+	for (cases, 0..) |case, i| try std.testing.expectEqual(case.included, seen[i]);
 }
 
 test "findFiles respects ignores" {

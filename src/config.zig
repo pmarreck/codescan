@@ -1064,7 +1064,7 @@ test "applyOver covers every Config field, including ones added later" {
 	}
 }
 
-/// Path to the machine-wide config, honouring `XDG_CONFIG_HOME` and falling
+/// Path to the machine-wide config, honoring `XDG_CONFIG_HOME` and falling
 /// back to `~/.config`. Returns null when neither variable is set, in which
 /// case there is simply no global tier rather than a guessed location.
 pub fn globalPath(allocator: std.mem.Allocator) !?[]u8 {
@@ -1089,17 +1089,19 @@ test "globalPath prefers XDG_CONFIG_HOME and falls back to HOME" {
 	try std.testing.expect((try globalPath(allocator)) == null);
 
 	try env.put("HOME", "/home/someone");
+	const expected_home = if (@import("builtin").os.tag == .windows) "/home/someone\\.config\\codescan\\config.ini" else "/home/someone/.config/codescan/config.ini";
 	{
 		const path = (try globalPath(allocator)).?;
 		defer allocator.free(path);
-		try std.testing.expectEqualStrings("/home/someone/.config/codescan/config.ini", path);
+		try std.testing.expectEqualStrings(expected_home, path);
 	}
 
 	try env.put("XDG_CONFIG_HOME", "/xdg");
 	{
 		const path = (try globalPath(allocator)).?;
 		defer allocator.free(path);
-		try std.testing.expectEqualStrings("/xdg/codescan/config.ini", path);
+		const expected_xdg = if (@import("builtin").os.tag == .windows) "/xdg\\codescan\\config.ini" else "/xdg/codescan/config.ini";
+		try std.testing.expectEqualStrings(expected_xdg, path);
 	}
 
 	// An empty XDG value must not produce a path rooted at "/", which would
@@ -1108,6 +1110,6 @@ test "globalPath prefers XDG_CONFIG_HOME and falls back to HOME" {
 	{
 		const path = (try globalPath(allocator)).?;
 		defer allocator.free(path);
-		try std.testing.expectEqualStrings("/home/someone/.config/codescan/config.ini", path);
+		try std.testing.expectEqualStrings(expected_home, path);
 	}
 }
