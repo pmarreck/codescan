@@ -50,6 +50,23 @@
 						zig build -j"$NIX_BUILD_CORES" -Dtarget=${target} -Doptimize=ReleaseSafe --prefix "$out" --color off
 					'';
 				};
+				mkWindowsTestGit = arch:
+					let
+						asset = {
+							amd64 = { suffix = "64-bit"; hash = "sha256-4794NR/nd/ukfd7llQCC+KmLsPAmBP3Huj7iy2j/qHc="; };
+							arm64 = { suffix = "arm64"; hash = "sha256-cPdkn3gIjB2x0vNXHKRqBNW+8G5OnVbY7X+YKejGxNs="; };
+						}.${arch};
+					in pkgs.runCommand "codescan-test-git-mswin-${arch}-2.56.0.4" {
+						nativeBuildInputs = [ pkgs.unzip ];
+						archive = pkgs.fetchurl {
+							url = "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-${asset.suffix}.zip";
+							inherit (asset) hash;
+						};
+					} ''
+						mkdir -p "$out" || exit "$?"
+						unzip -q "$archive" -d "$out" || exit "$?"
+						test -f "$out/cmd/git.exe" || exit "$?"
+					'';
 				sqlite-amalgamation = pkgs.fetchzip {
 					url = "https://www.sqlite.org/2024/sqlite-amalgamation-3450300.zip";
 					sha256 = "sha256-F50oTmmcPIl0AZJbsWAR3tbNAPV3pQLf+CNITzhmXfI=";
@@ -256,6 +273,22 @@
 						path = pcre2-src;
 					}
 				];
+				mkTestBinaries = pname: target: pkgs.stdenv.mkDerivation {
+					inherit pname;
+					version = "0.1.0";
+					src = projectSource;
+					nativeBuildInputs = [ pkgs.zig_0_16 ];
+					dontConfigure = true;
+					dontInstall = true;
+					dontFixup = true;
+					buildPhase = ''
+						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
+						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
+						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
+						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
+						zig build test-artifacts -j"$NIX_BUILD_CORES" --system ${zigPkgCache} -Dtarget=${target} -Doptimize=ReleaseSafe --prefix "$out" --color off
+					'';
+				};
 				mkCodescan = { target ? nativeZigTarget, pf ? null, profile ? "ReleaseFast", sourceRoot ? ./. }:
 				let executable = if target != null && pkgs.lib.hasInfix "-windows-" target then "codescan.exe" else "codescan";
 				in pkgs.stdenv.mkDerivation {
@@ -307,6 +340,8 @@
 				packages.cancellation-native = mkCancellationTests nativePF nativeZigTarget;
 				packages.cancellation-mswin-amd64 = mkCancellationTests "mswin-amd64" "x86_64-windows-gnu";
 				packages.cancellation-mswin-arm64 = mkCancellationTests "mswin-arm64" "aarch64-windows-gnu";
+				packages.test-git-mswin-amd64 = mkWindowsTestGit "amd64";
+				packages.test-git-mswin-arm64 = mkWindowsTestGit "arm64";
 
 				checks.cancellation-artifacts = pkgs.runCommand "codescan-cancellation-artifacts" {
 					nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.file ];
@@ -328,10 +363,10 @@
 				'';
 
 				checks.windows-cancellation-harness = pkgs.runCommand "codescan-windows-cancellation-harness" {
-					nativeBuildInputs = [ pkgs.powershell ];
+					nativeBuildInputs = [ pkgs.powershell pkgs.git ];
 					source = pkgs.lib.fileset.toSource {
 						root = ./.;
-						fileset = pkgs.lib.fileset.unions [ ./scripts/ci-test-windows.ps1 ./tests/unit/test-windows-cancellation.ps1 ./.github/workflows/native-windows.yml ];
+						fileset = pkgs.lib.fileset.unions [ ./scripts/ci-test-windows.ps1 ./tests/unit/test-windows-cancellation.ps1 ./tests/unit/expected-unit-diagnostics.json ./.github/workflows/native-windows.yml ];
 					};
 				} ''
 					umask 077
@@ -341,7 +376,8 @@
 					mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME" "$XDG_RUNTIME_DIR"
 					pwsh -NoLogo -NoProfile -NonInteractive -File "$source/tests/unit/test-windows-cancellation.ps1" \
 						-Amd64Executable ${self.packages.${system}.cancellation-mswin-amd64}/bin/codescan-cancellation-tests.exe \
-						-Arm64Executable ${self.packages.${system}.cancellation-mswin-arm64}/bin/codescan-cancellation-tests.exe || exit "$?"
+						-Arm64Executable ${self.packages.${system}.cancellation-mswin-arm64}/bin/codescan-cancellation-tests.exe \
+						-NativeUnitExecutable ${self.packages.${system}.test-binaries}/bin/codescan-unit-tests || exit "$?"
 					touch "$out"
 				'';
 
@@ -417,28 +453,17 @@
 						touch "$out"
 					'';
 
-				packages.test-binaries = pkgs.stdenv.mkDerivation {
-					pname = "codescan-test-binaries";
-					version = "0.1.0";
-					src = projectSource;
-					nativeBuildInputs = [ pkgs.zig_0_16 ];
-					dontConfigure = true;
-					dontInstall = true;
-					dontFixup = true;
-					buildPhase = ''
-						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
-						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
-						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
-						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local-cache"
-						zig build test-artifacts -j"$NIX_BUILD_CORES" --system ${zigPkgCache} -Dtarget=${nativeZigTarget} -Doptimize=ReleaseSafe --prefix "$out" --color off
-					'';
-				};
+				packages.test-binaries = mkTestBinaries "codescan-test-binaries" nativeZigTarget;
+				packages.test-binaries-mswin-amd64 = mkTestBinaries "codescan-test-binaries-mswin-amd64" "x86_64-windows-gnu";
+				packages.test-binaries-mswin-arm64 = mkTestBinaries "codescan-test-binaries-mswin-arm64" "aarch64-windows-gnu";
 
 				checks.compiler-concurrency = pkgs.runCommand "codescan-compiler-concurrency" {
 					cliPhase = self.packages.${system}.default.buildPhase;
 					unitPhase = self.packages.${system}.test-binaries.buildPhase;
+					windowsAmd64UnitPhase = self.packages.${system}.test-binaries-mswin-amd64.buildPhase;
+					windowsArm64UnitPhase = self.packages.${system}.test-binaries-mswin-arm64.buildPhase;
 					cancellationPhase = self.packages.${system}.cancellation-native.buildPhase;
-					passAsFile = [ "cliPhase" "unitPhase" "cancellationPhase" ];
+					passAsFile = [ "cliPhase" "unitPhase" "windowsAmd64UnitPhase" "windowsArm64UnitPhase" "cancellationPhase" ];
 					nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
 				} ''
 					set +e
@@ -453,7 +478,7 @@
 					}
 					export -f zig
 					failed=0
-					for phase in "$cliPhasePath" "$unitPhasePath" "$cancellationPhasePath"; do
+					for phase in "$cliPhasePath" "$unitPhasePath" "$windowsAmd64UnitPhasePath" "$windowsArm64UnitPhasePath" "$cancellationPhasePath"; do
 						for cores in 1 4 12; do
 							export PROBE_CALLS="$TMPDIR/calls" PROBE_JOBS="$TMPDIR/jobs"
 							: > "$PROBE_CALLS"

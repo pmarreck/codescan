@@ -19,16 +19,24 @@ jobs:
       - name: Setup Nix
         shell: bash
         run: ./scripts/ci-setup-nix
-      - name: Prepare focused cancellation products
+      - name: Prepare Windows test products
         shell: bash
         run: |
-          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64
+          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64
           mkdir -p cancellation-mswin-amd64 cancellation-mswin-arm64
           for arch in amd64 arm64; do
             product="$(nix path-info ".#cancellation-mswin-$arch")"
             for extension in exe pdb; do
               cp "$product/bin/codescan-cancellation-tests.$extension" "cancellation-mswin-$arch/"
             done
+            unit_product="$(nix path-info ".#test-binaries-mswin-$arch")"
+            mkdir -p "unit-mswin-$arch"
+            for extension in exe pdb; do
+              cp "$unit_product/bin/codescan-unit-tests.$extension" "unit-mswin-$arch/"
+            done
+            git_product="$(nix path-info ".#test-git-mswin-$arch")"
+            mkdir -p "git-mswin-$arch"
+            ALLOW_NIX_STORE_COPY='Export complete declared Windows CI test tools' cp -R "$git_product/." "git-mswin-$arch/"
           done
       - uses: actions/upload-artifact@v6
         with:
@@ -39,6 +47,28 @@ jobs:
         with:
           name: cancellation-mswin-arm64
           path: cancellation-mswin-arm64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: unit-mswin-amd64
+          path: unit-mswin-amd64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: unit-mswin-arm64
+          path: unit-mswin-arm64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: git-mswin-amd64
+          path: git-mswin-amd64/
+          include-hidden-files: true
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: git-mswin-arm64
+          path: git-mswin-arm64/
+          include-hidden-files: true
           if-no-files-found: error
 
   qualify:
@@ -64,6 +94,18 @@ jobs:
       - name: Validate qualification controls
         shell: pwsh
         run: ./tests/unit/test-windows-cancellation.ps1
+      - uses: actions/download-artifact@v7
+        with:
+          name: unit-mswin-${{ matrix.arch }}
+          path: unit
+      - uses: actions/download-artifact@v7
+        with:
+          name: git-mswin-${{ matrix.arch }}
+          path: git-tools
+      - name: Execute native aggregate unit tests
+        shell: pwsh
+        run: |
+          ./scripts/ci-test-windows.ps1 -Suite unit -Architecture "${{ matrix.arch }}" -Executable "./unit/codescan-unit-tests.exe" -GitExecutable "./git-tools/cmd/git.exe"
       - name: Execute native cancellation tests
         shell: pwsh
         run: |

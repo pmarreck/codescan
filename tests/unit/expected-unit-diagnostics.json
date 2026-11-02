@@ -1,0 +1,4 @@
+{
+	"mcp.test.MCP pending-file SQLite failures are not reported as inference failures": "sqlite error (insertSymbol: step): fixture SQLite failure\n",
+	"storage.test.embeddingDimension validates metadata and preserves SQLite failures": "sqlite error (metaValue: prepare): no such table: meta\n"
+}
