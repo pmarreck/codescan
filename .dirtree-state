@@ -94,6 +94,7 @@ annotate=[
 	src/filter.zig = PCRE2 glob compilation and combined pattern sets with recursive directory-component boundaries
 	src/filters.zig = Search/index filter list construction; pure with respect to the index — default search admits every code language rather than pinning the most-populous one
 	src/freshness.zig = Watcher-aware pre-search reconciliation, stale fallback, and watcher-advisory classifiers
+	src/freshness_service.zig = Shared pre-search freshness orchestration and synchronous update port
 	src/fs_watch.zig = OS-native filesystem watch port: FSEvents on macOS, fanotify on Linux, polling fallback elsewhere
 	src/hashline.zig = Three-character base-62 chained line hashes for content-anchored addressing; a hash depends on the previous line's, so any edit above cascades and stale line references are detected
 	src/index_service.zig = Transport-neutral full/incremental indexing service owning filter, ignore, batch, dispatch, and read-only pending semantic-index count semantics.

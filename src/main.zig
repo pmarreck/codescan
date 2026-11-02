@@ -25,6 +25,7 @@ const lsp = @import("lsp.zig");
 const pcre2 = @import("pcre2.zig");
 const watcher = @import("watcher.zig");
 const freshness = @import("freshness.zig");
+const freshness_service = @import("freshness_service.zig");
 const pidfile = @import("pidfile.zig");
 const watcher_mgmt = @import("watcher_mgmt.zig");
 const progress_mod = @import("progress.zig");
@@ -2909,87 +2910,27 @@ fn runUpdateWithInvocation(
 	}
 }
 
-const SearchFreshnessContext = struct {
+const SearchUpdateContext = struct {
 	allocator: std.mem.Allocator,
 	settings: UpdateSettings,
 	registry: plugin.Registry,
 	lexical_only: bool,
-	inference_unavailable: bool = false,
 
-	fn adapter(self: *SearchFreshnessContext, watcher_running: bool) freshness.Adapter {
-		return .{
-			.context = self,
-			.watcher_running = watcher_running,
-			.reconcile_fn = reconcile,
-			.usable_index_fn = usableIndex,
-		};
-	}
-
-	fn reconcile(context: *anyopaque) !void {
-		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
-		self.inference_unavailable = false;
-		if (!self.lexical_only) {
-			var http_client = embedding_http.StdHttpTransport.init(self.allocator);
-			defer http_client.deinit();
-			if (!embedding_http.inferenceAvailable(
-				self.allocator,
-				http_client.transport(),
-				self.settings.embedding_url,
-				self.settings.embedding_model,
-				self.settings.embedding_dialect,
-			)) {
-				self.inference_unavailable = true;
-				return error.EmbeddingUnavailable;
-			}
-		}
-		var embedding_failure: ?anyerror = null;
-		defer if (embedding_failure) |err| {
-			if (err != error.OutOfMemory) self.inference_unavailable = true;
-		};
-		runUpdateWithInvocation(
+	fn reconcile(context: *anyopaque, embedding_failure: *?anyerror) !void {
+		const self: *SearchUpdateContext = @ptrCast(@alignCast(context));
+		return runUpdateWithInvocation(
 			self.allocator,
 			self.settings,
 			self.registry,
 			self.lexical_only,
 			null,
 			.pre_search,
-			&embedding_failure,
-		) catch |err| {
-			if (err == error.EmbeddingDimMismatch) self.inference_unavailable = true;
-			return err;
-		};
-	}
-
-		fn usableIndex(context: *anyopaque) bool {
-		const self: *SearchFreshnessContext = @ptrCast(@alignCast(context));
-		return update_service.indexUsable(self.allocator, self.settings.db_path);
-	}
-
-};
-
-pub const SearchFreshness = struct {
-	outcome: freshness.Outcome,
-	elapsed_ns: u64,
-	watcher_advisory: ?freshness.WatcherAdvisory,
-	semantic_index_pending_paths: ?usize = null,
-	inference_unavailable: bool = false,
-	inference_url: ?[]const u8 = null,
-
-	pub fn outputMetadata(self: SearchFreshness) output.FreshnessMetadata {
-		return .{
-			.outcome = self.outcome,
-			.update_seconds = if (self.outcome == .watcher_active)
-				null
-			else
-				@as(f64, @floatFromInt(self.elapsed_ns)) /
-					@as(f64, @floatFromInt(std.time.ns_per_s)),
-			.watcher_recommended = self.watcher_advisory != null,
-			.semantic_index_pending_paths = self.semantic_index_pending_paths,
-			.inference_unavailable = self.inference_unavailable,
-			.inference_url = self.inference_url,
-		};
+			embedding_failure,
+		);
 	}
 };
+
+pub const SearchFreshness = freshness_service.Result;
 
 /// Counts paths that a semantic incremental update would still reconcile.
 /// This is intentionally read-only so an active watcher remains the sole
@@ -3024,36 +2965,20 @@ pub fn ensureSearchFreshness(
 	registry: plugin.Registry,
 	lexical_only: bool,
 ) !SearchFreshness {
-	const codescan_dir = std.fs.path.dirname(settings.db_path) orelse ".codescan";
-	var context = SearchFreshnessContext{
+	var context = SearchUpdateContext{
 		.allocator = allocator,
 		.settings = settings,
 		.registry = registry,
 		.lexical_only = lexical_only,
 	};
-	const io = io_singleton.getOrInit();
-	const started = std.Io.Clock.awake.now(io);
-	const outcome = try freshness.ensureFresh(context.adapter(
-		pidfile.isWatcherRunning(allocator, codescan_dir),
-	));
-	const duration = started.durationTo(std.Io.Clock.awake.now(io)).nanoseconds;
-	const elapsed_ns: u64 = if (duration > 0) @intCast(duration) else 0;
-	const watcher_advisory = if (outcome == .reconciled and elapsed_ns > std.time.ns_per_s) advice: {
-		const activity = freshness.detectGitActivity(
-			allocator,
-			io,
-			settings.root_path,
-			std.Io.Clock.real.now(io).nanoseconds,
-		);
-		break :advice freshness.watcherAdvisory(elapsed_ns, activity);
-	} else null;
-	return .{
-		.outcome = outcome,
-		.elapsed_ns = elapsed_ns,
-		.watcher_advisory = watcher_advisory,
-		.inference_unavailable = context.inference_unavailable,
-		.inference_url = if (context.inference_unavailable) settings.embedding_url else null,
-	};
+	return freshness_service.ensure(allocator, .{
+		.root_path = settings.root_path,
+		.db_path = settings.db_path,
+		.embedding_url = settings.embedding_url,
+		.embedding_model = settings.embedding_model,
+		.embedding_dialect = settings.embedding_dialect,
+		.lexical_only = lexical_only,
+	}, .{ .context = &context, .run_fn = SearchUpdateContext.reconcile });
 }
 
 /// Run a search query against the index — vector, lexical (FTS5),

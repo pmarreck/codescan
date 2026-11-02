@@ -61,6 +61,7 @@ const _symbol_tree = @import("symbol_tree.zig");
 const _ts_symbols = @import("ts_symbols.zig");
 const _watcher = @import("watcher.zig");
 const _freshness = @import("freshness.zig");
+const _freshness_service = @import("freshness_service.zig");
 const _weights = @import("weights.zig");
 
 test "correctness suite retains runtime safety and allocator leak checks" {
@@ -131,5 +132,6 @@ test {
 	_ = _ts_symbols;
 	_ = _watcher;
 	_ = _freshness;
+	_ = _freshness_service;
 	_ = _weights;
 }
