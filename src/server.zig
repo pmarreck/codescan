@@ -128,13 +128,17 @@ pub fn serve(allocator: std.mem.Allocator, settings: Settings) !void {
 		return err;
 	};
 	defer net_server.socket.close(io);
+	const bound_port = switch (net_server.socket.address) {
+		.ip4 => |a| a.port,
+		.ip6 => |a| a.port,
+	};
 
 	{
 		var sb: [4096]u8 = undefined;
 		var sw = io_singleton.stderrWriter(&sb);
 		const stderr = &sw.interface;
 		var host_buf: [64]u8 = undefined;
-		_ = stderr.print("codescan serve: listening on http://{s}:{d}/\n", .{ urlHost(&host_buf, settings.http_host), settings.http_port }) catch {};
+		_ = stderr.print("codescan serve: listening on http://{s}:{d}/\n", .{ urlHost(&host_buf, settings.http_host), bound_port }) catch {};
 		_ = stderr.flush() catch {};
 	}
 

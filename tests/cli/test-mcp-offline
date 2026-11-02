@@ -22,6 +22,23 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { printf 'FAIL MCP offline: %s\n' "$1" >&2; exit 1; }
+read_listening_port() {
+	local description="$1" descriptor="$2" line port
+	local prefix='codescan serve: listening on http://127.0.0.1:'
+	while IFS= read -r -t 15 line <&"$descriptor"; do
+		case "$line" in
+			"$prefix"*/)
+				port="${line#"$prefix"}"
+				port="${port%/}"
+				case "$port" in ''|*[!0-9]*) fail "$description announced an invalid port: $port" ;; esac
+				[ "$port" -gt 0 ] && [ "$port" -le 65535 ] || fail "$description announced an unbound port: $port"
+				printf '%s\n' "$port"
+				return 0 ;;
+			error:*) fail "$description startup: $line" ;;
+		esac
+	done
+	fail "$description did not report readiness"
+}
 mkdir -p "$fixture/.codescan" || fail setup
 cd "$fixture" || fail 'private working directory unavailable'
 out= err= rc=
@@ -202,9 +219,9 @@ printf '%s\n' "$out" | jq -se '
 ' >/dev/null || fail "hybrid search did not return lexical matches and inference advice: $out"
 
 # The actual HTTP adapter answers probes but has no embedding endpoint.
-# Required Linux runs own a private network; suites share one sequential lane.
+# Each server owns an OS-assigned port and reports it through its readiness pipe.
 provider_root="$fixture/.codescan/http-provider"
-provider_port=8125
+provider_port=0
 mkdir -p "$provider_root" || fail 'provider fixture setup'
 mkfifo "$provider_root/stderr" || fail 'provider readiness channel'
 exec {provider_stderr}<>"$provider_root/stderr"
@@ -212,14 +229,7 @@ exec {provider_stderr}<>"$provider_root/stderr"
 	--ollama-url http://127.0.0.1:1 --ollama-model test-model --embedding-dim 2 \
 	> "$provider_root/stdout" 2>&"$provider_stderr" &
 provider_pid=$!
-ready=false
-while IFS= read -r -t 15 line <&"$provider_stderr"; do
-	case "$line" in
-		"codescan serve: listening on http://127.0.0.1:$provider_port/") ready=true; break ;;
-		error:*) fail "provider fixture startup: $line" ;;
-	esac
-done
-[ "$ready" = true ] || fail 'provider did not report readiness'
+provider_port="$(read_listening_port provider "$provider_stderr")" || fail 'provider did not report a usable endpoint'
 capture "$binary" status --json --root "$fixture"
 [ "$rc" -eq 0 ] || fail 'could not inspect the index before embedding rejection'
 index_before_rejection="$(printf '%s' "$out" | jq -ce '.index | {symbols, embeddings, comment_embeddings}')" || fail 'invalid pre-rejection index status'
@@ -306,20 +316,13 @@ printf '%s\n' "$out" | jq -se '
 # Exercise HTTP replacement against the same responding/rejecting provider.
 capture "$fixture_db" --db .codescan/index.sqlite3 --embedding-dim 2
 [ "$rc" -eq 0 ] || fail 'HTTP fixture creation failed'
-service_port=8126
+service_port=0
 mkfifo .codescan/service-stderr || fail 'HTTP readiness channel'
 exec {service_stderr}<>.codescan/service-stderr
 "$binary" serve --root "$fixture" --http-host 127.0.0.1 --http-port "$service_port" \
 	> .codescan/service-stdout 2>&"$service_stderr" &
 service_pid=$!
-ready=false
-while IFS= read -r -t 15 line <&"$service_stderr"; do
-	case "$line" in
-		"codescan serve: listening on http://127.0.0.1:$service_port/") ready=true; break ;;
-		error:*) fail "HTTP fixture startup: $line" ;;
-	esac
-done
-[ "$ready" = true ] || fail 'HTTP fixture did not report readiness'
+service_port="$(read_listening_port HTTP "$service_stderr")" || fail 'HTTP fixture did not report a usable endpoint'
 http_failed=0
 for endpoint in /index /update; do
 	capture "$fixture_db" --db .codescan/index.sqlite3 --embedding-dim 2
