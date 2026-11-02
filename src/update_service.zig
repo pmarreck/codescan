@@ -73,6 +73,21 @@ pub const RebuildPolicy = enum {
 	verify_then_recreate,
 };
 
+pub const Invocation = enum {
+	explicit,
+	pre_search,
+};
+
+/// Preserve an existing index during pre-search work that cannot replace its
+/// vectors. Explicit lexical-only updates still permit rebuilding without them.
+pub fn rebuildPolicy(invocation: Invocation, use_null_embedder: bool) RebuildPolicy {
+	if (!use_null_embedder) return .verify_then_recreate;
+	return switch (invocation) {
+		.explicit => .recreate_unverified,
+		.pre_search => .refuse,
+	};
+}
+
 /// An opened update database plus the story of how it got that way.
 pub const Prepared = struct {
 	db: storage.Db,
@@ -372,6 +387,32 @@ fn countSymbols(allocator: std.mem.Allocator, db_path: []const u8) !i64 {
 	const db = try storage.openFileWithVec(allocator, db_path);
 	defer storage.close(db);
 	return storage.countRows(db, allocator, "symbols");
+}
+
+test "rebuild policy covers the complete invocation and embedder domain" {
+	const Case = struct {
+		invocation: Invocation,
+		use_null_embedder: bool,
+		expected: RebuildPolicy,
+	};
+	const cases = [_]Case{
+		.{ .invocation = .explicit, .use_null_embedder = false, .expected = .verify_then_recreate },
+		.{ .invocation = .explicit, .use_null_embedder = true, .expected = .recreate_unverified },
+		.{ .invocation = .pre_search, .use_null_embedder = false, .expected = .verify_then_recreate },
+		.{ .invocation = .pre_search, .use_null_embedder = true, .expected = .refuse },
+	};
+	inline for (std.meta.tags(Invocation)) |invocation| {
+		for ([_]bool{ false, true }) |use_null_embedder| {
+			var matches: usize = 0;
+			for (cases) |case| {
+				if (case.invocation == invocation and case.use_null_embedder == use_null_embedder) matches += 1;
+			}
+			try std.testing.expectEqual(@as(usize, 1), matches);
+		}
+	}
+	for (cases) |case| {
+		try std.testing.expectEqual(case.expected, rebuildPolicy(case.invocation, case.use_null_embedder));
+	}
 }
 
 test "probeEmbeddingDim requires exactly one nonempty vector for its one input" {

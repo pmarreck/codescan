@@ -1,5 +1,7 @@
 # Build conformance inventory
 
+Read-only preparation finds that all eight vendored Lua source/license files match upstream `tree-sitter-grammars/tree-sitter-lua` [revision e40f5b6e6df9c2d1d6d664ff5d346a75d71ee6b2](https://github.com/tree-sitter-grammars/tree-sitter-lua/tree/e40f5b6e6df9c2d1d6d664ff5d346a75d71ee6b2), independently checked against its Git tree. The exact archive is prefetched with unpacked hash `sha256-tBD2Z+t0YafUeeV7xsFS9Cwe6dR9WewYh2yL/GcIfFw=`, and every local source/license file compares byte-for-byte with it. No regeneration or patch is needed for this candidate. Declared-root/source-filter regressions, symbol/range/body characterization, Nix integration, duplicate retirement, and complete verification remain queued; this inventory does not claim the pin is implemented.
+
 The project has one executable implementation: Zig with linked C libraries and grammars. A canonical-implementation selector would add no choice. Release packages target the five declared platform/ABI combinations; compiled unit prerequisites use ReleaseSafe, the default CLI uses ReleaseFast, and the debug package uses Debug.
 
 | Entry or product | Current behavior | Remaining migration |

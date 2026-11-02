@@ -2589,10 +2589,7 @@ fn notifyVerifyingEmbeddingModel() void {
 }
 
 
-const UpdateInvocation = enum {
-	explicit,
-	pre_search,
-};
+const UpdateInvocation = update_service.Invocation;
 
 const DiscoveryProgress = struct {
 	const Clock = union(enum) {
@@ -2771,10 +2768,7 @@ fn runUpdateWithInvocation(
 	// A null embedder cannot regenerate what a rebuild would delete, so the
 	// pre-search path must report rather than destroy. An explicit update has
 	// asked for the rebuild and accepts an index without vectors.
-	const rebuild_policy: update_service.RebuildPolicy = if (use_null_embedder)
-		(if (invocation == .pre_search) .refuse else .recreate_unverified)
-	else
-		.verify_then_recreate;
+	const rebuild_policy = update_service.rebuildPolicy(invocation, use_null_embedder);
 
 	var prepared = try update_service.prepare(allocator, active_embedder, .{
 		.db_path = settings.db_path,
