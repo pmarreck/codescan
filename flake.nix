@@ -24,6 +24,7 @@
 						(pkgs.lib.fileset.unions [
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-bash/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lua/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -92,6 +93,17 @@
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
 				'';
+				grammar-lua = pkgs.runCommand "codescan-lua-source" {
+					source = grammarSource "tree-sitter-grammars" "tree-sitter-lua"
+						"e40f5b6e6df9c2d1d6d664ff5d346a75d71ee6b2"
+						"sha256-tBD2Z+t0YafUeeV7xsFS9Cwe6dR9WewYh2yL/GcIfFw=";
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-lua/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE.md ${./deps/tree-sitter-lua/LICENSE.md} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE.md "$out/" || exit "$?"
+					'';
 				grammar-nim = pkgs.applyPatches {
 					name = "codescan-nim-source";
 					src = grammarSource "alaviss" "tree-sitter-nim"
@@ -213,6 +225,7 @@
 				grammarSources = pkgs.linkFarm "codescan-tree-sitter-grammars" [
 					{ name = "c"; path = "${grammar-c}/src"; }
 					{ name = "bash"; path = "${grammar-bash}/src"; }
+					{ name = "lua"; path = "${grammar-lua}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -341,6 +354,14 @@
 					cmp LICENSE ${./deps/tree-sitter-bash/LICENSE} || exit "$?"
 					touch "$out"
 				'';
+				checks.lua-source = pkgs.runCommand "codescan-lua-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/lua/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-lua/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE.md ${./deps/tree-sitter-lua/LICENSE.md} || exit "$?"
+					touch "$out"
+					'';
 				checks.swift-scanner-shifts = pkgs.runCommand "codescan-swift-scanner-shifts" {
 					source = "${grammar-swift}/src";
 					nativeBuildInputs = [ pkgs.zig_0_16 ];
@@ -374,6 +395,7 @@
 						expected = [ "build.zig" "build.zig.zon" "deps/parser/future.h" "deps/parser/parser.c" "src/docs/data.txt" "src/future/module.zig" "src/main.zig" ];
 					in pkgs.runCommand "codescan-source-closure" {
 						bashSourceContract = self.checks.${system}.bash-source;
+						luaSourceContract = self.checks.${system}.lua-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -456,6 +478,7 @@
 					version = "0.1.0";
 					bashSourceContract = self.checks.${system}.bash-source;
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
+					luaSourceContract = self.checks.${system}.lua-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
