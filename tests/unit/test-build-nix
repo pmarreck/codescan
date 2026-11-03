@@ -2,9 +2,72 @@
 set -u
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$(mktemp -d "${TMPDIR:?}/codescan-build.XXXXXX")" || exit 1
-trap 'rm -rf -- "$fixture"' EXIT
+cleanup_fixture() {
+	[ -n "$fixture" ] && [ -d "$fixture" ] && [ ! -L "$fixture" ] || return 1
+	# Only the fresh allocation belongs to this invocation. Physical traversal
+	# must not chmod a retained product or another target reached by a symlink.
+	find -P "$fixture" -type d -exec chmod u+w -- {} + || return 1
+	rm -rf -- "$fixture"
+}
+finish_fixture() {
+	local previous_status="$1"
+	if ! cleanup_fixture; then
+		printf 'FAIL Nix build: owned fixture cleanup failed\n' >&2
+		[ "$previous_status" -ne 0 ] || previous_status=1
+	fi
+	exit "$previous_status"
+}
+trap 'finish_fixture "$?"' EXIT
 fail() { printf 'FAIL Nix build: %s\n' "$1" >&2; exit 1; }
 source "$root/tests/lib/build-fixture.bash"
+
+# Exercise the actual exit handler independently of filesystem cleanup.
+for statuses in 0:0:0 0:9:1 7:0:7 7:9:7; do
+	IFS=: read -r body_status cleanup_status expected_status <<< "$statuses"
+	if (
+		trap - EXIT
+		cleanup_fixture() { return "$cleanup_status"; }
+		finish_fixture "$body_status"
+	) > "$fixture/exit-out" 2> "$fixture/exit-error"; then status=0; else status="$?"; fi
+	[ "$status" -eq "$expected_status" ] || fail "cleanup status matrix changed body $body_status / cleanup $cleanup_status: expected $expected_status, got $status"
+	[ ! -s "$fixture/exit-out" ] || fail 'cleanup status handler wrote unexpected stdout'
+	if [ "$cleanup_status" -eq 0 ]; then
+		[ ! -s "$fixture/exit-error" ] || fail 'successful cleanup reported an error'
+	else
+		printf 'FAIL Nix build: owned fixture cleanup failed\n' > "$fixture/expected-cleanup-error"
+		cmp "$fixture/expected-cleanup-error" "$fixture/exit-error" || fail 'cleanup failure lost its diagnostic'
+	fi
+done
+
+# A real read-only tree is removable, while an external symlink target keeps
+# both its bytes and permissions. The outer fixture owns both disposable trees.
+protected="$fixture/cleanup-protected"
+mkdir "$protected" || fail 'cleanup protected fixture'
+printf protected > "$protected/sentinel"
+chmod 0444 "$protected/sentinel" && chmod 0555 "$protected" || fail 'cleanup protected permissions'
+(
+	trap - EXIT
+	fixture="$(mktemp -d "$fixture/cleanup-probe.XXXXXXXX")" || exit 1
+	mkdir "$fixture/readonly" || exit 1
+	printf private > "$fixture/readonly/data"
+	ln -s "$protected" "$fixture/external" || exit 1
+	chmod 0444 "$fixture/readonly/data" && chmod 0555 "$fixture/readonly" "$fixture" || exit 1
+	cleanup_fixture || exit 1
+	[ ! -e "$fixture" ] && [ ! -L "$fixture" ] || exit 1
+	[ "$(find -P "$protected" -maxdepth 0 -perm 0555 -print)" = "$protected" ] || exit 1
+	[ "$(find -P "$protected/sentinel" -maxdepth 0 -perm 0444 -print)" = "$protected/sentinel" ] || exit 1
+	[ "$(< "$protected/sentinel")" = protected ] || exit 1
+) || fail 'owned cleanup followed an external symlink or retained read-only fixture data'
+(
+	trap - EXIT
+	fixture="$fixture/cleanup-root-link"
+	ln -s "$protected" "$fixture" || exit 1
+	if cleanup_fixture; then exit 1; fi
+	[ -L "$fixture" ] && [ "$(readlink "$fixture")" = "$protected" ] || exit 1
+	[ "$(find -P "$protected" -maxdepth 0 -perm 0555 -print)" = "$protected" ] || exit 1
+	[ "$(< "$protected/sentinel")" = protected ] || exit 1
+) || fail 'owned cleanup accepted a substituted symlink root'
+
 nix() {
 	printf '%s\n' "$*" >> "$BUILD_EVENTS"
 	[ "$BUILD_STATUS" -eq 0 ] || return "$BUILD_STATUS"
