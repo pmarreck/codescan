@@ -50,7 +50,7 @@ const MacOsBackend = struct {
 	const CFArrayRef = *const anyopaque;
 	const CFStringRef = *const anyopaque;
 	const CFTimeInterval = f64;
-	const CFIndex = i32;
+	const CFIndex = isize;
 	const CFStringEncoding = enum(u32) { utf8 = 0x8000100 };
 
 	const FSEventStreamRef = *anyopaque;
@@ -66,7 +66,7 @@ const MacOsBackend = struct {
 	) callconv(.c) void;
 
 	const FSEventStreamContext = extern struct {
-		version: i32 = 0,
+		version: CFIndex = 0,
 		info: ?*anyopaque = null,
 		retain: ?*const anyopaque = null,
 		release: ?*const anyopaque = null,
@@ -341,6 +341,22 @@ const PollingBackend = struct {
 };
 
 // Tests
+
+test "FSEvents bindings preserve the supported Darwin LP64 integer and context ABI" {
+	// Apple's CFBase.h defines CFIndex as signed long on Darwin. FSEvents.h
+	// uses CFIndex for context.version before four pointer-sized fields.
+	try std.testing.expectEqual(@as(usize, 8), @sizeOf(MacOsBackend.CFIndex));
+	try std.testing.expectEqual(std.builtin.Signedness.signed, @typeInfo(MacOsBackend.CFIndex).int.signedness);
+	const Context = MacOsBackend.FSEventStreamContext;
+	const context = Context{};
+	try std.testing.expectEqual(@as(usize, 8), @sizeOf(@TypeOf(context.version)));
+	try std.testing.expect(@TypeOf(context.version) == MacOsBackend.CFIndex);
+	try std.testing.expectEqual(@as(usize, 40), @sizeOf(Context));
+	try std.testing.expectEqual(@as(usize, 8), @alignOf(Context));
+	inline for (.{ "version", "info", "retain", "release", "copy_description" }, 0..) |field, index| {
+		try std.testing.expectEqual(index * 8, @offsetOf(Context, field));
+	}
+}
 
 test "FsWatch init and deinit (must succeed on every supported platform)" {
 	// LIBRARY-QUALITY CONTRACT: FsWatch.init MUST succeed on macOS (FSEvents),
