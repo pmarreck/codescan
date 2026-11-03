@@ -17,6 +17,7 @@ pub const FsWatch = struct {
 		.linux => if (@hasDecl(std.c, "fanotify_init")) LinuxBackend else PollingBackend,
 		else => PollingBackend,
 	};
+	pub const uses_native_events = Backend != PollingBackend;
 
 	pub fn init(allocator: std.mem.Allocator) InitError!FsWatch {
 		return .{ .backend = try Backend.init(allocator) };

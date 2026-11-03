@@ -132,6 +132,10 @@ pub const WatchOptions = struct {
 	idle_limit_ns: ?u64 = null,
 	/// Injected wall clock, so retirement logic is exercised without waiting.
 	now_fn: *const fn () i128 = systemNowNs,
+	/// Caller-owned diagnostic destinations. Defaults retain CLI/system logging;
+	/// embedders can capture output without redirecting process-wide streams.
+	diagnostic_writer: ?*std.Io.Writer = null,
+	log_fn: *const fn (c_int, []const u8, []const u8) void = syslog.logWithRoot,
 };
 
 /// Default clock for `WatchOptions.now_fn`.
@@ -246,7 +250,7 @@ fn executeInitialIncrementalWithRetry(
 				"initial index error: {s}; retrying in {d}ms ({d}/2)",
 				.{ @errorName(err), delay_ms, failed_attempts },
 			) catch "initial index error; retrying";
-			syslog.logWithRoot(syslog.LOG_WARNING, root_path, message);
+			options.log_fn(syslog.LOG_WARNING, root_path, message);
 			io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(delay_ns), .awake) catch {};
 			continue;
 		}).incremental;
@@ -258,7 +262,7 @@ fn executeInitialIncrementalWithRetry(
 /// Announces retirement on both the terminal and the system log. A watcher that
 /// simply vanished would be indistinguishable from one that crashed, which is
 /// the same false-success shape as a daemon that dies with its stdio closed.
-fn announceRetirement(stderr: *std.Io.Writer, root_path: []const u8, idle_limit_ns: u64) void {
+fn announceRetirement(stderr: *std.Io.Writer, root_path: []const u8, idle_limit_ns: u64, options: WatchOptions) void {
 	var limit_buf: [64]u8 = undefined;
 	const limit = retirement.formatIdleLimit(&limit_buf, idle_limit_ns);
 	_ = stderr.print(
@@ -272,9 +276,8 @@ fn announceRetirement(stderr: *std.Io.Writer, root_path: []const u8, idle_limit_
 		"watcher retiring: idle {s} with no index activity",
 		.{limit},
 	) catch "watcher retiring: idle";
-	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, msg);
+	options.log_fn(syslog.LOG_NOTICE, root_path, msg);
 }
-
 
 /// Runs the incremental indexer using OS-native file watching (FSEvents/fanotify),
 /// falling back to polling on unsupported platforms or init failure.
@@ -290,7 +293,7 @@ pub fn watchLoop(
 ) !void {
 	var stderr_buf: [4096]u8 = undefined;
 	var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
-	const stderr = &stderr_writer.interface;
+	const stderr = options.diagnostic_writer orelse &stderr_writer.interface;
 
 	// Acquire PID file — reject if another watcher is already running
 	if (options.codescan_dir) |dir| {
@@ -311,6 +314,10 @@ pub fn watchLoop(
 	defer if (options.codescan_dir) |dir| pidfile.removePid(allocator, dir);
 	defer if (options.codescan_dir) |dir| removeStartupReady(allocator, dir);
 
+	if (comptime !fs_watch.FsWatch.uses_native_events) {
+		return watchLoopPolling(allocator, db, root_path, registry, embedder, options, stop, stderr);
+	}
+
 	// Try native watcher; fall back to polling on failure
 	var native_watcher = fs_watch.FsWatch.init(allocator) catch {
 		return watchLoopPolling(allocator, db, root_path, registry, embedder, options, stop, stderr);
@@ -324,7 +331,7 @@ pub fn watchLoop(
 	_ = stderr.print("Watching {s} (native events, Ctrl-C to stop)\n", .{root_path}) catch {};
 	_ = stderr.flush() catch {};
 	var start_buf: [128]u8 = undefined;
-	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, startedMessage(&start_buf, "native events"));
+	options.log_fn(syslog.LOG_NOTICE, root_path, startedMessage(&start_buf, "native events"));
 
 	// Set up progress file (symlink to TMPDIR)
 	const progress_path = progress.setup(allocator, options.codescan_dir orelse ".");
@@ -363,7 +370,7 @@ pub fn watchLoop(
 		if (configChanged(config_path, &config_mtime)) {
 			_ = stderr.print("watcher: config changed, stopping (restart to apply new settings)\n", .{}) catch {};
 			_ = stderr.flush() catch {};
-			syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher stopping: config changed");
+			options.log_fn(syslog.LOG_NOTICE, root_path, "watcher stopping: config changed");
 			return;
 		}
 
@@ -389,11 +396,11 @@ pub fn watchLoop(
 			if (options.codescan_dir) |dir| {
 				writeFailureRecord(allocator, dir, root_path, msg_w, options.version) catch {};
 			}
-			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_w);
+			options.log_fn(syslog.LOG_WARNING, root_path, msg_w);
 			if (consecutive_errors >= max_consecutive_errors) {
 				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
 				_ = stderr.flush() catch {};
-				syslog.logWithRoot(syslog.LOG_ERR, root_path, "watcher stopping: too many consecutive errors");
+				options.log_fn(syslog.LOG_ERR, root_path, "watcher stopping: too many consecutive errors");
 				return;
 			}
 			continue;
@@ -409,7 +416,7 @@ pub fn watchLoop(
 		// Retirement is decided only here, outside the index call, so the
 		// in-progress flag can never be observed mid-pass.
 		if (tracker.decide() == .retire) {
-			announceRetirement(stderr, root_path, options.idle_limit_ns.?);
+			announceRetirement(stderr, root_path, options.idle_limit_ns.?, options);
 			return;
 		}
 
@@ -435,7 +442,7 @@ fn watchLoopPolling(
 	}) catch {};
 	_ = stderr.flush() catch {};
 	var start_buf: [128]u8 = undefined;
-	syslog.logWithRoot(syslog.LOG_NOTICE, root_path, startedMessage(&start_buf, "polling"));
+	options.log_fn(syslog.LOG_NOTICE, root_path, startedMessage(&start_buf, "polling"));
 
 	// Set up progress file (symlink to TMPDIR)
 	const progress_path_poll = progress.setup(allocator, options.codescan_dir orelse ".");
@@ -474,7 +481,7 @@ fn watchLoopPolling(
 		if (configChanged(config_path, &config_mtime)) {
 			_ = stderr.print("watcher: config changed, stopping (restart to apply new settings)\n", .{}) catch {};
 			_ = stderr.flush() catch {};
-			syslog.logWithRoot(syslog.LOG_NOTICE, root_path, "watcher stopping: config changed");
+			options.log_fn(syslog.LOG_NOTICE, root_path, "watcher stopping: config changed");
 			return;
 		}
 
@@ -500,11 +507,11 @@ fn watchLoopPolling(
 			if (options.codescan_dir) |dir| {
 				writeFailureRecord(allocator, dir, root_path, msg_p, options.version) catch {};
 			}
-			syslog.logWithRoot(syslog.LOG_WARNING, root_path, msg_p);
+			options.log_fn(syslog.LOG_WARNING, root_path, msg_p);
 			if (consecutive_errors >= max_consecutive_errors) {
 				_ = stderr.print("watcher: too many consecutive errors, stopping\n", .{}) catch {};
 				_ = stderr.flush() catch {};
-				syslog.logWithRoot(syslog.LOG_ERR, root_path, "watcher stopping: too many consecutive errors");
+				options.log_fn(syslog.LOG_ERR, root_path, "watcher stopping: too many consecutive errors");
 				return;
 			}
 			continue;
@@ -520,7 +527,7 @@ fn watchLoopPolling(
 		// Decided outside the index call, so the in-progress flag can never be
 		// observed mid-pass.
 		if (tracker.decide() == .retire) {
-			announceRetirement(stderr, root_path, options.idle_limit_ns.?);
+			announceRetirement(stderr, root_path, options.idle_limit_ns.?, options);
 			return;
 		}
 	}
@@ -687,21 +694,139 @@ test "startedMessage reports the watcher PID" {
 	try std.testing.expect(std.mem.indexOf(u8, message, "PID ") != null);
 }
 
-test "watcher source contains syslog calls at all error paths" {
-    // An exact count, deliberately: adding or removing a log call should
-    // require saying so out loud rather than passing unnoticed. A watcher that
-    // stops without leaving a reason in the system log is indistinguishable
-    // from one that crashed.
-    //
+test "watch loop releases caller allocations after repeated reconciliation for both root forms" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	const http = @import("embedding_http.zig");
+	const sqlite = storage.sqlite;
+	const Fixture = struct {
+		const sources = [_][]const u8{
+			"/// First operation.\npub fn first() void {}\n",
+			"/// A longer second operation.\npub fn second() void {}\n",
+			"/// The longest, final operation.\npub fn third() void {}\n",
+		};
+		dir: std.Io.Dir,
+		codescan_dir: []const u8,
+		stop: *std.atomic.Value(bool),
+		inner: embedding.Embedder,
+		calls: usize = 0,
+
+		fn embed(ctx: *anyopaque, alloc: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
+			const self: *@This() = @ptrCast(@alignCast(ctx));
+			try std.testing.expectEqual(@as(usize, 1), inputs.len);
+			const values = try self.inner.embed(self.inner.ctx, alloc, inputs);
+			errdefer self.inner.free(self.inner.ctx, alloc, values);
+			self.calls += 1;
+			// Each source has one code and one comment embedding. Mutate only
+			// after both, using distinct sizes instead of timestamp sleeps.
+			if (self.calls % 2 == 0) {
+				const phase = self.calls / 2;
+				try std.testing.expect(phase <= sources.len);
+				if (phase > 1) try std.testing.expect(startupReadyExists(alloc, self.codescan_dir));
+				if (phase == sources.len) {
+					self.stop.store(true, .release);
+				} else {
+					try self.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "events.zig", .data = sources[phase] });
+				}
+			}
+			return values;
+		}
+
+		fn free(ctx: *anyopaque, alloc: std.mem.Allocator, values: [][]f32) void {
+			const self: *@This() = @ptrCast(@alignCast(ctx));
+			self.inner.free(self.inner.ctx, alloc, values);
+		}
+
+		fn log(_: c_int, _: []const u8, _: []const u8) void {}
+	};
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDir(io, ".codescan", .default_dir);
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	const codescan_dir = try std.fs.path.join(allocator, &.{ root, ".codescan" });
+	defer allocator.free(codescan_dir);
+	const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(cwd);
+	const relative_root = try std.fs.path.relative(allocator, cwd, io_singleton.getEnvMap(), cwd, root);
+	defer allocator.free(relative_root);
+	for ([_][]const u8{ root, relative_root }) |root_arg| {
+		try tmp.dir.writeFile(io, .{ .sub_path = "events.zig", .data = Fixture.sources[0] });
+		const db = try storage.openMemoryWithVec(allocator);
+		defer storage.close(db);
+		var replies: http.MockTransportCtx = .{ .tags_body = "{}", .ps_body = "{}" };
+		var provider = embedding.HttpEmbedder{
+			.transport = replies.transport(),
+			.base_url = "http://provider.invalid",
+			.model = "fixture-model",
+		};
+		var stop = std.atomic.Value(bool).init(false);
+		var fixture = Fixture{ .dir = tmp.dir, .codescan_dir = codescan_dir, .stop = &stop, .inner = provider.embedder() };
+		var diagnostic_buffer: [4096]u8 = undefined;
+		var diagnostics = std.Io.Writer.fixed(&diagnostic_buffer);
+		var accounting = std.testing.FailingAllocator.init(allocator, .{});
+		try watchLoop(accounting.allocator(), db, root_arg, plugin.defaultRegistry(), .{
+			.ctx = &fixture,
+			.embed = Fixture.embed,
+			.free = Fixture.free,
+		}, .{
+			.interval_ms = 0,
+			.codescan_dir = codescan_dir,
+			.diagnostic_writer = &diagnostics,
+			.log_fn = Fixture.log,
+			.index_request = .{
+				.mode = .incremental,
+				.root_path = root_arg,
+				.embedding_dim = 2,
+				.embedding_model = "fixture-model",
+				.batch_size = 1,
+				.max_file_size = 4096,
+				.index_ext = "zig",
+			},
+		}, &stop);
+		try std.testing.expect(stop.load(.acquire));
+		try std.testing.expectEqual(@as(usize, 6), fixture.calls);
+		try std.testing.expectEqual(@as(usize, 6), replies.embed_count);
+		try std.testing.expectEqual(accounting.allocated_bytes, accounting.freed_bytes);
+		for ([_][]const u8{ "symbols", "embeddings", "embeddings_comment" }) |table| {
+			try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, table));
+		}
+		var statement: ?*sqlite.sqlite3_stmt = null;
+		try std.testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_prepare_v2(db, "SELECT symbol_name, body FROM symbols;", -1, &statement, null));
+		defer _ = sqlite.sqlite3_finalize(statement);
+		try std.testing.expectEqual(sqlite.SQLITE_ROW, sqlite.sqlite3_step(statement));
+		try std.testing.expectEqualStrings("third", std.mem.span(sqlite.sqlite3_column_text(statement, 0)));
+		try std.testing.expectEqualStrings("pub fn third() void {}\n", std.mem.span(sqlite.sqlite3_column_text(statement, 1)));
+		try std.testing.expectEqual(sqlite.SQLITE_DONE, sqlite.sqlite3_step(statement));
+		try std.testing.expect(!startupReadyExists(allocator, codescan_dir));
+		try std.testing.expect((try pidfile.readAndCheckPid(allocator, codescan_dir)) == null);
+		const remaining_progress = progress.read(allocator, codescan_dir);
+		defer if (remaining_progress) |bytes| allocator.free(bytes);
+		try std.testing.expect(remaining_progress == null);
+		if (!fs_watch.FsWatch.uses_native_events) {
+			try std.testing.expect(std.mem.indexOf(u8, diagnostics.buffered(), "(poll every 0ms, Ctrl-C to stop)") != null);
+			try std.testing.expect(std.mem.indexOf(u8, diagnostics.buffered(), "native events") == null);
+		}
+		try std.testing.expect(std.mem.indexOf(u8, diagnostics.buffered(), "+1 new, ~0 modified") != null);
+		try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, diagnostics.buffered(), "+0 new, ~1 modified"));
+	}
+}
+
+test "watcher source routes log calls through its configured destination at all error paths" {
+	// An exact count, deliberately: adding or removing a log call should
+	// require saying so out loud rather than passing unnoticed. A watcher that
+	// stops without leaving a reason in the system log is indistinguishable
+	// from one that crashed.
+	//
 	// 10 = start (native, polling), initial retry, config-changed stop (x2),
 	// index error (x2), too-many-errors stop (x2), and retirement (shared by
 	// both loops).
-    const src = @embedFile("watcher.zig");
-    var count: usize = 0;
-    var i: usize = 0;
-    const needle = "syslog." ++ "logWithRoot(";
-    while (std.mem.indexOfPos(u8, src, i, needle)) |pos| : (i = pos + 1) {
-        count += 1;
-    }
+	const src = @embedFile("watcher.zig");
+	var count: usize = 0;
+	var i: usize = 0;
+	const needle = "options." ++ "log_fn(";
+	while (std.mem.indexOfPos(u8, src, i, needle)) |pos| : (i = pos + 1) {
+		count += 1;
+	}
 	try std.testing.expectEqual(@as(usize, 10), count);
 }
