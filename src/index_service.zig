@@ -185,10 +185,19 @@ test "execute owns full and incremental index dispatch" {
 	try std.testing.expectEqual(@as(usize, 1), incremental.incremental.unchanged_files);
 }
 
-test "repeated incremental event batches release caller allocations for both root forms" {
+test "repeated incremental event batches release caller and SQLite allocations for both root forms" {
 	const allocator = std.testing.allocator;
 	const io = io_singleton.getOrInit();
 	const http = @import("embedding_http.zig");
+	const sqlite = storage.sqlite;
+	try std.testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_initialize());
+	// A disabled or disconnected counter must not produce a false cleanup pass.
+	const before_probe = sqlite.sqlite3_memory_used();
+	const held = sqlite.sqlite3_malloc64(64) orelse return error.OutOfMemory;
+	const during_probe = sqlite.sqlite3_memory_used();
+	sqlite.sqlite3_free(held);
+	try std.testing.expect(during_probe - before_probe >= 64);
+	try std.testing.expectEqual(before_probe, sqlite.sqlite3_memory_used());
 	var tmp = std.testing.tmpDir(.{});
 	defer tmp.cleanup();
 	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
@@ -212,40 +221,44 @@ test "repeated incremental event batches release caller allocations for both roo
 		.{ .action = .remove, .counts = .{ 0, 0, 1, 0, 0 }, .rows = 0, .embed_calls = 0 },
 	};
 	for ([_][]const u8{ root, relative_root }) |root_arg| {
-		const db = try storage.openMemoryWithVec(allocator);
-		defer storage.close(db);
-		var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "fixture-model" });
-		defer schema.deinit(allocator);
-		var replies: http.MockTransportCtx = .{ .tags_body = "{}", .ps_body = "{}" };
-		var provider = embedding.HttpEmbedder{
-			.transport = replies.transport(), .base_url = "http://provider.invalid", .model = "fixture-model",
-		};
-		var accounting = std.testing.FailingAllocator.init(allocator, .{});
-		for (0..3) |_| {
-			for (cases) |case| {
-				switch (case.action) {
-					.write => try tmp.dir.writeFile(io, .{ .sub_path = "events.zig", .data = case.source }),
-					.unchanged => {},
-					.remove => try tmp.dir.deleteFile(io, "events.zig"),
+		const native_before = sqlite.sqlite3_memory_used();
+		{
+			const db = try storage.openMemoryWithVec(allocator);
+			defer storage.close(db);
+			var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2, .embedding_model = "fixture-model" });
+			defer schema.deinit(allocator);
+			var replies: http.MockTransportCtx = .{ .tags_body = "{}", .ps_body = "{}" };
+			var provider = embedding.HttpEmbedder{
+				.transport = replies.transport(), .base_url = "http://provider.invalid", .model = "fixture-model",
+			};
+			var accounting = std.testing.FailingAllocator.init(allocator, .{});
+			for (0..3) |_| {
+				for (cases) |case| {
+					switch (case.action) {
+						.write => try tmp.dir.writeFile(io, .{ .sub_path = "events.zig", .data = case.source }),
+						.unchanged => {},
+						.remove => try tmp.dir.deleteFile(io, "events.zig"),
+					}
+					const previous_calls = replies.embed_count;
+					const result = try execute(accounting.allocator(), db, plugin.defaultRegistry(), provider.embedder(), .{
+						.mode = .incremental, .root_path = root_arg, .embedding_dim = 2,
+						.embedding_model = "fixture-model", .batch_size = 1, .max_file_size = 4096,
+						.index_ext = "zig",
+					});
+					const stats = result.incremental;
+					try std.testing.expectEqual(case.counts, [5]usize{
+						stats.new_files, stats.modified_files, stats.deleted_files, stats.unchanged_files, stats.symbols,
+					});
+					try std.testing.expectEqual(@as(usize, 0), stats.recovered_files);
+					try std.testing.expectEqual(case.embed_calls, replies.embed_count - previous_calls);
+					for ([_][]const u8{ "symbols", "embeddings", "embeddings_comment" }) |table| {
+						try std.testing.expectEqual(case.rows, try storage.countRows(db, allocator, table));
+					}
+					try std.testing.expectEqual(accounting.allocated_bytes, accounting.freed_bytes);
 				}
-				const previous_calls = replies.embed_count;
-				const result = try execute(accounting.allocator(), db, plugin.defaultRegistry(), provider.embedder(), .{
-					.mode = .incremental, .root_path = root_arg, .embedding_dim = 2,
-					.embedding_model = "fixture-model", .batch_size = 1, .max_file_size = 4096,
-					.index_ext = "zig",
-				});
-				const stats = result.incremental;
-				try std.testing.expectEqual(case.counts, [5]usize{
-					stats.new_files, stats.modified_files, stats.deleted_files, stats.unchanged_files, stats.symbols,
-				});
-				try std.testing.expectEqual(@as(usize, 0), stats.recovered_files);
-				try std.testing.expectEqual(case.embed_calls, replies.embed_count - previous_calls);
-				for ([_][]const u8{ "symbols", "embeddings", "embeddings_comment" }) |table| {
-					try std.testing.expectEqual(case.rows, try storage.countRows(db, allocator, table));
-				}
-				try std.testing.expectEqual(accounting.allocated_bytes, accounting.freed_bytes);
 			}
 		}
+		try std.testing.expectEqual(native_before, sqlite.sqlite3_memory_used());
 	}
 }
 

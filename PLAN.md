@@ -4,7 +4,6 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
-- [x] Verify native header preflight on exact-commit CI: complete native Linux/Mac suites, both native Windows aggregate reports and twenty-process cancellation campaigns, all eight Mechatron targets, and exactly five nonempty release archives pass. (done 2026-11-02 23:08 EST; commit 8b7af814)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Verify the infrastructure owner's build-budget literal-argument repair; the owner acknowledged the request and confirmed the source/installed-helper defect, but implementation remains queued, with the resource envelope and equivalent-syntax workaround unchanged.
 
@@ -20,13 +19,13 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 - [ ] Investigate broad ReleaseSafe host-runner variation: the Assembly-pin host run records a 25.01-second execution lower bound and 3.84-second evaluation after about 36 minutes queued; retain earlier observations without attributing the variation, accepting a baseline, or changing coverage/exclusions/budgets. (context: docs/plan_context/test_latency.md)
 	- [x] Qualify immutable build-fixture templates on exact-commit native CI: complete Linux/Mac/Windows suites, both cancellation campaigns, eight Mechatron targets, and five archives pass with all 64 failure controls, no accepted baseline, and no changed budget. (done 2026-11-03 02:05 EST; commit f4597fce; context: docs/plan_context/test_latency.md)
 - [ ] Add controlled TCP-blackhole/TLS-cancellation fixtures and run request-deadline checks on qualified native macOS/Windows runners; native execution depends on runner availability, not cross-build success.
-- [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; shared-service caller-allocator ownership is clean in the bounded fixture, while native watcher, transport, and implicit-root profiling remain open. (context: docs/plan_context/watcher_memory.md)
+- [ ] Reproduce watcher heap growth with deterministic event batches and explicit/implicit roots using the shared profiling engine; qualify native SQLite counter checks alongside clean per-call caller ownership, while native watcher, transport, implicit-root, and whole-process profiling remain open. (context: docs/plan_context/watcher_memory.md)
 - [ ] Recover the interrupted reindex sweep's private completion ledger and exact remaining project set before resuming live writes; bounded archived evidence and retained-journal recovery cannot establish later completion, so later result records are required and live writes remain held.
 
 ## Architecture and features
 
 - [ ] Bring project builds and publication into conformance with the `cross-platform-project-build-arch` convention; preserve existing products and coordinate PATH cutover separately. (context: docs/plan_context/build_conformance.md)
-	- [ ] Use `macos-arm64`, `linux-amd64`, `linux-arm64`, `mswin-amd64`, and `mswin-arm64` namespaces with separate ABI/profile products; preserve native compiler/Nix identifiers and keep writable outputs separate from retained Nix outputs.
+	- [x] Use all five canonical PF namespaces with separate ABI/profile products, preserved compiler/Nix identifiers, and separate writable/retained outputs; scope/coexistence/refusal controls and exact-commit native qualification pass. (done 2026-11-03 03:30 EST; implementation 58e41052; qualified tip 8abeef16; context: docs/plan_context/build_conformance.md)
 	- [ ] Publish verified commands in `bin/<PF>/` without runtime selector wrappers; preserve previous selections on failure, serialize publishers, retain runtime resources, support native Windows entrypoints, and coordinate PATH changes separately.
 		- [x] Verify native default/debug header preflight through the integrated complete suite, fresh confined host run, and exact-commit CI; controlled wrong-CPU/reader failures preserve prior products and actual native bytes pass. (done 2026-11-02 23:08 EST; commit 8b7af814; context: docs/plan_context/build_conformance.md)
 		- [x] Verify staged all-platform candidate preflight on exact-commit CI; all 24 failure controls, complete local/fresh host checks, native Linux/Mac/Windows qualification, eight Mechatron targets, and five canonical archives pass without changed exclusions. (done 2026-11-02 23:34 EST; commit f662a495; context: docs/plan_context/build_conformance.md)
