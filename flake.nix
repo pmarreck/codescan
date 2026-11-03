@@ -371,7 +371,10 @@
 					if timeout --kill-after=5 30 bash "$source/tests/unit/test-publication-lock" ${pkgs.coreutils}/bin/true > mutation-out 2> mutation-error; then
 						printf 'always-successful lock tool escaped the control\n' >&2
 						exit 1
+					else
+						mutation_status="$?"
 					fi
+					[ "$mutation_status" -eq 1 ] || { printf 'unexpected lock control exit: %s\n' "$mutation_status" >&2; exit 1; }
 					rg -Fq 'contender did not reject a held publication lease' mutation-error || exit 1
 					printf 'Always-successful lock impostor rejected\n'
 					touch "$out"
@@ -390,7 +393,10 @@
 					if timeout --kill-after=5 30 bash "$source/tests/unit/test-publication-serialization" "$impostor" > mutation-out 2> mutation-error; then
 						printf 'unlocked publisher escaped the integration control\n' >&2
 						exit 1
+					else
+						mutation_status="$?"
 					fi
+					[ "$mutation_status" -eq 1 ] || { sed -n '1,40p' mutation-error >&2; printf 'unexpected publisher control exit: %s\n' "$mutation_status" >&2; exit 1; }
 					if ! rg -Fq 'competing publisher entered the selection phase' mutation-error; then
 						sed -n '1,40p' mutation-error >&2
 						exit 1

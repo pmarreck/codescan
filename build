@@ -49,9 +49,56 @@ validate_publication_lock() {
 }
 retention_works=()
 publication=''
+selected_prefixes=()
+selected_products=()
+previous_products=()
+previous_available=()
+previous_roots=()
+rollback_needed=0
+keep_previous=0
+restore_selections() {
+	local index prefix previous current restore_status
+	for ((index=${#selected_prefixes[@]}-1; index>=0; index--)); do
+		prefix="${selected_prefixes[$index]}"; previous="${previous_products[$index]}"
+		current=''
+		if [ -L "$prefix" ]; then current="$(readlink "$prefix")"; fi
+		if [ -n "$previous" ] && [ "$current" = "$previous" ]; then continue; fi
+		if { [ -e "$prefix" ] && [ ! -L "$prefix" ]; } || { [ -n "$current" ] && [ "$current" != "${selected_products[$index]}" ]; }; then
+			printf 'error: refusing rollback over an unexpected selected output: %s\n' "$prefix" >&2
+			keep_previous=1
+			continue
+		fi
+		if [ -n "$previous" ]; then
+			restore_status=0
+			if [ "${previous_available[$index]}" -eq 1 ]; then
+				nix-store --add-root "$prefix" --realise "$previous" >/dev/null || restore_status="$?"
+			else
+				# An originally dangling link has metadata, but no product to retain.
+				ln -sfn "$previous" "$prefix" || restore_status="$?"
+			fi
+			if [ "$restore_status" -ne 0 ] || [ "$(readlink "$prefix")" != "$previous" ]; then
+				printf 'error: could not restore previous selected output: %s -> %s\n' "$prefix" "$previous" >&2
+				if [ "${previous_available[$index]}" -eq 1 ]; then
+					printf 'error: previous product recovery root: %s/previous-%s\n' "$candidate_root" "$index" >&2
+				fi
+				keep_previous=1
+			fi
+		elif [ -L "$prefix" ]; then
+			unlink "$prefix" || keep_previous=1
+		fi
+	done
+}
 cleanup_publication() {
-	local retention_work
+	local retention_work previous_root
+	if [ "$rollback_needed" -eq 1 ]; then restore_selections; fi
 	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication"; fi
+	if [ "$keep_previous" -eq 1 ]; then
+		printf 'error: rollback incomplete; previous products remain retained for recovery in %s\n' "$candidate_root" >&2
+		return
+	fi
+	for previous_root in "${previous_roots[@]}"; do
+		if [ -L "$previous_root" ]; then unlink "$previous_root"; fi
+	done
 	for retention_work in "${retention_works[@]}"; do
 		if [ -L "$retention_work/tools" ]; then unlink "$retention_work/tools"; fi
 		if [ -L "$retention_work/result" ]; then unlink "$retention_work/result"; fi
@@ -153,10 +200,35 @@ if [ "$all_platforms" -eq 1 ]; then
 	for index in "${!targets[@]}"; do
 		# The explicit native request owns this profile's final selection.
 		[ "${prefixes[$index]}" != "$native_prefix" ] || continue
-		nix-store --add-root "${prefixes[$index]}" --realise "${products[$index]}" >/dev/null || exit "$?"
+		selected_prefixes+=("${prefixes[$index]}")
+		selected_products+=("${products[$index]}")
 	done
 fi
-# Keep the candidate GC root until Nix registers the verified complete product.
-# Renaming a GC root would invalidate its separately registered retention path.
-nix-store --add-root "$native_prefix" --realise "$output" >/dev/null || exit "$?"
+selected_prefixes+=("$native_prefix")
+selected_products+=("$output")
+# Retain every prior complete product before changing any selected GC root.
+for index in "${!selected_prefixes[@]}"; do
+	prefix="${selected_prefixes[$index]}"
+	validate_retention "$prefix" || exit 1
+	previous=''; available=0
+	if [ -L "$prefix" ]; then
+		previous="$(readlink "$prefix")" || exit "$?"
+		if [ -e "$prefix" ]; then
+			available=1
+			previous_root="$candidate_root/previous-$index"
+			previous_roots+=("$previous_root")
+			nix-store --add-root "$previous_root" --realise "$previous" >/dev/null || exit "$?"
+			[ "$(readlink "$previous_root")" = "$previous" ] || { printf 'error: previous product lacks its rollback retention root\n' >&2; exit 1; }
+		fi
+	fi
+	previous_products+=("$previous")
+	previous_available+=("$available")
+done
+rollback_needed=1
+for index in "${!selected_prefixes[@]}"; do
+	prefix="${selected_prefixes[$index]}"; product="${selected_products[$index]}"
+	nix-store --add-root "$prefix" --realise "$product" >/dev/null || exit "$?"
+	[ "$(readlink "$prefix")" = "$product" ] || { printf 'error: selected output does not match the verified product\n' >&2; exit 1; }
+done
 mv -f -- "$publication" zig-out/bin/codescan || exit 1
+rollback_needed=0

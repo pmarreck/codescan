@@ -14,6 +14,10 @@ actual name. Require the negative test's specific causal diagnostic, alongside
 a passing real-tool control. An unrelated nonzero exit is not evidence that
 the intended defect was detected.
 
+Require the intentional failure's expected exit code as well. A timeout or
+cleanup hang must not become an accepted negative control merely because an
+earlier line contains the expected diagnostic.
+
 Codescan's publication integration control catches this mistake before
 qualification: the renamed utility fails during startup, whereas the explicit
 no-op reaches the competing publisher and is rejected for entering selection.

@@ -19,19 +19,36 @@ nix() {
 	printf '%s\n' "$product"
 }
 nix-store() {
-	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] && [ "$4" = "$BUILD_OUTPUT" ] || return 64
-	[ "${BUILD_RETAIN_STATUS:-0}" -eq 0 ] || return "$BUILD_RETAIN_STATUS"
+	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
+	case "$4" in "$BUILD_OUTPUT"|"$PWD/release"|"$PWD/debug") ;; *) return 64 ;; esac
+	if [[ "$2" == .nix-out/* ]] && [ "$4" = "$BUILD_OUTPUT" ]; then
+		[ "${BUILD_RETAIN_STATUS:-0}" -eq 0 ] || return "$BUILD_RETAIN_STATUS"
+	fi
 	ln -sfn "$4" "$2"
+	if [[ "$2" == .nix-out/* ]] && [ "$4" = "$BUILD_OUTPUT" ]; then
+		return "${BUILD_RETAIN_AFTER_STATUS:-0}"
+	fi
 }
 zig() { printf 'forbidden compiler\n' >> "$BUILD_EVENTS"; return 99; }
 export -f nix nix-store zig
-for mode in default debug test failure missing-nix output-symlink real-publication wrong-header header-reader-failure linked-command; do
+for mode in default debug test failure missing-nix output-symlink real-publication wrong-header header-reader-failure linked-command dangling-root dangling-root-failure; do
 	project="$fixture/$mode/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" "$project/tools" || fail setup
 	copy_build_fixture "$project" || fail 'cannot copy source fixture'
 	printf old > "$project/zig-out/bin/codescan"
 	printf new > "$project/prepared/bin/codescan"
 	chmod +x "$project/prepared/bin/codescan"
+	if [[ "$mode" == dangling-root* ]]; then
+		case "$(uname -s)/$(uname -m)" in
+			Linux/x86_64) namespace=linux-amd64/musl ;;
+			Linux/aarch64) namespace=linux-arm64/musl ;;
+			Darwin/arm64) namespace=macos-arm64 ;;
+			*) fail 'unsupported dangling-root fixture host' ;;
+		esac
+		selected="$project/.nix-out/$namespace/ReleaseFast"
+		mkdir -p "${selected%/*}" || fail 'dangling root parent'
+		ln -s "$project/missing-old-product" "$selected" || fail 'dangling root fixture'
+	fi
 	if [ "$mode" = output-symlink ]; then
 		mv "$project/zig-out" "$project/protected-output"
 		ln -s "$project/protected-output" "$project/zig-out"
@@ -47,7 +64,8 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	fi
 	: > "$project/events"
 	status=0
-	header=''; header_status=0; real_header=0
+	header=''; header_status=0; real_header=0; after_status=0
+	[ "$mode" != dangling-root-failure ] || after_status=23
 	[ "$mode" != failure ] || status=19
 	[ "$mode" != wrong-header ] || header='foreign executable'
 	[ "$mode" != header-reader-failure ] || header_status=17
@@ -60,10 +78,20 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	else
 		invocation=("$BASH" "$project/build" "${args[@]}")
 	fi
-	if (cd "$project" && env BUILD_EVENTS="$project/events" BUILD_STATUS="$status" BUILD_OUTPUT="$project/prepared" BUILD_HEADER="$header" BUILD_HEADER_STATUS="$header_status" BUILD_REAL_HEADER="$real_header" "${invocation[@]}") > "$project/stdout" 2> "$project/stderr"; then
+	if (cd "$project" && env BUILD_EVENTS="$project/events" BUILD_STATUS="$status" BUILD_OUTPUT="$project/prepared" BUILD_HEADER="$header" BUILD_HEADER_STATUS="$header_status" BUILD_REAL_HEADER="$real_header" BUILD_RETAIN_AFTER_STATUS="$after_status" "${invocation[@]}") > "$project/stdout" 2> "$project/stderr"; then
 		rc=0
 	else rc="$?"; fi
 	case "$mode" in
+		dangling-root)
+			[ "$rc" -eq 0 ] || fail "dangling selected root prevented a successful rebuild: $rc"
+			[ "$(readlink "$selected")" = "$project/prepared" ] && [ "$(< "$project/zig-out/bin/codescan")" = new ] || fail 'dangling root was not repaired'
+			;;
+		dangling-root-failure)
+			[ "$rc" -eq 23 ] || fail "dangling root lost the post-registration failure: $rc"
+			[ "$(readlink "$selected")" = "$project/missing-old-product" ] && [ ! -e "$selected" ] || fail 'failed rebuild did not restore the original dangling link'
+			[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'failed dangling-root repair changed the prior command'
+			[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'dangling-root rollback leaked candidates'
+			;;
 		failure|missing-nix|output-symlink)
 			[ "$rc" -ne 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$mode did not preserve the previous product"
 			;;
@@ -233,6 +261,14 @@ unset -f uname
 	}
 	nix-store() {
 		[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
+		if [[ "$BATCH_FAULT" == registration-* ]] && [[ "$4" == "$BATCH_PROJECT/next/"* ]]; then
+			case "$2" in
+				".nix-out/$BATCH_BAD_PRODUCT/ReleaseFast"|".nix-out/$BATCH_BAD_PRODUCT/musl/ReleaseFast"|".nix-out/$BATCH_BAD_PRODUCT/gnu/ReleaseFast")
+					if [[ "$BATCH_FAULT" == registration-after-mutation* ]]; then ln -sfn "$4" "$2" || return 68; fi
+					printf 'controlled retained-root registration failure\n' >&2
+					return 23 ;;
+			esac
+		fi
 		ln -sfn "$4" "$2"
 	}
 	file() {
@@ -242,8 +278,11 @@ unset -f uname
 	}
 	export -f nix nix-store file
 	batch_controls=0
-	for fault in build-failure wrong-header reader-failure missing-command; do
+	registration_controls=0
+	for fault in build-failure wrong-header reader-failure missing-command registration-failure registration-after-mutation registration-failure-absent registration-after-mutation-absent; do
 		for bad_product in macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64 native; do
+			# The native alias selects an already represented PF in registration.
+			if [[ "$fault" == registration-* ]] && [ "$bad_product" = native ]; then continue; fi
 			project="$fixture/batch-$fault-$bad_product/project with spaces"
 			mkdir -p "$project/zig-out/bin" || fail 'batch fixture'
 			copy_build_fixture "$project" || fail 'batch wrapper'
@@ -259,7 +298,7 @@ unset -f uname
 				printf old-resource > "$project/old/$pf/share/resource"
 				prefix="$project/.nix-out/$pf/${variant}ReleaseFast"
 				mkdir -p "${prefix%/*}" || fail 'batch retained parent'
-				ln -s "$project/old/$pf" "$prefix" || fail 'batch old root'
+				if [[ "$fault" != *-absent ]]; then ln -s "$project/old/$pf" "$prefix" || fail 'batch old root'; fi
 				prefixes+=("$prefix"); old_products+=("$project/old/$pf")
 			done < <(build_fixture_headers)
 			case "$(uname -s)/$(uname -m)" in
@@ -275,18 +314,27 @@ unset -f uname
 			esac
 			if (cd "$project" && env BATCH_PROJECT="$project" BATCH_FAULT="$fault" BATCH_BAD_PRODUCT="$bad_product" "$BASH" ./build --all) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
 			expected_status=1
-			case "$fault" in build-failure) expected_status=19 ;; reader-failure) expected_status=17 ;; esac
+			case "$fault" in build-failure) expected_status=19 ;; reader-failure) expected_status=17 ;; registration-*) expected_status=23 ;; esac
 			[ "$rc" -eq "$expected_status" ] || fail "$bad_product $fault lost the failure status: $rc"
+			if [[ "$fault" == registration-* ]]; then
+				rg -Fq 'controlled retained-root registration failure' "$project/err" || fail 'registration failure did not reach its intended fault'
+			fi
 			[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$bad_product $fault changed the old command"
 			for index in "${!prefixes[@]}"; do
-				[ "$(readlink "${prefixes[$index]}")" = "${old_products[$index]}" ] || fail "$bad_product $fault changed an earlier retained selection"
-				[ "$(< "${prefixes[$index]}/share/resource")" = old-resource ] || fail 'batch failure lost runtime resources'
+				if [[ "$fault" == *-absent ]]; then
+					[ ! -e "${prefixes[$index]}" ] && [ ! -L "${prefixes[$index]}" ] || fail "$bad_product $fault created a previously absent selection"
+				else
+					[ "$(readlink "${prefixes[$index]}")" = "${old_products[$index]}" ] || fail "$bad_product $fault changed an earlier retained selection"
+					[ "$(< "${prefixes[$index]}/share/resource")" = old-resource ] || fail 'batch failure lost runtime resources'
+				fi
+				[ "$(< "${old_products[$index]}/share/resource")" = old-resource ] || fail 'batch failure changed unselected fixture data'
 			done
 			[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'batch failure leaked candidate roots'
-			batch_controls=$((batch_controls + 1))
+			if [[ "$fault" == registration-* ]]; then registration_controls=$((registration_controls + 1)); else batch_controls=$((batch_controls + 1)); fi
 		done
 	done
 	[ "$batch_controls" -eq 24 ] || fail 'incomplete batch failure matrix'
+	[ "$registration_controls" -eq 20 ] || fail 'incomplete before/after registration and absent-root matrix'
 ) || fail 'all-platform batch preservation'
 
 # Explicit source execution must not select a stale PATH or published command.
@@ -422,4 +470,87 @@ awk -v root="$retained_root" 'index($0, root " -> ") == 1 { n++ } END { exit n !
 if command nix-store --gc > "$project/gc-out" 2> "$project/gc-error"; then :; else fail 'private store GC'; fi
 cmp -s "$fixture/retention-source/share/resource" "$retained_root/share/resource" || fail 'GC lost retained runtime resources'
 cmp -s "$fixture/retention-source/bin/codescan" "$project/zig-out/bin/codescan" || fail 'real retention changed the legacy command bytes'
+
+# A real collector must not reclaim the old complete product during a failed
+# replacement. The mutation leaves an ordinary symlink instead of a GC root.
+gc_rollback_case() (
+	case_root="$fixture/gc-rollback-$1"
+	mutation=0; [ "$1" != unregistered ] || mutation=1
+	restore_fault=0; [ "$1" != restore-failure ] || restore_fault=1
+	export NIX_REMOTE="local?store=$case_root/store&state=$case_root/state&log=$case_root/log"
+	for generation in old new; do
+		mkdir -p "$case_root/$generation-source/bin" "$case_root/$generation-source/share" || fail 'GC rollback sources'
+		printf '#!/usr/bin/env bash\nprintf %s\n' "$generation" > "$case_root/$generation-source/bin/codescan"
+		printf '%s-runtime-resource\n' "$generation" > "$case_root/$generation-source/share/resource"
+		chmod +x "$case_root/$generation-source/bin/codescan" || fail 'GC rollback executable'
+	done
+	old_product="$(command nix-store --add "$case_root/old-source")" || fail 'old GC rollback product'
+	new_product="$(command nix-store --add "$case_root/new-source")" || fail 'new GC rollback product'
+	project="$case_root/project with spaces"
+	mkdir -p "$project" || fail 'GC rollback project'
+	copy_build_fixture "$project" || fail 'GC rollback wrapper'
+	nix-store() {
+		[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
+		if [ "$GC_FAIL_RESTORE" -eq 1 ] && [ "$2" = "$GC_SELECTED_PREFIX" ] && [ "$4" != "$RETENTION_PRODUCT" ]; then
+			printf 'controlled rollback registration failure\n' >&2
+			return 41
+		fi
+		if [ "$GC_UNREGISTERED_BACKUP" -eq 1 ]; then
+			case "$2" in "$GC_PROJECT/.nix-out/"*/.candidate.*/previous-*) ln -sfn "$4" "$2"; return "$?" ;; esac
+		fi
+		command nix-store "$@" >/dev/null || return "$?"
+		if [ "$GC_FAIL_SELECTED" -eq 1 ] && [ "$2" = "$GC_SELECTED_PREFIX" ] && [ "$4" = "$RETENTION_PRODUCT" ]; then
+			command nix-store --gc > "$GC_PROJECT/fault-gc-out" 2> "$GC_PROJECT/fault-gc-error" || return 67
+			printf 'controlled post-registration failure\n' >&2
+			return 23
+		fi
+	}
+	export -f nix-store
+	for operation in initial replacement; do
+		product="$old_product"; fault=0
+		if [ "$operation" = replacement ]; then product="$new_product"; fault=1; fi
+		if (cd "$project" && env RETENTION_PRODUCT="$product" GC_PROJECT="$project" \
+			GC_FAIL_SELECTED="$fault" GC_FAIL_RESTORE="$restore_fault" GC_SELECTED_PREFIX=".nix-out/$namespace/ReleaseFast" GC_UNREGISTERED_BACKUP="$mutation" \
+			"$BASH" ./build) > "$project/$operation-out" 2> "$project/$operation-error"; then status=0; else status="$?"; fi
+		expected=0; [ "$operation" != replacement ] || expected=23
+		[ "$status" -eq "$expected" ] || fail "$operation changed the actual private-store failure: $status"
+	done
+	rg -Fq 'controlled post-registration failure' "$project/replacement-error" || fail 'GC rollback did not reach its intended fault'
+	[ -f "$old_product/share/resource" ] || fail 'private GC discarded previous runtime resources'
+	retained_root="$project/.nix-out/$namespace/ReleaseFast"
+	if [ "$restore_fault" -eq 1 ]; then
+		rg -Fq 'controlled rollback registration failure' "$project/replacement-error" || fail 'restoration failure did not reach its fault'
+		rg -Fq 'rollback incomplete; previous products remain retained for recovery' "$project/replacement-error" || fail 'incomplete rollback hid its recovery location'
+		[ "$(readlink "$retained_root")" = "$new_product" ] || fail 'restoration-failure state was not observed'
+		command nix-store --gc > "$project/recovery-gc-out" 2> "$project/recovery-gc-error" || fail 'recovery private GC'
+		cmp -s "$case_root/old-source/share/resource" "$old_product/share/resource" || fail 'GC lost the recoverable previous product'
+		cmp -s "$case_root/old-source/bin/codescan" "$project/zig-out/bin/codescan" || fail 'failed restoration changed the prior command'
+		backup_root="$(find "$project/.nix-out" -type l -name previous-0 -print)"
+		[ "$(readlink "$backup_root")" = "$old_product" ] || fail 'recovery backup does not identify its old product'
+		command nix-store --query --roots "$old_product" > "$project/recovery-roots" || fail 'recovery root query'
+		awk -v root="$backup_root" 'index($0, root " -> ") == 1 { n++ } END { exit n != 1 }' "$project/recovery-roots" || fail 'recoverable product lacks its real GC root'
+		exit 0
+	fi
+	[ "$(readlink "$retained_root")" = "$old_product" ] || fail 'private store did not restore its prior selected root'
+	cmp -s "$case_root/old-source/share/resource" "$retained_root/share/resource" || fail 'GC rollback changed old resource bytes'
+	cmp -s "$case_root/old-source/bin/codescan" "$project/zig-out/bin/codescan" || fail 'GC rollback changed the prior command'
+	command nix-store --query --roots "$old_product" > "$project/restored-roots" || fail 'restored private root query'
+	awk -v root="$retained_root" 'index($0, root " -> ") == 1 { n++ } END { exit n != 1 }' "$project/restored-roots" || fail 'rollback did not register the restored GC root'
+	[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'successful GC rollback leaked candidates'
+)
+if gc_rollback_case registered > "$fixture/gc-rollback-out" 2> "$fixture/gc-rollback-error"; then :; else
+	sed -n '1,30p' "$fixture/gc-rollback-error" >&2; fail 'real GC rollback control'
+fi
+if gc_rollback_case restore-failure > "$fixture/gc-recovery-out" 2> "$fixture/gc-recovery-error"; then :; else
+	sed -n '1,30p' "$fixture/gc-recovery-error" >&2; fail 'real GC recovery-retention control'
+fi
+if gc_rollback_case unregistered > "$fixture/gc-mutation-out" 2> "$fixture/gc-mutation-error"; then
+	fail 'unregistered previous-product symlink escaped the GC control'
+else
+	gc_mutation_status="$?"
+fi
+[ "$gc_mutation_status" -eq 1 ] || fail "unexpected GC control exit: $gc_mutation_status"
+if ! rg -Fq 'private GC discarded previous runtime resources' "$fixture/gc-mutation-error"; then
+	sed -n '1,30p' "$fixture/gc-mutation-error" >&2; fail 'GC mutation failed for an unrelated reason'
+fi
 printf 'Nix-required build adapter passed\n'

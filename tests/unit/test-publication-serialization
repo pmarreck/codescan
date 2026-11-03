@@ -45,12 +45,16 @@ nix() {
 }
 nix-store() {
 	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
-	if [ "${PUB_HOLD:-0}" -eq 1 ]; then
+	local selecting=0
+	case "$2" in .nix-out/*/ReleaseFast) selecting=1 ;; esac
+	if [ "$selecting" -eq 1 ] && [ "$4" = "$PUB_PROJECT/prepared" ] && [ "${PUB_HOLD:-0}" -eq 1 ]; then
 		printf 'ready\n' >&7
 		IFS= read -r release || return 65
 		[ "$release" = release ] || return 65
 	fi
-	[ "${PUB_RETAIN_STATUS:-0}" -eq 0 ] || return "$PUB_RETAIN_STATUS"
+	if [ "$selecting" -eq 1 ] && [ "$4" = "$PUB_PROJECT/prepared" ]; then
+		[ "${PUB_RETAIN_STATUS:-0}" -eq 0 ] || return "$PUB_RETAIN_STATUS"
+	fi
 	ln -sfn "$4" "$2"
 }
 export -f nix nix-store
