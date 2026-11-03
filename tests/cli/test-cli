@@ -288,6 +288,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==4 and .end_line==6 and .body==["func add(left, right int) int {","\treturn left + right","}"]' >/dev/null || \
 		fail "Go grammar changed the exact function body: $out"
 
+	llvm_file="$DB_DIR/functions with spaces.ll"
+	printf '%s\n' '; Fixture IR.' '@answer = global i32 42' 'define i32 @add(i32 %left, i32 %right) {' 'entry:' \
+		$'\t%sum = add i32 %left, %right' $'\tret i32 %sum' '}' 'declare void @external()' > "$llvm_file"
+	capture "$BIN" symbols --file "$llvm_file" --json
+	[ "$rc" -eq 0 ] || fail "LLVM symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"@answer",kind:"var",start_line:2,end_line:2},{name:"@add",kind:"fn",start_line:3,end_line:7},{name:"@external",kind:"fn",start_line:8,end_line:8}]' >/dev/null || \
+		fail "LLVM grammar changed the complete global/function/declaration set or source ranges: $out"
+	capture "$BIN" symbols @add --file "$llvm_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "LLVM function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="@add" and .start_line==3 and .end_line==7 and .body==["define i32 @add(i32 %left, i32 %right) {","entry:","\t%sum = add i32 %left, %right","\tret i32 %sum","}"]' >/dev/null || \
+		fail "LLVM grammar changed the exact function body: $out"
+
 	asm_file="$DB_DIR/labels with spaces.asm"
 	printf '%s\n' '; Fixture labels.' 'const LIMIT 1024' '_start:' $'\tmov rax, 60' $'\tsyscall' 'helper:' $'\tret' > "$asm_file"
 	capture "$BIN" symbols --file "$asm_file" --json

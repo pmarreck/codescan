@@ -82,6 +82,11 @@ An explicit, no-fuzz patch retains the existing allocator declarations and
 MSVC warning-stack handling. Seven source/license identities preserve the
 previous source bytes and ABI 14 before compilation.
 
+The LLVM parser comes from hash-pinned upstream
+[revision 2914786a](https://github.com/benwilliamgraham/tree-sitter-llvm/tree/2914786ae6774d4c4e25a230f4afe16aa68fe1c1).
+Seven source/license identities preserve the existing ABI-15 parser, metadata,
+headers, optimization pragmas, and license byte for byte, without regeneration.
+
 `./build --debug` selects the Nix debug package; `./build --test` prepares
 compiled unit tests and fixture tools without publishing a CLI. `./build --all`
 (or `--all-platforms` / `--all-plats`) builds the five declared release targets through Nix,
