@@ -22,6 +22,7 @@ fail() { printf 'FAIL Nix build: %s\n' "$1" >&2; exit 1; }
 source "$root/tests/lib/build-fixture.bash"
 
 # Exercise the actual exit handler independently of filesystem cleanup.
+cleanup_status_controls=0
 for statuses in 0:0:0 0:9:1 7:0:7 7:9:7; do
 	IFS=: read -r body_status cleanup_status expected_status <<< "$statuses"
 	if (
@@ -37,7 +38,9 @@ for statuses in 0:0:0 0:9:1 7:0:7 7:9:7; do
 		printf 'FAIL Nix build: owned fixture cleanup failed\n' > "$fixture/expected-cleanup-error"
 		cmp "$fixture/expected-cleanup-error" "$fixture/exit-error" || fail 'cleanup failure lost its diagnostic'
 	fi
+	cleanup_status_controls=$((cleanup_status_controls + 1))
 done
+[ "$cleanup_status_controls" -eq 4 ] || fail 'incomplete cleanup exit-status matrix'
 
 # A real read-only tree is removable, while an external symlink target keeps
 # both its bytes and permissions. The outer fixture owns both disposable trees.
