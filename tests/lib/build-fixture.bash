@@ -20,3 +20,12 @@ file() {
 	esac
 }
 export -f file
+
+build_fixture_headers() {
+	printf '%s\n' \
+		'macos-arm64||Mach-O 64-bit arm64 executable' \
+		'linux-arm64|musl/|ELF 64-bit LSB executable, ARM aarch64, statically linked' \
+		'linux-amd64|musl/|ELF 64-bit LSB executable, x86-64, statically linked' \
+		'mswin-arm64|gnu/|PE32+ executable (console) Aarch64, for MS Windows, 7 sections' \
+		'mswin-amd64|gnu/|PE32+ executable (console) x86-64, for MS Windows, 7 sections'
+}

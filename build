@@ -40,17 +40,30 @@ validate_retention() {
 		return 1
 	fi
 }
-native_options=(--no-link)
-retention_work=''
+retention_works=()
 publication=''
 cleanup_publication() {
+	local retention_work
 	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication"; fi
-	if [ -n "$retention_work" ]; then
+	for retention_work in "${retention_works[@]}"; do
 		if [ -L "$retention_work/result" ]; then unlink "$retention_work/result"; fi
 		rmdir "$retention_work"
-	fi
+	done
 }
 trap cleanup_publication EXIT
+prepare_product() {
+	local prefix="$1" attribute="$2" target="$3" retention_work executable=codescan
+	mkdir -p "${prefix%/*}" || return "$?"
+	retention_work="$(mktemp -d "$root/${prefix%/*}/.candidate.XXXXXXXX")" || return "$?"
+	retention_works+=("$retention_work")
+	if candidate_output="$(nix build --out-link "$retention_work/result" --print-out-paths "$attribute")"; then :; else return "$?"; fi
+	if [ -z "$candidate_output" ] || [ "$(readlink "$retention_work/result")" != "$candidate_output" ]; then
+		printf 'error: Nix output does not match its retained candidate\n' >&2
+		return 1
+	fi
+	case "$target" in *-windows-gnu) executable=codescan.exe ;; esac
+	ci_verify_release "$target" "$candidate_output/bin/$executable"
+}
 if [ "$attribute" != test-binaries ]; then
 	case "$(uname -s)/$(uname -m)" in
 		Linux/x86_64) native_namespace=linux-amd64/musl; native_target=x86_64-linux-musl ;;
@@ -62,6 +75,7 @@ if [ "$attribute" != test-binaries ]; then
 	[ "$attribute" != debug ] || profile=Debug
 	native_prefix=".nix-out/$native_namespace/$profile"
 	validate_retention "$native_prefix" || exit 1
+	source "$root/scripts/ci-verify-release" || exit "$?"
 fi
 if [ "$all_platforms" -eq 1 ]; then
 	targets=(macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64)
@@ -77,26 +91,29 @@ if [ "$all_platforms" -eq 1 ]; then
 		prefixes+=("$prefix")
 		validate_retention "$prefix" || exit 1
 	done
+	products=()
 	for index in "${!targets[@]}"; do
 		prefix="${prefixes[$index]}"
-		mkdir -p "${prefix%/*}" || exit 1
-		nix build ".#release-${targets[$index]}" --out-link "$prefix" || exit "$?"
+		case "${targets[$index]}" in
+			macos-arm64) compiler_target=aarch64-macos ;;
+			linux-arm64) compiler_target=aarch64-linux-musl ;;
+			linux-amd64) compiler_target=x86_64-linux-musl ;;
+			mswin-arm64) compiler_target=aarch64-windows-gnu ;;
+			mswin-amd64) compiler_target=x86_64-windows-gnu ;;
+			*) printf 'error: unsupported product target\n' >&2; exit 64 ;;
+		esac
+		prepare_product "$prefix" ".#release-${targets[$index]}" "$compiler_target" || exit "$?"
+		products+=("$candidate_output")
 	done
 fi
-# Native publication remains last, so a failed cross-build cannot replace it.
-if [ "$attribute" != test-binaries ]; then
-	mkdir -p "${native_prefix%/*}" || exit 1
-	retention_work="$(mktemp -d "$root/${native_prefix%/*}/.candidate.XXXXXXXX")" || exit 1
-	native_options=(--out-link "$retention_work/result")
-fi
-if output="$(nix build "${native_options[@]}" --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
 if [ "$attribute" = test-binaries ]; then
+	if output="$(nix build --no-link --print-out-paths ".#$attribute")"; then :; else exit "$?"; fi
 	printf 'Prepared test artifacts: %s\n' "$output" >&2
 	exit 0
 fi
-[ -x "$output/bin/codescan" ] || { printf 'error: Nix output is missing codescan\n' >&2; exit 1; }
-source "$root/scripts/ci-verify-release" || exit "$?"
-ci_verify_release "$native_target" "$output/bin/codescan" || exit "$?"
+# No selected root changes until the complete requested batch is verified.
+prepare_product "$native_prefix" ".#$attribute" "$native_target" || exit "$?"
+output="$candidate_output"
 if [ -L zig-out ] || [ -L zig-out/bin ] || [ -d zig-out/bin/codescan ]; then
 	printf 'error: refusing publication through an unexpected output symlink/directory\n' >&2
 	exit 1
@@ -104,6 +121,13 @@ fi
 mkdir -p zig-out/bin || exit 1
 publication="$(mktemp "$root/zig-out/bin/.codescan.XXXXXX")" || exit 1
 install -m755 "$output/bin/codescan" "$publication" || exit 1
+if [ "$all_platforms" -eq 1 ]; then
+	for index in "${!targets[@]}"; do
+		# The explicit native request owns this profile's final selection.
+		[ "${prefixes[$index]}" != "$native_prefix" ] || continue
+		nix-store --add-root "${prefixes[$index]}" --realise "${products[$index]}" >/dev/null || exit "$?"
+	done
+fi
 # Keep the candidate GC root until Nix registers the verified complete product.
 # Renaming a GC root would invalidate its separately registered retention path.
 nix-store --add-root "$native_prefix" --realise "$output" >/dev/null || exit "$?"

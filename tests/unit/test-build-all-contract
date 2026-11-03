@@ -10,7 +10,7 @@ source "$root/tests/lib/build-fixture.bash"
 nix() {
 	[ "${1:-}" = build ] || return 64
 	shift
-	local attribute='' link='' next_link=0 argument print_paths=0
+	local attribute='' link='' next_link=0 argument print_paths=0 product namespace
 	for argument in "$@"; do
 		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
 		case "$argument" in
@@ -22,25 +22,39 @@ nix() {
 	[ -n "$attribute" ] && [ "$next_link" -eq 0 ] || return 64
 	case "$attribute" in
 		'.#default'|'.#debug')
-			case "$link" in "$PWD/.nix-out/$SCOPE_NAMESPACE"/.candidate.????????/result) ;; *) return 77 ;; esac
-			ln -s "$SCOPE_OUTPUT" "$link" || return 1
-			link='<candidate>' ;;
+			namespace="$SCOPE_NAMESPACE"; product="$SCOPE_OUTPUT" ;;
+		'.#release-macos-arm64') namespace=macos-arm64; product="$SCOPE_PRODUCTS/macos-arm64" ;;
+		'.#release-linux-arm64') namespace=linux-arm64/musl; product="$SCOPE_PRODUCTS/linux-arm64" ;;
+		'.#release-linux-amd64') namespace=linux-amd64/musl; product="$SCOPE_PRODUCTS/linux-amd64" ;;
+		'.#release-mswin-arm64') namespace=mswin-arm64/gnu; product="$SCOPE_PRODUCTS/mswin-arm64" ;;
+		'.#release-mswin-amd64') namespace=mswin-amd64/gnu; product="$SCOPE_PRODUCTS/mswin-amd64" ;;
+		'.#test-binaries') namespace=''; product="$SCOPE_OUTPUT" ;;
+		*) return 64 ;;
 	esac
+	if [ -n "$namespace" ]; then
+		case "$link" in "$PWD/.nix-out/$namespace"/.candidate.????????/result) ;; *) return 77 ;; esac
+		ln -s "$product" "$link" || return 1
+		link='<candidate>'
+	fi
 	printf '%s\t%s\n' "$attribute" "$link" >> "$SCOPE_EVENTS"
 	if [ "$attribute" = "$SCOPE_FAIL_ATTRIBUTE" ]; then
 		printf 'controlled Nix build failure\n' >&2
 		return 19
 	fi
-	# Retained-link writes belong to Nix; assert the requested operation above.
-	if [ "$print_paths" -eq 1 ]; then printf '%s\n' "$SCOPE_OUTPUT"; fi
+	if [ "$print_paths" -eq 1 ]; then printf '%s\n' "$product"; fi
 }
 nix-store() {
-	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] && [ "$4" = "$SCOPE_OUTPUT" ] || return 64
+	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
+	case "$4" in "$SCOPE_OUTPUT"|"$SCOPE_PRODUCTS/"*) ;; *) return 64 ;; esac
 	printf '%s\t%s\n' "$2" "$4" >> "$SCOPE_ROOTS"
 	ln -sfn "$4" "$2"
 }
 zig() { printf 'forbidden direct compiler\n' >> "$SCOPE_EVENTS"; return 99; }
-export -f nix nix-store zig
+file() {
+	[ "$#" -eq 3 ] && [ "$1" = -b ] && [ "$2" = -- ] || return 64
+	command head -n 1 "$3"
+}
+export -f nix nix-store zig file
 
 case "$(uname -s)/$(uname -m)" in
 	Linux/x86_64) native_namespace=linux-amd64/musl ;;
@@ -51,17 +65,25 @@ esac
 native_request=$'.#default\t<candidate>'
 all_requests="$(printf '%s\n' \
 	"$native_request" \
-	$'.#release-macos-arm64\t.nix-out/macos-arm64/ReleaseFast' \
-	$'.#release-linux-arm64\t.nix-out/linux-arm64/musl/ReleaseFast' \
-	$'.#release-linux-amd64\t.nix-out/linux-amd64/musl/ReleaseFast' \
-	$'.#release-mswin-arm64\t.nix-out/mswin-arm64/gnu/ReleaseFast' \
-	$'.#release-mswin-amd64\t.nix-out/mswin-amd64/gnu/ReleaseFast' | LC_ALL=C sort)"
+	$'.#release-macos-arm64\t<candidate>' \
+	$'.#release-linux-arm64\t<candidate>' \
+	$'.#release-linux-amd64\t<candidate>' \
+	$'.#release-mswin-arm64\t<candidate>' \
+	$'.#release-mswin-amd64\t<candidate>' | LC_ALL=C sort)"
 for scenario in all default implementations-short implementations-long platforms-short platforms-long combined reverse repeated debug test invalid-debug invalid-test unknown failure retention-root-symlink retention-platform-symlink retention-variant-symlink; do
 	project="$fixture/$scenario/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" || fail 'fixture setup'
 	copy_build_fixture "$project" || fail 'wrapper fixture'
 	printf old > "$project/zig-out/bin/codescan"
-	printf new > "$project/prepared/bin/codescan"
+	while IFS='|' read -r pf variant description; do
+		mkdir -p "$project/products/$pf/bin" || fail 'scope product setup'
+		printf '%s\n' "$description" > "$project/products/$pf/bin/codescan"
+		cp "$project/products/$pf/bin/codescan" "$project/products/$pf/bin/codescan.exe" || fail 'scope PE fixture'
+		chmod +x "$project/products/$pf/bin/codescan" "$project/products/$pf/bin/codescan.exe" || fail 'scope products'
+	done < <(build_fixture_headers)
+	native_pf="${native_namespace%%/*}"
+	cp "$project/products/$native_pf/bin/codescan" "$project/prepared/bin/codescan" || fail 'scope native product'
+	native_payload="$(< "$project/prepared/bin/codescan")"
 	chmod +x "$project/prepared/bin/codescan" || fail 'fixture executable'
 	: > "$project/events"
 	args=()
@@ -96,7 +118,7 @@ for scenario in all default implementations-short implementations-long platforms
 			ln -s "$project/protected" "$link" || fail 'retained escape fixture'
 			;;
 	esac
-	if (cd "$project" && env SCOPE_EVENTS="$project/events" SCOPE_OUTPUT="$project/prepared" SCOPE_ROOTS="$project/roots" SCOPE_NAMESPACE="$native_namespace" \
+	if (cd "$project" && env SCOPE_EVENTS="$project/events" SCOPE_OUTPUT="$project/prepared" SCOPE_PRODUCTS="$project/products" SCOPE_ROOTS="$project/roots" SCOPE_NAMESPACE="$native_namespace" \
 		SCOPE_FAIL_ATTRIBUTE="$fail_attribute" "$BASH" "$project/build" "${args[@]}") > "$project/stdout" 2> "$project/stderr"; then
 		rc=0
 	else rc="$?"; fi
@@ -112,14 +134,21 @@ for scenario in all default implementations-short implementations-long platforms
 		case "$scenario" in
 			test|invalid-debug|invalid-test|unknown|retention-*-symlink)
 				[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$scenario published a command" ;;
-			*) [ "$(< "$project/zig-out/bin/codescan")" = new ] || fail "$scenario omitted native publication" ;;
+			*) [ "$(< "$project/zig-out/bin/codescan")" = "$native_payload" ] || fail "$scenario omitted native publication" ;;
 		esac
 	fi
 	case "$scenario" in
 		test|invalid-debug|invalid-test|unknown|failure|retention-*-symlink) [ ! -e "$project/roots" ] || fail "$scenario promoted a native root" ;;
 		*)
 			profile=ReleaseFast; [ "$scenario" != debug ] || profile=Debug
-			[ "$(< "$project/roots")" = "$(printf '.nix-out/%s/%s\t%s' "$native_namespace" "$profile" "$project/prepared")" ] || fail "$scenario did not register the exact selected product once"
+			expected_roots="$(printf '.nix-out/%s/%s\t%s' "$native_namespace" "$profile" "$project/prepared")"
+			if [ "$expected" = "$all_requests" ]; then
+				while IFS='|' read -r pf variant description; do
+					[ "$pf" != "$native_pf" ] || continue
+					expected_roots+=$'\n'"$(printf '.nix-out/%s/%sReleaseFast\t%s/products/%s' "$pf" "$variant" "$project" "$pf")"
+				done < <(build_fixture_headers)
+			fi
+			[ "$(LC_ALL=C sort "$project/roots")" = "$(printf '%s\n' "$expected_roots" | LC_ALL=C sort)" ] || fail "$scenario did not register the exact selected products once"
 			;;
 	esac
 	case "$scenario" in retention-*-symlink)

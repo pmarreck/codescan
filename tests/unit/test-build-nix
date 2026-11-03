@@ -207,6 +207,84 @@ for mapping in Darwin:x86_64 Linux:riscv64 Plan9:amd64 MINGW64_NT:x86_64; do
 done
 unset -f uname
 
+# Every selected product must survive a failure anywhere in the build batch.
+(
+	nix() {
+		[ "$1" = build ] || return 64
+		local argument link='' key='' next_link=0 print_paths=0 product
+		for argument in "$@"; do
+			if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
+			case "$argument" in
+				--out-link) next_link=1 ;;
+				--print-out-paths) print_paths=1 ;;
+				'.#release-'*) key="${argument#.#release-}" ;;
+				'.#default') key=native ;;
+			esac
+		done
+		[ -n "$key" ] && [ -n "$link" ] && [ "$next_link" -eq 0 ] || return 64
+		if [ "$BATCH_FAULT" = build-failure ] && [ "$key" = "$BATCH_BAD_PRODUCT" ]; then return 19; fi
+		product="$BATCH_PROJECT/next/$key"
+		ln -sfn "$product" "$link" || return 1
+		if [ "$print_paths" -eq 1 ]; then printf '%s\n' "$product"; fi
+	}
+	nix-store() {
+		[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
+		ln -sfn "$4" "$2"
+	}
+	file() {
+		[ "$#" -eq 3 ] && [ "$1" = -b ] && [ "$2" = -- ] || return 64
+		case "$3" in "$BATCH_PROJECT/next/$BATCH_BAD_PRODUCT/"*) [ "$BATCH_FAULT" != reader-failure ] || return 17 ;; esac
+		command head -n 1 "$3"
+	}
+	export -f nix nix-store file
+	batch_controls=0
+	for fault in build-failure wrong-header reader-failure missing-command; do
+		for bad_product in macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64 native; do
+			project="$fixture/batch-$fault-$bad_product/project with spaces"
+			mkdir -p "$project/zig-out/bin" || fail 'batch fixture'
+			copy_build_fixture "$project" || fail 'batch wrapper'
+			printf old > "$project/zig-out/bin/codescan"
+			prefixes=(); old_products=()
+			while IFS='|' read -r pf variant description; do
+				product="$project/next/$pf"
+				mkdir -p "$product/bin" "$product/share" "$project/old/$pf/share" || fail 'batch products'
+				printf '%s\n' "$description" > "$product/bin/codescan"
+				cp "$product/bin/codescan" "$product/bin/codescan.exe" || fail 'batch PE fixture'
+				chmod +x "$product/bin/codescan" "$product/bin/codescan.exe" || fail 'batch executable'
+				printf new-resource > "$product/share/resource"
+				printf old-resource > "$project/old/$pf/share/resource"
+				prefix="$project/.nix-out/$pf/${variant}ReleaseFast"
+				mkdir -p "${prefix%/*}" || fail 'batch retained parent'
+				ln -s "$project/old/$pf" "$prefix" || fail 'batch old root'
+				prefixes+=("$prefix"); old_products+=("$project/old/$pf")
+			done < <(build_fixture_headers)
+			case "$(uname -s)/$(uname -m)" in
+				Linux/x86_64) native_pf=linux-amd64 ;;
+				Linux/aarch64) native_pf=linux-arm64 ;;
+				Darwin/arm64) native_pf=macos-arm64 ;;
+				*) fail 'batch native mapping' ;;
+			esac
+			cp -R "$project/next/$native_pf" "$project/next/native" || fail 'batch native product'
+			case "$fault" in
+				wrong-header) printf 'rejected foreign header\n' > "$project/next/$bad_product/bin/codescan"; cp "$project/next/$bad_product/bin/codescan" "$project/next/$bad_product/bin/codescan.exe" ;;
+				missing-command) unlink "$project/next/$bad_product/bin/codescan"; unlink "$project/next/$bad_product/bin/codescan.exe" ;;
+			esac
+			if (cd "$project" && env BATCH_PROJECT="$project" BATCH_FAULT="$fault" BATCH_BAD_PRODUCT="$bad_product" "$BASH" ./build --all) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+			expected_status=1
+			case "$fault" in build-failure) expected_status=19 ;; reader-failure) expected_status=17 ;; esac
+			[ "$rc" -eq "$expected_status" ] || fail "$bad_product $fault lost the failure status: $rc"
+			[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$bad_product $fault changed the old command"
+			for index in "${!prefixes[@]}"; do
+				[ "$(readlink "${prefixes[$index]}")" = "${old_products[$index]}" ] || fail "$bad_product $fault changed an earlier retained selection"
+				[ "$(< "${prefixes[$index]}/share/resource")" = old-resource ] || fail 'batch failure lost runtime resources'
+			done
+			[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'batch failure leaked candidate roots'
+			batch_controls=$((batch_controls + 1))
+		done
+	done
+	[ "$batch_controls" -eq 24 ] || fail 'incomplete batch failure matrix'
+) || fail 'all-platform batch preservation'
+
 # Explicit source execution must not select a stale PATH or published command.
 nix() {
 	printf '%s\0' "$@" > "$BUILD_EVENTS"
