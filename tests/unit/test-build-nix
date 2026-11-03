@@ -196,6 +196,67 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	if grep -Fq 'forbidden compiler' "$project/events"; then fail "$mode fell back to direct compilation"; fi
 done
 
+# Exercise the real publisher's cleanup after successful and failed bodies.
+(
+	rmdir() {
+		publisher_cleanup_calls=$((${publisher_cleanup_calls:-0} + 1))
+		if [ "${BUILD_CLEANUP_STATUS:-0}" -ne 0 ] && { [ "$BUILD_CLEANUP_POINT" = all ] || [ "$publisher_cleanup_calls" -eq 1 ]; }; then
+			printf 'controlled publisher directory cleanup failure\n' >&2
+			if [ "$BUILD_CLEANUP_POINT" = nonempty ]; then
+				case "$1" in "$PWD"/bin/*/.candidate.*|"$PWD"/.nix-out/*/.candidate.*) ;; *) return 79 ;; esac
+				[ -d "$1" ] && [ ! -L "$1" ] || return 79
+				printf owned-blocker > "$1/.cleanup-blocker" || return 79
+			else
+				return "$BUILD_CLEANUP_STATUS"
+			fi
+		fi
+		command rmdir "$@"
+	}
+	export -f rmdir
+	cleanup_controls=0
+	for statuses in all:0:0:0 all:0:73:1 all:19:0:19 all:19:73:19 \
+		first:0:0:0 first:0:73:1 first:19:0:19 first:19:73:19 \
+		nonempty:0:0:0 nonempty:0:73:1 nonempty:19:0:19 nonempty:19:73:19; do
+		IFS=: read -r cleanup_point body_status cleanup_status expected_status <<< "$statuses"
+		project="$fixture/publisher-cleanup-$cleanup_point-$body_status-$cleanup_status/project with spaces"
+		mkdir -p "$project/zig-out/bin" "$project/prepared/bin" || fail 'publisher cleanup fixture'
+		copy_build_fixture "$project" || fail 'publisher cleanup wrapper'
+		printf old > "$project/zig-out/bin/codescan"
+		printf new > "$project/prepared/bin/codescan"
+		chmod +x "$project/prepared/bin/codescan"
+		: > "$project/events"
+		if (cd "$project" && env BUILD_EVENTS="$project/events" BUILD_STATUS="$body_status" \
+			BUILD_OUTPUT="$project/prepared" BUILD_CLEANUP_STATUS="$cleanup_status" BUILD_CLEANUP_POINT="$cleanup_point" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+		[ "$rc" -eq "$expected_status" ] || fail "publisher cleanup status mismatch ($cleanup_point, body $body_status, cleanup $cleanup_status): expected $expected_status, got $rc"
+		if [ "$cleanup_status" -ne 0 ]; then
+			rg -Fq 'controlled publisher directory cleanup failure' "$project/err" || fail 'publisher cleanup fault was not reached'
+			rg -Fq 'error: could not completely clean owned publication staging' "$project/err" || fail 'publisher cleanup failure lacks its final diagnostic'
+			[ -n "$(find "$project" -type d -name '.candidate.*' -print)" ] || fail 'publisher cleanup fault did not retain its owned staging'
+			if [ "$cleanup_point" = nonempty ]; then
+				blocker="$(find "$project" -type f -name .cleanup-blocker -print)"
+				[ -n "$blocker" ] && [ "$(< "$blocker")" = owned-blocker ] || fail 'real cleanup failure lost its owned blocker'
+				rg -Fq 'Directory not empty' "$project/err" || fail 'nonempty cleanup control did not reach the real directory remover'
+			fi
+		else
+			[ -z "$(find "$project" -type d -name '.candidate.*' -print)" ] || fail 'successful publisher cleanup retained staging'
+		fi
+		if [ "$body_status" -eq 0 ]; then
+			[ "$(< "$project/zig-out/bin/codescan")" = new ] || fail 'cleanup-only failure reverted the published command'
+			case "$(uname -s)/$(uname -m)" in
+				Linux/x86_64) cleanup_pf=linux-amd64 ;;
+				Linux/aarch64) cleanup_pf=linux-arm64 ;;
+				Darwin/arm64) cleanup_pf=macos-arm64 ;;
+				*) fail 'unsupported publisher cleanup fixture host' ;;
+			esac
+			[ "$(< "$project/bin/$cleanup_pf/codescan")" = new ] || fail 'cleanup-only failure lost the selected product'
+		else
+			[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'failed build changed the previous command'
+		fi
+		cleanup_controls=$((cleanup_controls + 1))
+	done
+	[ "$cleanup_controls" -eq 12 ] || fail 'incomplete publisher cleanup matrix'
+) || fail 'publisher cleanup status controls'
+
 # Native products coexist by target and profile; the complete output is retained.
 uname() {
 	case "$1" in

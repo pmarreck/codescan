@@ -13,3 +13,5 @@ trap 'saved_status=$?; if ! cleanup_owned_fixture; then [ "$saved_status" -ne 0 
 ```
 
 Judge success by the process status, not an earlier success footer. A four-case control must cover successful/failed bodies crossed with successful/failed cleanup, preserving the original failure when both fail; an independent count must also reject an omitted case. Keep permission repair confined to the exact owned allocation, with physical traversal and separate symlink-target controls; see the existing copied-product permission lesson. The complete entry point must exercise the fatal-cleanup path as well as successful cleanup.
+
+The cleanup helper itself must accumulate every failed operation. A later successful removal can otherwise hide an earlier error even from an explicit exit-status handler. Include a first-step failure followed by success, plus a real nonempty-directory control. If publication has already finished, report staging cleanup failure without undoing valid selected products; preserve the original failure when the body also failed.

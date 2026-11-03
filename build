@@ -135,27 +135,36 @@ restore_selections() {
 	done
 }
 cleanup_publication() {
-	local retention_work previous_root public_stage
+	local retention_work previous_root public_stage cleanup_status=0
 	if [ "$rollback_needed" -eq 1 ]; then restore_selections; fi
-	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication"; fi
+	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication" || cleanup_status=1; fi
 	if [ "$keep_previous" -eq 1 ]; then
 		printf 'error: rollback incomplete; previous products remain retained for recovery in %s\n' "$candidate_root" >&2
-		return
+		return "$cleanup_status"
 	fi
 	for public_stage in "${public_stages[@]}"; do
-		if [ -L "$public_stage/entry" ]; then unlink "$public_stage/entry"; fi
-		rmdir "$public_stage"
+		if [ -L "$public_stage/entry" ]; then unlink "$public_stage/entry" || cleanup_status=1; fi
+		rmdir "$public_stage" || cleanup_status=1
 	done
 	for previous_root in "${previous_roots[@]}"; do
-		if [ -L "$previous_root" ]; then unlink "$previous_root"; fi
+		if [ -L "$previous_root" ]; then unlink "$previous_root" || cleanup_status=1; fi
 	done
 	for retention_work in "${retention_works[@]}"; do
-		if [ -L "$retention_work/tools" ]; then unlink "$retention_work/tools"; fi
-		if [ -L "$retention_work/result" ]; then unlink "$retention_work/result"; fi
-		rmdir "$retention_work"
+		if [ -L "$retention_work/tools" ]; then unlink "$retention_work/tools" || cleanup_status=1; fi
+		if [ -L "$retention_work/result" ]; then unlink "$retention_work/result" || cleanup_status=1; fi
+		rmdir "$retention_work" || cleanup_status=1
 	done
+	return "$cleanup_status"
 }
-trap cleanup_publication EXIT
+finish_publication() {
+	local previous_status="$1"
+	if ! cleanup_publication; then
+		printf 'error: could not completely clean owned publication staging\n' >&2
+		[ "$previous_status" -ne 0 ] || previous_status=1
+	fi
+	exit "$previous_status"
+}
+trap 'finish_publication "$?"' EXIT
 prepare_product() {
 	local prefix="$1" attribute="$2" target="$3" retention_work executable=codescan
 	mkdir -p "${prefix%/*}" || return "$?"
