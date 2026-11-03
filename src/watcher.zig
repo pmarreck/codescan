@@ -279,8 +279,39 @@ fn announceRetirement(stderr: *std.Io.Writer, root_path: []const u8, idle_limit_
 	options.log_fn(syslog.LOG_NOTICE, root_path, msg);
 }
 
+const NativeWatcherFailurePhase = enum { initialization, path_registration };
+
+fn reportNativeWatcherFailure(phase: NativeWatcherFailurePhase, err: anyerror, root_path: []const u8, options: WatchOptions, stderr: *std.Io.Writer) void {
+	const phase_name = switch (phase) {
+		.initialization => "initialization",
+		.path_registration => "path registration",
+	};
+	const format = "native watcher {s} failed: {s}; using polling";
+	const args = .{ phase_name, @errorName(err) };
+	_ = stderr.print("warning: " ++ format ++ "\n", args) catch {};
+	_ = stderr.flush() catch {};
+	var buffer: [512]u8 = undefined;
+	const message = std.fmt.bufPrint(&buffer, format, args) catch
+		"native watcher failed; using polling (see watcher log for full error)";
+	options.log_fn(syslog.LOG_WARNING, root_path, message);
+}
+
+/// Returns a prepared backend, releasing failed setup before polling begins.
+fn prepareNativeWatcher(comptime Watcher: type, allocator: std.mem.Allocator, root_path: []const u8, options: WatchOptions, stderr: *std.Io.Writer) ?Watcher {
+	var watcher = Watcher.init(allocator) catch |err| {
+		reportNativeWatcherFailure(.initialization, err, root_path, options, stderr);
+		return null;
+	};
+	watcher.setWatchPaths(allocator, &.{root_path}) catch |err| {
+		reportNativeWatcherFailure(.path_registration, err, root_path, options, stderr);
+		watcher.deinit(allocator);
+		return null;
+	};
+	return watcher;
+}
+
 /// Runs the incremental indexer using OS-native file watching (FSEvents/fanotify),
-/// falling back to polling on unsupported platforms or init failure.
+/// falling back to polling on unsupported platforms or native setup failure.
 /// Blocks until interrupted via stop flag.
 pub fn watchLoop(
 	allocator: std.mem.Allocator,
@@ -319,14 +350,9 @@ pub fn watchLoop(
 	}
 
 	// Try native watcher; fall back to polling on failure
-	var native_watcher = fs_watch.FsWatch.init(allocator) catch {
+	var native_watcher = prepareNativeWatcher(fs_watch.FsWatch, allocator, root_path, options, stderr) orelse
 		return watchLoopPolling(allocator, db, root_path, registry, embedder, options, stop, stderr);
-	};
 	defer native_watcher.deinit(allocator);
-
-	native_watcher.setWatchPaths(allocator, &.{root_path}) catch {
-		return watchLoopPolling(allocator, db, root_path, registry, embedder, options, stop, stderr);
-	};
 
 	_ = stderr.print("Watching {s} (native events, Ctrl-C to stop)\n", .{root_path}) catch {};
 	_ = stderr.flush() catch {};
@@ -588,6 +614,67 @@ fn printChangeSummary(writer: *std.Io.Writer, stats: indexer.IncrementalStats) v
 	_ = writer.flush() catch {};
 }
 
+fn testNativeWatcherFailure(comptime fail_initialization: bool, comptime expected_message: []const u8) !void {
+	const Fake = struct {
+		bytes: []u8,
+		fn init(allocator: std.mem.Allocator) !@This() {
+			if (fail_initialization) return error.OpenFrameworkFailed;
+			return .{ .bytes = try allocator.alloc(u8, 8) };
+		}
+		fn setWatchPaths(_: *@This(), _: std.mem.Allocator, _: []const []const u8) !void {
+			return error.FSEventStreamStartFailed;
+		}
+		fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+			allocator.free(self.bytes);
+		}
+	};
+	const Capture = struct {
+		threadlocal var active: ?*@This() = null;
+		calls: usize = 0,
+		priority: c_int = 0,
+		root_matches: bool = false,
+		message_matches: bool = false,
+		fn log(priority: c_int, root: []const u8, message: []const u8) void {
+			const self = active.?;
+			self.calls += 1;
+			self.priority = priority;
+			self.root_matches = std.mem.eql(u8, root, "native-fixture");
+			self.message_matches = std.mem.eql(u8, message, expected_message);
+		}
+	};
+	var capture: Capture = .{};
+	std.debug.assert(Capture.active == null);
+	Capture.active = &capture;
+	defer Capture.active = null;
+	var buffer: [512]u8 = undefined;
+	var diagnostics: std.Io.Writer = .fixed(&buffer);
+	try std.testing.expect(prepareNativeWatcher(Fake, std.testing.allocator, "native-fixture", .{
+		.log_fn = Capture.log,
+		.index_request = .{
+			.mode = .incremental,
+			.root_path = "native-fixture",
+			.embedding_dim = 2,
+			.embedding_model = "fixture-model",
+			.batch_size = 1,
+			.max_file_size = 1024,
+			.index_ext = "zig",
+		},
+	}, &diagnostics) == null);
+	try std.testing.expectEqualStrings("warning: " ++ expected_message ++ "\n", diagnostics.buffered());
+	try std.testing.expectEqual(@as(usize, 1), capture.calls);
+	try std.testing.expectEqual(syslog.LOG_WARNING, capture.priority);
+	try std.testing.expect(capture.root_matches);
+	try std.testing.expect(capture.message_matches);
+}
+
+test "native watcher initialization failure reports the cause before polling fallback" {
+	try testNativeWatcherFailure(true, "native watcher initialization failed: OpenFrameworkFailed; using polling");
+}
+
+test "native watcher path failure reports the cause and releases the failed backend" {
+	try testNativeWatcherFailure(false, "native watcher path registration failed: FSEventStreamStartFailed; using polling");
+}
+
 test "printChangeSummary formats correctly" {
 	const allocator = std.testing.allocator;
 	var out: std.Io.Writer.Allocating = .init(allocator);
@@ -818,9 +905,9 @@ test "watcher source routes log calls through its configured destination at all 
 	// stops without leaving a reason in the system log is indistinguishable
 	// from one that crashed.
 	//
-	// 10 = start (native, polling), initial retry, config-changed stop (x2),
+	// 11 = start (native, polling), initial retry, config-changed stop (x2),
 	// index error (x2), too-many-errors stop (x2), and retirement (shared by
-	// both loops).
+	// both loops), plus native setup failure (shared by both failure phases).
 	const src = @embedFile("watcher.zig");
 	var count: usize = 0;
 	var i: usize = 0;
@@ -828,5 +915,5 @@ test "watcher source routes log calls through its configured destination at all 
 	while (std.mem.indexOfPos(u8, src, i, needle)) |pos| : (i = pos + 1) {
 		count += 1;
 	}
-	try std.testing.expectEqual(@as(usize, 10), count);
+	try std.testing.expectEqual(@as(usize, 11), count);
 }

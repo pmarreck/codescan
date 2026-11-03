@@ -163,6 +163,10 @@ const MacOsBackend = struct {
 	}
 
 	fn setWatchPaths(self: *MacOsBackend, allocator: std.mem.Allocator, paths: []const []const u8) !void {
+		return self.setWatchPathsWithCallback(allocator, paths, &fsEventsCallback);
+	}
+
+	fn setWatchPathsWithCallback(self: *MacOsBackend, allocator: std.mem.Allocator, paths: []const []const u8, callback: FSEventStreamCallback) !void {
 		self.stopStream();
 
 		// Free old paths
@@ -172,6 +176,7 @@ const MacOsBackend = struct {
 		// Build CF array of paths
 		for (paths) |path| {
 			const z = try allocator.dupeZ(u8, path);
+			errdefer allocator.free(z);
 			try self.watch_paths_z.append(allocator, z);
 		}
 
@@ -199,7 +204,7 @@ const MacOsBackend = struct {
 
 		self.stream = self.syms.FSEventStreamCreate(
 			null,
-			&fsEventsCallback,
+			callback,
 			&ctx,
 			cf_array,
 			since_now,
@@ -209,10 +214,10 @@ const MacOsBackend = struct {
 
 		self.syms.CFRelease(cf_array);
 
-		if (self.stream) |s| {
-			self.syms.FSEventStreamSetDispatchQueue(s, self.queue);
-			_ = self.syms.FSEventStreamStart(s);
-		}
+		const stream = self.stream orelse return error.FSEventStreamCreateFailed;
+		errdefer self.stopStream();
+		self.syms.FSEventStreamSetDispatchQueue(stream, self.queue);
+		if (!self.syms.FSEventStreamStart(stream)) return error.FSEventStreamStartFailed;
 	}
 
 	fn fsEventsCallback(
@@ -341,6 +346,165 @@ const PollingBackend = struct {
 };
 
 // Tests
+
+// Fake framework calls execute synchronously in these fixtures. The borrowed
+// thread-local port never redirects process-wide I/O or calls a real framework.
+const MacFrameworkFixture = struct {
+	const Self = @This();
+	const Mode = enum { success, create_failure, start_failure };
+	threadlocal var active: ?*Self = null;
+	mode: Mode,
+	string_token: u8 = 0,
+	array_token: u8 = 0,
+	strings_created: usize = 0,
+	strings_released: usize = 0,
+	arrays_released: usize = 0,
+	unexpected_releases: usize = 0,
+	path_count: MacOsBackend.CFIndex = 0,
+	queue_assignments: usize = 0,
+	starts: usize = 0,
+	stops: usize = 0,
+	invalidations: usize = 0,
+	stream_releases: usize = 0,
+
+	fn backend(self: *Self) MacOsBackend {
+		std.debug.assert(active == null);
+		active = self;
+		return .{
+			.core_services = undefined, // Never opened or closed by this fixture.
+			.syms = .{
+				.FSEventStreamCreate = create,
+				.FSEventStreamSetDispatchQueue = setQueue,
+				.FSEventStreamStart = start,
+				.FSEventStreamStop = stop,
+				.FSEventStreamInvalidate = invalidate,
+				.FSEventStreamRelease = release,
+				.CFRelease = releaseCf,
+				.CFArrayCreate = createArray,
+				.CFStringCreateWithCString = createString,
+			},
+			.queue = @ptrCast(self),
+			.semaphore = @ptrCast(self),
+			.stream = null,
+			.watch_paths_z = .empty,
+		};
+	}
+
+	fn finish(self: *Self, watcher: *MacOsBackend, allocator: std.mem.Allocator) void {
+		std.debug.assert(active == self);
+		watcher.stopStream();
+		for (watcher.watch_paths_z.items) |path| allocator.free(std.mem.span(path));
+		watcher.watch_paths_z.deinit(allocator);
+		active = null;
+	}
+
+	fn create(
+		_: MacOsBackend.CFAllocatorRef,
+		_: MacOsBackend.FSEventStreamCallback,
+		context: ?*const MacOsBackend.FSEventStreamContext,
+		_: MacOsBackend.CFArrayRef,
+		_: MacOsBackend.FSEventStreamEventId,
+		_: MacOsBackend.CFTimeInterval,
+		_: MacOsBackend.FSEventStreamCreateFlags,
+	) callconv(.c) ?MacOsBackend.FSEventStreamRef {
+		const self = active.?;
+		std.debug.assert(context.?.info == @as(?*anyopaque, @ptrCast(self)));
+		return if (self.mode == .create_failure) null else @ptrCast(self);
+	}
+	fn setQueue(_: MacOsBackend.FSEventStreamRef, _: MacOsBackend.dispatch_queue_t) callconv(.c) void {
+		active.?.queue_assignments += 1;
+	}
+	fn start(_: MacOsBackend.FSEventStreamRef) callconv(.c) bool {
+		active.?.starts += 1;
+		return active.?.mode != .start_failure;
+	}
+	fn stop(_: MacOsBackend.FSEventStreamRef) callconv(.c) void {
+		active.?.stops += 1;
+	}
+	fn invalidate(_: MacOsBackend.FSEventStreamRef) callconv(.c) void {
+		active.?.invalidations += 1;
+	}
+	fn release(_: MacOsBackend.FSEventStreamRef) callconv(.c) void {
+		active.?.stream_releases += 1;
+	}
+	fn releaseCf(object: *const anyopaque) callconv(.c) void {
+		const self = active.?;
+		if (object == @as(*const anyopaque, @ptrCast(&self.array_token))) {
+			self.arrays_released += 1;
+		} else if (object == @as(*const anyopaque, @ptrCast(&self.string_token))) {
+			self.strings_released += 1;
+		} else self.unexpected_releases += 1;
+	}
+	fn createArray(_: MacOsBackend.CFAllocatorRef, _: [*]const usize, count: MacOsBackend.CFIndex, _: ?*const anyopaque) callconv(.c) MacOsBackend.CFArrayRef {
+		active.?.path_count = count;
+		return @ptrCast(&active.?.array_token);
+	}
+	fn createString(_: MacOsBackend.CFAllocatorRef, _: [*:0]const u8, _: MacOsBackend.CFStringEncoding) callconv(.c) MacOsBackend.CFStringRef {
+		active.?.strings_created += 1;
+		return @ptrCast(&active.?.string_token);
+	}
+	fn unexpectedEvents(_: MacOsBackend.ConstFSEventStreamRef, _: ?*anyopaque, _: usize, _: *anyopaque, _: [*]const u32, _: [*]const MacOsBackend.FSEventStreamEventId) callconv(.c) void {
+		@panic("fake framework must not deliver events");
+	}
+};
+
+test "FSEvents reports stream creation failure after releasing temporary CF objects" {
+	var fixture = MacFrameworkFixture{ .mode = .create_failure };
+	var backend = fixture.backend();
+	defer fixture.finish(&backend, std.testing.allocator);
+	try std.testing.expectError(error.FSEventStreamCreateFailed, backend.setWatchPathsWithCallback(std.testing.allocator, &.{"owned path"}, &MacFrameworkFixture.unexpectedEvents));
+	try std.testing.expect(backend.stream == null);
+	try std.testing.expectEqual(@as(usize, 1), fixture.strings_released);
+	try std.testing.expectEqual(@as(usize, 1), fixture.arrays_released);
+	try std.testing.expectEqual(@as(usize, 0), fixture.unexpected_releases);
+	try std.testing.expectEqual(@as(usize, 0), fixture.queue_assignments);
+	try std.testing.expectEqual(@as(usize, 0), fixture.starts);
+	try std.testing.expectEqual(@as(usize, 0), fixture.stream_releases);
+}
+
+test "FSEvents reports stream start failure and releases the failed stream exactly once" {
+	var fixture = MacFrameworkFixture{ .mode = .start_failure };
+	var backend = fixture.backend();
+	defer fixture.finish(&backend, std.testing.allocator);
+	try std.testing.expectError(error.FSEventStreamStartFailed, backend.setWatchPathsWithCallback(std.testing.allocator, &.{"owned path"}, &MacFrameworkFixture.unexpectedEvents));
+	try std.testing.expect(backend.stream == null);
+	try std.testing.expectEqual(@as(usize, 1), fixture.queue_assignments);
+	try std.testing.expectEqual(@as(usize, 1), fixture.starts);
+	try std.testing.expectEqual(@as(usize, 1), fixture.stops);
+	try std.testing.expectEqual(@as(usize, 1), fixture.invalidations);
+	try std.testing.expectEqual(@as(usize, 1), fixture.stream_releases);
+	try std.testing.expectEqual(@as(usize, 1), fixture.strings_released);
+	try std.testing.expectEqual(@as(usize, 1), fixture.arrays_released);
+	try std.testing.expectEqual(@as(usize, 0), fixture.unexpected_releases);
+	backend.stopStream();
+	try std.testing.expectEqual(@as(usize, 1), fixture.stream_releases);
+}
+
+test "FSEvents watch path setup releases caller allocations at every allocation failure" {
+	const Case = struct {
+		fn run(allocator: std.mem.Allocator) !void {
+			var fixture = MacFrameworkFixture{ .mode = .success };
+			{
+				var backend = fixture.backend();
+				defer fixture.finish(&backend, allocator);
+				const paths = [_][]const u8{ "first path", "second path", "third path" };
+				try backend.setWatchPathsWithCallback(allocator, &paths, &MacFrameworkFixture.unexpectedEvents);
+				try std.testing.expectEqual(@as(MacOsBackend.CFIndex, 3), fixture.path_count);
+				try std.testing.expectEqual(@as(usize, 3), backend.watch_paths_z.items.len);
+				for (paths, backend.watch_paths_z.items) |expected, actual| try std.testing.expectEqualStrings(expected, std.mem.span(actual));
+				try std.testing.expectEqual(@as(usize, 3), fixture.strings_created);
+				try std.testing.expectEqual(@as(usize, 3), fixture.strings_released);
+				try std.testing.expectEqual(@as(usize, 1), fixture.arrays_released);
+				try std.testing.expectEqual(@as(usize, 1), fixture.starts);
+				try std.testing.expectEqual(@as(usize, 0), fixture.unexpected_releases);
+			}
+			try std.testing.expectEqual(@as(usize, 1), fixture.stops);
+			try std.testing.expectEqual(@as(usize, 1), fixture.invalidations);
+			try std.testing.expectEqual(@as(usize, 1), fixture.stream_releases);
+		}
+	};
+	try std.testing.checkAllAllocationFailures(std.testing.allocator, Case.run, .{});
+}
 
 test "FSEvents bindings preserve the supported Darwin LP64 integer and context ABI" {
 	// Apple's CFBase.h defines CFIndex as signed long on Darwin. FSEvents.h
