@@ -1,0 +1,1 @@
+/* Legacy Erlang grammar must not enter compiled source. */

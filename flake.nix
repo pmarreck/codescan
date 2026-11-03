@@ -56,6 +56,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-llvm/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nix/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-clojure/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-erlang/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -182,6 +183,18 @@
 					cd "$source" || exit "$?"
 					sha256sum -c ${./deps/tree-sitter-ruby/SOURCE_SHA256} || exit "$?"
 					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE "$out/" || exit "$?"
+				'';
+				# Preserve the exact ABI-14 Erlang parser, scanner, and headers.
+				grammar-erlang = pkgs.runCommand "codescan-erlang-source" {
+					source = grammarSource "WhatsApp" "tree-sitter-erlang"
+						"81989eb3b1f067367a8b655263c41081f34be7d9"
+						"sha256-xFlbKDPttbyQ0w8Ko38Hvq3sKWZGL4WjmC4TaXV0A80=";
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-erlang/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-erlang/LICENSE} || exit "$?"
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
 				'';
@@ -372,6 +385,7 @@
 					{ name = "llvm"; path = "${grammar-llvm}/src"; }
 					{ name = "nix"; path = "${grammar-nix}/src"; }
 					{ name = "clojure"; path = "${grammar-clojure}/src"; }
+					{ name = "erlang"; path = "${grammar-erlang}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -578,6 +592,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.erlang-source = pkgs.runCommand "codescan-erlang-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/erlang/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-erlang/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-erlang/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.clojure-source = pkgs.runCommand "codescan-clojure-source-identity" {
 					source = grammarSources;
 				} ''
@@ -682,6 +704,7 @@
 						llvmSourceContract = self.checks.${system}.llvm-source;
 						nixSourceContract = self.checks.${system}.nix-source;
 						clojureSourceContract = self.checks.${system}.clojure-source;
+							erlangSourceContract = self.checks.${system}.erlang-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -760,6 +783,7 @@
 					llvmSourceContract = self.checks.${system}.llvm-source;
 					nixSourceContract = self.checks.${system}.nix-source;
 					clojureSourceContract = self.checks.${system}.clojure-source;
+					erlangSourceContract = self.checks.${system}.erlang-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;

@@ -300,6 +300,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==3 and .end_line==4 and .body==["\tadd = left: right:","\t\tleft + right;"]' >/dev/null || \
 		fail "Nix grammar changed the exact function binding body: $out"
 
+	erlang_file="$DB_DIR/definitions with spaces.erl"
+	printf '%s\n' '%% Fixture definitions.' '-module(fixture).' '-export([add/2, adjacent/1]).' 'add(Left, Right) ->' \
+		$'\tLeft + Right.' 'adjacent(Value) -> Value.' > "$erlang_file"
+	capture "$BIN" symbols --file "$erlang_file" --json
+	[ "$rc" -eq 0 ] || fail "Erlang symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,start_line,end_line}] == [{name:"add",start_line:4,end_line:5},{name:"adjacent",start_line:6,end_line:6}]' >/dev/null || \
+		fail "Erlang grammar changed the complete function set or source ranges: $out"
+	capture "$BIN" symbols add --file "$erlang_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Erlang function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==4 and .end_line==5 and .body==["add(Left, Right) ->","\tLeft + Right."]' >/dev/null || \
+		fail "Erlang grammar changed the exact function body: $out"
+
 	clojure_file="$DB_DIR/definitions with spaces.clj"
 	printf '%s\n' ';; Fixture definitions.' '(ns fixture.core)' '(def answer 42)' '(defn add [left right]' \
 		$'\t(+ left right))' '(defn adjacent [value] value)' > "$clojure_file"
