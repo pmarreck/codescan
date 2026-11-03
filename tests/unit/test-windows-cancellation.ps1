@@ -12,6 +12,16 @@ $machines = @{ amd64 = 0x8664; arm64 = 0xaa64 }
 $osNames = @{ amd64 = 'X64'; arm64 = 'Arm64' }
 $executables = @{ amd64 = $Amd64Executable; arm64 = $Arm64Executable }
 foreach ($architecture in @('amd64', 'arm64')) {
+	$about = "codescan 0.1.0 - Semantic code search and targeted edits; PF=mswin-$architecture VARIANT=gnu`n"
+	Assert-NativeTestEvidence -Suite release -ExitCode 0 -StandardOutput $about -StandardError '' -Architecture $architecture
+	Assert-NativeTestEvidence -Suite release -ExitCode 0 -StandardOutput $about.Replace("`n", "`r`n") -StandardError '' -Architecture $architecture
+	foreach ($invalid in @('', $about.Replace("mswin-$architecture", 'linux-amd64'), $about.Replace('VARIANT=gnu', 'VARIANT=musl'), "$about$about", "$about`n", $about.TrimEnd([char[]] "`n"))) {
+		Expect-Rejection { Assert-NativeTestEvidence -Suite release -ExitCode 0 -StandardOutput $invalid -StandardError '' -Architecture $architecture }
+	}
+	Expect-Rejection { Assert-NativeTestEvidence -Suite release -ExitCode 7 -StandardOutput $about -StandardError '' -Architecture $architecture }
+	Expect-Rejection { Assert-NativeTestEvidence -Suite release -ExitCode 0 -StandardOutput $about -StandardError 'unexpected' -Architecture $architecture }
+}
+foreach ($architecture in @('amd64', 'arm64')) {
 	if ($executables[$architecture]) {
 		if ((Get-PeMachine ([IO.File]::ReadAllBytes($executables[$architecture]))) -ne $machines[$architecture]) { throw 'Real PE machine mismatch' }
 	}
@@ -98,11 +108,13 @@ $null = Assert-NativeTestEvidence 'unit' 0 '' $unitValid
 Assert-NativeTestEvidence 'cancellation' 0 '' $valid
 foreach ($command in @((Get-Command Assert-NativeTestEvidence), (Get-Command "$PSScriptRoot/../../scripts/ci-test-windows.ps1"))) {
 	$choices = @($command.Parameters['Suite'].Attributes | Where-Object { $_ -is [Management.Automation.ValidateSetAttribute] } | ForEach-Object { $_.ValidValues } | Sort-Object)
-	if (($choices -join ',') -cne 'cancellation,unit') { throw 'A native test suite lacks an explicit evidence control' }
+	if (($choices -join ',') -cne 'cancellation,release,unit') { throw 'A native test suite lacks an explicit evidence control' }
 }
 Expect-Rejection { Assert-NativeTestEvidence 'unit' 0 '' $valid }
 Expect-Rejection { Assert-NativeTestEvidence 'cancellation' 0 '' $unitValid }
 Expect-Rejection { Assert-NativeTestEvidence 'unknown' 0 '' $unitValid }
+Expect-Rejection { Assert-NativeTestEvidence 'release' 0 '' $unitValid }
+Expect-Rejection { Assert-NativeTestEvidence -Suite release -ExitCode 0 -StandardOutput $about -StandardError '' -Architecture unknown }
 $gitEnvironment = @{ PATH = 'ambient-tools'; PATHEXT = '.BAT'; HOME = 'private-home' }
 Set-UnitGitEnvironment $gitEnvironment 'C:/pinned git/cmd' 'C:/private fixture'
 if ($gitEnvironment.PATH -cne 'C:/pinned git/cmd' -or $gitEnvironment.PATHEXT -cne '.EXE' -or $gitEnvironment.HOME -cne 'private-home' -or $gitEnvironment.GIT_CONFIG_NOSYSTEM -cne '1' -or $gitEnvironment.GIT_TERMINAL_PROMPT -cne '0' -or $gitEnvironment.GIT_CONFIG_GLOBAL -cne 'C:/private fixture/gitconfig') { throw 'Git test environment depends on ambient tools or configuration' }
@@ -255,4 +267,30 @@ Expect-Rejection { Assert-UnitWorkflow "$unitBody`n$unitBody" }
 Expect-Rejection { Assert-UnitWorkflow $unitBody.Replace('-GitExecutable "./git-tools/cmd/git.exe"', '') }
 $unitSwallowed = "try { $unitBody } catch {}"
 Expect-Rejection { Assert-UnitWorkflow $unitSwallowed }
+
+$releaseMatch = [regex]::Match($workflow, '(?m)^      - name: Execute native release copy\r?\n        shell: pwsh\r?\n        run: \|\r?\n(?<body>(?:          [^\n]*(?:\n|$))+)')
+if (-not $releaseMatch.Success) { throw 'Missing native release workflow body' }
+$releaseBody = [regex]::Replace($releaseMatch.Groups['body'].Value, '(?m)^ {10}', '')
+$releaseBody = $releaseBody.Replace('${{ matrix.arch }}', 'arm64').Replace('./scripts/ci-test-windows.ps1', 'Invoke-RecordedRelease')
+function Invoke-RecordedRelease([string] $Suite, [string] $Architecture, [string] $Executable) {
+	if ($Suite -cne 'release' -or $Architecture -cne 'arm64' -or $Executable -cne './release product with spaces/codescan-mswin-arm64/bin/codescan.exe') { throw 'Wrong native release request' }
+	$script:releaseCalls++
+	if ($script:releaseFails) { throw 'controlled release failure' }
+}
+function Assert-ReleaseWorkflow([string] $Body) {
+	foreach ($script:releaseFails in @($false, $true)) {
+		$script:releaseCalls = 0
+		$threw = $false
+		try { & ([scriptblock]::Create($Body)) | Out-Null } catch {
+			if ($_.Exception.Message -cne 'controlled release failure') { throw }
+			$threw = $true
+		}
+		if ($script:releaseCalls -ne 1 -or $threw -ne $script:releaseFails) { throw 'Release workflow omitted, duplicated, or hid a failure' }
+	}
+}
+Assert-ReleaseWorkflow $releaseBody
+Expect-Rejection { Assert-ReleaseWorkflow '' }
+Expect-Rejection { Assert-ReleaseWorkflow "$releaseBody`n$releaseBody" }
+Expect-Rejection { Assert-ReleaseWorkflow $releaseBody.Replace('/bin/codescan.exe', '/codescan.exe') }
+Expect-Rejection { Assert-ReleaseWorkflow "try { $releaseBody } catch {}" }
 Write-Output 'Windows architecture, PE corruption, and test evidence controls passed'

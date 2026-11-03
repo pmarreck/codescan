@@ -3,7 +3,11 @@ set -u
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/codescan-ci-architecture.XXXXXX")" || exit 1
-trap 'rm -rf -- "$fixture_root"' EXIT
+cleanup_fixtures() {
+	find "$fixture_root" -type d -exec chmod u+w {} +
+	rm -rf -- "$fixture_root"
+}
+trap cleanup_fixtures EXIT
 
 fail() {
 	printf 'FAIL: %s\n' "$1" >&2
@@ -50,17 +54,30 @@ nix() {
 		printf 'fixture compilation failed\n' >&2
 		return "$CI_CASE_BUILD_RC"
 	fi
-	local output="$PWD/prepared output"
-	mkdir -p "$output/bin" || return 1
+	local output="$PWD/prepared output" executable=codescan
+	case "${4-}" in .#release-mswin-*) executable=codescan.exe ;; esac
+	mkdir -p "$output/bin" "$output/share/empty" || return 1
 	{
 		printf '#!%s\n' "$BASH"
 		printf '%s\n' \
 			'printf "binary\t%s\n" "$*" >> "$CI_CASE_EVENTS"' \
 			'printf "fixture about\n"' \
 			'exit "$CI_CASE_BINARY_RC"'
-	} > "$output/bin/codescan"
-	chmod +x "$output/bin/codescan"
-	cp "$output/bin/codescan" "$output/bin/codescan.exe" || return 1
+	} > "$output/bin/$executable"
+	chmod +x "$output/bin/$executable" || return 1
+	printf 'adjacent runtime bytes\n' > "$output/bin/runtime.dat"
+	printf 'resource bytes\n' > "$output/share/data with spaces"
+	printf 'hidden resource\n' > "$output/share/.hidden"
+	ln -s 'data with spaces' "$output/share/current" || return 1
+	case "${CI_CASE_PRODUCT_MODE:-complete}" in
+		absolute) ln -sfn "$output/share/data with spaces" "$output/share/current" || return 1 ;;
+		escaping) ln -sfn ../../protected "$output/share/current" || return 1 ;;
+		dangling) ln -sfn missing "$output/share/current" || return 1 ;;
+		cycle) ln -sfn current "$output/share/current" || return 1 ;;
+		command-conflict) printf 'product-owned command\n' > "$output/$executable" ;;
+		document-conflict) printf 'product-owned README\n' > "$output/README.md" ;;
+	esac
+	chmod a-w "$output/bin" "$output/share/empty" "$output/share" || return 1
 	printf '%s\n' "$output"
 }
 tar() {
@@ -110,13 +127,19 @@ run_case() {
 		[ -f "$case_dir/$package_name/previous" ] && [ "$(<"$case_dir/$package_name/previous")" = 'previous artifact' ] || fail "$name: packaging destroyed caller-owned staging contents"
 		[ ! -e "$case_dir/$package_name/$executable" ] || fail "$name: packaging wrote into caller-owned staging"
 		[ -f "$case_dir/$archive_name" ] || fail "$name: valid product was not published"
+		local leftovers
+		leftovers="$(find "$case_dir" -maxdepth 1 -type d -name '.codescan-package.*' -print)" || fail "$name: cleanup inventory"
+		[ -z "$leftovers" ] || fail "$name: successful packaging leaked read-only staging"
 		local actual_members expected_members
 		case "$archive_name" in
 			*.zip) actual_members="$(unzip -Z -1 "$case_dir/$archive_name")" || fail "$name: ZIP listing failed" ;;
 			*) actual_members="$(tar -tzf "$case_dir/$archive_name")" || fail "$name: tar listing failed" ;;
 		esac
 		actual_members="$(printf '%s\n' "$actual_members" | LC_ALL=C sort)" || fail "$name: member sorting failed"
-		expected_members="$(printf '%s\n' "$package_name/" "$package_name/LICENSE" "$package_name/README.md" "$package_name/$executable")"
+		expected_members="$(printf '%s\n' "$package_name/" "$package_name/LICENSE" "$package_name/README.md" "$package_name/$executable" \
+			"$package_name/bin/" "$package_name/bin/$executable" "$package_name/bin/runtime.dat" \
+			"$package_name/share/" "$package_name/share/.hidden" "$package_name/share/current" \
+			"$package_name/share/data with spaces" "$package_name/share/empty/" | LC_ALL=C sort)"
 		[ "$actual_members" = "$expected_members" ] || fail "$name: archive contains the wrong product set"
 		mkdir "$case_dir/extracted" || fail "$name: could not allocate extraction fixture"
 		case "$archive_name" in
@@ -125,6 +148,19 @@ run_case() {
 		esac
 		cmp "$case_dir/prepared output/bin/$executable" "$case_dir/extracted/$package_name/$executable" || fail "$name: archive changed executable bytes"
 		[ -x "$case_dir/extracted/$package_name/$executable" ] || fail "$name: archive lost executable permissions"
+		cmp "$case_dir/prepared output/bin/$executable" "$case_dir/extracted/$package_name/bin/$executable" || fail "$name: archive changed the complete product command"
+		[ -x "$case_dir/extracted/$package_name/bin/$executable" ] || fail "$name: product command lost executable permissions"
+		for resource in bin/runtime.dat share/.hidden 'share/data with spaces'; do
+			cmp "$case_dir/prepared output/$resource" "$case_dir/extracted/$package_name/$resource" || fail "$name: archive changed a runtime resource"
+		done
+		[ -d "$case_dir/extracted/$package_name/share/empty" ] || fail "$name: archive lost an empty directory"
+		[ ! -w "$case_dir/prepared output/bin" ] && [ ! -w "$case_dir/prepared output/share" ] || fail "$name: cleanup changed original product permissions"
+		[ ! -w "$case_dir/extracted/$package_name/bin" ] && [ ! -w "$case_dir/extracted/$package_name/share" ] || fail "$name: archive lost read-only directory permissions"
+		case "$target" in
+			*-windows-gnu) [ ! -L "$case_dir/extracted/$package_name/share/current" ] || fail "$name: Windows copy requires symlink privileges" ;;
+			*) [ "$(readlink "$case_dir/extracted/$package_name/share/current")" = 'data with spaces' ] || fail "$name: archive changed a relative resource link" ;;
+		esac
+		cmp "$case_dir/prepared output/share/data with spaces" "$case_dir/extracted/$package_name/share/current" || fail "$name: relative resource lookup failed"
 	fi
 	case "$name" in
 		wrong-os|wrong-host-cpu)
@@ -227,6 +263,30 @@ run_case windows-arm Linux x86_64 'PE32+ executable (console) Aarch64, for MS Wi
 run_case linux-dynamic Linux x86_64 'ELF 64-bit LSB executable, x86-64, dynamically linked, interpreter /lib/ld.so' reject x86_64-linux-musl
 run_case linux-foreign Linux x86_64 "$linux_arm" reject x86_64-linux-musl
 run_case windows-foreign Linux x86_64 'PE32+ executable (console) Aarch64, for MS Windows, 7 sections' reject x86_64-windows-gnu
+
+for product_mode in absolute escaping dangling cycle command-conflict document-conflict; do
+	case_dir="$fixture_root/product-$product_mode/project with spaces"
+	mkdir -p "$case_dir/package dir" || fail 'product refusal fixture'
+	printf 'previous staging\n' > "$case_dir/package dir/previous"
+	printf 'previous archive\n' > "$case_dir/artifact.zip"
+	printf 'protected bytes\n' > "$case_dir/protected"
+	printf 'fixture README\n' > "$case_dir/README.md"
+	printf 'fixture license\n' > "$case_dir/LICENSE"
+	: > "$case_dir/events"
+	if (
+		cd "$case_dir" || exit 1
+		env CI_CASE_EVENTS="$case_dir/events" CI_CASE_FORMAT="$linux_x64" CI_CASE_BUILD_RC=0 CI_CASE_FILE_RC=0 \
+			CI_CASE_PRODUCT_MODE="$product_mode" \
+			bash "$root/scripts/ci-build" x86_64-linux-musl 'package dir' artifact.zip ''
+	) > "$case_dir/stdout" 2> "$case_dir/stderr"; then status=0; else status="$?"; fi
+	[ "$status" -eq 1 ] || fail "$product_mode: invalid distribution product was not rejected: $status"
+	[ -s "$case_dir/stderr" ] || fail "$product_mode: rejection was silent"
+	[ "$(< "$case_dir/artifact.zip")" = 'previous archive' ] || fail "$product_mode: rejection replaced the previous archive"
+	[ "$(< "$case_dir/package dir/previous")" = 'previous staging' ] || fail "$product_mode: rejection changed caller staging"
+	[ "$(< "$case_dir/protected")" = 'protected bytes' ] || fail "$product_mode: rejection changed a link target"
+	leftovers="$(find "$case_dir" -maxdepth 1 -type d -name '.codescan-package.*' -print)" || fail 'product refusal cleanup inventory'
+	[ -z "$leftovers" ] || fail "$product_mode: rejection leaked staging"
+done
 
 # The failing builder is a controlled stop: even a broken argument validator
 # cannot reach staging deletion for these adversarial inputs.
@@ -354,4 +414,44 @@ do
 done
 
 (unset -f file uname nix tar; bash "$root/tests/unit/test-release-product") || fail 'release product classifier/reader controls'
+
+# Exercise the complete archive with the actual prepared native executable.
+# Only the Nix request port is controlled; headers, tar, extraction, and execution
+# are real. Nothing here publishes into the working checkout.
+(
+	unset -f file uname nix tar
+	case "$CODESCAN_EXPECT_PF" in
+		linux-amd64) native_target=x86_64-linux-musl ;;
+		linux-arm64) native_target=aarch64-linux-musl ;;
+		macos-arm64) native_target=aarch64-macos ;;
+		*) fail 'actual native archive target must be declared' ;;
+	esac
+	native_case="$fixture_root/actual-native/project with spaces"
+	native_product="$native_case/prepared product"
+	mkdir -p "$native_product/bin" "$native_product/share" || fail 'native archive fixture'
+	cp "$CODESCAN_TEST_BIN" "$native_product/bin/codescan" || fail 'prepared native command copy'
+	printf 'native resource\n' > "$native_product/share/resource"
+	ln -s resource "$native_product/share/current" || fail 'native resource link'
+	cp "$root/README.md" "$root/LICENSE" "$native_case/" || fail 'native archive documentation'
+	nix() {
+		if [ "$*" = 'build --no-link --keep-going -L .#checks.aarch64-darwin.test .#checks.aarch64-darwin.source-closure' ]; then return 0; fi
+		if [ "${1-}" = develop ] && [ "${2-}" = -c ]; then shift 2; "$@"; return "$?"; fi
+		[ "$*" = "build --no-link --print-out-paths .#release-$CODESCAN_EXPECT_PF" ] || return 64
+		printf '%s\n' "$CI_NATIVE_PRODUCT"
+	}
+	export -f nix
+	(cd "$native_case" && CI_NATIVE_PRODUCT="$native_product" bash "$root/scripts/ci-build" "$native_target" native-package native.tar.gz '') || fail 'real native packaging'
+	mkdir "$native_case/extracted" || fail 'native archive extraction root'
+	tar -xzf "$native_case/native.tar.gz" -C "$native_case/extracted" || fail 'native archive extraction'
+	extracted="$native_case/extracted/native-package"
+	cmp "$CODESCAN_TEST_BIN" "$extracted/bin/codescan" && cmp "$extracted/bin/codescan" "$extracted/codescan" || fail 'native archive command bytes'
+	[ ! -L "$extracted/bin/codescan" ] && [ -x "$extracted/bin/codescan" ] || fail 'native archive must contain an executable copy'
+	[ "$(readlink "$extracted/share/current")" = resource ] && [ "$(< "$extracted/share/current")" = 'native resource' ] || fail 'native archive resource lookup'
+	bash "$root/scripts/ci-verify-release" "$native_target" "$extracted/bin/codescan" || fail 'extracted native command header'
+	# The original fixture command is now unavailable. Run only the extracted copy.
+	unlink "$native_product/bin/codescan" || fail 'remove owned original fixture command'
+	"$CODESCAN_TEST_BIN" --about > "$native_case/expected-about" || fail 'prepared native self-identification'
+	(cd "$native_case/extracted" && env PF=wrong-target PLATFORM=wrong-target OS=wrong-target ARCH=wrong-target VARIANT=wrong-target "$extracted/bin/codescan" --about) > "$native_case/actual-about" 2> "$native_case/actual-error" || fail 'extracted native command execution'
+	cmp "$native_case/expected-about" "$native_case/actual-about" && [ ! -s "$native_case/actual-error" ] || fail 'extracted native self-identification'
+) || fail 'complete real native product distribution'
 printf 'CI architecture/publication regressions passed\n'

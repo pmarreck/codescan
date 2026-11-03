@@ -22,7 +22,7 @@ jobs:
       - name: Prepare Windows test products
         shell: bash
         run: |
-          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64
+          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64 .#release-mswin-amd64 .#release-mswin-arm64
           mkdir -p cancellation-mswin-amd64 cancellation-mswin-arm64
           for arch in amd64 arm64; do
             product="$(nix path-info ".#cancellation-mswin-$arch")"
@@ -37,6 +37,11 @@ jobs:
             git_product="$(nix path-info ".#test-git-mswin-$arch")"
             mkdir -p "git-mswin-$arch"
             ALLOW_NIX_STORE_COPY='Export complete declared Windows CI test tools' cp -R "$git_product/." "git-mswin-$arch/"
+            case "$arch" in
+              amd64) release_target=x86_64-windows-gnu ;;
+              arm64) release_target=aarch64-windows-gnu ;;
+            esac
+            nix develop -c ./scripts/ci-build "$release_target" "codescan-mswin-$arch" "codescan-mswin-$arch.zip" .exe
           done
       - uses: actions/upload-artifact@v6
         with:
@@ -69,6 +74,16 @@ jobs:
           name: git-mswin-arm64
           path: git-mswin-arm64/
           include-hidden-files: true
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-mswin-amd64
+          path: codescan-mswin-amd64.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: release-mswin-arm64
+          path: codescan-mswin-arm64.zip
           if-no-files-found: error
 
   qualify:
@@ -106,6 +121,18 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/ci-test-windows.ps1 -Suite unit -Architecture "${{ matrix.arch }}" -Executable "./unit/codescan-unit-tests.exe" -GitExecutable "./git-tools/cmd/git.exe"
+      - uses: actions/download-artifact@v7
+        with:
+          name: release-mswin-${{ matrix.arch }}
+          path: release-archive
+      - name: Extract complete release product
+        shell: pwsh
+        run: |
+          Expand-Archive -LiteralPath "./release-archive/codescan-mswin-${{ matrix.arch }}.zip" -DestinationPath './release product with spaces'
+      - name: Execute native release copy
+        shell: pwsh
+        run: |
+          ./scripts/ci-test-windows.ps1 -Suite release -Architecture "${{ matrix.arch }}" -Executable "./release product with spaces/codescan-mswin-${{ matrix.arch }}/bin/codescan.exe"
       - name: Execute native cancellation tests
         shell: pwsh
         run: |

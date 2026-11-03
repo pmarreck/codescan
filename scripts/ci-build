@@ -51,14 +51,55 @@ fi
 # Keep temporary archives on the destination filesystem for rename publication.
 # The package label never selects a caller-owned filesystem directory.
 package_work="$(mktemp -d "$PWD/.codescan-package.XXXXXXXX")" || exit 1
-trap 'rm -rf -- "$package_work"' EXIT
+cleanup_package() {
+	local package_status="$?" cleanup_status=0
+	# find does not follow product links. Change only owned directory copies,
+	# after archiving, so read-only permissions survive distribution unchanged.
+	if find "$package_work" -type d -exec chmod u+w {} + && rm -rf -- "$package_work"; then :; else
+		cleanup_status="$?"
+		printf 'error: package cleanup failed; staging retained at %s\n' "$package_work" >&2
+	fi
+	if [ "$package_status" -ne 0 ]; then exit "$package_status"; fi
+	exit "$cleanup_status"
+}
+trap cleanup_package EXIT
 mkdir "$package_work/$PKGDIR" || exit 1
+
+# Distributed products cannot depend on links back into the build machine.
+product_root="$(cd "$output" && pwd -P)" || exit 1
+find "$output" -type l -print0 > "$package_work/.links" || exit "$?"
+while IFS= read -r -d '' product_link; do
+	link_target="$(readlink "$product_link")" || exit "$?"
+	case "$link_target" in /*) printf 'error: absolute product link is not distributable: %s\n' "$product_link" >&2; exit 1 ;; esac
+	resolved_target="$(realpath -e "$product_link")" || exit "$?"
+	case "$resolved_target" in
+		"$product_root"/*) ;;
+		*) printf 'error: product link escapes the complete product: %s\n' "$product_link" >&2; exit 1 ;;
+	esac
+done < "$package_work/.links"
+
+case "$TARGET" in
+	*-windows-gnu) cp -RL "$output/." "$package_work/$PKGDIR/" || exit "$?" ;;
+	*) cp -R "$output/." "$package_work/$PKGDIR/" || exit "$?" ;;
+esac
+chmod u+w "$package_work/$PKGDIR" || exit "$?"
+# Keep the legacy flat command, but never overwrite an unrelated product file.
+if [ -e "$package_work/$PKGDIR/codescan${EXT}" ] || [ -L "$package_work/$PKGDIR/codescan${EXT}" ]; then
+	printf 'error: product conflicts with the legacy flat command\n' >&2
+	exit 1
+fi
 cp "$output/bin/codescan${EXT}" "$package_work/$PKGDIR/" || exit 1
-cp README.md LICENSE "$package_work/$PKGDIR/" || exit 1
+for document in README.md LICENSE; do
+	if [ -e "$output/$document" ] || [ -L "$output/$document" ]; then
+		cmp "$output/$document" "$document" || { printf 'error: product conflicts with package documentation: %s\n' "$document" >&2; exit 1; }
+	else
+		cp "$document" "$package_work/$PKGDIR/" || exit 1
+	fi
+done
 
 if [[ "$ARCHIVE" == *.zip ]]; then
 	package_archive="$package_work/.archive.zip"
-	(cd "$package_work" && zip -rq "$package_archive" "$PKGDIR") || exit "$?"
+	(cd "$package_work" && zip -ryq "$package_archive" "$PKGDIR") || exit "$?"
 else
 	package_archive="$package_work/.archive.tar.gz"
 	tar -czf "$package_archive" -C "$package_work" "$PKGDIR" || exit "$?"

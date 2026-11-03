@@ -32,22 +32,27 @@ nix profile install github:pmarreck/codescan
 
 ### Pre-built binaries (no Nix required)
 
-Pre-built binaries for Linux (x86_64, arm64) and macOS (arm64) are available as
-artifacts from the latest CI build:
+Pre-built binaries for Linux (x86_64, arm64), macOS (arm64), and Windows
+(x86_64, arm64) are available as artifacts from the latest CI build:
 
 **[Download from GitHub Actions](https://github.com/pmarreck/codescan/actions/workflows/build.yml?query=branch%3Ayolo+is%3Asuccess)**
 
 1. Click the most recent successful run
 2. Scroll to the **Artifacts** section at the bottom
 3. Download the archive for your platform
-4. Extract and place `codescan` somewhere on your `PATH`
+4. Extract the complete package and run `bin/codescan` (`bin/codescan.exe` on Windows), keeping its product tree together
+
+The flat command at the package root remains available for compatibility with
+the current self-contained CLI. Windows packages contain ordinary copies, not
+Nix-store links, and running them requires neither Nix nor Bash.
 
 > Note: GitHub requires you to be signed in to download workflow artifacts.
 
 CI publishes archives for all five declared targets using canonical platform
 names (`linux-amd64`, `linux-arm64`, `macos-arm64`, `mswin-amd64`, and
-`mswin-arm64`). Windows ZIPs are cross-built on Linux; native Windows runtime
-qualification remains separate from build success.
+`mswin-arm64`). Windows ZIPs are cross-built on Linux. A separate native workflow
+extracts the complete ZIP into a path with spaces and checks its actual PE CPU
+and direct command execution on matching Windows x64 and ARM64 hosts.
 
 ### Build from source
 

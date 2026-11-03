@@ -1,5 +1,5 @@
 param(
-	[ValidateSet('cancellation', 'unit')][string] $Suite = 'cancellation',
+	[ValidateSet('cancellation', 'unit', 'release')][string] $Suite = 'cancellation',
 	[ValidateSet('amd64', 'arm64')][string] $Architecture,
 	[string] $Executable,
 	[string] $GitExecutable
@@ -88,7 +88,13 @@ function ConvertFrom-UnitEvidence([int] $ExitCode, [string] $StandardOutput, [st
 	return [pscustomobject]@{ Passed = $passed; Skipped = $skipped; Total = $total; Transcript = $clean.ToString() }
 }
 
-function Assert-NativeTestEvidence([ValidateSet('cancellation', 'unit')][string] $Suite, [int] $ExitCode, [string] $StandardOutput, [string] $StandardError, [Collections.IDictionary] $ExpectedDiagnostics = @{}) {
+function Assert-NativeTestEvidence([ValidateSet('cancellation', 'unit', 'release')][string] $Suite, [int] $ExitCode, [string] $StandardOutput, [string] $StandardError, [Collections.IDictionary] $ExpectedDiagnostics = @{}, [string] $Architecture) {
+	if ($Suite -ceq 'release') {
+		if ($Architecture -cnotin @('amd64', 'arm64')) { throw 'Require a declared release architecture' }
+		$expected = "codescan 0.1.0 - Semantic code search and targeted edits; PF=mswin-$Architecture VARIANT=gnu`n"
+		if ($ExitCode -ne 0 -or $StandardError -cne '' -or $StandardOutput.Replace("`r`n", "`n") -cne $expected) { throw 'Native release self-identification failed' }
+		return
+	}
 	if ($Suite -ceq 'unit') { return ConvertFrom-UnitEvidence $ExitCode $StandardOutput $StandardError $ExpectedDiagnostics }
 	else { Assert-CancellationEvidence $ExitCode $StandardOutput $StandardError }
 }
@@ -187,6 +193,7 @@ if ($Suite -ceq 'unit') {
 	Assert-NativeTarget $Architecture $IsWindows $osArchitecture (Get-PeMachine ([IO.File]::ReadAllBytes($gitBinary.FullName)))
 	Write-Output "Native Windows unit runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine"
 }
+elseif ($Suite -ceq 'release') { Write-Output "Native Windows release runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine" }
 else { Write-Output "Native Windows runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine" }
 
 $fixture = Join-Path $env:RUNNER_TEMP ("codescan-$Suite-" + [Guid]::NewGuid().ToString('N'))
@@ -201,6 +208,10 @@ try {
 	$start.RedirectStandardError = $true
 	$start.Environment.Clear()
 	$start.Environment['OLLAMA_URL'] = 'http://127.0.0.1:1'
+	if ($Suite -ceq 'release') {
+		$start.ArgumentList.Add('--about')
+		foreach ($name in @('PF', 'PLATFORM', 'OS', 'ARCH', 'VARIANT')) { $start.Environment[$name] = 'wrong-target' }
+	}
 	foreach ($name in @('SystemRoot', 'WINDIR', 'SystemDrive')) {
 		$value = [Environment]::GetEnvironmentVariable($name)
 		if ($value) { $start.Environment[$name] = $value }
@@ -222,13 +233,14 @@ try {
 	try {
 		if ($result.TimedOut) { throw "Native $Suite process exceeded 30 seconds; buffered test progress follows" }
 		$expectedDiagnostics = if ($Suite -ceq 'unit') { Get-Content -Raw -LiteralPath "$PSScriptRoot/../tests/unit/expected-unit-diagnostics.json" | ConvertFrom-Json -AsHashtable } else { @{} }
-		$evidence = Assert-NativeTestEvidence $Suite $result.ExitCode $result.StandardOutput $result.StandardError $expectedDiagnostics
+		$evidence = Assert-NativeTestEvidence $Suite $result.ExitCode $result.StandardOutput $result.StandardError $expectedDiagnostics $Architecture
 	} catch {
 		Write-Output $result.StandardOutput
 		Write-Output $result.StandardError
 		throw
 	}
 	if ($Suite -ceq 'unit') { Write-Output $evidence.Transcript }
+	elseif ($Suite -ceq 'release') { Write-Output $result.StandardOutput }
 	else { Write-Output $result.StandardError }
 } finally {
 	try {
