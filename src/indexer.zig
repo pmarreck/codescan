@@ -606,7 +606,8 @@ pub fn indexIncremental(
 	if (options.batch_size == 0) return error.InvalidBatchSize;
 
 	// Ensure schema exists (including indexed_files table)
-	_ = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = options.embedding_dim, .embedding_model = options.embedding_model });
+	defer schema.deinit(allocator);
 
 	const debug = try debugEnabled(allocator);
 	const show_progress = options.show_progress and !debug;

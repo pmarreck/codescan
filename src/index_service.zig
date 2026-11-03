@@ -262,6 +262,76 @@ test "repeated incremental event batches release caller and SQLite allocations f
 	}
 }
 
+test "incremental model mismatch releases schema results on success and failure" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	const http = @import("embedding_http.zig");
+	const sqlite = storage.sqlite;
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.writeFile(io, .{
+		.sub_path = "stable.zig", .data = "/// Stable operation.\npub fn stable() void {}\n",
+	});
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	const cwd = try std.Io.Dir.cwd().realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(cwd);
+	const relative_root = try std.fs.path.relative(allocator, cwd, io_singleton.getEnvMap(), cwd, root);
+	defer allocator.free(relative_root);
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var replies: http.MockTransportCtx = .{ .tags_body = "{}", .ps_body = "{}" };
+	var provider = embedding.HttpEmbedder{
+		.transport = replies.transport(), .base_url = "http://provider.invalid", .model = "stored-model",
+	};
+	const base_request = Request{
+		.mode = .incremental, .root_path = root, .embedding_dim = 2,
+		.embedding_model = "stored-model", .batch_size = 1, .max_file_size = 4096,
+		.index_ext = "zig",
+	};
+	const seeded = try execute(allocator, db, plugin.defaultRegistry(), provider.embedder(), base_request);
+	try std.testing.expectEqual(@as(usize, 1), seeded.incremental.new_files);
+	try std.testing.expectEqual(@as(usize, 1), seeded.incremental.symbols);
+	const initial_calls = replies.embed_count;
+	var accounting = std.testing.FailingAllocator.init(allocator, .{});
+	for ([_][]const u8{ root, relative_root }) |root_arg| {
+		const missing_root = try std.fs.path.join(allocator, &.{ root_arg, "missing" });
+		defer allocator.free(missing_root);
+		for ([_][]const u8{ "stored-model", "requested-model" }) |requested_model| {
+			for (0..3) |_| {
+				for ([_]bool{ true, false }) |missing| {
+					var request = base_request;
+					request.root_path = if (missing) missing_root else root_arg;
+					request.embedding_model = requested_model;
+					const result = execute(accounting.allocator(), db, plugin.defaultRegistry(), provider.embedder(), request);
+					if (missing) {
+						try std.testing.expectError(error.FileNotFound, result);
+					} else {
+						const stats = (try result).incremental;
+						try std.testing.expectEqual([6]usize{ 0, 0, 0, 1, 0, 0 }, [6]usize{
+							stats.new_files, stats.modified_files, stats.deleted_files,
+							stats.unchanged_files, stats.symbols, stats.recovered_files,
+						});
+					}
+					try std.testing.expectEqual(initial_calls, replies.embed_count);
+					for ([_][]const u8{ "symbols", "embeddings", "embeddings_comment" }) |table| {
+						try std.testing.expectEqual(@as(i64, 1), try storage.countRows(db, allocator, table));
+					}
+					var statement: ?*sqlite.sqlite3_stmt = null;
+					try std.testing.expectEqual(sqlite.SQLITE_OK, sqlite.sqlite3_prepare_v2(db,
+						"SELECT value FROM meta WHERE key='embedding_model';", -1, &statement, null));
+					defer _ = sqlite.sqlite3_finalize(statement.?);
+					try std.testing.expectEqual(sqlite.SQLITE_ROW, sqlite.sqlite3_step(statement.?));
+					const stored_model = sqlite.sqlite3_column_text(statement.?, 0) orelse return error.MissingFixtureMetadata;
+					const stored_length: usize = @intCast(sqlite.sqlite3_column_bytes(statement.?, 0));
+					try std.testing.expectEqualStrings("stored-model", stored_model[0..stored_length]);
+					try std.testing.expectEqual(accounting.allocated_bytes, accounting.freed_bytes);
+				}
+			}
+		}
+	}
+}
+
 test "full indexing rebuilds vector schemas when the detected model width changes" {
 	const http = @import("embedding_http.zig");
 	const update = @import("update_service.zig");
