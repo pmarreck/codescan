@@ -15,7 +15,7 @@ while [ "$#" -gt 0 ]; do
 		--all|--all-plats|--all-platforms) all_platforms=1 ;;
 		--all-impls|--all-implementations) ;; # Zig is the sole executable implementation.
 		-h|--help)
-			printf 'Usage: ./build [--debug|--test] [--all-impls] [--all-plats|--all]\nNix is required. ReleaseFast is the default.\nImplementation aliases: --all-impls, --all-implementations\nPlatform aliases: --all-plats, --all-platforms\n--all enables both scopes. Debug/test products are native-only.\n'
+			printf 'Usage: ./build [--debug|--test] [--all-impls] [--all-plats|--all]\nNix is required. ReleaseFast is the default.\nImplementation aliases: --all-impls, --all-implementations\nPlatform aliases: --all-plats, --all-platforms\n--all enables both scopes. Debug/test products are native-only.\nPublishes verified commands in bin/<PF>/ without changing PATH.\n'
 			exit 0 ;;
 		*) printf 'error: unsupported build option: %s\n' "$1" >&2; exit 64 ;;
 	esac
@@ -47,6 +47,31 @@ validate_publication_lock() {
 		return 1
 	fi
 }
+validate_public_entry() {
+	local prefix="$1" platform="${1#.nix-out/}" command_name=codescan parent previous namespace
+	platform="${platform%%/*}"
+	case "$platform" in mswin-*) command_name=codescan.exe ;; esac
+	public_command="bin/$platform/$command_name"
+	public_target="../../$prefix/bin/$command_name"
+	for parent in bin "bin/$platform"; do
+		if [ -L "$parent" ] || { [ -e "$parent" ] && [ ! -d "$parent" ]; }; then
+			printf 'error: refusing public command through unexpected symlink/file: %s\n' "$parent" >&2
+			return 1
+		fi
+	done
+	if [ -L "$public_command" ]; then
+		previous="$(readlink "$public_command")" || return "$?"
+		namespace="../../${prefix%/*}"
+		case "$previous" in
+			"$namespace/ReleaseFast/bin/$command_name"|"$namespace/Debug/bin/$command_name") ;;
+			*) printf 'error: refusing to replace an unrecognized public command link: %s\n' "$public_command" >&2; return 1 ;;
+		esac
+		[ ! -d "$public_command" ] || { printf 'error: public command resolves to a directory: %s\n' "$public_command" >&2; return 1; }
+	elif [ -e "$public_command" ]; then
+		printf 'error: refusing to replace a non-link public command: %s\n' "$public_command" >&2
+		return 1
+	fi
+}
 retention_works=()
 publication=''
 selected_prefixes=()
@@ -54,11 +79,32 @@ selected_products=()
 previous_products=()
 previous_available=()
 previous_roots=()
+public_commands=()
+public_targets=()
+previous_commands=()
+public_stages=()
 rollback_needed=0
 keep_previous=0
+restore_public_command() {
+	local index="$1" command="${public_commands[$1]}" previous="${previous_commands[$1]}" current=''
+	if [ -L "$command" ]; then current="$(readlink "$command")"; fi
+	if [ -n "$previous" ] && [ "$current" = "$previous" ]; then return; fi
+	if { [ -e "$command" ] && [ ! -L "$command" ]; } || { [ -n "$current" ] && [ "$current" != "${public_targets[$index]}" ]; }; then
+		printf 'error: refusing rollback over an unexpected public command: %s\n' "$command" >&2
+		keep_previous=1
+	elif [ -n "$previous" ]; then
+		if ln -sfn "$previous" "${public_stages[$index]}/entry" && mv -f -- "${public_stages[$index]}/entry" "$command"; then :; else
+			printf 'error: could not restore public command: %s -> %s\n' "$command" "$previous" >&2
+			keep_previous=1
+		fi
+	elif [ -L "$command" ]; then
+		unlink "$command" || keep_previous=1
+	fi
+}
 restore_selections() {
 	local index prefix previous current restore_status
 	for ((index=${#selected_prefixes[@]}-1; index>=0; index--)); do
+		restore_public_command "$index"
 		prefix="${selected_prefixes[$index]}"; previous="${previous_products[$index]}"
 		current=''
 		if [ -L "$prefix" ]; then current="$(readlink "$prefix")"; fi
@@ -89,13 +135,17 @@ restore_selections() {
 	done
 }
 cleanup_publication() {
-	local retention_work previous_root
+	local retention_work previous_root public_stage
 	if [ "$rollback_needed" -eq 1 ]; then restore_selections; fi
 	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication"; fi
 	if [ "$keep_previous" -eq 1 ]; then
 		printf 'error: rollback incomplete; previous products remain retained for recovery in %s\n' "$candidate_root" >&2
 		return
 	fi
+	for public_stage in "${public_stages[@]}"; do
+		if [ -L "$public_stage/entry" ]; then unlink "$public_stage/entry"; fi
+		rmdir "$public_stage"
+	done
 	for previous_root in "${previous_roots[@]}"; do
 		if [ -L "$previous_root" ]; then unlink "$previous_root"; fi
 	done
@@ -131,6 +181,7 @@ if [ "$attribute" != test-binaries ]; then
 	[ "$attribute" != debug ] || profile=Debug
 	native_prefix=".nix-out/$native_namespace/$profile"
 	validate_retention "$native_prefix" || exit 1
+	validate_public_entry "$native_prefix" || exit 1
 	validate_publication_lock || exit 1
 	source "$root/scripts/ci-verify-release" || exit "$?"
 fi
@@ -147,6 +198,7 @@ if [ "$all_platforms" -eq 1 ]; then
 		prefix=".nix-out/$target/${variant}ReleaseFast"
 		prefixes+=("$prefix")
 		validate_retention "$prefix" || exit 1
+		validate_public_entry "$prefix" || exit 1
 	done
 	products=()
 	for index in "${!targets[@]}"; do
@@ -223,12 +275,25 @@ for index in "${!selected_prefixes[@]}"; do
 	fi
 	previous_products+=("$previous")
 	previous_available+=("$available")
+	validate_public_entry "$prefix" || exit 1
+	public_commands+=("$public_command")
+	public_targets+=("$public_target")
+	previous=''
+	if [ -L "$public_command" ]; then previous="$(readlink "$public_command")" || exit "$?"; fi
+	previous_commands+=("$previous")
+	mkdir -p "${public_command%/*}" || exit "$?"
+	public_stage="$(mktemp -d "$root/${public_command%/*}/.candidate.XXXXXXXX")" || exit "$?"
+	public_stages+=("$public_stage")
+	ln -s "$public_target" "$public_stage/entry" || exit "$?"
 done
 rollback_needed=1
 for index in "${!selected_prefixes[@]}"; do
 	prefix="${selected_prefixes[$index]}"; product="${selected_products[$index]}"
 	nix-store --add-root "$prefix" --realise "$product" >/dev/null || exit "$?"
 	[ "$(readlink "$prefix")" = "$product" ] || { printf 'error: selected output does not match the verified product\n' >&2; exit 1; }
+done
+for index in "${!public_commands[@]}"; do
+	mv -f -- "${public_stages[$index]}/entry" "${public_commands[$index]}" || exit "$?"
 done
 mv -f -- "$publication" zig-out/bin/codescan || exit 1
 rollback_needed=0

@@ -7,6 +7,11 @@ zig-out/
 .zig-cache
 result
 /.nix-out/
+/bin/linux-amd64/
+/bin/linux-arm64/
+/bin/macos-arm64/
+/bin/mswin-amd64/
+/bin/mswin-arm64/
 /.profiling.local.json
 /.codescan-package.*/
 inbox

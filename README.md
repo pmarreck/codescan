@@ -79,7 +79,11 @@ debug/test products are native-only. There is no direct compiler fallback.
 Native release/debug builds also retain their complete Nix products under
 `.nix-out/<PF>/[<VARIANT>/]<profile>` (`ReleaseFast` or `Debug`), so profiles and
 foreign products coexist. Legacy `zig-out/bin/codescan` publication remains in
-place pending verified `bin/<PF>/` publication and a coordinated PATH cutover.
+place for compatibility. Nix-host builds also publish direct relative command
+links in `bin/<PF>/`, selecting the requested native profile or all five release
+products. Foreign Windows links use `codescan.exe`; they are not portable
+distribution copies. Unrecognized public commands are preserved and reported as
+errors. Publication does not change PATH; that cutover remains separate.
 
 Use `./run ARGS...` to build the current checkout's native release package and
 execute that exact Nix output. It preserves your working directory, arguments,

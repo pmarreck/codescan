@@ -105,6 +105,15 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 			cmp "$CODESCAN_TEST_BIN" "$project/zig-out/bin/codescan" || fail 'real publication changed executable bytes'
 			"$project/zig-out/bin/codescan" --about > "$project/about" 2> "$project/about-error" || fail 'published native command did not execute'
 			[ -s "$project/about" ] && [ ! -s "$project/about-error" ] || fail 'published command did not identify itself cleanly'
+			case "$(uname -s)/$(uname -m)" in
+				Linux/x86_64) public_pf=linux-amd64 ;;
+				Linux/aarch64) public_pf=linux-arm64 ;;
+				Darwin/arm64) public_pf=macos-arm64 ;;
+				*) fail 'unsupported real PF fixture' ;;
+			esac
+			[ -L "$project/bin/$public_pf/codescan" ] || fail 'real PF command is not a direct retained-product link'
+			"$project/bin/$public_pf/codescan" --about > "$project/public-about" 2> "$project/public-error" || fail 'real PF command did not execute'
+			cmp "$project/about" "$project/public-about" && [ ! -s "$project/public-error" ] || fail 'PF publication changed native execution'
 			;;
 		test)
 			[ "$rc" -eq 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'test preparation unexpectedly published a CLI'
@@ -135,6 +144,8 @@ for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darw
 	project="$fixture/native-$os-$arch/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/release/bin" "$project/release/share" "$project/debug/bin" "$project/debug/lib" || fail 'native retention setup'
 	copy_build_fixture "$project" || fail 'native retention wrapper'
+	mkdir -p "$project/bin" || fail 'portable command fixture'
+	printf portable-sentinel > "$project/bin/helper"
 	mkdir -p "$project/foreign/share" "$project/.nix-out/mswin-arm64/gnu" || fail 'foreign coexistence setup'
 	printf foreign > "$project/foreign/share/resource"
 	ln -s "$project/foreign" "$project/.nix-out/mswin-arm64/gnu/ReleaseFast" || fail 'foreign coexistence link'
@@ -153,6 +164,9 @@ for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darw
 			"$BASH" ./build "${args[@]}") > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
 		[ "$rc" -eq 0 ] || fail "$mapping $profile failed"
 		[ -L "$project/.nix-out/$namespace/$profile" ] && [ "$(readlink "$project/.nix-out/$namespace/$profile")" = "$project/$product" ] || fail "$mapping $profile did not retain the exact complete Nix product"
+		public_command="$project/bin/${namespace%%/*}/codescan"
+		[ -L "$public_command" ] && [ "$(readlink "$public_command")" = "../../.nix-out/$namespace/$profile/bin/codescan" ] || fail "$mapping $profile did not select its direct PF command"
+		cmp "$public_command" "$project/$product/bin/codescan" || fail 'PF command did not resolve to the complete retained product'
 		[ "$(< "$project/zig-out/bin/codescan")" = "$product" ] || fail 'native retention changed legacy publication'
 	done
 	[ "$(< "$project/.nix-out/$namespace/ReleaseFast/share/resource")" = resource ] || fail 'debug build lost release resources'
@@ -192,6 +206,7 @@ for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darw
 	[ "$(< "$project/zig-out/bin/codescan")" = release ] || fail 'failed root registration changed the previous command'
 	[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'native build left a temporary retention root'
 	[ "$(readlink "$project/.nix-out/mswin-arm64/gnu/ReleaseFast")" = "$project/foreign" ] && [ "$(< "$project/.nix-out/mswin-arm64/gnu/ReleaseFast/share/resource")" = foreign ] || fail 'native builds changed a foreign retained product'
+	[ "$(< "$project/bin/helper")" = portable-sentinel ] && [ ! -e "$project/bin/codescan" ] || fail 'PF publication changed generic portable commands'
 done
 for obstacle in root-link platform-link variant-link root-file platform-file variant-file leaf-file leaf-directory; do
 	project="$fixture/native-$obstacle/project with spaces"
@@ -222,6 +237,31 @@ for obstacle in root-link platform-link variant-link root-file platform-file var
 		*-file) [ "$(< "$blocked")" = unchanged ] || fail 'native refusal overwrote a file' ;;
 		leaf-directory) [ "$(< "$blocked/sentinel")" = unchanged ] || fail 'native refusal overwrote a directory' ;;
 	esac
+done
+for obstacle in root-link root-file platform-link platform-file leaf-link leaf-dangling-link leaf-file leaf-directory; do
+	project="$fixture/public-$obstacle/project with spaces"
+	mkdir -p "$project/zig-out/bin" "$project/protected" || fail 'public refusal setup'
+	copy_build_fixture "$project" || fail 'public refusal wrapper'
+	printf old > "$project/zig-out/bin/codescan"
+	printf unchanged > "$project/protected/sentinel"
+	case "$obstacle" in
+		root-*) blocked="$project/bin" ;;
+		platform-*) blocked="$project/bin/linux-amd64" ;;
+		leaf-*) blocked="$project/bin/linux-amd64/codescan" ;;
+	esac
+	mkdir -p "${blocked%/*}" || fail 'public refusal parent'
+	case "$obstacle" in
+		leaf-dangling-link) ln -s "$project/protected/missing" "$blocked" || fail 'public dangling link' ;;
+		*-link) ln -s "$project/protected" "$blocked" || fail 'public refusal link' ;;
+		*-file) printf unchanged > "$blocked" ;;
+		leaf-directory) mkdir "$blocked" && cp "$project/protected/sentinel" "$blocked/sentinel" || fail 'public refusal directory' ;;
+	esac
+	: > "$project/events"
+	if (cd "$project" && env BUILD_OS=Linux BUILD_ARCH=x86_64 BUILD_EVENTS="$project/events" \
+		BUILD_STATUS=0 BUILD_OUTPUT="$project/protected" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+	[ "$rc" -eq 1 ] && [ ! -s "$project/events" ] && [ -s "$project/err" ] || fail "$obstacle public command was not refused before building"
+	[ "$(< "$project/zig-out/bin/codescan")" = old ] && [ "$(< "$project/protected/sentinel")" = unchanged ] || fail "$obstacle public refusal changed existing data"
+	[ ! -e "$project/.nix-out" ] && [ "$(find "$project/protected" -mindepth 1 -maxdepth 1 | wc -l)" -eq 1 ] || fail 'public refusal wrote into caller data'
 done
 for mapping in Darwin:x86_64 Linux:riscv64 Plan9:amd64 MINGW64_NT:x86_64; do
 	IFS=: read -r os arch <<< "$mapping"
@@ -276,13 +316,26 @@ unset -f uname
 		case "$3" in "$BATCH_PROJECT/next/$BATCH_BAD_PRODUCT/"*) [ "$BATCH_FAULT" != reader-failure ] || return 17 ;; esac
 		command head -n 1 "$3"
 	}
-	export -f nix nix-store file
+	mv() {
+		if [ "$#" -eq 4 ] && [ "$1" = -f ] && [ "$2" = -- ] && [[ "$BATCH_FAULT" == public-* ]]; then
+			case "$4" in "bin/$BATCH_BAD_PRODUCT/codescan"|"bin/$BATCH_BAD_PRODUCT/codescan.exe")
+				case "$(readlink "$3")" in ../../.nix-out/*/ReleaseFast/bin/*)
+					if [[ "$BATCH_FAULT" == public-after-mutation* ]]; then command mv "$@" || return 69; fi
+					printf 'controlled public command rename failure\n' >&2
+					return 37 ;;
+				esac ;;
+			esac
+		fi
+		command mv "$@"
+	}
+	export -f nix nix-store file mv
 	batch_controls=0
 	registration_controls=0
-	for fault in build-failure wrong-header reader-failure missing-command registration-failure registration-after-mutation registration-failure-absent registration-after-mutation-absent; do
+	public_controls=0
+	for fault in build-failure wrong-header reader-failure missing-command registration-failure registration-after-mutation registration-failure-absent registration-after-mutation-absent public-failure public-after-mutation public-failure-absent public-after-mutation-absent; do
 		for bad_product in macos-arm64 linux-arm64 linux-amd64 mswin-arm64 mswin-amd64 native; do
 			# The native alias selects an already represented PF in registration.
-			if [[ "$fault" == registration-* ]] && [ "$bad_product" = native ]; then continue; fi
+			if [[ "$fault" == registration-* || "$fault" == public-* ]] && [ "$bad_product" = native ]; then continue; fi
 			project="$fixture/batch-$fault-$bad_product/project with spaces"
 			mkdir -p "$project/zig-out/bin" || fail 'batch fixture'
 			copy_build_fixture "$project" || fail 'batch wrapper'
@@ -299,6 +352,14 @@ unset -f uname
 				prefix="$project/.nix-out/$pf/${variant}ReleaseFast"
 				mkdir -p "${prefix%/*}" || fail 'batch retained parent'
 				if [[ "$fault" != *-absent ]]; then ln -s "$project/old/$pf" "$prefix" || fail 'batch old root'; fi
+				if [[ "$fault" == public-* && "$fault" != *-absent ]]; then
+					mkdir -p "$project/bin/$pf" "$project/old/$pf/bin" || fail 'old public fixture'
+					command_name=codescan; case "$pf" in mswin-*) command_name=codescan.exe ;; esac
+					printf old-public > "$project/old/$pf/bin/$command_name"
+					chmod +x "$project/old/$pf/bin/$command_name" || fail 'old public executable'
+					ln -s "$project/old/$pf" "$project/.nix-out/$pf/${variant}Debug" || fail 'old public profile'
+					ln -s "../../.nix-out/$pf/${variant}Debug/bin/$command_name" "$project/bin/$pf/$command_name" || fail 'old public entrypoint'
+				fi
 				prefixes+=("$prefix"); old_products+=("$project/old/$pf")
 			done < <(build_fixture_headers)
 			case "$(uname -s)/$(uname -m)" in
@@ -314,10 +375,13 @@ unset -f uname
 			esac
 			if (cd "$project" && env BATCH_PROJECT="$project" BATCH_FAULT="$fault" BATCH_BAD_PRODUCT="$bad_product" "$BASH" ./build --all) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
 			expected_status=1
-			case "$fault" in build-failure) expected_status=19 ;; reader-failure) expected_status=17 ;; registration-*) expected_status=23 ;; esac
+			case "$fault" in build-failure) expected_status=19 ;; reader-failure) expected_status=17 ;; registration-*) expected_status=23 ;; public-*) expected_status=37 ;; esac
 			[ "$rc" -eq "$expected_status" ] || fail "$bad_product $fault lost the failure status: $rc"
 			if [[ "$fault" == registration-* ]]; then
 				rg -Fq 'controlled retained-root registration failure' "$project/err" || fail 'registration failure did not reach its intended fault'
+			fi
+			if [[ "$fault" == public-* ]]; then
+				rg -Fq 'controlled public command rename failure' "$project/err" || fail 'public rename did not reach its intended fault'
 			fi
 			[ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$bad_product $fault changed the old command"
 			for index in "${!prefixes[@]}"; do
@@ -329,12 +393,24 @@ unset -f uname
 				fi
 				[ "$(< "${old_products[$index]}/share/resource")" = old-resource ] || fail 'batch failure changed unselected fixture data'
 			done
+			while IFS='|' read -r pf variant description; do
+				command_name=codescan; case "$pf" in mswin-*) command_name=codescan.exe ;; esac
+				entrypoint="$project/bin/$pf/$command_name"
+				if [[ "$fault" == public-* && "$fault" != *-absent ]]; then
+					[ "$(readlink "$entrypoint")" = "../../.nix-out/$pf/${variant}Debug/bin/$command_name" ] && [ "$(< "$entrypoint")" = old-public ] || fail "$bad_product $fault changed a previous public command"
+					[ "$(readlink "$project/.nix-out/$pf/${variant}Debug")" = "$project/old/$pf" ] || fail 'public rollback changed an unselected profile'
+				else
+					[ ! -e "$entrypoint" ] && [ ! -L "$entrypoint" ] || fail "$bad_product $fault created a previously absent command"
+				fi
+			done < <(build_fixture_headers)
 			[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'batch failure leaked candidate roots'
-			if [[ "$fault" == registration-* ]]; then registration_controls=$((registration_controls + 1)); else batch_controls=$((batch_controls + 1)); fi
+			[ -z "$(find "$project" -type d -name '.candidate.*' -print)" ] || fail 'batch failure leaked public candidates'
+			case "$fault" in registration-*) registration_controls=$((registration_controls + 1)) ;; public-*) public_controls=$((public_controls + 1)) ;; *) batch_controls=$((batch_controls + 1)) ;; esac
 		done
 	done
 	[ "$batch_controls" -eq 24 ] || fail 'incomplete batch failure matrix'
 	[ "$registration_controls" -eq 20 ] || fail 'incomplete before/after registration and absent-root matrix'
+	[ "$public_controls" -eq 20 ] || fail 'incomplete before/after public rename and absent-command matrix'
 ) || fail 'all-platform batch preservation'
 
 # Explicit source execution must not select a stale PATH or published command.

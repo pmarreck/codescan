@@ -150,6 +150,18 @@ for scenario in all default implementations-short implementations-long platforms
 				done < <(build_fixture_headers)
 			fi
 			[ "$(LC_ALL=C sort "$project/roots")" = "$(printf '%s\n' "$expected_roots" | LC_ALL=C sort)" ] || fail "$scenario did not register the exact selected products once"
+			while IFS='|' read -r pf variant description; do
+				command_name=codescan
+				case "$pf" in mswin-*) command_name=codescan.exe ;; esac
+				entrypoint="$project/bin/$pf/$command_name"
+				if [ "$expected" = "$all_requests" ] || [ "$pf" = "$native_pf" ]; then
+					selected_profile=ReleaseFast; [ "$pf" != "$native_pf" ] || selected_profile="$profile"
+					[ -L "$entrypoint" ] && [ "$(readlink "$entrypoint")" = "../../.nix-out/$pf/$variant$selected_profile/bin/$command_name" ] || fail "$scenario omitted or misdirected the $pf entrypoint"
+					cmp "$entrypoint" "$project/.nix-out/$pf/$variant$selected_profile/bin/$command_name" || fail "$scenario changed the $pf command bytes"
+				else
+					[ ! -e "$entrypoint" ] && [ ! -L "$entrypoint" ] || fail "$scenario published an unrequested foreign command"
+				fi
+			done < <(build_fixture_headers)
 			;;
 	esac
 	case "$scenario" in retention-*-symlink)
