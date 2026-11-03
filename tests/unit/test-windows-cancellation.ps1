@@ -103,9 +103,9 @@ foreach ($command in @((Get-Command Assert-NativeTestEvidence), (Get-Command "$P
 Expect-Rejection { Assert-NativeTestEvidence 'unit' 0 '' $valid }
 Expect-Rejection { Assert-NativeTestEvidence 'cancellation' 0 '' $unitValid }
 Expect-Rejection { Assert-NativeTestEvidence 'unknown' 0 '' $unitValid }
-$gitEnvironment = @{ PATH = 'ambient-tools'; HOME = 'private-home' }
+$gitEnvironment = @{ PATH = 'ambient-tools'; PATHEXT = '.BAT'; HOME = 'private-home' }
 Set-UnitGitEnvironment $gitEnvironment 'C:/pinned git/cmd' 'C:/private fixture'
-if ($gitEnvironment.PATH -cne 'C:/pinned git/cmd' -or $gitEnvironment.HOME -cne 'private-home' -or $gitEnvironment.GIT_CONFIG_NOSYSTEM -cne '1' -or $gitEnvironment.GIT_TERMINAL_PROMPT -cne '0' -or $gitEnvironment.GIT_CONFIG_GLOBAL -cne 'C:/private fixture/gitconfig') { throw 'Git test environment depends on ambient tools or configuration' }
+if ($gitEnvironment.PATH -cne 'C:/pinned git/cmd' -or $gitEnvironment.PATHEXT -cne '.EXE' -or $gitEnvironment.HOME -cne 'private-home' -or $gitEnvironment.GIT_CONFIG_NOSYSTEM -cne '1' -or $gitEnvironment.GIT_TERMINAL_PROMPT -cne '0' -or $gitEnvironment.GIT_CONFIG_GLOBAL -cne 'C:/private fixture/gitconfig') { throw 'Git test environment depends on ambient tools or configuration' }
 
 if ($NativeUnitExecutable) {
 	$fixture = Join-Path ([IO.Path]::GetTempPath()) ('codescan-unit-evidence-' + [Guid]::NewGuid().ToString('N'))

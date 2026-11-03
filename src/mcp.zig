@@ -1125,7 +1125,7 @@ test "handleToolsCall dispatches symbols" {
 	defer allocator.free(abs_path);
 
 	// Build params JSON
-	const params_str = try std.fmt.allocPrint(allocator, "{{\"name\":\"symbols\",\"arguments\":{{\"file\":\"{s}\"}}}}", .{abs_path});
+	const params_str = try std.json.Stringify.valueAlloc(allocator, .{ .name = "symbols", .arguments = .{ .file = abs_path } }, .{});
 	defer allocator.free(params_str);
 
 	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_str, .{});
@@ -1233,11 +1233,7 @@ test "handleToolsCall dispatches symbols and config" {
 	};
 
 	// Test symbols tool — no Ollama needed
-	const symbols_params_str = try std.fmt.allocPrint(
-		allocator,
-		"{{\"name\":\"symbols\",\"arguments\":{{\"file\":\"{s}\"}}}}",
-		.{file_path},
-	);
+	const symbols_params_str = try std.json.Stringify.valueAlloc(allocator, .{ .name = "symbols", .arguments = .{ .file = file_path } }, .{});
 	defer allocator.free(symbols_params_str);
 	var symbols_parsed = try std.json.parseFromSlice(std.json.Value, allocator, symbols_params_str, .{});
 	defer symbols_parsed.deinit();

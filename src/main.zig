@@ -8483,7 +8483,7 @@ test "resolveSettings uses discovered repo root for db path" {
 	var settings = try resolveSettings(allocator, parsed, cfg, root.?);
 	defer settings.deinit(allocator);
 
-	const expected_db = try std.fs.path.join(allocator, &.{ root.?, ".codescan", "index.sqlite3" });
+	const expected_db = try std.fs.path.join(allocator, &.{ root.?, ".codescan/index.sqlite3" });
 	defer allocator.free(expected_db);
 
 	try std.testing.expectEqualStrings(root.?, settings.root_path);
@@ -8755,13 +8755,16 @@ test "runReadFile partial read with from/to" {
 
 test "resolveProjectFilePath roots relative paths and preserves absolute paths" {
 	const allocator = std.testing.allocator;
-	const relative = try resolveProjectFilePath(allocator, "/project", "bin/tool");
+	const windows = @import("builtin").os.tag == .windows;
+	const project = if (windows) "C:\\project" else "/project";
+	const expected = if (windows) "C:\\project\\bin/tool" else "/project/bin/tool";
+	const relative = try resolveProjectFilePath(allocator, project, "bin/tool");
 	defer allocator.free(relative);
-	try std.testing.expectEqualStrings("/project/bin/tool", relative);
+	try std.testing.expectEqualStrings(expected, relative);
 
-	const absolute = try resolveProjectFilePath(allocator, "/ignored", "/project/bin/tool");
+	const absolute = try resolveProjectFilePath(allocator, "/ignored", expected);
 	defer allocator.free(absolute);
-	try std.testing.expectEqualStrings("/project/bin/tool", absolute);
+	try std.testing.expectEqualStrings(expected, absolute);
 }
 
 test "delayed discovery progress uses an injected monotonic clock" {

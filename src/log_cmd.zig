@@ -288,7 +288,15 @@ pub fn run(
 	opts: Options,
 	runner: ?CommandRunner,
 ) ![]u8 {
-	const platform = currentPlatform();
+	return runForPlatform(allocator, currentPlatform(), opts, runner);
+}
+
+fn runForPlatform(
+	allocator: std.mem.Allocator,
+	platform: Platform,
+	opts: Options,
+	runner: ?CommandRunner,
+) ![]u8 {
 	if (platform == .unsupported) return error.UnsupportedPlatform;
 
 	const command = try buildArgv(allocator, platform, opts);
@@ -304,9 +312,11 @@ pub fn run(
 // --- Test fakes ---
 
 var fake_output: []const u8 = "";
+var fake_calls: usize = 0;
 
 fn fakeRunner(allocator: std.mem.Allocator, argv: []const []const u8) anyerror![]u8 {
 	_ = argv;
+	fake_calls += 1;
 	return allocator.dupe(u8, fake_output);
 }
 
@@ -317,13 +327,27 @@ test "run applies root filter and honors --all" {
 		\\2026-04-18 codescan[2]: /proj-b: watcher started
 	;
 
-	const filtered = try run(allocator, .{ .root = "/proj-a" }, fakeRunner);
-	defer allocator.free(filtered);
-	try std.testing.expect(std.mem.indexOf(u8, filtered, "/proj-a") != null);
-	try std.testing.expect(std.mem.indexOf(u8, filtered, "/proj-b") == null);
+	fake_calls = 0;
+	try std.testing.expectError(error.UnsupportedPlatform, runForPlatform(allocator, .unsupported, .{}, fakeRunner));
+	try std.testing.expectEqual(@as(usize, 0), fake_calls);
+	for ([_]Platform{ .linux, .macos }) |platform| {
+		const filtered = try runForPlatform(allocator, platform, .{ .root = "/proj-a" }, fakeRunner);
+		defer allocator.free(filtered);
+		try std.testing.expect(std.mem.indexOf(u8, filtered, "/proj-a") != null);
+		try std.testing.expect(std.mem.indexOf(u8, filtered, "/proj-b") == null);
 
-	const all = try run(allocator, .{ .root = "/proj-a", .all = true }, fakeRunner);
-	defer allocator.free(all);
-	try std.testing.expect(std.mem.indexOf(u8, all, "/proj-a") != null);
-	try std.testing.expect(std.mem.indexOf(u8, all, "/proj-b") != null);
+		const all = try runForPlatform(allocator, platform, .{ .root = "/proj-a", .all = true }, fakeRunner);
+		defer allocator.free(all);
+		try std.testing.expect(std.mem.indexOf(u8, all, "/proj-a") != null);
+		try std.testing.expect(std.mem.indexOf(u8, all, "/proj-b") != null);
+	}
+	try std.testing.expectEqual(@as(usize, 4), fake_calls);
+	if (currentPlatform() == .unsupported) {
+		try std.testing.expectError(error.UnsupportedPlatform, run(allocator, .{}, fakeRunner));
+		try std.testing.expectEqual(@as(usize, 4), fake_calls);
+	} else {
+		const native = try run(allocator, .{ .root = "/proj-a" }, fakeRunner);
+		defer allocator.free(native);
+		try std.testing.expectEqualStrings("2026-04-18 codescan[1]: /proj-a: watcher started\n", native);
+	}
 }

@@ -1434,7 +1434,7 @@ test "handleRequest responds to POST /symbols" {
 	defer allocator.free(abs_path);
 
 	// Build HTTP POST request with JSON body
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\"}}", .{abs_path});
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /symbols HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1476,7 +1476,7 @@ test "handleRequest responds to POST /find-symbol" {
 	defer allocator.free(abs_path);
 
 	// Search for symbol "foo"
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\"}}", .{abs_path});
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .pattern = "foo" }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /find-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1518,7 +1518,7 @@ test "handleRequest responds to POST /replace-symbol" {
 	defer allocator.free(abs_path);
 
 	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn foo() u32 {{ return 99; }}\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .pattern = "foo", .body = "pub fn foo() u32 { return 99; }", .version = @as([]const u8, &ver) }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1560,7 +1560,7 @@ test "handleRequest responds to POST /insert-after" {
 	defer allocator.free(abs_path);
 
 	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .pattern = "foo", .body = "pub fn baz() void {}", .version = @as([]const u8, &ver) }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-after HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1601,7 +1601,7 @@ test "handleRequest responds to POST /insert-before" {
 	defer allocator.free(abs_path);
 
 	const ver = (try hashline.computeFileVersion(allocator, zig_content)).?;
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"body\":\"pub fn baz() void {{}}\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .pattern = "foo", .body = "pub fn baz() void {}", .version = @as([]const u8, &ver) }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-before HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1645,7 +1645,7 @@ test "handleRequest responds to POST /replace-lines" {
 	// Hashline refs computed for "line1\nline2\nline3\nline4\n": line2=pZK, line3=yO7
 	// Replace lines 2-3 with new text
 	const ver = (try hashline.computeFileVersion(allocator, content)).?;
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"from\":\"2:pZK\",\"to\":\"3:yO7\",\"body\":\"replaced\\n\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .from = "2:pZK", .to = "3:yO7", .body = "replaced\n", .version = @as([]const u8, &ver) }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-lines HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1689,7 +1689,7 @@ test "handleRequest responds to POST /insert-at" {
 	// Hashline ref computed for "line1\nline2\nline3\n": line2=pZK
 	// Insert after line 2
 	const ver = (try hashline.computeFileVersion(allocator, content)).?;
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"ref\":\"2:pZK\",\"body\":\"inserted\\n\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .ref = "2:pZK", .body = "inserted\n", .version = @as([]const u8, &ver) }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /insert-at HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1730,7 +1730,7 @@ test "handleRequest responds to POST /replace-content" {
 
 	// Replace "hello" with "howdy" using literal mode
 	const ver = (try hashline.computeFileVersion(allocator, content)).?;
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"needle\":\"hello\",\"body\":\"howdy\",\"version\":\"{s}\"}}", .{ abs_path, &ver });
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .needle = "hello", .body = "howdy", .version = @as([]const u8, &ver) }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /replace-content HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1772,7 +1772,7 @@ test "handleRequest responds to POST /rename" {
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"nonexistent_symbol\",\"to\":\"quux\",\"dry_run\":true}}", .{abs_path});
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .pattern = "nonexistent_symbol", .to = "quux", .dry_run = true }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /rename HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});
@@ -1809,7 +1809,7 @@ test "handleRequest responds to POST /find-symbol with include_body" {
 	const abs_path = try tmp.dir.realPathFileAlloc(io_singleton.getOrInit(), "test.zig", allocator);
 	defer allocator.free(abs_path);
 
-	const body = try std.fmt.allocPrint(allocator, "{{\"file\":\"{s}\",\"pattern\":\"foo\",\"include_body\":true}}", .{abs_path});
+	const body = try std.json.Stringify.valueAlloc(allocator, .{ .file = abs_path, .pattern = "foo", .include_body = true }, .{});
 	defer allocator.free(body);
 
 	const header = try std.fmt.allocPrint(allocator, "POST /find-symbol HTTP/1.1\r\nHost: localhost\r\nContent-Length: {d}\r\n\r\n", .{body.len});

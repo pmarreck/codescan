@@ -895,7 +895,7 @@ test "Python discovery classifies sources, stubs, and scripts while excluding en
 		.{ .path = "main.py", .include = true },
 		.{ .path = "package/api.pyi", .include = true },
 		.{ .path = "path with spaces/café.py", .include = true },
-		.{ .path = "tool", .include = true },
+		.{ .path = "tool", .include = std.Io.File.Permissions.has_executable_bit },
 		.{ .path = ".venv/lib/installed.py", .include = false },
 		.{ .path = "nested/venv/installed.pyi", .include = false },
 		.{ .path = "nested/__pycache__/generated.py", .include = false },
@@ -925,7 +925,7 @@ test "Python discovery classifies sources, stubs, and scripts while excluding en
 		for (files) |path| allocator.free(path);
 		allocator.free(files);
 	}
-	try std.testing.expectEqual(@as(usize, 4), files.len);
+	try std.testing.expectEqual(@as(usize, if (std.Io.File.Permissions.has_executable_bit) 4 else 3), files.len);
 	for (cases) |case| {
 		var found = false;
 		for (files) |path| if (std.mem.eql(u8, path, case.path)) {

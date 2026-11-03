@@ -95,6 +95,7 @@ function Assert-NativeTestEvidence([ValidateSet('cancellation', 'unit')][string]
 
 function Set-UnitGitEnvironment($Environment, [string] $GitDirectory, [string] $PrivateRoot) {
 	$Environment['PATH'] = $GitDirectory
+	$Environment['PATHEXT'] = '.EXE'
 	$Environment['GIT_CONFIG_NOSYSTEM'] = '1'
 	$Environment['GIT_CONFIG_GLOBAL'] = "$PrivateRoot/gitconfig"
 	$Environment['GIT_TERMINAL_PROMPT'] = '0'
