@@ -276,6 +276,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==4 and .body==["add() {","\techo \"$1\"","}"]' >/dev/null || \
 		fail "Bash grammar changed the exact function body: $out"
 
+	go_file="$DB_DIR/functions with spaces.go"
+	printf '%s\n' 'package fixture' '' '// Adds two values.' 'func add(left, right int) int {' \
+		$'\treturn left + right' '}' '' 'func adjacent() int { return 42 }' > "$go_file"
+	capture "$BIN" symbols --file "$go_file" --json
+	[ "$rc" -eq 0 ] || fail "Go symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,kind,start_line,end_line}] == [{name:"add",kind:"fn",start_line:4,end_line:6},{name:"adjacent",kind:"fn",start_line:8,end_line:8}]' >/dev/null || \
+		fail "Go grammar changed the complete function set or source ranges: $out"
+	capture "$BIN" symbols add --file "$go_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Go function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==4 and .end_line==6 and .body==["func add(left, right int) int {","\treturn left + right","}"]' >/dev/null || \
+		fail "Go grammar changed the exact function body: $out"
+
 	lua_file="$DB_DIR/functions with spaces.lua"
 	printf '%s\n' '--- Adds one value.' 'local function helper(value)' \
 		$'\treturn value + 1' 'end' 'function adjacent(value) return value end' > "$lua_file"

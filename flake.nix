@@ -25,6 +25,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-c/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-bash/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lua/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-go/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -121,6 +122,20 @@
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE.md "$out/" || exit "$?"
 					'';
+				# Release v0.25.0 (1547678a9da59885853f5f5cc8a99cc203fa2e2c)
+				# includes the unchanged generated ABI-15 parser and its license.
+				grammar-go = pkgs.runCommand "codescan-go-source-0.25.0" {
+					source = pkgs.fetchzip {
+						url = "https://github.com/tree-sitter/tree-sitter-go/releases/download/v0.25.0/tree-sitter-go.tar.gz";
+						hash = "sha256-y7bTET8ypPczPnMVlCaiZuswcA7vFrDOc2jlbfVk5Sk=";
+					};
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-go/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-go/LICENSE} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE "$out/" || exit "$?"
+				'';
 				grammar-nim = pkgs.applyPatches {
 					name = "codescan-nim-source";
 					src = grammarSource "alaviss" "tree-sitter-nim"
@@ -243,6 +258,7 @@
 					{ name = "c"; path = "${grammar-c}/src"; }
 					{ name = "bash"; path = "${grammar-bash}/src"; }
 					{ name = "lua"; path = "${grammar-lua}/src"; }
+					{ name = "go"; path = "${grammar-go}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -422,6 +438,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.go-source = pkgs.runCommand "codescan-go-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/go/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-go/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-go/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.bash-source = pkgs.runCommand "codescan-bash-source-identity" {
 					source = grammarSources;
 				} ''
@@ -472,6 +496,7 @@
 					in pkgs.runCommand "codescan-source-closure" {
 						bashSourceContract = self.checks.${system}.bash-source;
 						luaSourceContract = self.checks.${system}.lua-source;
+						goSourceContract = self.checks.${system}.go-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -544,6 +569,7 @@
 					bashSourceContract = self.checks.${system}.bash-source;
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
 					luaSourceContract = self.checks.${system}.lua-source;
+					goSourceContract = self.checks.${system}.go-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;

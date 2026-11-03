@@ -61,6 +61,11 @@ sandboxed build. This is deliberate: there is one reproducible dependency
 contract rather than an undocumented collection of host packages. Pre-built
 binaries remain self-contained and do not require Nix at runtime.
 
+The Tree-sitter Go parser comes from the hash-pinned
+[v0.25.0 release](https://github.com/tree-sitter/tree-sitter-go/releases/tag/v0.25.0).
+Source checks preserve the existing generated parser, metadata, and headers
+byte for byte, and retain the upstream license before compilation.
+
 `./build --debug` selects the Nix debug package; `./build --test` prepares
 compiled unit tests and fixture tools without publishing a CLI. `./build --all`
 (or `--all-platforms` / `--all-plats`) builds the five declared release targets through Nix,
