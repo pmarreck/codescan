@@ -1,2 +1,4 @@
 # Preserve the exact upstream license, including its final blank line.
 deps/tree-sitter-ruby/LICENSE whitespace=-blank-at-eof
+# A blank unified-patch context line is represented by one literal space.
+patches/asm-header-compatibility.patch whitespace=-blank-at-eol

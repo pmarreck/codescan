@@ -76,6 +76,12 @@ The Tree-sitter Ruby parser and scanner likewise come from the hash-pinned
 Eight source/license identities preserve the existing ABI-14 grammar byte for
 byte, without a generator or Zig toolchain upgrade.
 
+The Assembly parser is pinned to upstream
+[revision 839741fe](https://github.com/RubixDev/tree-sitter-asm/tree/839741fef4dab5128952334624905c82b40c7133).
+An explicit, no-fuzz patch retains the existing allocator declarations and
+MSVC warning-stack handling. Seven source/license identities preserve the
+previous source bytes and ABI 14 before compilation.
+
 `./build --debug` selects the Nix debug package; `./build --test` prepares
 compiled unit tests and fixture tools without publishing a CLI. `./build --all`
 (or `--all-platforms` / `--all-plats`) builds the five declared release targets through Nix,

@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
 	const ts_swift = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_swift", b.fmt("{s}/swift", .{grammar_root}), true);
 	const ts_llvm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_llvm", "deps/tree-sitter-llvm/src", false);
 	const ts_clojure = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_clojure", "deps/tree-sitter-clojure/src", false);
-	const ts_asm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_asm", "deps/tree-sitter-asm/src", false);
+	const ts_asm = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_asm", b.fmt("{s}/asm", .{grammar_root}), false);
 	const ts_fish = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_fish", b.fmt("{s}/fish", .{grammar_root}), true);
 	const ts_nu = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nu", b.fmt("{s}/nu", .{grammar_root}), true);
 	const ts_powershell = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_powershell", b.fmt("{s}/powershell", .{grammar_root}), true);

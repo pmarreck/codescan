@@ -27,6 +27,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lua/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-go/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-ruby/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-asm/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -148,6 +149,23 @@
 					cd "$source" || exit "$?"
 					sha256sum -c ${./deps/tree-sitter-ruby/SOURCE_SHA256} || exit "$?"
 					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE "$out/" || exit "$?"
+				'';
+				# Keep the existing ABI-14 parser and both local header adjustments.
+				grammar-asm = pkgs.runCommand "codescan-asm-source" {
+					source = pkgs.applyPatches {
+						name = "codescan-asm-patched-source";
+						src = grammarSource "RubixDev" "tree-sitter-asm"
+							"839741fef4dab5128952334624905c82b40c7133"
+							"sha256-AbMSSt3tTjyPe7ksNjBxxsqvdoKmIKymqzisUWrSTT0=";
+						patches = [ ./patches/asm-header-compatibility.patch ];
+						patchFlags = [ "-p1" "--fuzz=0" ];
+					};
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-asm/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-asm/LICENSE} || exit "$?"
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
 				'';
@@ -275,6 +293,7 @@
 					{ name = "lua"; path = "${grammar-lua}/src"; }
 					{ name = "go"; path = "${grammar-go}/src"; }
 					{ name = "ruby"; path = "${grammar-ruby}/src"; }
+					{ name = "asm"; path = "${grammar-asm}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -460,6 +479,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.asm-source = pkgs.runCommand "codescan-asm-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/asm/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-asm/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-asm/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.ruby-source = pkgs.runCommand "codescan-ruby-source-identity" {
 					source = grammarSources;
 				} ''
@@ -528,6 +555,7 @@
 						luaSourceContract = self.checks.${system}.lua-source;
 						goSourceContract = self.checks.${system}.go-source;
 						rubySourceContract = self.checks.${system}.ruby-source;
+						asmSourceContract = self.checks.${system}.asm-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -602,6 +630,7 @@
 					luaSourceContract = self.checks.${system}.lua-source;
 					goSourceContract = self.checks.${system}.go-source;
 					rubySourceContract = self.checks.${system}.ruby-source;
+					asmSourceContract = self.checks.${system}.asm-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;
