@@ -329,6 +329,23 @@ unset -f uname
 		command mv "$@"
 	}
 	export -f nix nix-store file mv
+	# Copy regular files, never hardlinks: each fault owns mutable product bytes.
+	template="$fixture/batch-products"
+	while IFS='|' read -r pf variant description; do
+		mkdir -p "$template/next/$pf/bin" "$template/next/$pf/share" "$template/old/$pf/share" || fail 'batch template products'
+		printf '%s\n' "$description" > "$template/next/$pf/bin/codescan"
+		cp "$template/next/$pf/bin/codescan" "$template/next/$pf/bin/codescan.exe" || fail 'batch template PE fixture'
+		chmod +x "$template/next/$pf/bin/codescan" "$template/next/$pf/bin/codescan.exe" || fail 'batch template executable'
+		printf new-resource > "$template/next/$pf/share/resource"
+		printf old-resource > "$template/old/$pf/share/resource"
+	done < <(build_fixture_headers)
+	case "$(uname -s)/$(uname -m)" in
+		Linux/x86_64) native_pf=linux-amd64 ;;
+		Linux/aarch64) native_pf=linux-arm64 ;;
+		Darwin/arm64) native_pf=macos-arm64 ;;
+		*) fail 'batch native mapping' ;;
+	esac
+	cp -R "$template/next/$native_pf" "$template/next/native" || fail 'batch native template'
 	batch_controls=0
 	registration_controls=0
 	public_controls=0
@@ -340,15 +357,9 @@ unset -f uname
 			mkdir -p "$project/zig-out/bin" || fail 'batch fixture'
 			copy_build_fixture "$project" || fail 'batch wrapper'
 			printf old > "$project/zig-out/bin/codescan"
+			cp -R "$template/next" "$template/old" "$project/" || fail 'private batch product copy'
 			prefixes=(); old_products=()
 			while IFS='|' read -r pf variant description; do
-				product="$project/next/$pf"
-				mkdir -p "$product/bin" "$product/share" "$project/old/$pf/share" || fail 'batch products'
-				printf '%s\n' "$description" > "$product/bin/codescan"
-				cp "$product/bin/codescan" "$product/bin/codescan.exe" || fail 'batch PE fixture'
-				chmod +x "$product/bin/codescan" "$product/bin/codescan.exe" || fail 'batch executable'
-				printf new-resource > "$product/share/resource"
-				printf old-resource > "$project/old/$pf/share/resource"
 				prefix="$project/.nix-out/$pf/${variant}ReleaseFast"
 				mkdir -p "${prefix%/*}" || fail 'batch retained parent'
 				if [[ "$fault" != *-absent ]]; then ln -s "$project/old/$pf" "$prefix" || fail 'batch old root'; fi
@@ -362,13 +373,6 @@ unset -f uname
 				fi
 				prefixes+=("$prefix"); old_products+=("$project/old/$pf")
 			done < <(build_fixture_headers)
-			case "$(uname -s)/$(uname -m)" in
-				Linux/x86_64) native_pf=linux-amd64 ;;
-				Linux/aarch64) native_pf=linux-arm64 ;;
-				Darwin/arm64) native_pf=macos-arm64 ;;
-				*) fail 'batch native mapping' ;;
-			esac
-			cp -R "$project/next/$native_pf" "$project/next/native" || fail 'batch native product'
 			case "$fault" in
 				wrong-header) printf 'rejected foreign header\n' > "$project/next/$bad_product/bin/codescan"; cp "$project/next/$bad_product/bin/codescan" "$project/next/$bad_product/bin/codescan.exe" ;;
 				missing-command) unlink "$project/next/$bad_product/bin/codescan"; unlink "$project/next/$bad_product/bin/codescan.exe" ;;
@@ -411,6 +415,11 @@ unset -f uname
 	[ "$batch_controls" -eq 24 ] || fail 'incomplete batch failure matrix'
 	[ "$registration_controls" -eq 20 ] || fail 'incomplete before/after registration and absent-root matrix'
 	[ "$public_controls" -eq 20 ] || fail 'incomplete before/after public rename and absent-command matrix'
+	while IFS='|' read -r pf variant description; do
+		[ "$(head -n 1 "$template/next/$pf/bin/codescan")" = "$description" ] || fail 'a fault changed the shared header template'
+		cmp "$template/next/$pf/bin/codescan" "$template/next/$pf/bin/codescan.exe" || fail 'a fault changed the shared command template'
+		[ "$(< "$template/next/$pf/share/resource")" = new-resource ] && [ "$(< "$template/old/$pf/share/resource")" = old-resource ] || fail 'a fault changed the shared resource template'
+	done < <(build_fixture_headers)
 ) || fail 'all-platform batch preservation'
 
 # Explicit source execution must not select a stale PATH or published command.
