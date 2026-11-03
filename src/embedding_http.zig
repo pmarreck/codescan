@@ -1,6 +1,11 @@
 const std = @import("std");
 const io_singleton = @import("io_singleton.zig");
 
+// This module is also the standalone cancellation-test root. Keep unexpected
+// native status codes and their stacks visible in those ReleaseSafe processes;
+// importing it into the application does not change the application's options.
+pub const std_options: std.Options = .{ .unexpected_error_tracing = true };
+
 pub const HttpRequest = struct {
 	method: []const u8,
 	url: []const u8,
@@ -736,6 +741,9 @@ const HeldExchange = struct {
 			if (reader.err) |cause| {
 				if (cause == error.ConnectionResetByPeer) return;
 			}
+			std.debug.print("held exchange peer closure failed: phase={s}; read={s}; cause={s}\n", .{
+				@tagName(self.phase), @errorName(err), if (reader.err) |cause| @errorName(cause) else "none",
+			});
 			return err;
 		};
 	}
