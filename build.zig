@@ -42,7 +42,7 @@ pub fn build(b: *std.Build) void {
 	const ts_idris = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_idris2", "deps/tree-sitter-idris2/src", false);
 	const ts_haskell = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_haskell", "deps/tree-sitter-haskell/src", true);
 	const ts_go = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_go", b.fmt("{s}/go", .{grammar_root}), false);
-	const ts_ruby = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ruby", "deps/tree-sitter-ruby/src", true);
+	const ts_ruby = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ruby", b.fmt("{s}/ruby", .{grammar_root}), true);
 	const ts_erlang = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_erlang", "deps/tree-sitter-erlang/src", true);
 	const ts_ocaml = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_ocaml", "deps/tree-sitter-ocaml/src", true);
 	const ts_swift = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_swift", b.fmt("{s}/swift", .{grammar_root}), true);

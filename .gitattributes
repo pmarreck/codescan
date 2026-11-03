@@ -1,0 +1,2 @@
+# Preserve the exact upstream license, including its final blank line.
+deps/tree-sitter-ruby/LICENSE whitespace=-blank-at-eof

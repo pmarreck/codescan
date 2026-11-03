@@ -66,6 +66,11 @@ The Tree-sitter Go parser comes from the hash-pinned
 Source checks preserve the existing generated parser, metadata, and headers
 byte for byte, and retain the upstream license before compilation.
 
+The Tree-sitter Ruby parser and scanner likewise come from the hash-pinned
+[v0.23.1 release](https://github.com/tree-sitter/tree-sitter-ruby/releases/tag/v0.23.1).
+Eight source/license identities preserve the existing ABI-14 grammar byte for
+byte, without a generator or Zig toolchain upgrade.
+
 `./build --debug` selects the Nix debug package; `./build --test` prepares
 compiled unit tests and fixture tools without publishing a CLI. `./build --all`
 (or `--all-platforms` / `--all-plats`) builds the five declared release targets through Nix,

@@ -26,6 +26,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-bash/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lua/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-go/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-ruby/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -133,6 +134,20 @@
 					cd "$source" || exit "$?"
 					sha256sum -c ${./deps/tree-sitter-go/SOURCE_SHA256} || exit "$?"
 					cmp LICENSE ${./deps/tree-sitter-go/LICENSE} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE "$out/" || exit "$?"
+				'';
+				# Release v0.23.1 (71bd32fb7607035768799732addba884a37a6210)
+				# preserves the vendored ABI-14 parser, scanner, and headers.
+				grammar-ruby = pkgs.runCommand "codescan-ruby-source-0.23.1" {
+					source = pkgs.fetchzip {
+						url = "https://github.com/tree-sitter/tree-sitter-ruby/releases/download/v0.23.1/tree-sitter-ruby.tar.xz";
+						hash = "sha256-iu3MVJl0Qr/Ba+aOttmEzMiVY6EouGi5wGOx5ofROzA=";
+					};
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-ruby/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
 				'';
@@ -259,6 +274,7 @@
 					{ name = "bash"; path = "${grammar-bash}/src"; }
 					{ name = "lua"; path = "${grammar-lua}/src"; }
 					{ name = "go"; path = "${grammar-go}/src"; }
+					{ name = "ruby"; path = "${grammar-ruby}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -444,6 +460,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.ruby-source = pkgs.runCommand "codescan-ruby-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/ruby/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-ruby/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.go-source = pkgs.runCommand "codescan-go-source-identity" {
 					source = grammarSources;
 				} ''
@@ -503,6 +527,7 @@
 						bashSourceContract = self.checks.${system}.bash-source;
 						luaSourceContract = self.checks.${system}.lua-source;
 						goSourceContract = self.checks.${system}.go-source;
+						rubySourceContract = self.checks.${system}.ruby-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -576,6 +601,7 @@
 					compilerConcurrencyContract = self.checks.${system}.compiler-concurrency;
 					luaSourceContract = self.checks.${system}.lua-source;
 					goSourceContract = self.checks.${system}.go-source;
+					rubySourceContract = self.checks.${system}.ruby-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;
