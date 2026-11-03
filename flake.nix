@@ -54,6 +54,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-ruby/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-asm/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-llvm/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nix/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -180,6 +181,18 @@
 					cd "$source" || exit "$?"
 					sha256sum -c ${./deps/tree-sitter-ruby/SOURCE_SHA256} || exit "$?"
 					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
+					mkdir -p "$out" || exit "$?"
+					cp -R src LICENSE "$out/" || exit "$?"
+				'';
+				# Preserve the unchanged ABI-13 parser, scanner, metadata, and license.
+				grammar-nix = pkgs.runCommand "codescan-nix-source" {
+					source = grammarSource "nix-community" "tree-sitter-nix"
+						"bae4c4fb39a4cc87a838817c5e2da7effac75183"
+						"sha256-WEom2qqfPifLlwO6U3batP4y1Rhq47a5bxDJW/g+ESQ=";
+				} ''
+					cd "$source" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-nix/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-nix/LICENSE} || exit "$?"
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
 				'';
@@ -338,6 +351,7 @@
 					{ name = "ruby"; path = "${grammar-ruby}/src"; }
 					{ name = "asm"; path = "${grammar-asm}/src"; }
 					{ name = "llvm"; path = "${grammar-llvm}/src"; }
+					{ name = "nix"; path = "${grammar-nix}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -544,6 +558,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.nix-source = pkgs.runCommand "codescan-nix-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/nix/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-nix/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-nix/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.llvm-source = pkgs.runCommand "codescan-llvm-source-identity" {
 					source = grammarSources;
 				} ''
@@ -630,6 +652,7 @@
 						rubySourceContract = self.checks.${system}.ruby-source;
 						asmSourceContract = self.checks.${system}.asm-source;
 						llvmSourceContract = self.checks.${system}.llvm-source;
+						nixSourceContract = self.checks.${system}.nix-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -706,6 +729,7 @@
 					rubySourceContract = self.checks.${system}.ruby-source;
 					asmSourceContract = self.checks.${system}.asm-source;
 					llvmSourceContract = self.checks.${system}.llvm-source;
+					nixSourceContract = self.checks.${system}.nix-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;

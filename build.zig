@@ -36,7 +36,7 @@ pub fn build(b: *std.Build) void {
 	const ts_rust = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_rust", "deps/tree-sitter-rust/src", true);
 	const ts_bash = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_bash", b.fmt("{s}/bash", .{grammar_root}), true);
 	const ts_lua = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lua", b.fmt("{s}/lua", .{grammar_root}), true);
-	const ts_nix = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nix", "deps/tree-sitter-nix/src", true);
+	const ts_nix = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nix", b.fmt("{s}/nix", .{grammar_root}), true);
 	const ts_nim = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_nim", b.fmt("{s}/nim", .{grammar_root}), true);
 	const ts_lean = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_lean", b.fmt("{s}/lean", .{grammar_root}), true);
 	const ts_idris = buildTreeSitterGrammar(b, target, optimize, "tree_sitter_idris2", "deps/tree-sitter-idris2/src", false);
