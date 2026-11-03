@@ -4,6 +4,7 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 fixture="$(mktemp -d "${TMPDIR:?}/codescan-build.XXXXXX")" || exit 1
 trap 'rm -rf -- "$fixture"' EXIT
 fail() { printf 'FAIL Nix build: %s\n' "$1" >&2; exit 1; }
+source "$root/tests/lib/build-fixture.bash"
 nix() {
 	printf '%s\n' "$*" >> "$BUILD_EVENTS"
 	[ "$BUILD_STATUS" -eq 0 ] || return "$BUILD_STATUS"
@@ -22,10 +23,10 @@ nix-store() {
 }
 zig() { printf 'forbidden compiler\n' >> "$BUILD_EVENTS"; return 99; }
 export -f nix nix-store zig
-for mode in default debug test failure missing-nix output-symlink real-publication; do
+for mode in default debug test failure missing-nix output-symlink real-publication wrong-header header-reader-failure linked-command; do
 	project="$fixture/$mode/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/prepared/bin" "$project/tools" || fail setup
-	cp "$root/build" "$project/build" || fail 'cannot copy source fixture'
+	copy_build_fixture "$project" || fail 'cannot copy source fixture'
 	printf old > "$project/zig-out/bin/codescan"
 	printf new > "$project/prepared/bin/codescan"
 	chmod +x "$project/prepared/bin/codescan"
@@ -35,11 +36,20 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	fi
 	if [ "$mode" = real-publication ]; then
 		[ -x "${CODESCAN_TEST_BIN:-}" ] || fail 'real publication requires the prepared Nix CLI'
-		ln -sf "$CODESCAN_TEST_BIN" "$project/prepared/bin/codescan"
+		mv "$project/prepared" "$project/fake-prepared" || fail 'real publication staging'
+		ln -s "$(dirname "$(dirname "$CODESCAN_TEST_BIN")")" "$project/prepared" || fail 'complete native fixture'
+	fi
+	if [ "$mode" = linked-command ]; then
+		mv "$project/prepared/bin/codescan" "$project/prepared/real-command" || fail 'linked command fixture'
+		ln -s ../real-command "$project/prepared/bin/codescan" || fail 'linked command fixture'
 	fi
 	: > "$project/events"
 	status=0
+	header=''; header_status=0; real_header=0
 	[ "$mode" != failure ] || status=19
+	[ "$mode" != wrong-header ] || header='foreign executable'
+	[ "$mode" != header-reader-failure ] || header_status=17
+	[ "$mode" != real-publication ] || real_header=1
 	args=()
 	case "$mode" in debug) args=(debug) ;; test) args=(--test) ;; esac
 	if [ "$mode" = missing-nix ]; then
@@ -48,12 +58,17 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 	else
 		invocation=("$BASH" "$project/build" "${args[@]}")
 	fi
-	if (cd "$project" && env BUILD_EVENTS="$project/events" BUILD_STATUS="$status" BUILD_OUTPUT="$project/prepared" "${invocation[@]}") > "$project/stdout" 2> "$project/stderr"; then
+	if (cd "$project" && env BUILD_EVENTS="$project/events" BUILD_STATUS="$status" BUILD_OUTPUT="$project/prepared" BUILD_HEADER="$header" BUILD_HEADER_STATUS="$header_status" BUILD_REAL_HEADER="$real_header" "${invocation[@]}") > "$project/stdout" 2> "$project/stderr"; then
 		rc=0
 	else rc="$?"; fi
 	case "$mode" in
 		failure|missing-nix|output-symlink)
 			[ "$rc" -ne 0 ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$mode did not preserve the previous product"
+			;;
+		wrong-header|header-reader-failure|linked-command)
+			expected_status=1; [ "$mode" != header-reader-failure ] || expected_status=17
+			[ "$rc" -eq "$expected_status" ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$mode changed the old command or lost the inspection error"
+			[ -s "$project/stderr" ] && [ -z "$(find "$project/.nix-out" -name ReleaseFast -type l -print)" ] || fail "$mode hid its diagnostic or promoted a rejected root"
 			;;
 		real-publication)
 			[ "$rc" -eq 0 ] || fail 'real prepared product was not published'
@@ -89,7 +104,7 @@ for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darw
 	IFS=: read -r os arch namespace <<< "$mapping"
 	project="$fixture/native-$os-$arch/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/release/bin" "$project/release/share" "$project/debug/bin" "$project/debug/lib" || fail 'native retention setup'
-	cp "$root/build" "$project/build" || fail 'native retention wrapper'
+	copy_build_fixture "$project" || fail 'native retention wrapper'
 	mkdir -p "$project/foreign/share" "$project/.nix-out/mswin-arm64/gnu" || fail 'foreign coexistence setup'
 	printf foreign > "$project/foreign/share/resource"
 	ln -s "$project/foreign" "$project/.nix-out/mswin-arm64/gnu/ReleaseFast" || fail 'foreign coexistence link'
@@ -112,6 +127,22 @@ for mapping in Linux:x86_64:linux-amd64/musl Linux:aarch64:linux-arm64/musl Darw
 	done
 	[ "$(< "$project/.nix-out/$namespace/ReleaseFast/share/resource")" = resource ] || fail 'debug build lost release resources'
 	[ "$(< "$project/.nix-out/$namespace/Debug/lib/runtime")" = library ] || fail 'release build lost debug resources'
+	case "$namespace" in
+		linux-amd64/musl) foreign_header='ELF 64-bit LSB executable, ARM aarch64, statically linked' ;;
+		linux-arm64/musl) foreign_header='ELF 64-bit LSB executable, x86-64, statically linked' ;;
+		macos-arm64) foreign_header='Mach-O 64-bit x86_64 executable' ;;
+	esac
+	for rejected_product in foreign-header reader-failure; do
+		header="$foreign_header"; header_status=0; expected_status=1
+		if [ "$rejected_product" = reader-failure ]; then header=''; header_status=17; expected_status=17; fi
+		if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
+			BUILD_STATUS=0 BUILD_OUTPUT="$project/release" BUILD_HEADER="$header" BUILD_HEADER_STATUS="$header_status" \
+			"$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
+		[ "$rc" -eq "$expected_status" ] && [ -s "$project/err" ] || fail "$mapping $rejected_product lost its inspection failure"
+		[ "$(readlink "$project/.nix-out/$namespace/ReleaseFast")" = "$project/release" ] || fail "$mapping $rejected_product changed the retained release"
+		[ "$(readlink "$project/.nix-out/$namespace/Debug")" = "$project/debug" ] || fail "$mapping $rejected_product changed the retained debug product"
+		[ "$(< "$project/zig-out/bin/codescan")" = debug ] || fail "$mapping $rejected_product changed the previous command"
+	done
 	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
 		BUILD_STATUS=19 BUILD_OUTPUT="$project/debug" "$BASH" ./build) > "$project/out" 2> "$project/err"; then rc=0; else rc="$?"; fi
 	[ "$rc" -eq 19 ] && [ "$(< "$project/zig-out/bin/codescan")" = debug ] || fail 'failed native rebuild changed legacy selection'
@@ -135,7 +166,7 @@ done
 for obstacle in root-link platform-link variant-link root-file platform-file variant-file leaf-file leaf-directory; do
 	project="$fixture/native-$obstacle/project with spaces"
 	mkdir -p "$project/zig-out/bin" "$project/protected" || fail 'native refusal setup'
-	cp "$root/build" "$project/build" || fail 'native refusal wrapper'
+	copy_build_fixture "$project" || fail 'native refusal wrapper'
 	printf old > "$project/zig-out/bin/codescan"
 	printf unchanged > "$project/protected/sentinel"
 	case "$obstacle" in
@@ -166,7 +197,7 @@ for mapping in Darwin:x86_64 Linux:riscv64 Plan9:amd64 MINGW64_NT:x86_64; do
 	IFS=: read -r os arch <<< "$mapping"
 	project="$fixture/unsupported-$os-$arch"
 	mkdir -p "$project/zig-out/bin" || fail 'unsupported host setup'
-	cp "$root/build" "$project/build" || fail 'unsupported host wrapper'
+	copy_build_fixture "$project" || fail 'unsupported host wrapper'
 	printf old > "$project/zig-out/bin/codescan"
 	: > "$project/events"
 	if (cd "$project" && env BUILD_OS="$os" BUILD_ARCH="$arch" BUILD_EVENTS="$project/events" \
@@ -258,6 +289,7 @@ for mode in run run-child-failure run-build-failure run-missing-product run-none
 done
 
 # Use a real, wholly test-owned local Nix store: no daemon or live GC roots.
+# Its tiny script is metadata-only; actual native headers are checked above.
 unset -f nix nix-store
 export NIX_REMOTE="local?store=$fixture/private-nix/store&state=$fixture/private-nix/state&log=$fixture/private-nix/log"
 export NIX_CONFIG=$'substituters =\nbuild-users-group =\n'
@@ -282,7 +314,7 @@ nix() {
 export -f nix
 project="$fixture/real-retention/project with spaces"
 mkdir -p "$project" || fail 'real retention fixture'
-cp "$root/build" "$project/build" || fail 'real retention wrapper'
+copy_build_fixture "$project" || fail 'real retention wrapper'
 if (cd "$project" && env RETENTION_PRODUCT="$retention_product" "$BASH" ./build) > "$project/out" 2> "$project/err"; then :; else
 	sed -n '1,20p' "$project/err" >&2; fail 'real Nix retention failed'
 fi

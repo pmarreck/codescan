@@ -53,9 +53,9 @@ cleanup_publication() {
 trap cleanup_publication EXIT
 if [ "$attribute" != test-binaries ]; then
 	case "$(uname -s)/$(uname -m)" in
-		Linux/x86_64) native_namespace=linux-amd64/musl ;;
-		Linux/aarch64) native_namespace=linux-arm64/musl ;;
-		Darwin/arm64) native_namespace=macos-arm64 ;;
+		Linux/x86_64) native_namespace=linux-amd64/musl; native_target=x86_64-linux-musl ;;
+		Linux/aarch64) native_namespace=linux-arm64/musl; native_target=aarch64-linux-musl ;;
+		Darwin/arm64) native_namespace=macos-arm64; native_target=aarch64-macos ;;
 		*) printf 'error: native Nix builds support Linux x86_64/aarch64 and macOS arm64\n' >&2; exit 69 ;;
 	esac
 	profile=ReleaseFast
@@ -95,6 +95,8 @@ if [ "$attribute" = test-binaries ]; then
 	exit 0
 fi
 [ -x "$output/bin/codescan" ] || { printf 'error: Nix output is missing codescan\n' >&2; exit 1; }
+source "$root/scripts/ci-verify-release" || exit "$?"
+ci_verify_release "$native_target" "$output/bin/codescan" || exit "$?"
 if [ -L zig-out ] || [ -L zig-out/bin ] || [ -d zig-out/bin/codescan ]; then
 	printf 'error: refusing publication through an unexpected output symlink/directory\n' >&2
 	exit 1
