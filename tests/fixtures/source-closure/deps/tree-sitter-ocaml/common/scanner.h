@@ -1,0 +1,1 @@
+/* Legacy OCaml common header must not enter compiled source. */

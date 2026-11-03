@@ -1,0 +1,1 @@
+/* Legacy OCaml parser must not enter compiled source. */

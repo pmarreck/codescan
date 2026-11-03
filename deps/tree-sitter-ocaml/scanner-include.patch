@@ -1,0 +1,5 @@
+--- a/src/scanner.c
++++ b/src/scanner.c
+@@ -1 +1 @@
+-#include "../../../common/scanner.h"
++#include "ocaml_scanner.h"

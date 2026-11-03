@@ -57,6 +57,8 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nix/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-clojure/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-erlang/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-ocaml/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-ocaml/common"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -185,6 +187,32 @@
 					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
+				'';
+				# Preserve the existing ABI-15 parser and the local scanner include
+				# layout, including both byte-identical shared-header locations.
+				grammar-ocaml = pkgs.runCommand "codescan-ocaml-source" {
+					source = grammarSource "tree-sitter" "tree-sitter-ocaml"
+						"3ef7c00b29e41e3a0c1d18e82ea37c64d72b93fc"
+						"sha256-8u1jtUFMjykVG6aCDzqcb4vFCY401CZ2o+JPGMadg6o=";
+					nativeBuildInputs = [ pkgs.patch ];
+				} ''
+					mkdir -p "$out/src/tree_sitter" "$out/common" || exit "$?"
+					for path in parser.c scanner.c grammar.json node-types.json tree_sitter/parser.h tree_sitter/alloc.h tree_sitter/array.h; do
+						cp "$source/grammars/ocaml/src/$path" "$out/src/$path" || exit "$?"
+					done
+					cp "$source/common/scanner.h" "$out/common/scanner.h" || exit "$?"
+					cp "$source/common/scanner.h" "$out/src/ocaml_scanner.h" || exit "$?"
+					cp "$source/LICENSE" "$out/" || exit "$?"
+					chmod u+w "$out/src/scanner.c" || exit "$?"
+					cd "$out" || exit "$?"
+					patch --batch --fuzz=0 --forward -p1 < ${./deps/tree-sitter-ocaml/scanner-include.patch} > "$TMPDIR/ocaml-scanner-include.log" 2>&1 || {
+						cat "$TMPDIR/ocaml-scanner-include.log" >&2
+						exit 1
+					}
+					cat "$TMPDIR/ocaml-scanner-include.log"
+					if grep -E 'offset|fuzz' "$TMPDIR/ocaml-scanner-include.log"; then exit 1; fi
+					sha256sum -c ${./deps/tree-sitter-ocaml/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-ocaml/LICENSE} || exit "$?"
 				'';
 				# Preserve the exact ABI-14 Erlang parser, scanner, and headers.
 				grammar-erlang = pkgs.runCommand "codescan-erlang-source" {
@@ -386,6 +414,7 @@
 					{ name = "nix"; path = "${grammar-nix}/src"; }
 					{ name = "clojure"; path = "${grammar-clojure}/src"; }
 					{ name = "erlang"; path = "${grammar-erlang}/src"; }
+					{ name = "ocaml"; path = "${grammar-ocaml}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -592,6 +621,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.ocaml-source = pkgs.runCommand "codescan-ocaml-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/ocaml/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-ocaml/SOURCE_SHA256} || exit "$?"
+					cmp LICENSE ${./deps/tree-sitter-ocaml/LICENSE} || exit "$?"
+					touch "$out"
+				'';
 				checks.erlang-source = pkgs.runCommand "codescan-erlang-source-identity" {
 					source = grammarSources;
 				} ''
@@ -705,6 +742,7 @@
 						nixSourceContract = self.checks.${system}.nix-source;
 						clojureSourceContract = self.checks.${system}.clojure-source;
 							erlangSourceContract = self.checks.${system}.erlang-source;
+							ocamlSourceContract = self.checks.${system}.ocaml-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -784,6 +822,7 @@
 					nixSourceContract = self.checks.${system}.nix-source;
 					clojureSourceContract = self.checks.${system}.clojure-source;
 					erlangSourceContract = self.checks.${system}.erlang-source;
+					ocamlSourceContract = self.checks.${system}.ocaml-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;

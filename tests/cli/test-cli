@@ -300,6 +300,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==3 and .end_line==4 and .body==["\tadd = left: right:","\t\tleft + right;"]' >/dev/null || \
 		fail "Nix grammar changed the exact function binding body: $out"
 
+	ocaml_file="$DB_DIR/definitions with spaces.ml"
+	printf '%s\n' '(* Fixture definitions. *)' 'type count = int' 'let add left right =' \
+		$'\tleft + right' 'let adjacent value = value' > "$ocaml_file"
+	capture "$BIN" symbols --file "$ocaml_file" --json
+	[ "$rc" -eq 0 ] || fail "OCaml symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,start_line,end_line}] == [{name:"count",start_line:2,end_line:2},{name:"add",start_line:3,end_line:4},{name:"adjacent",start_line:5,end_line:5}]' >/dev/null || \
+		fail "OCaml grammar changed the complete binding/type set or source ranges: $out"
+	capture "$BIN" symbols add --file "$ocaml_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "OCaml function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==3 and .end_line==4 and .body==["let add left right =","\tleft + right"]' >/dev/null || \
+		fail "OCaml grammar changed the exact function body: $out"
+
 	erlang_file="$DB_DIR/definitions with spaces.erl"
 	printf '%s\n' '%% Fixture definitions.' '-module(fixture).' '-export([add/2, adjacent/1]).' 'add(Left, Right) ->' \
 		$'\tLeft + Right.' 'adjacent(Value) -> Value.' > "$erlang_file"
