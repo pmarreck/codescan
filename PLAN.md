@@ -4,6 +4,7 @@ Completed work is recorded in docs/PLAN_LOG.md. Earlier planning history remains
 
 ## CI completion and maintenance
 
+- [ ] Investigate the retained Linux x64 Nix bootstrap evaluation failure at watcher tip dbc859ca; tests never started, no retry was performed, and infrastructure contact approval is pending. (context: docs/plan_context/ci_bootstrap.md)
 - [ ] Diagnose the native Windows x64 held-body peer-closure failure in the seventh cancellation repetition at commit 4a4d6048; retain its failed run and expose the underlying native status without relaxing socket-closure assertions or retrying it into a passing verdict. (context: docs/plan_context/inference_availability.md)
 - [ ] Report the shared profiler's failed-run WITHIN_BUDGET label and verify its repair; contact approval is pending and the failed diagnostic remains ineligible for compliance. (context: docs/plan_context/test_latency.md)
 - [ ] Verify the infrastructure owner's build-budget literal-argument repair; the owner acknowledged the request and confirmed the source/installed-helper defect, but implementation remains queued, with the resource envelope and equivalent-syntax workaround unchanged.

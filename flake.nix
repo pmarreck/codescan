@@ -11,6 +11,31 @@
 		flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ] (system:
 			let
 				pkgs = import nixpkgs { inherit system; };
+				# Zig 0.16 omits the Windows AFD read-reset mapping. Keep the
+				# compiler unchanged and patch only this declared library copy.
+				# Remove when the pinned library recognizes resets natively.
+				# Upstream reproducer: https://gist.github.com/marler8997/5ab75f9e90f68edef1cecaa1d1979060
+				zigStdlib = pkgs.runCommand "codescan-zig-0.16-stdlib-read-reset" {
+					nativeBuildInputs = [ pkgs.patch pkgs.diffutils ];
+				} ''
+					printf '%s  %s\n' eb7bbb4ddf590ec3d0d2a1ee5c3845ef4984d9e440965a3e7c920cd0c906df94 \
+						${pkgs.zig_0_16}/lib/zig/std/Io/Threaded.zig | sha256sum -c - || exit "$?"
+					cp -R ${pkgs.zig_0_16}/lib/zig "$out" || exit "$?"
+					chmod u+w "$out/std/Io" "$out/std/Io/Threaded.zig" || exit "$?"
+					patch --batch --fuzz=0 --forward -p1 -d "$out" \
+						-i ${./patches/zig-0.16-windows-read-reset.patch} > patch-report || exit "$?"
+					cat patch-report
+					if grep -E 'offset|fuzz' patch-report; then exit 1; fi
+					if diff -qr ${pkgs.zig_0_16}/lib/zig "$out" > changed-files; then
+						echo 'Expected exactly one changed Zig library file' >&2; exit 1
+					else
+						diff_status=$?
+						[ "$diff_status" -eq 1 ] || exit "$diff_status"
+					fi
+					printf 'Files %s and %s differ\n' ${pkgs.zig_0_16}/lib/zig/std/Io/Threaded.zig \
+						"$out/std/Io/Threaded.zig" > expected-files
+					cmp expected-files changed-files || exit "$?"
+				'';
 				profilingPackage = profiling.packages.${system}.default.overrideAttrs (old: {
 					patches = (old.patches or []) ++ [ ./patches/profiler-latency-debounce-fixture.patch ];
 				});
@@ -39,16 +64,21 @@
 					root = ./src;
 					fileset = pkgs.lib.fileset.unions [ ./src/embedding_http.zig ./src/io_singleton.zig ];
 				};
-				mkCancellationTests = pf: target: pkgs.stdenv.mkDerivation {
-					pname = "codescan-cancellation-${pf}";
+				mkCancellationTests = { pf, target, stdlib ? zigStdlib, suffix ? "" }: pkgs.stdenv.mkDerivation {
+					pname = "codescan-cancellation-${pf}${suffix}";
 					version = "0.1.0";
 					src = cancellationSource;
-					nativeBuildInputs = [ pkgs.zig_0_16 ];
+					nativeBuildInputs = [ pkgs.zig_0_16 pkgs.patch ];
 					dontConfigure = true;
 					dontInstall = true;
 					dontFixup = true;
 					buildPhase = ''
 						cp ${./tests/cancellation-build.zig} build.zig || exit "$?"
+						export ZIG_LIB_DIR="${stdlib}"
+						cp "$ZIG_LIB_DIR/compiler/test_runner.zig" test_runner.zig || exit "$?"
+						chmod u+w test_runner.zig || exit "$?"
+						patch --batch --fuzz=0 --forward -p1 \
+							-i ${./patches/zig-0.16-cancellation-runner.patch} || exit "$?"
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-global"
 						export ZIG_LOCAL_CACHE_DIR="$TMPDIR/zig-local"
 						zig build -j"$NIX_BUILD_CORES" -Dtarget=${target} -Doptimize=ReleaseSafe --prefix "$out" --color off
@@ -347,6 +377,7 @@
 					dontInstall = true;
 					dontFixup = true;
 					buildPhase = ''
+						export ZIG_LIB_DIR="${zigStdlib}"
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
 						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
@@ -368,6 +399,7 @@
 					dontFixup = true;
 
 					buildPhase = ''
+						export ZIG_LIB_DIR="${zigStdlib}"
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR="${sqlite-amalgamation}"
 						export CODESCAN_GRAMMAR_ROOT="${grammarSources}"
 						export ZIG_GLOBAL_CACHE_DIR="$TMPDIR/zig-cache"
@@ -402,9 +434,22 @@
 				packages.release-macos-arm64 = mkCodescan { pf = "macos-arm64"; target = "aarch64-macos"; };
 				packages.release-mswin-amd64 = mkCodescan { pf = "mswin-amd64"; target = "x86_64-windows-gnu"; };
 				packages.release-mswin-arm64 = mkCodescan { pf = "mswin-arm64"; target = "aarch64-windows-gnu"; };
-				packages.cancellation-native = mkCancellationTests nativePF nativeZigTarget;
-				packages.cancellation-mswin-amd64 = mkCancellationTests "mswin-amd64" "x86_64-windows-gnu";
-				packages.cancellation-mswin-arm64 = mkCancellationTests "mswin-arm64" "aarch64-windows-gnu";
+				packages.zig-stdlib = zigStdlib;
+				packages.cancellation-native = mkCancellationTests { pf = nativePF; target = nativeZigTarget; };
+				packages.cancellation-mswin-amd64 = mkCancellationTests { pf = "mswin-amd64"; target = "x86_64-windows-gnu"; };
+				packages.cancellation-mswin-arm64 = mkCancellationTests { pf = "mswin-arm64"; target = "aarch64-windows-gnu"; };
+				packages.cancellation-native-unpatched = mkCancellationTests {
+					pf = nativePF; target = nativeZigTarget;
+					stdlib = "${pkgs.zig_0_16}/lib/zig"; suffix = "-unpatched";
+				};
+				packages.cancellation-mswin-amd64-unpatched = mkCancellationTests {
+					pf = "mswin-amd64"; target = "x86_64-windows-gnu";
+					stdlib = "${pkgs.zig_0_16}/lib/zig"; suffix = "-unpatched";
+				};
+				packages.cancellation-mswin-arm64-unpatched = mkCancellationTests {
+					pf = "mswin-arm64"; target = "aarch64-windows-gnu";
+					stdlib = "${pkgs.zig_0_16}/lib/zig"; suffix = "-unpatched";
+				};
 				packages.test-git-mswin-amd64 = mkWindowsTestGit "amd64";
 				packages.test-git-mswin-arm64 = mkWindowsTestGit "arm64";
 				packages.publication-tools = pkgs.flock;
@@ -470,6 +515,10 @@
 						${self.packages.${system}.cancellation-native} \
 						${self.packages.${system}.cancellation-mswin-amd64} \
 						${self.packages.${system}.cancellation-mswin-arm64} || exit "$?"
+					bash "$source/unit/test-cancellation-artifacts" \
+						${self.packages.${system}.cancellation-native-unpatched} \
+						${self.packages.${system}.cancellation-mswin-amd64-unpatched} \
+						${self.packages.${system}.cancellation-mswin-arm64-unpatched} || exit "$?"
 					touch "$out"
 				'';
 
@@ -488,6 +537,8 @@
 					pwsh -NoLogo -NoProfile -NonInteractive -File "$source/tests/unit/test-windows-cancellation.ps1" \
 						-Amd64Executable ${self.packages.${system}.cancellation-mswin-amd64}/bin/codescan-cancellation-tests.exe \
 						-Arm64Executable ${self.packages.${system}.cancellation-mswin-arm64}/bin/codescan-cancellation-tests.exe \
+						-OriginalAmd64Executable ${self.packages.${system}.cancellation-mswin-amd64-unpatched}/bin/codescan-cancellation-tests.exe \
+						-OriginalArm64Executable ${self.packages.${system}.cancellation-mswin-arm64-unpatched}/bin/codescan-cancellation-tests.exe \
 						-NativeUnitExecutable ${self.packages.${system}.test-binaries}/bin/codescan-unit-tests || exit "$?"
 					touch "$out"
 				'';
@@ -611,7 +662,7 @@
 					windowsArm64UnitPhase = self.packages.${system}.test-binaries-mswin-arm64.buildPhase;
 					cancellationPhase = self.packages.${system}.cancellation-native.buildPhase;
 					passAsFile = [ "cliPhase" "unitPhase" "windowsAmd64UnitPhase" "windowsArm64UnitPhase" "cancellationPhase" ];
-					nativeBuildInputs = [ pkgs.bash pkgs.coreutils ];
+					nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.patch ];
 				} ''
 					set +e
 					set -u
@@ -710,6 +761,7 @@
 						export CODESCAN_PUBLICATION_TOOLS=\"${self.packages.${system}.publication-tools}\"
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR=\"${sqlite-amalgamation}\"
 						export CODESCAN_GRAMMAR_ROOT=\"${grammarSources}\"
+						export ZIG_LIB_DIR=\"${zigStdlib}\"
 						export ZIG_GLOBAL_CACHE_DIR=\"\${ZIG_GLOBAL_CACHE_DIR:-$HOME/.cache/zig}\"
 						export ZIG_LOCAL_CACHE_DIR=\"\${ZIG_LOCAL_CACHE_DIR:-$PWD/zig-cache}\"
 						export NIX_CFLAGS_COMPILE=\"\"

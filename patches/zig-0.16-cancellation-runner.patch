@@ -1,0 +1,13 @@
+--- a/test_runner.zig
++++ b/test_runner.zig
+@@ -12,6 +12,10 @@
+ pub const std_options: std.Options = .{
+     .logFn = log,
++    .unexpected_error_tracing = true,
+ };
++comptime {
++    if (!std.options.unexpected_error_tracing) @compileError("standalone native-status tracing must be enabled");
++}
+ 
+ var log_err_count: usize = 0;
+ var fba: std.heap.FixedBufferAllocator = .init(&fba_buffer);

@@ -1,0 +1,10 @@
+--- a/std/Io/Threaded.zig
++++ b/std/Io/Threaded.zig
+@@ -12657,6 +12657,7 @@ fn netReadWindows
+     switch (iosb.u.Status) {
+         .SUCCESS => return iosb.Information,
++        .CONNECTION_RESET => return error.ConnectionResetByPeer,
+         .CANCELLED => unreachable,
+         .INSUFFICIENT_RESOURCES => return error.SystemResources,
+         else => |status| return windows.unexpectedStatus(status),
+     }

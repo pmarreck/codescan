@@ -1,11 +1,6 @@
 const std = @import("std");
 const io_singleton = @import("io_singleton.zig");
 
-// This module is also the standalone cancellation-test root. Keep unexpected
-// native status codes and their stacks visible in those ReleaseSafe processes;
-// importing it into the application does not change the application's options.
-pub const std_options: std.Options = .{ .unexpected_error_tracing = true };
-
 pub const HttpRequest = struct {
 	method: []const u8,
 	url: []const u8,
@@ -754,11 +749,51 @@ test "StdHttpTransport cancellation closes and joins held HTTP headers" {
 }
 
 test "StdHttpTransport cancellation closes and joins held HTTP body" {
+	try testPeerResetRecognition();
 	try testHeldExchangeCancellation(.response_body);
 }
 
 test "StdHttpTransport cancellation closes and joins held TLS handshake" {
 	try testHeldExchangeCancellation(.tls_handshake);
+}
+
+/// A closure oracle must recognize an actual peer reset, not accept arbitrary
+/// read failures. A one-byte client read proves data arrived before it closes
+/// with the remaining bytes unread. Events order the close after the full write.
+fn testPeerResetRecognition() !void {
+	const io = io_singleton.getOrInit();
+	const Client = struct {
+		address: std.Io.net.IpAddress,
+		may_close: std.Io.Event = .unset,
+
+		fn run(self: *@This()) !void {
+			const client_io = io_singleton.getOrInit();
+			var stream = try self.address.connect(client_io, .{ .mode = .stream });
+			defer stream.close(client_io);
+			var input: [1]u8 = undefined;
+			var reader = stream.reader(client_io, &input);
+			try std.testing.expectEqual(@as(u8, 0xaa), try reader.interface.takeByte());
+			try self.may_close.wait(client_io);
+		}
+	};
+	const address = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+	var server = try address.listen(io, .{ .reuse_address = true });
+	defer server.socket.close(io);
+	var client = Client{ .address = server.socket.address };
+	var client_task = try std.Io.concurrent(io, Client.run, .{&client});
+	defer _ = client_task.cancel(io) catch {};
+	var stream = try server.accept(io);
+	defer stream.close(io);
+	var output: [64]u8 = undefined;
+	var writer = stream.writer(io, &output);
+	const payload = [_]u8{0xaa} ** 1024;
+	try writer.interface.writeAll(&payload);
+	try writer.interface.flush();
+	client.may_close.set(io);
+	try client_task.await(io);
+	var input: [1]u8 = undefined;
+	var buffers = [_][]u8{&input};
+	try std.testing.expectError(error.ConnectionResetByPeer, io.vtable.netRead(io.userdata, stream.socket.handle, &buffers));
 }
 
 fn testHeldExchangeCancellation(phase: HeldExchange.Phase) !void {

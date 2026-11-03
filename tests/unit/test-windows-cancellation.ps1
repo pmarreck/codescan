@@ -1,4 +1,4 @@
-param([string] $Amd64Executable, [string] $Arm64Executable, [string] $NativeUnitExecutable)
+param([string] $Amd64Executable, [string] $Arm64Executable, [string] $NativeUnitExecutable, [string] $OriginalAmd64Executable, [string] $OriginalArm64Executable)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot/../../scripts/ci-test-windows.ps1"
@@ -11,6 +11,7 @@ function Expect-Rejection([scriptblock] $Operation) {
 $machines = @{ amd64 = 0x8664; arm64 = 0xaa64 }
 $osNames = @{ amd64 = 'X64'; arm64 = 'Arm64' }
 $executables = @{ amd64 = $Amd64Executable; arm64 = $Arm64Executable }
+$originalExecutables = @{ amd64 = $OriginalAmd64Executable; arm64 = $OriginalArm64Executable }
 foreach ($architecture in @('amd64', 'arm64')) {
 	$about = "codescan 0.1.0 - Semantic code search and targeted edits; PF=mswin-$architecture VARIANT=gnu`n"
 	Assert-NativeTestEvidence -Suite release -ExitCode 0 -StandardOutput $about -StandardError '' -Architecture $architecture
@@ -24,6 +25,9 @@ foreach ($architecture in @('amd64', 'arm64')) {
 foreach ($architecture in @('amd64', 'arm64')) {
 	if ($executables[$architecture]) {
 		if ((Get-PeMachine ([IO.File]::ReadAllBytes($executables[$architecture]))) -ne $machines[$architecture]) { throw 'Real PE machine mismatch' }
+	}
+	if ($originalExecutables[$architecture]) {
+		if ((Get-PeMachine ([IO.File]::ReadAllBytes($originalExecutables[$architecture]))) -ne $machines[$architecture]) { throw 'Original-library PE machine mismatch' }
 	}
 	$bytes = [byte[]]::new(128)
 	$bytes[0] = 0x4d; $bytes[1] = 0x5a; $bytes[0x3c] = 0x40
@@ -61,6 +65,37 @@ foreach ($invalid in @('', 'All 0 tests passed.', 'All 5 tests passed.', $valid.
 }
 Expect-Rejection { Assert-CancellationEvidence 42 '' $valid }
 Expect-Rejection { Assert-CancellationEvidence 0 'unexpected' $valid }
+
+# The original-library executable must fail at the reset oracle, not merely
+# exit nonzero. Keep unrelated failures, skipped work, and successful impostors red.
+$resetPrefix = "1/5 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK`n2/5 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP headers...OK`n3/5 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP body..."
+$resetDetail = "error.Unexpected NTSTATUS=0xc000020d (CONNECTION_RESET)`n0x1234 in netReadWindows (Threaded.zig:1)`nexpected error.ConnectionResetByPeer, found error.Unexpected`nFAIL (TestUnexpectedError)`n"
+$resetTail = "4/5 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK`n5/5 embedding_http.test.StdHttpTransport send errors close the connection before response headers...OK`n4 passed; 0 skipped; 1 failed.`n"
+$resetValid = "$resetPrefix$resetDetail$resetTail"
+Assert-UnpatchedResetEvidence 1 '' $resetValid
+Assert-UnpatchedResetEvidence 1 '' $resetValid.Replace("`n", "`r`n")
+Assert-UnpatchedResetEvidence 1 '' $resetValid.Replace("FAIL (TestUnexpectedError)`n", "FAIL (TestUnexpectedError)`nfixture.zig:1:1: 0x5678 in resetOracle (tests)`n")
+Assert-NativeTestEvidence 'cancellation-unpatched' 1 '' $resetValid
+foreach ($invalid in @(
+	'', $valid, $resetValid.Replace('0xc000020d', '0xc0000241'),
+	$resetValid.Replace('CONNECTION_RESET', 'CONNECTION_ABORTED'),
+	$resetValid.Replace($resetDetail, ''), $resetValid.Replace('...OK', '...SKIP'),
+	$resetValid.Replace('4/5 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK', '4/5 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...FAIL'),
+	$resetValid.Replace('4 passed; 0 skipped; 1 failed.', '3 passed; 0 skipped; 2 failed.'),
+	$resetValid.Replace('FAIL (TestUnexpectedError)', 'FAIL (ReadFailed)'),
+	$resetValid.Replace('expected error.ConnectionResetByPeer, found error.Unexpected', 'expected error.Timeout, found error.Unexpected'),
+	$resetValid.Replace('0x1234 in', "2/5 extra.test.progress...OK`n0x1234 in"),
+	$resetValid.Replace("FAIL (TestUnexpectedError)`n", "FAIL (TestUnexpectedError)`nFAIL (ReadFailed)`n"),
+	$resetValid.Replace("FAIL (TestUnexpectedError)`n", "FAIL (TestUnexpectedError)`nexpected error.ConnectionResetByPeer, found error.Unexpected`nFAIL (TestUnexpectedError)`n"),
+	$resetValid.Replace('held HTTP body...', 'wrong HTTP body...'),
+	$resetValid.Replace('0x1234 in', ('x' * 262145)),
+	$resetValid.Replace('0x1234 in', "error.Unexpected NTSTATUS=0xc000020d (CONNECTION_RESET)`n0x1234 in"),
+	"$resetValid`nextra", "$resetValid`n1 tests leaked memory."
+)) { Expect-Rejection { Assert-UnpatchedResetEvidence 1 '' $invalid } }
+Expect-Rejection { Assert-UnpatchedResetEvidence 0 '' $resetValid }
+Expect-Rejection { Assert-UnpatchedResetEvidence 42 '' $resetValid }
+Expect-Rejection { Assert-UnpatchedResetEvidence 1 'unexpected' $resetValid }
+Expect-Rejection { Assert-CancellationEvidence 1 '' $resetValid }
 
 $unitGuard = 'all_tests.test.correctness suite retains runtime safety and allocator leak checks'
 $unitValid = "1/3 $unitGuard...OK`n2/3 fixture.test.unavailable...SKIP`n3/3 fixture.test.complete...OK`n2 passed; 1 skipped; 0 failed.`n"
@@ -108,7 +143,7 @@ $null = Assert-NativeTestEvidence 'unit' 0 '' $unitValid
 Assert-NativeTestEvidence 'cancellation' 0 '' $valid
 foreach ($command in @((Get-Command Assert-NativeTestEvidence), (Get-Command "$PSScriptRoot/../../scripts/ci-test-windows.ps1"))) {
 	$choices = @($command.Parameters['Suite'].Attributes | Where-Object { $_ -is [Management.Automation.ValidateSetAttribute] } | ForEach-Object { $_.ValidValues } | Sort-Object)
-	if (($choices -join ',') -cne 'cancellation,release,unit') { throw 'A native test suite lacks an explicit evidence control' }
+	if (($choices -join ',') -cne 'cancellation,cancellation-unpatched,release,unit') { throw 'A native test suite lacks an explicit evidence control' }
 }
 Expect-Rejection { Assert-NativeTestEvidence 'unit' 0 '' $valid }
 Expect-Rejection { Assert-NativeTestEvidence 'cancellation' 0 '' $unitValid }

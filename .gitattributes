@@ -2,3 +2,4 @@
 deps/tree-sitter-ruby/LICENSE whitespace=-blank-at-eof
 # A blank unified-patch context line is represented by one literal space.
 patches/asm-header-compatibility.patch whitespace=-blank-at-eol
+patches/zig-0.16-cancellation-runner.patch whitespace=-blank-at-eol

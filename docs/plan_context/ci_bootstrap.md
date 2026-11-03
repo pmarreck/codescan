@@ -1,0 +1,9 @@
+# Nix bootstrap evaluation failure
+
+The main workflow for `dbc859ca7fc59178a39ff77f92e110b3a7a415ca` fails on its Linux x64 job before Codescan tests run. Workflow run `41623786540`, job `125875908224`, installs Determinate Nix 3.24.1, based on upstream Nix 2.35.3. Its first `nix flake check --no-build --all-systems` evaluation rejects a Nixpkgs bootstrap `static-link.patch` store path as invalid while evaluating `pkgs/stdenv/booter.nix`. The original raw failure is retained privately. No retry has been performed, and the cause is not established.
+
+The referenced patch is a TinyCC-musl bootstrap input, not a Codescan patch or SQLite database. The same immutable path exists locally and has TinyCC derivation referrers. Local upstream Nix 2.34.8 evaluates and builds the project successfully, but that difference alone does not identify the remote failure's cause. The installer currently selects its current release; no system installation, security setting, cache policy, or concurrency setting has been changed to obtain a pass.
+
+The same commit passes the workflow's Linux ARM job, both independent native Windows jobs, and all eight Mechatron targets. Native Windows includes 808 aggregate passes with seven existing skips and twenty five-case cancellation processes per architecture. These successes do not make the failed main workflow green; downstream build and release jobs were skipped. Native Mac qualification and the main workflow's five release archives remain unavailable for this tip.
+
+Investigation should preserve the failed evaluation and distinguish a justified diagnostic rerun from a repaired cause. Permission to send the infrastructure maintainer this evidence has been requested and remains pending. A passing later functional tip must not silently erase this incident or be described as a bootstrap fix.

@@ -116,13 +116,14 @@ actual_windows="$(awk '
 expected_windows=$'windows-11-arm\tarm64\nwindows-2025\tamd64'
 [ "$actual_windows" = "$expected_windows" ] || fail 'Native Windows jobs must cover exactly both supported architectures'
 actual_preparation="$(awk '$1 == "nix" && $2 == "build" { sub(/^[[:space:]]+/, ""); print }' "$windows_workflow")"
-[ "$actual_preparation" = 'nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64 .#release-mswin-amd64 .#release-mswin-arm64' ] || fail 'Windows tests must consume cancellation, aggregate, pinned Git, and release Nix-prepared products'
+[ "$actual_preparation" = 'nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#cancellation-mswin-amd64-unpatched .#cancellation-mswin-arm64-unpatched .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64 .#release-mswin-amd64 .#release-mswin-arm64' ] || fail 'Windows tests must consume both library variants, aggregate, pinned Git, and release Nix-prepared products'
 actual_windows_checks="$(awk '/\.\/scripts\/ci-test-windows\.ps1/ { sub(/^[[:space:]]+/, ""); sub(/^run:[[:space:]]+/, ""); print }' "$windows_workflow")"
 expected_windows_checks=$(printf '%s\n' \
+	'./scripts/ci-test-windows.ps1 -Suite cancellation-unpatched -Architecture "${{ matrix.arch }}" -Executable "./cancellation-unpatched/codescan-cancellation-tests.exe"' \
 	'./scripts/ci-test-windows.ps1 -Suite unit -Architecture "${{ matrix.arch }}" -Executable "./unit/codescan-unit-tests.exe" -GitExecutable "./git-tools/cmd/git.exe"' \
 	'./scripts/ci-test-windows.ps1 -Suite release -Architecture "${{ matrix.arch }}" -Executable "./release product with spaces/codescan-mswin-${{ matrix.arch }}/bin/codescan.exe"' \
 	'./scripts/ci-test-windows.ps1 -Architecture "${{ matrix.arch }}" -Executable "./cancellation/codescan-cancellation-tests.exe"')
-[ "$actual_windows_checks" = "$expected_windows_checks" ] || fail 'Native Windows must run all three bounded architecture/evidence verifiers'
+[ "$actual_windows_checks" = "$expected_windows_checks" ] || fail 'Native Windows must run all four bounded architecture/evidence verifiers'
 actual_windows_timeouts="$(awk '/^  [a-z_-]+:$/ { job = $1; sub(/:$/, "", job) } /^    timeout-minutes:/ { print job "\t" $2 }' "$windows_workflow" | LC_ALL=C sort)"
 [ "$actual_windows_timeouts" = $'prepare\t30\nqualify\t5' ] || fail 'Native Windows preparation/execution bounds changed'
 

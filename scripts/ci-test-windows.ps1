@@ -1,5 +1,5 @@
 param(
-	[ValidateSet('cancellation', 'unit', 'release')][string] $Suite = 'cancellation',
+	[ValidateSet('cancellation', 'cancellation-unpatched', 'unit', 'release')][string] $Suite = 'cancellation',
 	[ValidateSet('amd64', 'arm64')][string] $Architecture,
 	[string] $Executable,
 	[string] $GitExecutable
@@ -29,6 +29,20 @@ function Assert-CancellationEvidence([int] $ExitCode, [string] $StandardOutput, 
 	if ($ExitCode -ne 0 -or $StandardOutput -cne '' -or $StandardError.Replace("`r`n", "`n").TrimEnd([char[]] "`n") -cne $expected) {
 		throw "Cancellation evidence failed: exit=$ExitCode; require all five passing cases"
 	}
+}
+
+function Assert-UnpatchedResetEvidence([int] $ExitCode, [string] $StandardOutput, [string] $StandardError) {
+	if ($ExitCode -ne 1 -or $StandardOutput -cne '') { throw 'Original-library control must fail exactly once without stdout' }
+	$text = $StandardError.Replace("`r`n", "`n").TrimEnd([char[]] "`n")
+	$prefix = "1/5 embedding_http.test.sendWithDeadline cancels and joins a blocked transport...OK`n2/5 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP headers...OK`n3/5 embedding_http.test.StdHttpTransport cancellation closes and joins held HTTP body..."
+	$tail = "4/5 embedding_http.test.StdHttpTransport cancellation closes and joins held TLS handshake...OK`n5/5 embedding_http.test.StdHttpTransport send errors close the connection before response headers...OK`n4 passed; 0 skipped; 1 failed."
+	if (-not $text.StartsWith($prefix, [StringComparison]::Ordinal) -or -not $text.EndsWith($tail, [StringComparison]::Ordinal) -or $text.Length -le $prefix.Length + $tail.Length -or [regex]::Matches($text, '(?m)^[0-9]+/[0-9]+ ').Count -ne 5) { throw 'Original-library control lost a case or failed outside reset recognition' }
+	$detail = $text.Substring($prefix.Length, $text.Length - $prefix.Length - $tail.Length)
+	$nativeStatus = "error.Unexpected NTSTATUS=0xc000020d (CONNECTION_RESET)`n"
+	$failure = "expected error.ConnectionResetByPeer, found error.Unexpected`nFAIL (TestUnexpectedError)`n"
+	# Zig may append its error-return trace after FAIL as well as the native
+	# status stack before it. Both stay bounded inside this one failed case.
+	if ($detail.Length -gt 262144 -or -not $detail.StartsWith($nativeStatus, [StringComparison]::Ordinal) -or $detail.IndexOf($failure, [StringComparison]::Ordinal) -lt 0 -or [regex]::Matches($detail, [regex]::Escape($failure)).Count -ne 1 -or [regex]::Matches($detail, '(?m)^FAIL \(').Count -ne 1 -or [regex]::Matches($detail, '(?m)^error\.Unexpected NTSTATUS=0x[0-9a-f]+ ').Count -ne 1) { throw 'Original-library control must expose the specific unmapped Windows peer-reset status' }
 }
 
 function ConvertFrom-UnitEvidence([int] $ExitCode, [string] $StandardOutput, [string] $StandardError, [Collections.IDictionary] $ExpectedDiagnostics = @{}) {
@@ -88,7 +102,8 @@ function ConvertFrom-UnitEvidence([int] $ExitCode, [string] $StandardOutput, [st
 	return [pscustomobject]@{ Passed = $passed; Skipped = $skipped; Total = $total; Transcript = $clean.ToString() }
 }
 
-function Assert-NativeTestEvidence([ValidateSet('cancellation', 'unit', 'release')][string] $Suite, [int] $ExitCode, [string] $StandardOutput, [string] $StandardError, [Collections.IDictionary] $ExpectedDiagnostics = @{}, [string] $Architecture) {
+function Assert-NativeTestEvidence([ValidateSet('cancellation', 'cancellation-unpatched', 'unit', 'release')][string] $Suite, [int] $ExitCode, [string] $StandardOutput, [string] $StandardError, [Collections.IDictionary] $ExpectedDiagnostics = @{}, [string] $Architecture) {
+	if ($Suite -ceq 'cancellation-unpatched') { Assert-UnpatchedResetEvidence $ExitCode $StandardOutput $StandardError; return }
 	if ($Suite -ceq 'release') {
 		if ($Architecture -cnotin @('amd64', 'arm64')) { throw 'Require a declared release architecture' }
 		$expected = "codescan 0.1.0 - Semantic code search and targeted edits; PF=mswin-$Architecture VARIANT=gnu`n"
@@ -194,6 +209,7 @@ if ($Suite -ceq 'unit') {
 	Write-Output "Native Windows unit runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine"
 }
 elseif ($Suite -ceq 'release') { Write-Output "Native Windows release runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine" }
+elseif ($Suite -ceq 'cancellation-unpatched') { Write-Output "Native Windows original-library reset runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine" }
 else { Write-Output "Native Windows runner: OS=$osArchitecture; PF=mswin-$Architecture; PE=$machine" }
 
 $fixture = Join-Path $env:RUNNER_TEMP ("codescan-$Suite-" + [Guid]::NewGuid().ToString('N'))

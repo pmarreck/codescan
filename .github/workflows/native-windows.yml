@@ -22,12 +22,16 @@ jobs:
       - name: Prepare Windows test products
         shell: bash
         run: |
-          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64 .#release-mswin-amd64 .#release-mswin-arm64
-          mkdir -p cancellation-mswin-amd64 cancellation-mswin-arm64
+          nix build --no-link --keep-going .#cancellation-mswin-amd64 .#cancellation-mswin-arm64 .#cancellation-mswin-amd64-unpatched .#cancellation-mswin-arm64-unpatched .#test-binaries-mswin-amd64 .#test-binaries-mswin-arm64 .#test-git-mswin-amd64 .#test-git-mswin-arm64 .#release-mswin-amd64 .#release-mswin-arm64
+          mkdir -p cancellation-mswin-amd64 cancellation-mswin-arm64 cancellation-unpatched-mswin-amd64 cancellation-unpatched-mswin-arm64
           for arch in amd64 arm64; do
             product="$(nix path-info ".#cancellation-mswin-$arch")"
             for extension in exe pdb; do
               cp "$product/bin/codescan-cancellation-tests.$extension" "cancellation-mswin-$arch/"
+            done
+            original_product="$(nix path-info ".#cancellation-mswin-$arch-unpatched")"
+            for extension in exe pdb; do
+              cp "$original_product/bin/codescan-cancellation-tests.$extension" "cancellation-unpatched-mswin-$arch/"
             done
             unit_product="$(nix path-info ".#test-binaries-mswin-$arch")"
             mkdir -p "unit-mswin-$arch"
@@ -52,6 +56,16 @@ jobs:
         with:
           name: cancellation-mswin-arm64
           path: cancellation-mswin-arm64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cancellation-unpatched-mswin-amd64
+          path: cancellation-unpatched-mswin-amd64/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v6
+        with:
+          name: cancellation-unpatched-mswin-arm64
+          path: cancellation-unpatched-mswin-arm64/
           if-no-files-found: error
       - uses: actions/upload-artifact@v6
         with:
@@ -109,6 +123,14 @@ jobs:
       - name: Validate qualification controls
         shell: pwsh
         run: ./tests/unit/test-windows-cancellation.ps1
+      - uses: actions/download-artifact@v7
+        with:
+          name: cancellation-unpatched-mswin-${{ matrix.arch }}
+          path: cancellation-unpatched
+      - name: Reproduce the original-library reset mapping failure
+        shell: pwsh
+        run: |
+          ./scripts/ci-test-windows.ps1 -Suite cancellation-unpatched -Architecture "${{ matrix.arch }}" -Executable "./cancellation-unpatched/codescan-cancellation-tests.exe"
       - uses: actions/download-artifact@v7
         with:
           name: unit-mswin-${{ matrix.arch }}
