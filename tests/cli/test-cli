@@ -300,6 +300,18 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==3 and .end_line==4 and .body==["\tadd = left: right:","\t\tleft + right;"]' >/dev/null || \
 		fail "Nix grammar changed the exact function binding body: $out"
 
+	clojure_file="$DB_DIR/definitions with spaces.clj"
+	printf '%s\n' ';; Fixture definitions.' '(ns fixture.core)' '(def answer 42)' '(defn add [left right]' \
+		$'\t(+ left right))' '(defn adjacent [value] value)' > "$clojure_file"
+	capture "$BIN" symbols --file "$clojure_file" --json
+	[ "$rc" -eq 0 ] || fail "Clojure symbol listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,start_line,end_line}] == [{name:"fixture.core",start_line:2,end_line:2},{name:"answer",start_line:3,end_line:3},{name:"add",start_line:4,end_line:5},{name:"adjacent",start_line:6,end_line:6}]' >/dev/null || \
+		fail "Clojure grammar changed the complete namespace/definition set or source ranges: $out"
+	capture "$BIN" symbols add --file "$clojure_file" --include-body --json
+	[ "$rc" -eq 0 ] || fail "Clojure function body lookup failed: $err"
+	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==4 and .end_line==5 and .body==["(defn add [left right]","\t(+ left right))"]' >/dev/null || \
+		fail "Clojure grammar changed the exact function body: $out"
+
 	llvm_file="$DB_DIR/functions with spaces.ll"
 	printf '%s\n' '; Fixture IR.' '@answer = global i32 42' 'define i32 @add(i32 %left, i32 %right) {' 'entry:' \
 		$'\t%sum = add i32 %left, %right' $'\tret i32 %sum' '}' 'declare void @external()' > "$llvm_file"

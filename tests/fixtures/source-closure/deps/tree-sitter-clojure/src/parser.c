@@ -1,0 +1,1 @@
+/* This legacy Clojure parser must not enter the compiled source closure. */

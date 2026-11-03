@@ -55,6 +55,7 @@
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-asm/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-llvm/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nix/src"))
+							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-clojure/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-lean/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-nim/src"))
 							(pkgs.lib.fileset.maybeMissing (root + "/deps/tree-sitter-swift/src"))
@@ -183,6 +184,24 @@
 					cmp LICENSE ${./deps/tree-sitter-ruby/LICENSE} || exit "$?"
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
+				'';
+				# Upstream reproduces all four generated ABI-14 files. Preserve the
+				# two existing support headers as explicit, unchanged local inputs.
+				grammar-clojure = pkgs.runCommand "codescan-clojure-source" {
+					source = grammarSource "clj-commons" "tree-sitter-clojure"
+						"e43eff80d17cf34852dcd92ca5e6986d23a7040f"
+						"sha256-jokekIuuQLx5UtuPs4XAI+euispeFCwSQByVKVelrC4=";
+				} ''
+					mkdir -p "$out/src/tree_sitter" || exit "$?"
+					for path in parser.c grammar.json node-types.json tree_sitter/parser.h; do
+						cp "$source/src/$path" "$out/src/$path" || exit "$?"
+					done
+					cp "$source/COPYING.txt" "$out/" || exit "$?"
+					cp ${./deps/tree-sitter-clojure/src/tree_sitter/alloc.h} "$out/src/tree_sitter/alloc.h" || exit "$?"
+					cp ${./deps/tree-sitter-clojure/src/tree_sitter/array.h} "$out/src/tree_sitter/array.h" || exit "$?"
+					cd "$out" || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-clojure/SOURCE_SHA256} || exit "$?"
+					cmp COPYING.txt ${./deps/tree-sitter-clojure/COPYING.txt} || exit "$?"
 				'';
 				# Preserve the unchanged ABI-13 parser, scanner, metadata, and license.
 				grammar-nix = pkgs.runCommand "codescan-nix-source" {
@@ -352,6 +371,7 @@
 					{ name = "asm"; path = "${grammar-asm}/src"; }
 					{ name = "llvm"; path = "${grammar-llvm}/src"; }
 					{ name = "nix"; path = "${grammar-nix}/src"; }
+					{ name = "clojure"; path = "${grammar-clojure}/src"; }
 					{ name = "lean"; path = "${grammar-lean}/src"; }
 					{ name = "nim"; path = "${grammar-nim}/src"; }
 					{ name = "swift"; path = "${grammar-swift}/src"; }
@@ -558,6 +578,14 @@
 				'';
 
 				checks.swift-source = grammar-swift;
+				checks.clojure-source = pkgs.runCommand "codescan-clojure-source-identity" {
+					source = grammarSources;
+				} ''
+					cd -P "$source/clojure/.." || exit "$?"
+					sha256sum -c ${./deps/tree-sitter-clojure/SOURCE_SHA256} || exit "$?"
+					cmp COPYING.txt ${./deps/tree-sitter-clojure/COPYING.txt} || exit "$?"
+					touch "$out"
+				'';
 				checks.nix-source = pkgs.runCommand "codescan-nix-source-identity" {
 					source = grammarSources;
 				} ''
@@ -653,6 +681,7 @@
 						asmSourceContract = self.checks.${system}.asm-source;
 						llvmSourceContract = self.checks.${system}.llvm-source;
 						nixSourceContract = self.checks.${system}.nix-source;
+						clojureSourceContract = self.checks.${system}.clojure-source;
 						swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 						fixtureSource = fixturePackage.src;
 						unfilteredFixture = ./tests/fixtures/source-closure;
@@ -730,6 +759,7 @@
 					asmSourceContract = self.checks.${system}.asm-source;
 					llvmSourceContract = self.checks.${system}.llvm-source;
 					nixSourceContract = self.checks.${system}.nix-source;
+					clojureSourceContract = self.checks.${system}.clojure-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
 					publicationLockContract = self.checks.${system}.publication-lock;
