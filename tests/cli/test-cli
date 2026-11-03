@@ -311,6 +311,16 @@ main() {
 	[ "$rc" -eq 0 ] || fail "OCaml function body lookup failed: $err"
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==3 and .end_line==4 and .body==["let add left right =","\tleft + right"]' >/dev/null || \
 		fail "OCaml grammar changed the exact function body: $out"
+	printf '%s\n' '(* outer (* inner *) let hidden = 0 *)' 'let after = 42' > "$ocaml_file"
+	capture "$BIN" symbols --file "$ocaml_file" --json
+	[ "$rc" -eq 0 ] || fail "OCaml nested comment listing failed: $err"
+	printf '%s' "$out" | jq -e '[.[]|{name,start_line,end_line}] == [{name:"after",start_line:2,end_line:2}]' >/dev/null || \
+		fail "OCaml nested comment exposed hidden code or lost the following declaration: $out"
+	printf '%s\n' '(* outer (* inner *)' 'let hidden = 0' 'let after = 42' > "$ocaml_file"
+	capture "$BIN" symbols --file "$ocaml_file" --json
+	[ "$rc" -eq 0 ] || fail "OCaml unfinished comment listing failed: $err"
+	printf '%s' "$out" | jq -e '. == []' >/dev/null || \
+		fail "OCaml unfinished comment exposed code before end-of-file: $out"
 
 	erlang_file="$DB_DIR/definitions with spaces.erl"
 	printf '%s\n' '%% Fixture definitions.' '-module(fixture).' '-export([add/2, adjacent/1]).' 'add(Left, Right) ->' \

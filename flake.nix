@@ -188,8 +188,8 @@
 					mkdir -p "$out" || exit "$?"
 					cp -R src LICENSE "$out/" || exit "$?"
 				'';
-				# Preserve the existing ABI-15 parser and the local scanner include
-				# layout, including both byte-identical shared-header locations.
+				# Preserve the ABI-15 parser and local scanner include layout;
+				# backport upstream 3b2e14e0's iterative nested-comment scanner.
 				grammar-ocaml = pkgs.runCommand "codescan-ocaml-source" {
 					source = grammarSource "tree-sitter" "tree-sitter-ocaml"
 						"3ef7c00b29e41e3a0c1d18e82ea37c64d72b93fc"
@@ -201,9 +201,8 @@
 						cp "$source/grammars/ocaml/src/$path" "$out/src/$path" || exit "$?"
 					done
 					cp "$source/common/scanner.h" "$out/common/scanner.h" || exit "$?"
-					cp "$source/common/scanner.h" "$out/src/ocaml_scanner.h" || exit "$?"
 					cp "$source/LICENSE" "$out/" || exit "$?"
-					chmod u+w "$out/src/scanner.c" || exit "$?"
+					chmod u+w "$out/src/scanner.c" "$out/common/scanner.h" || exit "$?"
 					cd "$out" || exit "$?"
 					patch --batch --fuzz=0 --forward -p1 < ${./deps/tree-sitter-ocaml/scanner-include.patch} > "$TMPDIR/ocaml-scanner-include.log" 2>&1 || {
 						cat "$TMPDIR/ocaml-scanner-include.log" >&2
@@ -211,6 +210,13 @@
 					}
 					cat "$TMPDIR/ocaml-scanner-include.log"
 					if grep -E 'offset|fuzz' "$TMPDIR/ocaml-scanner-include.log"; then exit 1; fi
+					patch --batch --fuzz=0 --forward -p1 < ${./deps/tree-sitter-ocaml/nested-comments.patch} > "$TMPDIR/ocaml-nested-comments.log" 2>&1 || {
+						cat "$TMPDIR/ocaml-nested-comments.log" >&2
+						exit 1
+					}
+					cat "$TMPDIR/ocaml-nested-comments.log"
+					if grep -E 'offset|fuzz' "$TMPDIR/ocaml-nested-comments.log"; then exit 1; fi
+					cp "$out/common/scanner.h" "$out/src/ocaml_scanner.h" || exit "$?"
 					sha256sum -c ${./deps/tree-sitter-ocaml/SOURCE_SHA256} || exit "$?"
 					cmp LICENSE ${./deps/tree-sitter-ocaml/LICENSE} || exit "$?"
 				'';

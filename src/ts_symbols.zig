@@ -1453,6 +1453,85 @@ test "ocaml: extracts let binding and type" {
 	try std.testing.expectEqual(SymbolKind.type_alias, tree.symbols[1].kind);
 }
 
+test "ocaml: deeply nested comments preserve the following declaration" {
+	const allocator = std.testing.allocator;
+	const builtin = @import("builtin");
+	const nested_depth = 262_144;
+	const hidden = " let hidden = 0 ";
+	const following = "\nlet after = 42\n";
+	const source = try allocator.alloc(u8, nested_depth * 4 + hidden.len + following.len);
+	defer allocator.free(source);
+	var offset: usize = 0;
+	for (0..nested_depth) |_| {
+		@memcpy(source[offset..][0..2], "(*");
+		offset += 2;
+	}
+	@memcpy(source[offset..][0..2], "*)");
+	offset += 2;
+	@memcpy(source[offset..][0..hidden.len], hidden);
+	offset += hidden.len;
+	for (0..(nested_depth - 1)) |_| {
+		@memcpy(source[offset..][0..2], "*)");
+		offset += 2;
+	}
+	@memcpy(source[offset..][0..following.len], following);
+	offset += following.len;
+	try std.testing.expectEqual(source.len, offset);
+
+	// A deliberate old-scanner crash must not invoke a host's piped core
+	// collector. This changes only this test process and restores on success.
+	const previous_dumpable = if (builtin.os.tag == .linux)
+		std.os.linux.prctl(@intFromEnum(std.os.linux.PR.GET_DUMPABLE), 0, 0, 0, 0)
+	else
+		0;
+	if (builtin.os.tag == .linux) {
+		try std.testing.expect(previous_dumpable <= 1);
+		try std.testing.expectEqual(@as(usize, 0), std.os.linux.prctl(@intFromEnum(std.os.linux.PR.SET_DUMPABLE), 0, 0, 0, 0));
+	}
+	defer {
+		if (builtin.os.tag == .linux) {
+			std.debug.assert(std.os.linux.prctl(@intFromEnum(std.os.linux.PR.SET_DUMPABLE), previous_dumpable, 0, 0, 0) == 0);
+		}
+	}
+	if (builtin.os.tag == .linux) {
+		try std.testing.expectEqual(@as(usize, 0), std.os.linux.prctl(@intFromEnum(std.os.linux.PR.GET_DUMPABLE), 0, 0, 0, 0));
+	}
+
+	var tree = try extract(allocator, source, .ocaml);
+	defer tree.deinit(allocator);
+	try std.testing.expectEqual(@as(usize, 1), tree.symbols.len);
+	try std.testing.expectEqualStrings("after", tree.symbols[0].name);
+	try std.testing.expectEqual(SymbolKind.function, tree.symbols[0].kind);
+	try std.testing.expectEqual(@as(usize, 2), tree.symbols[0].start_line);
+	try std.testing.expectEqual(@as(usize, 2), tree.symbols[0].end_line);
+
+	const parser = ts.ts_parser_new() orelse return error.ParseFailed;
+	defer ts.ts_parser_delete(parser);
+	try std.testing.expect(ts.ts_parser_set_language(parser, Language.ocaml.tsLanguage()));
+	for ([_]bool{ false, true }) |unterminated| {
+		if (unterminated) {
+			// Preserve the original scanner's editing-time EOF tolerance,
+			// without exposing code inside the unfinished outer comment.
+			const final_closing = source.len - following.len - 2;
+			@memcpy(source[final_closing..][0..2], "  ");
+		}
+		const parsed = ts.ts_parser_parse_string(parser, null, source.ptr, @intCast(source.len)) orelse return error.ParseFailed;
+		defer ts.ts_tree_delete(parsed);
+		const root = ts.ts_tree_root_node(parsed);
+		try std.testing.expect(!ts.ts_node_has_error(root));
+		if (unterminated) {
+			try std.testing.expectEqual(@as(u32, 1), ts.ts_node_named_child_count(root));
+			const comment = ts.ts_node_named_child(root, 0);
+			try std.testing.expectEqualStrings("comment", std.mem.span(ts.ts_node_type(comment)));
+			try std.testing.expectEqual(@as(u32, 0), ts.ts_node_start_byte(comment));
+			try std.testing.expectEqual(@as(u32, @intCast(source.len)), ts.ts_node_end_byte(comment));
+			var unfinished = try extract(allocator, source, .ocaml);
+			defer unfinished.deinit(allocator);
+			try std.testing.expectEqual(@as(usize, 0), unfinished.symbols.len);
+		}
+	}
+}
+
 test "swift: extracts function and class" {
 	const allocator = std.testing.allocator;
 	const source =
