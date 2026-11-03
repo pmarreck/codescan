@@ -10,7 +10,7 @@ source "$root/tests/lib/build-fixture.bash"
 nix() {
 	[ "${1:-}" = build ] || return 64
 	shift
-	local attribute='' link='' next_link=0 argument print_paths=0 product namespace
+	local attribute='' link='' next_link=0 argument print_paths=0 product namespace leaf=result
 	for argument in "$@"; do
 		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
 		case "$argument" in
@@ -29,10 +29,11 @@ nix() {
 		'.#release-mswin-arm64') namespace=mswin-arm64/gnu; product="$SCOPE_PRODUCTS/mswin-arm64" ;;
 		'.#release-mswin-amd64') namespace=mswin-amd64/gnu; product="$SCOPE_PRODUCTS/mswin-amd64" ;;
 		'.#test-binaries') namespace=''; product="$SCOPE_OUTPUT" ;;
+		'.#publication-tools') namespace="$SCOPE_NAMESPACE"; product="${CODESCAN_PUBLICATION_TOOLS:?prepare native publication tools with Nix}"; leaf=tools ;;
 		*) return 64 ;;
 	esac
 	if [ -n "$namespace" ]; then
-		case "$link" in "$PWD/.nix-out/$namespace"/.candidate.????????/result) ;; *) return 77 ;; esac
+		case "$link" in "$PWD/.nix-out/$namespace"/.candidate.????????/"$leaf") ;; *) return 77 ;; esac
 		ln -s "$product" "$link" || return 1
 		link='<candidate>'
 	fi
@@ -62,7 +63,7 @@ case "$(uname -s)/$(uname -m)" in
 	Darwin/arm64) native_namespace=macos-arm64 ;;
 	*) fail 'unsupported test host' ;;
 esac
-native_request=$'.#default\t<candidate>'
+native_request="$(printf '%s\n' $'.#default\t<candidate>' $'.#publication-tools\t<candidate>' | LC_ALL=C sort)"
 all_requests="$(printf '%s\n' \
 	"$native_request" \
 	$'.#release-macos-arm64\t<candidate>' \
@@ -99,7 +100,7 @@ for scenario in all default implementations-short implementations-long platforms
 		combined) args=(--all-impls --all-plats); expected="$all_requests" ;;
 		reverse) args=(--all-platforms --all-implementations); expected="$all_requests" ;;
 		repeated) args=(--all --all-plats --all-implementations --all); expected="$all_requests" ;;
-		debug) args=(--all-impls --debug); expected=$'.#debug\t<candidate>' ;;
+		debug) args=(--all-impls --debug); expected="$(printf '%s\n' $'.#debug\t<candidate>' $'.#publication-tools\t<candidate>' | LC_ALL=C sort)" ;;
 		test) args=(--test --all-implementations); expected=$'.#test-binaries\t' ;;
 		invalid-debug) args=(--all-platforms --debug); expected=''; expected_rc=64 ;;
 		invalid-test) args=(--test --all); expected=''; expected_rc=64 ;;

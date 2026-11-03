@@ -8,13 +8,15 @@ source "$root/tests/lib/build-fixture.bash"
 nix() {
 	printf '%s\n' "$*" >> "$BUILD_EVENTS"
 	[ "$BUILD_STATUS" -eq 0 ] || return "$BUILD_STATUS"
-	local link='' argument next_link=0
+	local link='' argument next_link=0 attribute='' product="$BUILD_OUTPUT"
 	for argument in "$@"; do
 		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
 		[ "$argument" != --out-link ] || next_link=1
+		case "$argument" in '.#'*) attribute="$argument" ;; esac
 	done
-	if [ -n "$link" ]; then ln -sfn "$BUILD_OUTPUT" "$link" || return 1; fi
-	printf '%s\n' "$BUILD_OUTPUT"
+	if [ "$attribute" = .#publication-tools ]; then product="${CODESCAN_PUBLICATION_TOOLS:?prepare native publication tools with Nix}"; fi
+	if [ -n "$link" ]; then ln -sfn "$product" "$link" || return 1; fi
+	printf '%s\n' "$product"
 }
 nix-store() {
 	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] && [ "$4" = "$BUILD_OUTPUT" ] || return 64
@@ -219,11 +221,13 @@ unset -f uname
 				--print-out-paths) print_paths=1 ;;
 				'.#release-'*) key="${argument#.#release-}" ;;
 				'.#default') key=native ;;
+				'.#publication-tools') key=tools ;;
 			esac
 		done
 		[ -n "$key" ] && [ -n "$link" ] && [ "$next_link" -eq 0 ] || return 64
 		if [ "$BATCH_FAULT" = build-failure ] && [ "$key" = "$BATCH_BAD_PRODUCT" ]; then return 19; fi
 		product="$BATCH_PROJECT/next/$key"
+		if [ "$key" = tools ]; then product="${CODESCAN_PUBLICATION_TOOLS:?prepare native publication tools with Nix}"; fi
 		ln -sfn "$product" "$link" || return 1
 		if [ "$print_paths" -eq 1 ]; then printf '%s\n' "$product"; fi
 	}
@@ -380,12 +384,20 @@ if retention_product="$(command nix-store --add "$fixture/retention-source" 2> "
 fi
 nix() {
 	[ "$1" = build ] || return 64
-	local link='' argument next_link=0
+	local link='' argument next_link=0 attribute=''
 	for argument in "$@"; do
 		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
 		[ "$argument" != --out-link ] || next_link=1
+		case "$argument" in '.#'*) attribute="$argument" ;; esac
 	done
 	[ -n "$link" ] && [ "$next_link" -eq 0 ] || return 64
+	# Only application retention uses the private store; this declared immutable
+	# test utility is already retained by the outer Nix check's input closure.
+	if [ "$attribute" = .#publication-tools ]; then
+		ln -s "${CODESCAN_PUBLICATION_TOOLS:?prepare native publication tools with Nix}" "$link" || return 1
+		printf '%s\n' "$CODESCAN_PUBLICATION_TOOLS"
+		return 0
+	fi
 	command nix-store --add-root "$link" --realise "$RETENTION_PRODUCT" >/dev/null || return "$?"
 	printf '%s\n' "$RETENTION_PRODUCT"
 }

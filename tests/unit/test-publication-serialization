@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+set -u
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$root/tests/lib/capture.bash"
+source "$root/tests/lib/build-fixture.bash"
+tool_product="${1:?provide the declared native tool product}"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-publication-serialization.XXXXXXXX")" || exit 1
+holder=''
+cleanup() {
+	if [ -n "$holder" ]; then kill -TERM "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true; fi
+	rm -r -- "$fixture"
+}
+trap cleanup EXIT
+fail() {
+	if [ -n "${project:-}" ] && [ -s "$project/holder-error" ]; then sed -n '1,20p' "$project/holder-error" >&2; fi
+	printf 'FAIL publication serialization: %s\n' "$1" >&2
+	exit 1
+}
+nix() {
+	local argument attribute='' link='' next_link=0 product
+	for argument in "$@"; do
+		if [ "$next_link" -eq 1 ]; then link="$argument"; next_link=0; continue; fi
+		case "$argument" in --out-link) next_link=1 ;; '.#'*) attribute="$argument" ;; esac
+	done
+	case "$attribute" in
+		'.#default') product="$PUB_PROJECT/prepared" ;;
+		'.#publication-tools')
+			product="$PUB_TOOL_OUTPUT"
+			case "${PUB_TOOLS_FAULT:-none}" in
+				build-failure) return 29 ;;
+				missing-command) product="$PUB_PROJECT/missing-tools" ;;
+			esac ;;
+		*) return 64 ;;
+	esac
+	printf '%s\n' "$attribute" >> "$PUB_PROJECT/requests"
+	[ -n "$link" ] && [ "$next_link" -eq 0 ] || return 64
+	ln -s "$product" "$link" || return 1
+	if [ "$attribute" = .#publication-tools ]; then
+		case "${PUB_TOOLS_FAULT:-none}" in
+			empty-output) return 0 ;;
+			wrong-output) printf '%s\n' "$PUB_PROJECT/wrong-tools"; return 0 ;;
+		esac
+	fi
+	printf '%s\n' "$product"
+}
+nix-store() {
+	[ "$#" -eq 4 ] && [ "$1" = --add-root ] && [ "$3" = --realise ] || return 64
+	if [ "${PUB_HOLD:-0}" -eq 1 ]; then
+		printf 'ready\n' >&7
+		IFS= read -r release || return 65
+		[ "$release" = release ] || return 65
+	fi
+	[ "${PUB_RETAIN_STATUS:-0}" -eq 0 ] || return "$PUB_RETAIN_STATUS"
+	ln -sfn "$4" "$2"
+}
+export -f nix nix-store
+project="$fixture/project with spaces"
+mkdir -p "$project/prepared/bin" "$project/old/share" "$project/zig-out/bin" || fail 'fixture setup'
+copy_build_fixture "$project" || fail 'wrapper fixture'
+printf new > "$project/prepared/bin/codescan"
+chmod +x "$project/prepared/bin/codescan" || fail 'fixture executable'
+printf old > "$project/zig-out/bin/codescan"
+printf preserved > "$project/old/share/resource"
+case "$(uname -s)/$(uname -m)" in
+	Linux/x86_64) namespace=linux-amd64/musl ;;
+	Linux/aarch64) namespace=linux-arm64/musl ;;
+	Darwin/arm64) namespace=macos-arm64 ;;
+	*) fail 'unsupported native mapping' ;;
+esac
+prefix="$project/.nix-out/$namespace/ReleaseFast"
+mkdir -p "${prefix%/*}" || fail 'retained parent'
+ln -s "$project/old" "$prefix" || fail 'old retained product'
+coproc HOLDER {
+	exec 7>&1
+	exec env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" PUB_HOLD=1 "$BASH" "$project/build" 2> "$project/holder-error"
+}
+holder="$HOLDER_PID"
+input_fd="${HOLDER[1]}"; output_fd="${HOLDER[0]}"
+IFS= read -r -t 5 ready <&"$output_fd" || fail 'holder did not reach the selection phase'
+[ "$ready" = ready ] || fail 'unexpected selection readiness'
+out= err= rc=
+capture env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" "$BASH" "$project/build"
+[ "$rc" -eq 75 ] || fail 'competing publisher entered the selection phase'
+[[ "$err" == *'another publisher is selecting products'* ]] || fail 'lease conflict was not explained'
+[ "$(readlink "$prefix")" = "$project/old" ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail 'competitor changed the held selection'
+[ "$(< "$prefix/share/resource")" = preserved ] || fail 'competitor lost old resources'
+printf 'release\n' >&"$input_fd"
+wait "$holder" || fail 'holder failed after release'
+holder=''
+[ "$(readlink "$prefix")" = "$project/prepared" ] && [ "$(< "$project/zig-out/bin/codescan")" = new ] || fail 'holder did not publish its product'
+coproc HOLDER {
+	exec 7>&1
+	exec env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" PUB_HOLD=1 "$BASH" "$project/build" 2> "$project/holder-error"
+}
+holder="$HOLDER_PID"
+output_fd="${HOLDER[0]}"
+IFS= read -r -t 5 ready <&"$output_fd" || fail 'second holder did not reach the selection phase'
+[ "$ready" = ready ] || fail 'unexpected second selection readiness'
+kill -TERM "$holder" || fail 'cannot terminate the owned publisher'
+if wait "$holder"; then fail 'terminated publisher succeeded'; else status="$?"; fi
+[ "$status" -eq 143 ] || fail 'unexpected publisher termination status'
+holder=''
+capture env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" PUB_RETAIN_STATUS=23 "$BASH" "$project/build"
+[ "$rc" -eq 23 ] || fail 'publication changed the registration failure'
+capture env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" "$BASH" "$project/build"
+[ "$rc" -eq 0 ] || fail 'failed publisher left a stale lease'
+[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail 'publishers leaked candidates'
+
+# Bootstrap failures cannot change an already working selection or hide errors.
+for fault in build-failure missing-command empty-output wrong-output; do
+	capture env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" PUB_TOOLS_FAULT="$fault" "$BASH" "$project/build"
+	expected=1; [ "$fault" != build-failure ] || expected=29
+	[ "$rc" -eq "$expected" ] || fail "$fault changed the utility preparation failure"
+	[ "$(readlink "$prefix")" = "$project/prepared" ] && [ "$(< "$project/zig-out/bin/codescan")" = new ] || fail "$fault changed the prior selection"
+	[ -z "$(find "$project/.nix-out" -type d -name '.candidate.*' -print)" ] || fail "$fault leaked candidate roots"
+done
+
+# Unexpected lock entries are user data, not disposable stale PID files.
+for obstacle in file link dangling-link directory fifo; do
+	project="$fixture/lock-$obstacle"
+	mkdir -p "$project/.nix-out" "$project/zig-out/bin" || fail 'lock refusal setup'
+	copy_build_fixture "$project" || fail 'lock refusal wrapper'
+	printf old > "$project/zig-out/bin/codescan"
+	printf preserved > "$project/sentinel"
+	lock="$project/.nix-out/.publication.lock"
+	case "$obstacle" in
+		file) printf preserved > "$lock" ;;
+		link) ln -s ../sentinel "$lock" ;;
+		dangling-link) ln -s ../missing "$lock" ;;
+		directory) mkdir "$lock" ;;
+		fifo) mkfifo "$lock" ;;
+	esac
+	capture env PUB_PROJECT="$project" PUB_TOOL_OUTPUT="$tool_product" "$BASH" "$project/build"
+	[ "$rc" -eq 1 ] && [[ "$err" == *'unexpected publication lock'* ]] || fail "$obstacle lost its lock refusal"
+	[ ! -e "$project/requests" ] && [ "$(< "$project/zig-out/bin/codescan")" = old ] || fail "$obstacle invoked a builder or replaced the command"
+	[ "$(< "$project/sentinel")" = preserved ] || fail "$obstacle modified protected bytes"
+	case "$obstacle" in
+		file) [ "$(< "$lock")" = preserved ] || fail 'lock file changed' ;;
+		link) [ "$(readlink "$lock")" = ../sentinel ] || fail 'lock link changed' ;;
+		dangling-link) [ "$(readlink "$lock")" = ../missing ] || fail 'dangling lock link changed' ;;
+		directory) [ -d "$lock" ] || fail 'lock directory removed' ;;
+		fifo) [ -p "$lock" ] || fail 'lock FIFO removed' ;;
+	esac
+done
+printf 'Actual publishers serialize selection and release failed leases\n'

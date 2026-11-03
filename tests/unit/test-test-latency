@@ -42,6 +42,8 @@ nix() {
 					closure:*.source-closure|both:*.source-closure) return 19 ;;
 					cancellation:*.cancellation-artifacts) return 21 ;;
 					harness:*.windows-cancellation-harness) return 23 ;;
+					lock:*.publication-lock) return 25 ;;
+					serialization:*.publication-serialization) return 27 ;;
 				esac
 			done
 			return 0
@@ -113,7 +115,7 @@ run_case() {
 assert_gate_request() {
 	local events="$1" actual expected system="${2:-x86_64-linux}"
 	actual="$(awk -F '\t' '$1 == "build" && $0 !~ /--json/ { print }' "$events")"
-	expected=$(printf 'build\tbuild\t--no-link\t--keep-going\t.#checks.%s.compiler-concurrency\t.#checks.%s.source-closure\t.#checks.%s.cancellation-artifacts\t.#checks.%s.windows-cancellation-harness' "$system" "$system" "$system" "$system")
+	expected=$(printf 'build\tbuild\t--no-link\t--keep-going\t.#checks.%s.compiler-concurrency\t.#checks.%s.source-closure\t.#checks.%s.cancellation-artifacts\t.#checks.%s.windows-cancellation-harness\t.#checks.%s.publication-lock\t.#checks.%s.publication-serialization' "$system" "$system" "$system" "$system" "$system" "$system")
 	[ "$actual" = "$expected" ] || fail 'all immutable gates must share exactly one keep-going Nix request'
 }
 run_case disabled '' none 0
@@ -146,7 +148,7 @@ run_case boundary-failure fixture-job boundary 1
 run_case artifact-preparation fixture-job none 0 prepare
 [ "$(awk -F '\t' '$1 == "span" && $3 == "mixed" && $4 == "artifact preparation" { n++ } END { print n+0 }' "$fixture/artifact-preparation.events")" -eq 1 ] || fail 'Nix preparation was omitted or misclassified as pure compilation'
 assert_gate_request "$fixture/artifact-preparation.events"
-for gate_failure in compiler closure both cancellation harness; do
+for gate_failure in compiler closure both cancellation harness lock serialization; do
 	run_case "$gate_failure-failure" fixture-job "$gate_failure" 1
 	assert_gate_request "$fixture/$gate_failure-failure.events"
 	[ "$(awk -F '\t' '$1 == "test" { n++ } END { print n+0 }' "$fixture/$gate_failure-failure.events")" -eq 3 ] || fail 'a failed Nix gate omitted a later required suite'

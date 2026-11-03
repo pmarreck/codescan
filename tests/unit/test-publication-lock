@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+set -u
+root="$(cd "$(dirname "$0")/../.." && pwd)"
+source "$root/tests/lib/capture.bash"
+tool="${1:?provide the declared native lock tool}"
+fixture="$(mktemp -d "${TMPDIR:?}/codescan-publication-lock.XXXXXXXX")" || exit 1
+holder=''
+cleanup() {
+	if [ -n "$holder" ]; then kill -TERM "$holder" 2>/dev/null || true; wait "$holder" 2>/dev/null || true; fi
+	rm -r -- "$fixture"
+}
+trap cleanup EXIT
+fail() { printf 'FAIL publication lock: %s\n' "$1" >&2; exit 1; }
+out= err= rc=
+for action in release terminate; do
+	coproc HOLDER {
+		exec "$BASH" -c '
+			set -eu
+			exec 9>>"$1"
+			"$2" -n -E 75 9
+			printf "ready\n"
+			IFS= read -r release
+			[ "$release" = release ]
+		' owned-lock-holder "$fixture/lease" "$tool"
+	}
+	holder="$HOLDER_PID"
+	input_fd="${HOLDER[1]}"; output_fd="${HOLDER[0]}"
+	IFS= read -r -t 5 ready <&"$output_fd" || fail 'holder did not acquire the native lease'
+	[ "$ready" = ready ] || fail 'unexpected holder readiness'
+	capture "$tool" -n -E 75 "$fixture/lease" "$BASH" -c 'printf invaded > "$1"' owned-contender "$fixture/invaded"
+	[ "$rc" -eq 75 ] && [ ! -e "$fixture/invaded" ] || fail 'contender did not reject a held publication lease'
+	[ -z "$out" ] && [ -z "$err" ] || fail 'unexpected lease-conflict output'
+	case "$action" in
+		release)
+			printf 'release\n' >&"$input_fd"
+			wait "$holder" || fail 'holder did not release cleanly' ;;
+		terminate)
+			kill -TERM "$holder" || fail 'cannot terminate the owned holder'
+			if wait "$holder"; then fail 'terminated holder succeeded'; else status="$?"; fi
+			[ "$status" -eq 143 ] || fail 'unexpected holder termination status' ;;
+	esac
+	holder=''
+	[ -f "$fixture/lease" ] || fail 'lease file was removed to fake release'
+	capture "$tool" -n -E 75 "$fixture/lease" "$BASH" -c 'printf acquired > "$1"' owned-successor "$fixture/acquired"
+	[ "$rc" -eq 0 ] && [ "$(< "$fixture/acquired")" = acquired ] || fail 'kernel lease survived holder exit'
+	[ -z "$out" ] && [ -z "$err" ] || fail 'successor produced unexpected output'
+done
+capture "$tool" -n -E 75 "$fixture/lease" "$BASH" -c 'exit 42'
+[ "$rc" -eq 42 ] && [ -z "$out" ] && [ -z "$err" ] || fail 'lock command changed its child failure'
+printf 'Native publication leases exclude competitors and release after process death\n'

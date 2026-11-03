@@ -342,6 +342,46 @@
 				packages.cancellation-mswin-arm64 = mkCancellationTests "mswin-arm64" "aarch64-windows-gnu";
 				packages.test-git-mswin-amd64 = mkWindowsTestGit "amd64";
 				packages.test-git-mswin-arm64 = mkWindowsTestGit "arm64";
+				packages.publication-tools = pkgs.flock;
+
+				checks.publication-lock = pkgs.runCommand "codescan-publication-lock" {
+					nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.ripgrep ];
+					source = pkgs.lib.fileset.toSource {
+						root = ./.;
+						fileset = pkgs.lib.fileset.unions [ ./tests/unit/test-publication-lock ./tests/lib/capture.bash ];
+					};
+				} ''
+					timeout --kill-after=5 30 bash "$source/tests/unit/test-publication-lock" ${self.packages.${system}.publication-tools}/bin/flock || exit "$?"
+					if timeout --kill-after=5 30 bash "$source/tests/unit/test-publication-lock" ${pkgs.coreutils}/bin/true > mutation-out 2> mutation-error; then
+						printf 'always-successful lock tool escaped the control\n' >&2
+						exit 1
+					fi
+					rg -Fq 'contender did not reject a held publication lease' mutation-error || exit 1
+					printf 'Always-successful lock impostor rejected\n'
+					touch "$out"
+				'';
+
+				checks.publication-serialization = pkgs.runCommand "codescan-publication-serialization" {
+					nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.ripgrep ];
+					# Renamed multicall binaries dispatch by argv[0], not by symlink target.
+					impostor = pkgs.writeShellScriptBin "flock" "exit 0";
+					source = pkgs.lib.fileset.toSource {
+						root = ./.;
+						fileset = pkgs.lib.fileset.unions [ ./build ./scripts/ci-verify-release ./scripts/ci-verify-macos-arm64 ./tests/lib/build-fixture.bash ./tests/lib/capture.bash ./tests/unit/test-publication-serialization ];
+					};
+				} ''
+					timeout --kill-after=5 30 bash "$source/tests/unit/test-publication-serialization" ${self.packages.${system}.publication-tools} || exit "$?"
+					if timeout --kill-after=5 30 bash "$source/tests/unit/test-publication-serialization" "$impostor" > mutation-out 2> mutation-error; then
+						printf 'unlocked publisher escaped the integration control\n' >&2
+						exit 1
+					fi
+					if ! rg -Fq 'competing publisher entered the selection phase' mutation-error; then
+						sed -n '1,40p' mutation-error >&2
+						exit 1
+					fi
+					printf 'Unlocked publisher rejected by the integration control\n'
+					touch "$out"
+				'';
 
 				checks.cancellation-artifacts = pkgs.runCommand "codescan-cancellation-artifacts" {
 					nativeBuildInputs = [ pkgs.bash pkgs.coreutils pkgs.file ];
@@ -506,6 +546,8 @@
 					luaSourceContract = self.checks.${system}.lua-source;
 					cancellationArtifactContract = self.checks.${system}.cancellation-artifacts;
 					windowsHarnessContract = self.checks.${system}.windows-cancellation-harness;
+					publicationLockContract = self.checks.${system}.publication-lock;
+					publicationSerializationContract = self.checks.${system}.publication-serialization;
 					swiftScannerContract = self.checks.${system}.swift-scanner-shifts;
 					src = ./.;
 					nativeBuildInputs = runtimeTools;
@@ -523,6 +565,7 @@
 						export CODESCAN_TEST_BIN=${self.packages.${system}.default}/bin/codescan
 						export CODESCAN_TEST_DB_BIN=${self.packages.${system}.test-binaries}/bin/mk-test-db
 						export CODESCAN_UNIT_TEST_BIN=${self.packages.${system}.test-binaries}/bin/codescan-unit-tests
+						export CODESCAN_PUBLICATION_TOOLS=${self.packages.${system}.publication-tools}
 						export CODESCAN_EXPECT_PF=${nativePF} CODESCAN_EXPECT_VARIANT="${if pkgs.stdenv.isLinux then "musl" else ""}"
 						export OLLAMA_URL=http://127.0.0.1:1
 						bash ./tests/run-prepared
@@ -553,6 +596,7 @@
 					] ++ [ profilingPackage ] ++ pkgs.lib.optionals pkgs.stdenv.isLinux [ pkgs.bubblewrap ];
 					shellHook = "
 						export CODESCAN_TEST_PATH=\"${pkgs.lib.makeBinPath runtimeTools}\"
+						export CODESCAN_PUBLICATION_TOOLS=\"${self.packages.${system}.publication-tools}\"
 						export SQLITE_VEC_SQLITE_AMALGAMATION_DIR=\"${sqlite-amalgamation}\"
 						export CODESCAN_GRAMMAR_ROOT=\"${grammarSources}\"
 						export ZIG_GLOBAL_CACHE_DIR=\"\${ZIG_GLOBAL_CACHE_DIR:-$HOME/.cache/zig}\"
