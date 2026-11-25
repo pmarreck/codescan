@@ -690,7 +690,36 @@ codescan rename MyFunc --file src/lib.zig --to newName [--dry-run]
 
 ## Config
 
-Create `<root>/.codescan/config` to override defaults. Example:
+Provider settings belong in the user-wide configuration:
+`$XDG_CONFIG_HOME/codescan/config.ini`, or `~/.config/codescan/config.ini` when
+`XDG_CONFIG_HOME` is unset (`USERPROFILE` supplies the home directory on Windows
+when `HOME` is absent). For example:
+
+```ini
+embedding_url=http://inference.example:8000
+embedding_api=openai
+embedding_model=your-embedding-model
+embedding_dim=1536
+embedding_api_key=${EMBEDDING_API_KEY}
+```
+
+Precedence, lowest to highest: built-in defaults, user configuration,
+environment, project configuration, explicit CLI flags. The environment variables
+are `CODESCAN_EMBEDDING_URL`, `CODESCAN_EMBEDDING_MODEL`,
+`CODESCAN_EMBEDDING_API` (`ollama` or `openai`), `CODESCAN_EMBEDDING_DIM`, and
+`CODESCAN_EMBEDDING_API_KEY`. Legacy aliases `OLLAMA_URL`, `OLLAMA_MODEL`,
+`OLLAMA_EMBEDDING_DIM`, and `CODESCAN_EMBEDDING_SERVER_API_KEY` remain accepted;
+nonempty canonical variables take precedence over aliases. Explicit project
+values override environment defaults, including credentials.
+
+New project configs do not copy provider identity. `codescan init` saves
+validated defaults in the user config unless the project already has explicit
+provider overrides. An explicitly configured provider is not replaced with a
+different host when unavailable. Restart existing MCP servers and watchers after
+changing their settings; long-lived processes retain their startup settings.
+
+Create `<root>/.codescan/config.ini` for project-specific settings or intentional
+provider overrides. Legacy `.codescan/config` files remain supported. Example:
 
 ```
 # output=json|human
@@ -712,16 +741,6 @@ index_type=code,doc
 search_ext=zig
 search_type=code
 search_lang=zig
-
-# Model selected and validated by `codescan init`
-# Use ollama_model as alias, or OLLAMA_MODEL env var
-embedding_model=jina-code-embeddings:1.5b
-embedding_dim=1536
-
-# For OpenAI-compatible providers (oMLX, LiteLLM, vLLM):
-#embedding_api=openai
-#embedding_url=http://localhost:8000
-#embedding_api_key=<your-key>
 
 # ignores
 ignore=**/.git/**, **/.codescan/**
@@ -760,8 +779,8 @@ Metadata weights apply when the query includes metadata cues such as `function`,
 press Enter to select it. Otherwise, init links to the pooling-metadata setup
 below and accepts the name of another installed embedding model.
 
-Codescan sends a real embedding request before it writes the selected model or
-dimension to `.codescan/config.ini`. A language or completion model that cannot
+Codescan sends a real embedding request before it saves shared provider defaults
+or an explicit project override. A language or completion model that cannot
 produce embeddings is rejected and the prompt continues. The old `bge-large`
 value remains only as a backward-compatible fallback before interactive setup
 has selected a model.
@@ -878,7 +897,7 @@ mirror. Do not edit Ollama's content-addressed model blobs in place.
 
 ### OpenAI-compatible providers (oMLX, LiteLLM, vLLM)
 
-Set `embedding_api=openai` in `.codescan/config.ini` along with `embedding_url` and
+Set `embedding_api=openai` in the user configuration along with `embedding_url` and
 `embedding_api_key`. Initialization probes the configured API and URL first,
 then tries the default oMLX endpoint if needed. A detected server is accepted
 only after an authenticated OpenAI-compatible embedding request succeeds;
@@ -976,6 +995,12 @@ Watcher schema initialization errors leave the existing database file in place; 
 watcher does not automatically delete and recreate it. Startup failures are
 recorded in `.codescan/watcher-error.log`. Use `codescan doctor` to inspect the
 project state before choosing a repair or reindex.
+
+Doctor verifies inference with a real embedding request using the configured
+provider, model, credentials, and vector dimension. A responding server or model
+listing alone does not pass this check. Its diagnostic request has a 10-second
+deadline; a timeout reports inference as unverified, not a missing model. Normal
+indexing can still wait for a cold model to load.
 
 The background watcher logs its lifecycle and error events to the system log. If your watcher appears to have stopped unexpectedly, inspect recent logs with:
 

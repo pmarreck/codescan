@@ -1,5 +1,58 @@
 const std = @import("std");
 const cli = @import("cli.zig");
+const embedding_http = @import("embedding_http.zig");
+
+pub const InferenceConfig = struct {
+	url: []const u8,
+	model: []const u8,
+	dialect: embedding_http.ApiDialect,
+	auth_header: ?[]const u8,
+	dimension: usize,
+};
+
+pub fn checkInference(report: *Report, transport: embedding_http.Transport, cfg: InferenceConfig) !void {
+	if (cfg.dialect == .openai and cfg.auth_header == null) {
+		try report.add(.fail, "Inference", "embedding_api=openai requires an API key; set CODESCAN_EMBEDDING_SERVER_API_KEY or embedding_api_key");
+		return;
+	}
+	// Doctor verifies the same POST, authentication and response parsing used by
+	// indexing, not just a model listing. Its diagnostic deadline is local to
+	// this adapter; ordinary indexing may still wait for a cold model to load.
+	var probe = InferenceProbeTransport{ .inner = transport };
+	const vectors = embedding_http.embed(report.allocator, .{ .ctx = &probe, .send = InferenceProbeTransport.send }, cfg.url, cfg.model, &.{"codescan inference health probe"}, null, cfg.dialect, cfg.auth_header) catch |err| {
+		if (err == error.Timeout) {
+			try report.addFmt(.fail, "Inference", "embedding probe for model '{s}' at {s} did not complete within 10 seconds; inference is unverified (the model may still be loading)", .{ cfg.model, cfg.url });
+		} else {
+			try report.addFmt(.fail, "Inference", "embedding request for model '{s}' at {s} failed: {s}", .{ cfg.model, cfg.url, @errorName(err) });
+		}
+		return;
+	};
+	defer embedding_http.freeEmbeddings(report.allocator, vectors);
+	// embed checks the response count against the single requested input.
+	const vector = vectors[0];
+	if (vector.len == 0 or vector.len != cfg.dimension) {
+		try report.addFmt(.fail, "Inference", "model '{s}' at {s} returned a {d}-dimensional embedding, but settings require {d}; verify provider and model settings", .{ cfg.model, cfg.url, vector.len, cfg.dimension });
+		return;
+	}
+	for (vector) |component| {
+		if (!std.math.isFinite(component)) {
+			try report.addFmt(.fail, "Inference", "model '{s}' at {s} returned a non-finite embedding", .{ cfg.model, cfg.url });
+			return;
+		}
+	}
+	try report.addFmt(.pass, "Inference", "model '{s}' returned a usable {d}-dimensional embedding at {s}", .{ cfg.model, vector.len, cfg.url });
+}
+
+const InferenceProbeTransport = struct {
+	inner: embedding_http.Transport,
+
+	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, request: embedding_http.HttpRequest) anyerror!embedding_http.HttpResponse {
+		const self: *InferenceProbeTransport = @ptrCast(@alignCast(ctx));
+		var bounded = request;
+		bounded.deadline_ns = embedding_http.reachability_deadline_ns;
+		return self.inner.send(self.inner.ctx, allocator, bounded);
+	}
+};
 
 pub const Status = enum {
 	pass,
@@ -134,4 +187,118 @@ test "JSON report exposes a stopped watcher as a note" {
 	defer std.testing.allocator.free(text);
 	try std.testing.expect(std.mem.indexOf(u8, text, "\"ok\":true") != null);
 	try std.testing.expect(std.mem.indexOf(u8, text, "\"status\":\"note\"") != null);
+}
+
+test "doctor rejects healthy inventories when the embedding request fails" {
+	var mock = embedding_http.MockTransportCtx{
+		.tags_body = "{\"models\":[{\"name\":\"test-model\"}]}",
+		.ps_body = "{\"models\":[{\"name\":\"test-model\"}]}",
+		.embed_should_fail = true,
+	};
+	var report = Report.init(std.testing.allocator);
+	defer report.deinit();
+	try checkInference(&report, mock.transport(), .{
+		.url = "http://localhost:11434",
+		.model = "test-model",
+		.dialect = .ollama,
+		.auth_header = null,
+		.dimension = 2,
+	});
+	try std.testing.expect(hasFailures(report.checks.items));
+	try std.testing.expectEqual(@as(usize, 1), mock.embed_count);
+}
+
+const ProbeFixture = struct {
+	body: []const u8,
+	status: u16 = 200,
+	failure: ?anyerror = null,
+	calls: usize = 0,
+	auth_seen: bool = false,
+	deadline: ?u64 = null,
+
+	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
+		const self: *ProbeFixture = @ptrCast(@alignCast(ctx));
+		self.calls += 1;
+		self.deadline = req.deadline_ns;
+		try std.testing.expectEqualStrings("POST", req.method);
+		try std.testing.expect(std.mem.endsWith(u8, req.url, "/api/embed") or std.mem.endsWith(u8, req.url, "/v1/embeddings"));
+		try std.testing.expect(std.mem.indexOf(u8, req.body, "test-model") != null);
+		for (req.headers) |header| {
+			if (std.ascii.eqlIgnoreCase(header.name, "Authorization")) {
+				try std.testing.expectEqualStrings("Bearer fixture-key", header.value);
+				self.auth_seen = true;
+			}
+		}
+		if (self.failure) |err| return err;
+		return .{ .status = self.status, .body = try allocator.dupe(u8, self.body) };
+	}
+
+	fn transport(self: *ProbeFixture) embedding_http.Transport {
+		return .{ .ctx = self, .send = send };
+	}
+};
+
+test "doctor probes both embedding APIs with authentication and a diagnostic deadline" {
+	inline for (.{ embedding_http.ApiDialect.ollama, embedding_http.ApiDialect.openai }) |dialect| {
+		var fixture = ProbeFixture{ .body = if (dialect == .ollama) "{\"embeddings\":[[0.1,0.2]]}" else "{\"data\":[{\"embedding\":[0.1,0.2],\"index\":0}]}" };
+		var report = Report.init(std.testing.allocator);
+		defer report.deinit();
+		try checkInference(&report, fixture.transport(), .{
+			.url = "http://localhost:8000",
+			.model = "test-model",
+			.dialect = dialect,
+			.auth_header = if (dialect == .openai) "Bearer fixture-key" else null,
+			.dimension = 2,
+		});
+		try std.testing.expect(!hasFailures(report.checks.items));
+		try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+		try std.testing.expectEqual(dialect == .openai, fixture.auth_seen);
+		try std.testing.expectEqual(embedding_http.reachability_deadline_ns, fixture.deadline.?);
+		try std.testing.expect(std.mem.indexOf(u8, report.checks.items[0].message, "usable 2-dimensional embedding") != null);
+	}
+}
+
+test "doctor rejects unusable embedding responses and reports probe failures" {
+	const cases = [_]struct { body: []const u8 = "", status: u16 = 200, failure: ?anyerror = null, message: []const u8 }{
+		.{ .status = 401, .message = "Unauthorized" },
+		.{ .status = 503, .message = "HttpStatus" },
+		.{ .body = "{}", .message = "MissingEmbeddings" },
+		.{ .body = "not json", .message = "SyntaxError" },
+		.{ .body = "{\"embeddings\":[]}", .message = "InvalidEmbeddingCount" },
+		.{ .body = "{\"embeddings\":[[]]}", .message = "0-dimensional" },
+		.{ .body = "{\"embeddings\":[[1,2,3]]}", .message = "3-dimensional" },
+		.{ .body = "{\"embeddings\":[[1e300,2]]}", .message = "non-finite" },
+		.{ .failure = error.Timeout, .message = "inference is unverified" },
+		.{ .failure = error.ConnectionRefused, .message = "ConnectionRefused" },
+	};
+	for (cases) |case| {
+		var fixture = ProbeFixture{ .body = case.body, .status = case.status, .failure = case.failure };
+		var report = Report.init(std.testing.allocator);
+		defer report.deinit();
+		try checkInference(&report, fixture.transport(), .{
+			.url = "http://localhost:11434",
+			.model = "test-model",
+			.dialect = .ollama,
+			.auth_header = null,
+			.dimension = 2,
+		});
+		try std.testing.expect(hasFailures(report.checks.items));
+		try std.testing.expectEqual(@as(usize, 1), fixture.calls);
+		try std.testing.expect(std.mem.indexOf(u8, report.checks.items[0].message, case.message) != null);
+	}
+}
+
+test "doctor refuses missing OpenAI credentials before making a request" {
+	var fixture = ProbeFixture{ .body = "{}" };
+	var report = Report.init(std.testing.allocator);
+	defer report.deinit();
+	try checkInference(&report, fixture.transport(), .{
+		.url = "http://localhost:8000",
+		.model = "test-model",
+		.dialect = .openai,
+		.auth_header = null,
+		.dimension = 2,
+	});
+	try std.testing.expect(hasFailures(report.checks.items));
+	try std.testing.expectEqual(@as(usize, 0), fixture.calls);
 }

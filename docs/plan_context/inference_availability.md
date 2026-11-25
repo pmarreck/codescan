@@ -151,3 +151,100 @@ References: [Microsoft NTSTATUS definitions](https://learn.microsoft.com/en-us/o
 Exact-commit `796fc682` qualifies on both CI services without retries. Each native Windows architecture first reproduces `0xc000020d (CONNECTION_RESET)` with the original library and fails exactly the reset oracle, preserving four passes and no skips. Its corrected product then passes 808 aggregate cases with seven existing skips, the runtime-safety/allocator guard and ownership regressions, extracted-release execution, and all twenty five-case cancellation processes. Native Linux/Mac complete checks pass; Mac reports 814 passes with one existing skip, verifies source identities, publication controls, native ARM64 execution, and matching binary headers. All eight Mechatron targets pass in 29 seconds, and the artifact API confirms exactly five nonempty, unexpired canonical archives matching the commit.
 
 This closes the controlled library-defect correction and fixes diagnostic option selection. The original `4a4d6048` incident still has no recorded underlying native status; the controlled reset is consistent with that failure but cannot retrospectively prove its cause. Historical attribution now depends on fresh incident evidence, not repeated successful reruns. No broader request policy, accepted-error set, TCP-connect-blackhole qualification, or latency verdict changes.
+
+## Owned Linux SYN-connect fixture
+
+A Nix-built bounded probe inside the existing Linux filesystem/network sandbox establishes a possible controlled setup without firewall or global kernel changes. One loopback connection fills a zero-backlog listener's completed queue; the next remains in `SYN_SENT`, independently read through `TCP_INFO`, with no writable poll event. The listener reports one queued connection and backlog zero. Every descriptor belongs to that probe and is closed before it exits. This is kernel setup evidence only, not yet proof of HTTP transport cancellation.
+
+The proposed permanent Linux-only regression keeps that listener and filler connection open, observes the actual HTTP request's destination port and socket inode in `/proc/net/tcp`, confirms ownership through `/proc/self/fd` and state through `TCP_INFO`, then requires both cancellation/join and disappearance of the owned descriptor. A real retained-descriptor mutation must make that closure assertion fail before qualification. The two-second readiness bound and existing outer process guard fail closed; elapsed time alone never declares a blackhole ready. The portable held-header/body/TLS fixtures and their native qualification remain unchanged.
+
+This setup is not claimed portable: [Microsoft documents queue-full listen requests as refusals](https://learn.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-listen), whereas [Linux permits ignored requests and TCP retry](https://man7.org/linux/man-pages/man2/listen.2.html). Native Mac/Windows SYN-blackhole qualification remains separate. The additional Linux-only test, if shipped, has an explicit platform skip elsewhere rather than silently substituting refusal or post-connect stalls. No host firewall changes, VM provisioning, privileged network changes, or new request policy are authorized by this probe.
+
+## November 25 inference diagnostic incident
+
+A watcher startup embedding failure was followed by a successful doctor report.
+The doctor's current inference check proves server reachability and model
+inventory only, not an actual embedding response. Add an authenticated, bounded
+embedding probe and validate the returned vector count and configured dimension.
+Keep ordinary indexing's cold-model wait policy unchanged.
+
+A related agent report shows semantic MCP failures while a fresh CLI process
+using the same executable succeeds. The MCP process is long-lived. Investigate
+process settings and transport lifetime without changing the live index or
+assuming the historical failure's cause. The running executable also predates
+the current source; qualification must distinguish source fixes from deployment.
+
+The owner intends a remote inference provider. A read-only top-level project
+configuration survey found 124 explicit loopback endpoints and two explicit
+lexical search modes. One affected index has thousands of stored vectors, and
+a direct request to the local provider returned an embedding. Neither observation
+proves all indexes complete, nor establishes why the watcher request failed.
+Endpoint migration awaits the owner's exact provider URL, dialect, model, and
+credential reference. Do not rewrite configs or reindex as part of diagnosis.
+
+The owner clarified that the main development host and embedding host differ;
+project settings on the development host are authoritative, while old projects
+may legitimately retain obsolete loopback endpoints. An exact glob of project
+config files on that host still yielded 124 explicit loopback URLs and no remote
+hostname, including recently modified configurations. The remote service is
+reachable and requires authentication. Its embedding API and configured model
+name differ from the local Ollama configuration. Validate the intended remote
+model and credentials, preserve the current vectors, and obtain migration scope
+before changing live project settings or rebuilding indexes.
+
+The new unit regression reproduced the doctor's false-green report before the
+correction: 821 passed, one skipped, and the single new case failed. The proposed
+correction submits a bounded authenticated embedding POST, checks vector count,
+dimension and finite components, and leaves ordinary indexing's cold-model
+request policy unchanged. Full verification is still pending.
+
+The owner replaced per-project endpoint migration with shared provider defaults:
+global config and environment supply URL, model, API, credentials and dimension;
+explicit project settings remain overrides. New local configs must not contain
+copied provider settings. Use precedence defaults, global file, environment,
+project file, then explicit CLI flags. Preserve legacy environment aliases.
+Initialization should save newly detected defaults globally, not stamp each
+project. After verification and private backups, remove matching local provider
+entries rather than copy a remote endpoint into every project. Do not remove
+intentional nonmatching overrides or change existing vector spaces silently.
+
+The owner separately authorized immediate repair of the reporting project.
+Its remote model returned a valid embedding; a replacement index was built
+separately and the final incremental scan completed successfully. The original
+config and a consistent database backup remain private, and the original
+database remains unmodified. The new config atomically selects a distinct
+remote-backed database; authenticated doctor, watcher startup, CLI semantic
+search and a fresh MCP semantic session pass. Its already-running MCP process
+must reconnect to load changed settings. This temporary project override will
+be removed when global inheritance is deployed.
+
+The owner subsequently confirmed a preference for the development host to serve
+its own embeddings. Its local Ollama installation advertises the exact existing
+Jina GGUF model and returned real 1536-dimensional vectors in repeated bounded
+diagnostic requests. Configure that provider globally and remove matching local
+duplicates after validation. No fleet conversion to the remote MLX model is
+authorized or required. Return the temporary repair to compatible local vectors
+while retaining both old and replacement indexes as rollback resources.
+
+The original request failure remains unattributed. Journald dropped 3,909
+messages near the incident; the local service is configured for 200 messages per
+30 seconds, while its runner deliberately enables verbose startup memory/offload
+logs and also emits noisy runtime prompt-cache details. The latter overwhelms
+retention. Do not reduce verbosity blindly: the source uses those startup lines
+for scheduler accounting. A scoped logging fix request awaits owner approval.
+
+A disposable, read-only-host reproduction using the installed watcher completed
+local startup successfully. It also independently observed closed standard
+descriptors being reused for read-only source files. This is a concrete daemon
+descriptor-ownership hazard, not yet proof of the historical failure's cause.
+The generic WriteFailed classification incorrectly assumes an embedding request;
+future diagnostics must distinguish confirmed transport and ordinary output
+failures and preserve their underlying causes.
+
+The complete canonical test entry point passes the configuration/doctor increment:
+833 unit passes, one existing unit skip, all required Nix and confined CLI/MCP
+contracts, and the two existing external-provider exclusions. The prior run
+correctly rejected outdated setup wording; the current output retains the
+existing dialect assertions and describes effective shared configuration. This
+is host verification, not yet native cross-platform CI qualification or fleet
+deployment. Long-lived MCP reload and daemon descriptor fixes remain separate.

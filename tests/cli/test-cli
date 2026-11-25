@@ -896,6 +896,26 @@ FAKEEOF
 	capture env XDG_CONFIG_HOME="$gcfg/xdg" MUTE_DEBUG_STATUS=1 "$BIN" --root "$gcfg/bare" config show
 	printf '%s' "$out" | rg -q 'embedding_url=http://from-global' || fail "a config-less project did not inherit the global tier"
 
+	# Exercise the real settings resolver, not only the raw config display.
+	# Closed ports are deliberate: the diagnostic must name the selected layer.
+	printf 'embedding_url=http://127.0.0.1:2\nembedding_model=global-model\nembedding_dim=2\n' > "$gcfg/xdg/codescan/config.ini"
+	capture env XDG_CONFIG_HOME="$gcfg/xdg" CODESCAN_EMBEDDING_URL=http://127.0.0.1:1 CODESCAN_EMBEDDING_MODEL=environment-model \
+		"$BIN" doctor --root "$gcfg/bare" --json
+	[ "$rc" -ne 0 ] || fail 'closed environment endpoint unexpectedly passed doctor'
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Inference" and .status == "fail" and (.message | contains("http://127.0.0.1:1") and contains("environment-model")))' >/dev/null || \
+		fail 'environment settings did not override the shared file'
+	printf 'embedding_url=http://127.0.0.1:3\nembedding_model=project-model\nembedding_dim=2\n' > "$gcfg/proj/.codescan/config.ini"
+	capture env XDG_CONFIG_HOME="$gcfg/xdg" CODESCAN_EMBEDDING_URL=http://127.0.0.1:1 CODESCAN_EMBEDDING_MODEL=environment-model \
+		"$BIN" doctor --root "$gcfg/proj" --json
+	[ "$rc" -ne 0 ] || fail 'closed project endpoint unexpectedly passed doctor'
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Inference" and .status == "fail" and (.message | contains("http://127.0.0.1:3") and contains("project-model")))' >/dev/null || \
+		fail 'project settings did not override environment defaults'
+	capture env XDG_CONFIG_HOME="$gcfg/xdg" CODESCAN_EMBEDDING_URL=http://127.0.0.1:1 CODESCAN_EMBEDDING_MODEL=environment-model \
+		"$BIN" doctor --root "$gcfg/proj" --ollama-url http://127.0.0.1:4 --ollama-model cli-model --json
+	[ "$rc" -ne 0 ] || fail 'closed CLI endpoint unexpectedly passed doctor'
+	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Inference" and .status == "fail" and (.message | contains("http://127.0.0.1:4") and contains("cli-model")))' >/dev/null || \
+		fail 'CLI flags did not override project settings'
+
 	printf '%s\n' "cli ok"
 }
 

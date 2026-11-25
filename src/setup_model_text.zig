@@ -23,7 +23,8 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 		\\
 		\\    {s}
 		\\
-		\\  Then in .codescan/config.ini:
+		\\  Then in your user config (~/.config/codescan/config.ini,
+		\\  or $XDG_CONFIG_HOME/codescan/config.ini):
 		\\
 		\\    embedding_api=ollama
 		\\    embedding_url=http://localhost:11434
@@ -33,7 +34,7 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 		\\
 		\\  huggingface-cli download jinaai/jina-code-embeddings-1.5b-mlx
 		\\
-		\\  Then configure your oMLX Server to serve it and set in .codescan/config.ini:
+		\\  Configure your oMLX Server to serve it, then set in your user config:
 		\\
 		\\    embedding_api=openai
 		\\    embedding_url=http://localhost:8000
@@ -50,11 +51,11 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 
 	switch (current) {
 		.ollama => try writer.print(
-			"Your .codescan/config is currently set for Ollama (embedding_api=ollama).\n\n",
+			"Your effective configuration is currently set for Ollama (embedding_api=ollama).\n\n",
 			.{},
 		),
 		.openai => try writer.print(
-			"Your .codescan/config is currently set for oMLX / OpenAI-compatible (embedding_api=openai).\n\n",
+			"Your effective configuration is currently set for oMLX / OpenAI-compatible (embedding_api=openai).\n\n",
 			.{},
 		),
 	}
@@ -64,8 +65,9 @@ pub fn print(writer: *std.Io.Writer, current: Dialect) !void {
 		\\
 		\\  codescan update
 		\\
-		\\codescan init validates a real embedding before saving a selected model and
-		\\records its returned dimension. A changed model is regenerated on update.
+		\\codescan init validates a real embedding before saving shared provider
+		\\defaults. Explicit project overrides remain supported. A changed model
+		\\is regenerated on update; existing vectors are not relabeled as a new model.
 		\\
 	, .{});
 }

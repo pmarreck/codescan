@@ -488,3 +488,20 @@ Complete final disposable-worktree and integrated Nix tests and source-closure c
 Fresh confined host verification passes every available check, including all 821 unit cases, with unchanged source identity and the 847/844/3 declared/executed/skipped inventory, with zero failures. The shared record remains INCOMPLETE/OVER_BUDGET at 28.564 seconds execution lower bound, 24.84 seconds isolated runtime, 4.470 evaluation, 4.985 mixed work, 13.599 setup, 2.570 instrumentation, and 63.681 admitted total. Exact queue and outer-entry intervals remain unknown. This verifies changed parser behavior, not a performance improvement, timing retry, accepted baseline, or budget change. No live index, installed command, PATH, service, or global crash-policy change is part of the repair.
 
 Exact-commit `940a0fa7` subsequently passes both complete Linux suites and the actual Mac ten-file source-identity gate with the corrected shared headers, all 19 source-suite PASS labels, 821 unit passes, one existing skip, both provider exclusions, both native host checks, ARM64 Mach-O inspection, and release execution. Both Windows architectures explicitly pass the new deep-comment case within 815 unit passes and seven existing skips, the safety/allocator and prior ownership/ABI/startup guards, original-library reset failure, twenty complete five-case corrected processes, and extracted release execution. Both CI services finish green; Mechatron passes all eight targets in 28 seconds, and the artifact API independently confirms exactly five nonempty, unexpired canonical archives matching the tip. No retry is needed.
+
+## Read-only CI coverage audit, November 25
+
+At pushed commit `76fb7436575a33a1239052e32ef316e987e053e7`, GitHub build
+run `41659019115` and native-Windows run `41659018968` both report completed
+success. Mechatron records all eight committed manifest targets successful for
+the same commit. This is historical exact-commit qualification, not verification
+of the current uncommitted inference changes.
+
+The services are not interchangeable. The Mechatron manifest executes the Linux
+x86_64 checks and builds five target releases. GitHub additionally executes
+native Linux ARM64 checks, the Mac qualification path, and Windows amd64/ARM64
+aggregate, cancellation/reset and unpacked-release checks. GitHub also owns
+tagged release publication. Cross-built release products do not establish those
+native execution contracts. No workflows, publishing configuration, badges,
+hooks or host settings were changed by this audit; retain the active workflows
+unless replacement coverage is independently demonstrated.

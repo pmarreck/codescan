@@ -239,6 +239,14 @@ symbols_before_rejection="$out"
 export CODESCAN_EMBEDDING_SERVER_API_KEY=fixture-key
 printf '%s\n' "embedding_url=http://127.0.0.1:$provider_port" 'embedding_api=openai' \
 	'embedding_model=test-model' 'embedding_dim=2' 'search_mode=hybrid' > .codescan/config.ini
+# A responding HTTP server and a model inventory are not evidence that the
+# embedding endpoint works. Exercise the actual doctor command against the
+# owned provider, which returns 404 for the embedding POST.
+capture timeout 15 "$binary" doctor --root "$fixture" --json
+[ "$rc" -ne 0 ] || fail 'doctor accepted a provider that rejects embedding requests'
+printf '%s\n' "$out" | jq -e '.ok == false and any(.checks[]; .name == "Inference" and .status == "fail" and (.message | contains("HttpStatus")))' >/dev/null || \
+	fail 'doctor did not expose the failed embedding probe'
+printf '%s\n' "$err" | rg -qF 'HTTP 404' || fail 'doctor did not exercise the real embedding endpoint'
 requests="$(printf '%s\n' \
 	'{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
 	'{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"search","arguments":{"query":"checksum_fn"}}}' \

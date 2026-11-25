@@ -88,6 +88,8 @@ const Settings = struct {
 	embedding_dialect: embedding_http.ApiDialect = .ollama,
 	embedding_auth_header: ?[]const u8 = null,
 	embedding_auth_header_owned: bool = false,
+	embedding_provider_configured: bool = false,
+	embedding_model_configured: bool = false,
 	embedding_dim: usize,
 	batch_size: usize,
 	max_file_size: usize,
@@ -233,7 +235,7 @@ pub fn main(init: std.process.Init) !void {
 	settings.search_weights = &search_weights;
 	defer settings.deinit(allocator);
 
-	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null) {
+	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null and parsed.command != .config) {
 		var stderr_buf: [4096]u8 = undefined;
 		var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 		const se = &stderr_writer.interface;
@@ -606,21 +608,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		.search_weights = null,
 	};
 
-	var env_model: ?[]u8 = null;
-	if (io_singleton.getEnvVarOwned(allocator, "OLLAMA_MODEL")) |value| {
-		env_model = value;
-	} else |err| switch (err) {
-		error.EnvironmentVariableNotFound => {},
-		else => return err,
-	}
-
-	var env_api_key: ?[]u8 = null;
-	if (io_singleton.getEnvVarOwned(allocator, "CODESCAN_EMBEDDING_SERVER_API_KEY")) |value| {
-		env_api_key = value;
-	} else |err| switch (err) {
-		error.EnvironmentVariableNotFound => {},
-		else => return err,
-	}
+	settings.embedding_provider_configured = cfg.embedding_url != null or cfg.embedding_api != null or parsed.seen.embedding_url;
+	settings.embedding_model_configured = cfg.embedding_model != null or parsed.seen.embedding_model;
 
 	if (cfg.output) |value| settings.output = value;
 	if (cfg.top_n) |value| settings.top_n = value;
@@ -656,11 +645,6 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 	settings.lsp_overrides = cfg.lsp_overrides.items;
 	if (cfg.http_host) |value| settings.http_host = value;
 	if (cfg.http_port) |value| settings.http_port = value;
-
-	if (env_model) |value| {
-		settings.embedding_model = value;
-		settings.embedding_model_owned = true;
-	}
 
 	if (parsed.seen.output) settings.output = parsed.output;
 	if (parsed.seen.show_comments) settings.show_comments = parsed.show_comments;
@@ -727,10 +711,8 @@ fn resolveSettings(allocator: std.mem.Allocator, parsed: cli.Parsed, cfg: config
 		}
 	}
 
-	// Format Bearer token from api key (env var overrides config)
-	const api_key = env_api_key orelse cfg.embedding_api_key;
-	defer if (env_api_key) |k| allocator.free(k); // always free owned env string
-	if (api_key) |key| {
+	// Configuration already merges global < environment < project overrides.
+	if (cfg.embedding_api_key) |key| {
 		settings.embedding_auth_header = try std.fmt.allocPrint(allocator, "Bearer {s}", .{key});
 		settings.embedding_auth_header_owned = true;
 	}
@@ -1178,11 +1160,24 @@ fn detectEmbeddingServer(
 	model_name: []const u8,
 	auth_header: ?[]const u8,
 ) ?DetectedServer {
+	return detectEmbeddingServerWithFallback(allocator, transport, configured_url, configured_dialect, model_name, auth_header, true);
+}
+
+fn detectEmbeddingServerWithFallback(
+	allocator: std.mem.Allocator,
+	transport: embedding_http.Transport,
+	configured_url: []const u8,
+	configured_dialect: embedding_http.ApiDialect,
+	model_name: []const u8,
+	auth_header: ?[]const u8,
+	allow_fallback: bool,
+) ?DetectedServer {
 	const configured = switch (configured_dialect) {
 		.ollama => probeOllama(allocator, transport, configured_url, model_name),
 		.openai => probeOpenAI(allocator, transport, configured_url, auth_header),
 	};
 	if (configured) |result| return result;
+	if (!allow_fallback) return null;
 
 	const fallback_url = "http://localhost:8000";
 	if (configured_dialect != .openai or !std.mem.eql(u8, configured_url, fallback_url)) {
@@ -1351,33 +1346,54 @@ fn writeDetectedConfig(
 	config_root: []const u8,
 	url: []const u8,
 	dialect: embedding_http.ApiDialect,
-	detected_model: ?[]const u8,
-	detected_dimension: ?usize,
+	detected_model: []const u8,
+	detected_dimension: usize,
 ) !void {
-    const cfg_path = try configPath(allocator, config_root);
-    defer allocator.free(cfg_path);
-    const content = try std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024));
+	const project_path = try configPath(allocator, config_root);
+	defer allocator.free(project_path);
+	var project = config.loadFromPath(allocator, project_path) catch |err| switch (err) {
+		error.FileNotFound, error.NotDir => config.Config{},
+		else => return err,
+	};
+	defer project.deinit(allocator);
+	const local_identity = project.embedding_url != null or project.embedding_model != null or project.embedding_api != null or project.embedding_dim != null;
+	const global_path: ?[]u8 = if (local_identity) null else (try config.globalPath(allocator)) orelse return error.GlobalConfigUnavailable;
+	defer if (global_path) |path| allocator.free(path);
+	const cfg_path = global_path orelse project_path;
+	try io_singleton.ensureParentDir(cfg_path);
+	const content = std.Io.Dir.cwd().readFileAlloc(io_singleton.getOrInit(), cfg_path, allocator, .limited(64 * 1024)) catch |err| switch (err) {
+		error.FileNotFound => try allocator.dupe(u8, config.global_template),
+		else => return err,
+	};
     defer allocator.free(content);
     const dialect_str = if (dialect == .ollama) "ollama" else "openai";
-    var kvs_buf: [4]config.KV = undefined;
-    kvs_buf[0] = .{ .key = "embedding_url", .value = url };
-    kvs_buf[1] = .{ .key = "embedding_api", .value = dialect_str };
-    var kv_count: usize = 2;
-    if (detected_model) |m| {
-		kvs_buf[kv_count] = .{ .key = "embedding_model", .value = m };
-		kv_count += 1;
-    }
 	var dimension_buf: [32]u8 = undefined;
-    if (detected_dimension) |dimension| {
-		const value = try std.fmt.bufPrint(&dimension_buf, "{d}", .{dimension});
-		kvs_buf[kv_count] = .{ .key = "embedding_dim", .value = value };
-		kv_count += 1;
-    }
-    const updated = try config.writeConfigValues(allocator, content, kvs_buf[0..kv_count]);
+	const value = try std.fmt.bufPrint(&dimension_buf, "{d}", .{detected_dimension});
+	const kvs = [_]config.KV{
+		.{ .key = "embedding_url", .value = url },
+		.{ .key = "embedding_api", .value = dialect_str },
+		.{ .key = "embedding_model", .value = detected_model },
+		.{ .key = "embedding_dim", .value = value },
+	};
+    const updated = try config.writeConfigValues(allocator, content, &kvs);
     defer allocator.free(updated);
-    const file = try std.Io.Dir.cwd().createFile(io_singleton.getOrInit(), cfg_path, .{ .truncate = true });
-    defer file.close(io_singleton.getOrInit());
-    try file.writeStreamingAll(io_singleton.getOrInit(), updated);
+	if (std.mem.eql(u8, content, updated)) return;
+	const io = io_singleton.getOrInit();
+	// Resolve an existing symlink rather than replacing a managed config link.
+	const write_path: [:0]u8 = std.Io.Dir.cwd().realPathFileAlloc(io, cfg_path, allocator) catch |err| switch (err) {
+		error.FileNotFound => try allocator.dupeZ(u8, cfg_path),
+		else => return err,
+	};
+	defer allocator.free(write_path);
+	const existing = std.Io.Dir.cwd().statFile(io, write_path, .{}) catch |err| switch (err) {
+		error.FileNotFound => null,
+		else => return err,
+	};
+	const private_permissions: std.Io.File.Permissions = if (builtin.os.tag == .windows) .default_file else .fromMode(0o600);
+	var atomic = try std.Io.Dir.cwd().createFileAtomic(io, write_path, .{ .replace = true, .permissions = if (existing) |stat| stat.permissions else private_permissions });
+	defer atomic.deinit(io);
+	try atomic.file.writeStreamingAll(io, updated);
+	try atomic.replace(io);
 }
 
 fn writeDetectedConfigLexical(allocator: std.mem.Allocator, config_root: []const u8) !void {
@@ -1793,6 +1809,9 @@ fn loadConfig(allocator: std.mem.Allocator, root_path: []const u8) !config.Confi
 		};
 	};
 	errdefer merged.deinit(allocator);
+	var environment = try config.embeddingEnvironment(allocator);
+	defer environment.deinit(allocator);
+	try config.applyOver(allocator, &merged, &environment);
 
 	const path = try configPath(allocator, root_path);
 	defer allocator.free(path);
@@ -2239,7 +2258,7 @@ fn runInit(
 
 	try stderr.writeAll("  Detecting embedding provider and available model...\n");
 	try stderr.flush();
-	const detected = detectEmbeddingServer(allocator, http_client.transport(), settings.embedding_url, settings.embedding_dialect, settings.embedding_model, settings.embedding_auth_header);
+	const detected = detectEmbeddingServerWithFallback(allocator, http_client.transport(), settings.embedding_url, settings.embedding_dialect, settings.embedding_model, settings.embedding_auth_header, !settings.embedding_provider_configured);
 	defer if (detected) |d| {
 		if (d.dialect == .openai) {
 			if (d.default_model) |model_name| allocator.free(model_name);
@@ -2281,7 +2300,7 @@ fn runInit(
 				use_embeddings = true;
 				try stderr.print(
 					"  Detected Ollama on {s}; model '{s}' returned {d}-dimensional embeddings.\n" ++
-						"  Saved the validated model to .codescan/config.ini.\n",
+						"  Saved validated provider defaults (global unless explicitly overridden by this project).\n",
 					.{ d.url, settings.embedding_model, dimension },
 				);
 			} else if (std.Io.File.stdin().isTty(io_singleton.getOrInit()) catch false) {
@@ -2318,21 +2337,9 @@ fn runInit(
 					try stdout.flush();
 					return;
 				}
-			} else {
-				writeDetectedConfig(
-					allocator,
-					config_root,
-					d.url,
-					d.dialect,
-					null,
-					null,
-				) catch |err| {
-					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
-					_ = stderr.flush() catch {};
-				};
 			}
 		} else {
-			const model_name = d.default_model orelse settings.embedding_model;
+			const model_name = if (settings.embedding_model_configured) settings.embedding_model else d.default_model orelse settings.embedding_model;
 			const configured_dimension: ?usize = if (settings.embedding_auth_header) |auth_header| blk: {
 				try stderr.print(
 					"  Validating authenticated oMLX embedding model '{s}'...\n",
@@ -2360,7 +2367,7 @@ fn runInit(
 				use_embeddings = true;
 				try stderr.print(
 					"  Detected oMLX on {s}; model '{s}' returned {d}-dimensional embeddings.\n" ++
-						"  Saved the validated model to .codescan/config.ini.\n",
+						"  Saved validated provider defaults (global unless explicitly overridden by this project).\n",
 					.{ d.url, model_name, dimension },
 				);
 			} else {
@@ -2376,17 +2383,6 @@ fn runInit(
 					"  Set CODESCAN_EMBEDDING_SERVER_API_KEY (or embedding_api_key) and\n" ++
 						"  select a model before semantic indexing.\n",
 				);
-				writeDetectedConfig(
-					allocator,
-					config_root,
-					d.url,
-					d.dialect,
-					null,
-					null,
-				) catch |err| {
-					_ = stderr.print("  warning: could not update config: {s}\n", .{@errorName(err)}) catch {};
-					_ = stderr.flush() catch {};
-				};
 				try stderr.writeAll("  Index in lexical-only mode? [Y/n] ");
 				if (!promptYesNo(stderr, true)) {
 					try stdout.writeAll("Aborted. Run 'codescan setup-model' for setup instructions.\n");
@@ -6329,8 +6325,11 @@ const usage_status =
 const usage_doctor =
     \\Usage: codescan doctor [--json]
     \\
-    \\Check settings syntax, SQLite integrity, inference-model availability,
+    \\Check settings syntax, SQLite integrity, a real embedding request,
     \\watcher state, and project-state permissions.
+    \\
+    \\The authenticated inference probe checks the configured vector dimension
+    \\and has a 10-second deadline. Indexing's cold-model waits are unchanged.
     \\
     \\A stopped watcher is reported as a note and does not make doctor fail.
     \\
@@ -7036,24 +7035,15 @@ fn runDoctor(
 	}
 
 	if (settings) |value| {
-		if (value.embedding_dialect == .openai and value.embedding_auth_header == null) {
-			try report.add(.fail, "Inference", "embedding_api=openai requires an API key; set CODESCAN_EMBEDDING_SERVER_API_KEY or embedding_api_key");
-		} else {
-			var http = embedding_http.StdHttpTransport.init(allocator);
-			defer http.deinit();
-			const available = embedding_http.inferenceAvailable(
-				allocator,
-				http.transport(),
-				value.embedding_url,
-				value.embedding_model,
-				value.embedding_dialect,
-			);
-			if (available) {
-				try report.addFmt(.pass, "Inference", "model '{s}' is available at {s}", .{ value.embedding_model, value.embedding_url });
-			} else {
-				try report.addFmt(.fail, "Inference", "model '{s}' is unavailable at {s}", .{ value.embedding_model, value.embedding_url });
-			}
-		}
+		var http = embedding_http.StdHttpTransport.init(allocator);
+		defer http.deinit();
+		try doctor.checkInference(&report, http.transport(), .{
+			.url = value.embedding_url,
+			.model = value.embedding_model,
+			.dialect = value.embedding_dialect,
+			.auth_header = value.embedding_auth_header,
+			.dimension = value.embedding_dim,
+		});
 	}
 
 	if (pidfile.readAndCheckPid(allocator, state_dir) catch null) |pid| {
@@ -7868,10 +7858,12 @@ test "watcher database initialization accepts valid existing and missing indexes
 
 const OpenAIFallbackMock = struct {
 	ollama_probes: usize = 0,
+	health_probes: usize = 0,
 	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: embedding_http.HttpRequest) !embedding_http.HttpResponse {
 		const self: *OpenAIFallbackMock = @ptrCast(@alignCast(ctx));
 		if (std.mem.endsWith(u8, req.url, "/api/tags")) self.ollama_probes += 1;
 		if (std.mem.endsWith(u8, req.url, "/health")) {
+			self.health_probes += 1;
 			return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"healthy\",\"default_model\":\"test-model-mlx\"}") };
 		}
 		if (std.mem.endsWith(u8, req.url, "/v1/models")) {
@@ -7935,6 +7927,14 @@ test "detectEmbeddingServer finds oMLX when Ollama unavailable" {
     try std.testing.expect(result.?.default_model != null);
     try std.testing.expectEqualStrings("test-model-mlx", result.?.default_model.?);
     allocator.free(result.?.default_model.?);
+}
+
+test "an explicitly configured provider never falls back to another host" {
+	var mock = OpenAIFallbackMock{};
+	const result = detectEmbeddingServerWithFallback(std.testing.allocator, mock.transport(), "http://provider.invalid:11434", .ollama, "test-model", null, false);
+	try std.testing.expect(result == null);
+	try std.testing.expectEqual(@as(usize, 1), mock.ollama_probes);
+	try std.testing.expectEqual(@as(usize, 0), mock.health_probes);
 }
 
 test "detectEmbeddingServer respects the configured OpenAI-compatible URL" {
@@ -8018,6 +8018,69 @@ test "validateEmbeddingModel probes an installed Ollama model and returns its di
 
 	try std.testing.expectEqual(@as(usize, 2), dimension);
 	try std.testing.expectEqual(@as(usize, 1), mock.embed_count);
+}
+
+test "detected provider defaults are saved globally without copying them into new projects" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io, "project/.codescan");
+	try tmp.dir.createDirPath(io, "xdg");
+	try tmp.dir.writeFile(io, .{ .sub_path = "project/.codescan/config.ini", .data = "top=7\n" });
+	const root = try tmp.dir.realPathFileAlloc(io, "project", allocator);
+	defer allocator.free(root);
+	const xdg = try tmp.dir.realPathFileAlloc(io, "xdg", allocator);
+	defer allocator.free(xdg);
+	var env = std.process.Environ.Map.init(allocator);
+	defer env.deinit();
+	try env.put("XDG_CONFIG_HOME", xdg);
+	const previous = io_singleton.getEnvMap();
+	io_singleton.setEnvMap(&env);
+	defer io_singleton.setEnvMap(previous);
+	try writeDetectedConfig(allocator, root, "http://provider:8000", .openai, "test-model", 2);
+	const project = try tmp.dir.readFileAlloc(io, "project/.codescan/config.ini", allocator, .limited(4096));
+	defer allocator.free(project);
+	try std.testing.expectEqualStrings("top=7\n", project);
+	const path = (try config.globalPath(allocator)).?;
+	defer allocator.free(path);
+	var saved = try config.loadFromPath(allocator, path);
+	defer saved.deinit(allocator);
+	try std.testing.expectEqualStrings("http://provider:8000", saved.embedding_url.?);
+	try std.testing.expectEqualStrings("test-model", saved.embedding_model.?);
+	try std.testing.expectEqual(@as(?usize, 2), saved.embedding_dim);
+}
+
+test "explicit project provider choices do not change shared defaults" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io, "project/.codescan");
+	try tmp.dir.createDirPath(io, "xdg/codescan");
+	try tmp.dir.writeFile(io, .{ .sub_path = "project/.codescan/config.ini", .data = "embedding_url=http://project:11434\ntop=7\n" });
+	const shared = "embedding_url=http://shared:11434\nembedding_model=shared-model\n";
+	try tmp.dir.writeFile(io, .{ .sub_path = "xdg/codescan/config.ini", .data = shared });
+	const root = try tmp.dir.realPathFileAlloc(io, "project", allocator);
+	defer allocator.free(root);
+	const xdg = try tmp.dir.realPathFileAlloc(io, "xdg", allocator);
+	defer allocator.free(xdg);
+	var env = std.process.Environ.Map.init(allocator);
+	defer env.deinit();
+	try env.put("XDG_CONFIG_HOME", xdg);
+	const previous = io_singleton.getEnvMap();
+	io_singleton.setEnvMap(&env);
+	defer io_singleton.setEnvMap(previous);
+	try writeDetectedConfig(allocator, root, "http://project:8000", .openai, "project-model", 2);
+	const after = try tmp.dir.readFileAlloc(io, "xdg/codescan/config.ini", allocator, .limited(4096));
+	defer allocator.free(after);
+	try std.testing.expectEqualStrings(shared, after);
+	const project_path = try configPath(allocator, root);
+	defer allocator.free(project_path);
+	var project = try config.loadFromPath(allocator, project_path);
+	defer project.deinit(allocator);
+	try std.testing.expectEqualStrings("http://project:8000", project.embedding_url.?);
+	try std.testing.expectEqualStrings("project-model", project.embedding_model.?);
 }
 
 test "validateEmbeddingModel supports authenticated OpenAI-compatible providers" {

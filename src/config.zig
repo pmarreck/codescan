@@ -9,8 +9,8 @@ pub const default_template =
     \\# codescan project configuration
     \\# https://github.com/pmarreck/codescan
     \\#
-    \\# This file lives in .codescan/config at the root of an indexed project.
-    \\# It is safe to commit — it contains no secrets, only search preferences.
+    \\# This file lives in .codescan/config.ini at the root of an indexed project.
+    \\# Keep credentials out of version control.
     \\# Uncomment and modify values as needed.
     \\# Changes take effect on the next command invocation.
     \\# See: codescan --help
@@ -21,12 +21,8 @@ pub const default_template =
     \\# Number of search results to return
     \\#top=10
     \\
-    \\# Embedding server (ollama_url and ollama_model are accepted as aliases)
-    \\#embedding_url=http://localhost:11434
-    \\#embedding_model=bge-large
-    \\#embedding_api=ollama
-    \\#embedding_api_key=
-    \\#embedding_dim=1024
+    \\# Provider settings are inherited from user configuration and environment.
+    \\# Add explicit project overrides only when this project needs a different provider.
     \\#batch_size=16
     \\
     \\# Maximum file size to index (bytes, default 5 MiB)
@@ -73,6 +69,13 @@ pub const default_template =
     \\#http_host=127.0.0.1
     \\#http_port=8123
     \\
+;
+
+pub const global_template =
+	\\# codescan user configuration
+	\\# Shared defaults for all projects. Explicit project settings override these.
+	\\# Keep this file private if it contains credentials.
+	\\
 ;
 
 pub const IgnoreOverride = struct {
@@ -960,6 +963,11 @@ test "writeConfigValues roundtrip preserves ${VAR} placeholder via writeValueFor
 /// that silently falls out of date, and the failure mode — one setting quietly
 /// not inheriting — is invisible until someone debugs it by hand.
 pub fn applyOver(allocator: std.mem.Allocator, base: *Config, overlay: *Config) !void {
+	// A literal replacement must not retain a lower tier's placeholder spelling.
+	if (overlay.embedding_api_key != null and overlay.embedding_api_key_raw == null) {
+		if (base.embedding_api_key_raw) |old| allocator.free(old);
+		base.embedding_api_key_raw = null;
+	}
 	inline for (@typeInfo(Config).@"struct".fields) |field| {
 		const info = @typeInfo(field.type);
 		if (comptime info == .optional) {
@@ -1072,9 +1080,129 @@ pub fn globalPath(allocator: std.mem.Allocator) !?[]u8 {
 	if (env_map.get("XDG_CONFIG_HOME")) |xdg| {
 		if (xdg.len > 0) return try std.fs.path.join(allocator, &.{ xdg, "codescan", "config.ini" });
 	}
-	const home = env_map.get("HOME") orelse return null;
+	const home = env_map.get("HOME") orelse (if (@import("builtin").os.tag == .windows) env_map.get("USERPROFILE") else null) orelse return null;
 	if (home.len == 0) return null;
 	return try std.fs.path.join(allocator, &.{ home, ".config", "codescan", "config.ini" });
+}
+
+pub fn embeddingEnvironment(allocator: std.mem.Allocator) !Config {
+	var result: Config = .{};
+	errdefer result.deinit(allocator);
+	const env = io_singleton.getEnvMapOrInit(allocator);
+	const variables = .{
+		.{ "embedding_url", "CODESCAN_EMBEDDING_URL", "OLLAMA_URL" },
+		.{ "embedding_model", "CODESCAN_EMBEDDING_MODEL", "OLLAMA_MODEL" },
+		.{ "embedding_api", "CODESCAN_EMBEDDING_API", "" },
+		.{ "embedding_api_key", "CODESCAN_EMBEDDING_API_KEY", "CODESCAN_EMBEDDING_SERVER_API_KEY" },
+		.{ "embedding_dim", "CODESCAN_EMBEDDING_DIM", "OLLAMA_EMBEDDING_DIM" },
+	};
+	inline for (variables) |variable| {
+		const primary = env.get(variable[1]);
+		const legacy = if (variable[2].len > 0) env.get(variable[2]) else null;
+		const value = if (primary != null and primary.?.len > 0) primary.? else legacy orelse "";
+		if (value.len > 0) {
+			if (comptime std.mem.eql(u8, variable[0], "embedding_dim")) {
+				const dimension = try std.fmt.parseInt(usize, value, 10);
+				if (dimension == 0) return error.InvalidValue;
+				result.embedding_dim = dimension;
+			} else {
+				if (comptime std.mem.eql(u8, variable[0], "embedding_api")) {
+					if (!std.mem.eql(u8, value, "openai") and !std.mem.eql(u8, value, "ollama")) return error.InvalidValue;
+				}
+				@field(result, variable[0]) = try allocator.dupe(u8, value);
+			}
+		}
+	}
+	return result;
+}
+
+test "new local config templates contain no provider identity" {
+	inline for (.{ "embedding_url", "embedding_model", "embedding_api", "embedding_dim", "ollama_url", "ollama_model" }) |key| {
+		try std.testing.expect(std.mem.indexOf(u8, default_template, key) == null);
+	}
+}
+
+test "embedding environment supplies shared defaults and local overrides win" {
+	const allocator = std.testing.allocator;
+	var env = std.process.Environ.Map.init(allocator);
+	defer env.deinit();
+	const previous = io_singleton.getEnvMap();
+	io_singleton.setEnvMap(&env);
+	defer io_singleton.setEnvMap(previous);
+	try env.put("OLLAMA_URL", "http://legacy:11434");
+	try env.put("OLLAMA_MODEL", "legacy-model");
+	try env.put("CODESCAN_EMBEDDING_URL", "http://provider:8000");
+	try env.put("CODESCAN_EMBEDDING_MODEL", "shared-model");
+	try env.put("CODESCAN_EMBEDDING_API", "openai");
+	try env.put("CODESCAN_EMBEDDING_DIM", "1536");
+	try env.put("CODESCAN_EMBEDDING_API_KEY", "environment-key");
+	var shared = try parseText(allocator, "embedding_url=http://global:11434\nembedding_model=global-model\n");
+	defer shared.deinit(allocator);
+	var environment = try embeddingEnvironment(allocator);
+	defer environment.deinit(allocator);
+	try applyOver(allocator, &shared, &environment);
+	try std.testing.expectEqualStrings("http://provider:8000", shared.embedding_url.?);
+	try std.testing.expectEqualStrings("shared-model", shared.embedding_model.?);
+	try std.testing.expectEqualStrings("openai", shared.embedding_api.?);
+	try std.testing.expectEqualStrings("environment-key", shared.embedding_api_key.?);
+	try std.testing.expectEqual(@as(?usize, 1536), shared.embedding_dim);
+	var project = try parseText(allocator, "embedding_url=http://project:8000\nembedding_model=project-model\nembedding_api_key=project-key\n");
+	defer project.deinit(allocator);
+	try applyOver(allocator, &shared, &project);
+	try std.testing.expectEqualStrings("http://project:8000", shared.embedding_url.?);
+	try std.testing.expectEqualStrings("project-model", shared.embedding_model.?);
+	try std.testing.expectEqualStrings("project-key", shared.embedding_api_key.?);
+	try std.testing.expectEqualStrings("openai", shared.embedding_api.?);
+}
+
+test "legacy embedding environment aliases remain supported" {
+	const allocator = std.testing.allocator;
+	var env = std.process.Environ.Map.init(allocator);
+	defer env.deinit();
+	const previous = io_singleton.getEnvMap();
+	io_singleton.setEnvMap(&env);
+	defer io_singleton.setEnvMap(previous);
+	try env.put("OLLAMA_URL", "http://legacy:11434");
+	try env.put("OLLAMA_MODEL", "legacy-model");
+	try env.put("OLLAMA_EMBEDDING_DIM", "1536");
+	try env.put("CODESCAN_EMBEDDING_SERVER_API_KEY", "legacy-key");
+	var cfg = try embeddingEnvironment(allocator);
+	defer cfg.deinit(allocator);
+	try std.testing.expectEqualStrings("http://legacy:11434", cfg.embedding_url.?);
+	try std.testing.expectEqualStrings("legacy-model", cfg.embedding_model.?);
+	try std.testing.expectEqualStrings("legacy-key", cfg.embedding_api_key.?);
+	try std.testing.expectEqual(@as(?usize, 1536), cfg.embedding_dim);
+}
+
+test "embedding environment rejects invalid dialects and dimensions" {
+	const allocator = std.testing.allocator;
+	inline for (.{ .{ "CODESCAN_EMBEDDING_API", "unknown" }, .{ "CODESCAN_EMBEDDING_DIM", "0" }, .{ "CODESCAN_EMBEDDING_DIM", "invalid" } }) |case| {
+		var env = std.process.Environ.Map.init(allocator);
+		defer env.deinit();
+		const previous = io_singleton.getEnvMap();
+		io_singleton.setEnvMap(&env);
+		defer io_singleton.setEnvMap(previous);
+		try env.put(case[0], case[1]);
+		if (embeddingEnvironment(allocator)) |value| {
+			var cfg = value;
+			cfg.deinit(allocator);
+			return error.TestUnexpectedResult;
+		} else |_| {}
+	}
+}
+
+test "a literal credential overlay clears the inherited placeholder" {
+	const allocator = std.testing.allocator;
+	var base: Config = .{
+		.embedding_api_key = try allocator.dupe(u8, "old-key"),
+		.embedding_api_key_raw = try allocator.dupe(u8, "${OLD_KEY}"),
+	};
+	defer base.deinit(allocator);
+	var overlay = try parseText(allocator, "embedding_api_key=new-key\n");
+	defer overlay.deinit(allocator);
+	try applyOver(allocator, &base, &overlay);
+	try std.testing.expect(base.embedding_api_key_raw == null);
+	try std.testing.expectEqualStrings("new-key", base.writeValueFor("embedding_api_key"));
 }
 
 test "globalPath prefers XDG_CONFIG_HOME and falls back to HOME" {
@@ -1111,5 +1239,12 @@ test "globalPath prefers XDG_CONFIG_HOME and falls back to HOME" {
 		const path = (try globalPath(allocator)).?;
 		defer allocator.free(path);
 		try std.testing.expectEqualStrings(expected_home, path);
+	}
+	if (@import("builtin").os.tag == .windows) {
+		_ = env.remove("HOME");
+		try env.put("USERPROFILE", "C:\\Users\\someone");
+		const path = (try globalPath(allocator)).?;
+		defer allocator.free(path);
+		try std.testing.expectEqualStrings("C:\\Users\\someone\\.config\\codescan\\config.ini", path);
 	}
 }
