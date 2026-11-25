@@ -418,3 +418,54 @@ the owner's respective decisions. The original request failure remains
 unattributed because its generic error and discarded journal do not establish
 the underlying operation or socket cause. These limits are not described as
 resolved by the successful current checks.
+
+## Approved operational follow-through
+
+The owner subsequently approved scoped provider and infrastructure logging fix
+requests. Both are delivered durably, with a human notification for the live
+infrastructure coordinator. No provider agent is currently live, so that delivery
+is durable-only. The requests preserve startup memory/offload accounting and ask
+for targeted runtime-noise filtering plus a coordinated per-service retention
+review, not a blind verbosity reduction, global limit increase or restart.
+The infrastructure coordinator acknowledged the request, independently confirmed
+the 200-message/30-second ingress limit, and found a later report of 1,432,327
+suppressed lines. More storage cannot recover ingress loss. The coordinator
+forwarded the source boundaries and acceptance criteria to the provider:
+preserve raw input to both accounting/status parsers, filter only the forwarded
+copy by complete line, retain unknown/error/startup lines, and expose bounded
+suppression counters. Qualification must replay fragmented writes and a burst
+above the unchanged limit while checking identical accounting and LastError,
+visible startup/error sentinels, and access-log contribution in an isolated
+journal or VM. No production policy or service was changed. Provider
+implementation and rollout approval remain pending.
+
+The reporting agent independently confirms working CLI semantic results, an
+active watcher and zero pending paths. The owner approved checkpointing and
+resuming only that agent's existing conversation for its one-time MCP upgrade.
+A durable request asks for its checkpoint, exact conversation identity and
+safe-boundary readiness before any interruption; the healthy watcher is not
+part of the restart.
+
+For the single preexisting BGE/1024 mismatch, the owner explicitly authorized
+replacing and discarding the regeneratable original. The exact database path,
+prior checksum, metadata and process inventory were logged privately first.
+The real index command validated a local Jina embedding before replacing the
+database. It indexed 10 files and 99 symbols; doctor now passes database
+integrity, stored Jina/1536 compatibility and an actual provider POST. Its
+existing lexical-search preference remains unchanged. No database backup was
+created for this approved replacement, and no other fleet index was rebuilt.
+Status independently reports 99 code vectors and 18 comment vectors; a real
+vector-mode query returns a positive score with inference available. The
+project's stopped watcher remains a note, not a health failure.
+
+The reporting agent subsequently checkpointed its work and confirmed the exact
+conversation identity. The old client exited normally while its client-update
+command ran; no signal was sent. After the pane returned to its shell, the
+existing conversation resumed in the same project and pane. The launcher could
+not report the native identity immediately, so its initial result was treated
+as unconfirmed rather than retried. Process arguments and the native registry
+then confirmed the requested identity, directory and idle state. A single
+native follow-up asked for the actual MCP check. The agent acknowledged three
+positive vector scores, watcher-active freshness, zero pending paths and the
+correct selected database with the existing watcher still running. Its compiler
+work and goal-control state were preserved. The one-time reconnect is complete.
