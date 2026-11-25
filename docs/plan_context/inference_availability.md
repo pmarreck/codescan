@@ -248,3 +248,38 @@ correctly rejected outdated setup wording; the current output retains the
 existing dialect assertions and describes effective shared configuration. This
 is host verification, not yet native cross-platform CI qualification or fleet
 deployment. Long-lived MCP reload and daemon descriptor fixes remain separate.
+
+The configuration/doctor increment is committed and pushed as `ef0d7956`.
+Its GitHub build workflow passes, including native Linux and Mac coverage.
+Windows preparation fails before runtime qualification because a Windows-only
+test calls a nonexistent environment-map removal method. The correction uses
+an independently owned map containing only the profile fallback. Both Windows
+test products must compile and then pass their native runners; host success
+does not qualify this branch.
+
+The next increment reloads configuration and weights for each MCP tool call,
+reports the selected database rather than a hardcoded default, and serializes
+error messages with the JSON encoder. Its initial regression run has three
+failures covering stale settings, incorrect database reporting, and invalid
+JSON containing quotes or newlines. A real, persistent stdio session also
+changes its configuration between requests. Upgrading an already-running old
+MCP executable still requires a one-time reconnect; changing its environment
+also requires restart. Watchers retain their startup snapshot.
+
+Detached watcher children now receive null-device standard streams rather
+than closed handles. A test helper uses the production launcher, while a
+closed-handle negative control must fail on the actual operating system.
+Native Windows coverage uses those same products and checks the expected
+control failure rather than treating any nonzero exit as sufficient.
+
+Captured logs also exposed independently constructed positional stderr
+writers overwriting earlier lines in regular files. Diagnostic writers now
+use streaming writes, with a real-file regression requiring both messages.
+Transport diagnostics retain the HTTP request stage, response status, and
+underlying stream error when available. Unconfirmed output failures must not
+claim that an embedding connection failed. These changes are implemented;
+the confined host suite passes all 840 available unit tests and every required
+adapter/build contract, with the existing optional unit skip and two external
+provider exclusions unchanged. Both Windows test products now compile after
+the environment-map correction. Native runtime qualification and deployment
+remain pending.

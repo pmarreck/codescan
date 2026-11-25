@@ -435,6 +435,21 @@ const EmbedRequest = struct {
 
 pub const StdHttpTransport = struct {
 	client: std.http.Client,
+	last_failure: ?Failure = null,
+	last_response_status: ?u16 = null,
+
+	pub const Failure = struct {
+		stage: enum { parse_uri, connect, write_request, response_head, response_body },
+		err: anyerror,
+		cause: ?anyerror = null,
+
+		pub fn describe(self: Failure, buf: []u8) []const u8 {
+			return if (self.cause) |cause|
+				std.fmt.bufPrint(buf, "HTTP {s}: {s} (underlying {s})", .{ @tagName(self.stage), @errorName(self.err), @errorName(cause) }) catch "HTTP request failed"
+			else
+				std.fmt.bufPrint(buf, "HTTP {s}: {s}", .{ @tagName(self.stage), @errorName(self.err) }) catch "HTTP request failed";
+		}
+	};
 
 	pub fn init(allocator: std.mem.Allocator) StdHttpTransport {
 		return .{ .client = .{ .allocator = allocator, .io = io_singleton.getOrInit() } };
@@ -450,6 +465,8 @@ pub const StdHttpTransport = struct {
 
 	fn send(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
 		const self: *StdHttpTransport = @ptrCast(@alignCast(ctx));
+		self.last_failure = null;
+		self.last_response_status = null;
 		if (req.deadline_ns) |deadline_ns| {
 			return sendWithDeadline(allocator, .{ .ctx = self, .send = sendOnce }, req, deadline_ns);
 		}
@@ -458,9 +475,15 @@ pub const StdHttpTransport = struct {
 
 	fn sendOnce(ctx: *anyopaque, allocator: std.mem.Allocator, req: HttpRequest) !HttpResponse {
 		const self: *StdHttpTransport = @ptrCast(@alignCast(ctx));
+		self.last_failure = null;
+		self.last_response_status = null;
+		var stage: @FieldType(Failure, "stage") = .parse_uri;
+		var cause: ?anyerror = null;
+		errdefer |err| self.last_failure = .{ .stage = stage, .err = err, .cause = cause };
 		const uri = try std.Uri.parse(req.url);
 
 		const method = try parseMethod(req.method);
+		stage = .connect;
 		var request = try self.client.request(method, uri, .{
 			.extra_headers = req.headers,
 		});
@@ -468,9 +491,13 @@ pub const StdHttpTransport = struct {
 		errdefer {
 			// An error before receiveHead leaves the reader ready for reuse.
 			// Never pool an incomplete request, including an early cancellation.
-			if (request.connection) |connection| connection.closing = true;
+			if (request.connection) |connection| {
+				cause = if (stage == .write_request) connection.stream_writer.err else connection.stream_reader.err;
+				connection.closing = true;
+			}
 		}
 
+		stage = .write_request;
 		if (method.requestHasBody()) {
 			const payload = try allocator.dupe(u8, req.body);
 			defer allocator.free(payload);
@@ -478,8 +505,11 @@ pub const StdHttpTransport = struct {
 		} else {
 			try request.sendBodiless();
 		}
+		stage = .response_head;
 		var response = try request.receiveHead(&.{});
+		self.last_response_status = @intFromEnum(response.head.status);
 
+		stage = .response_body;
 		var buffer: [8192]u8 = undefined;
 		const reader = response.reader(&buffer);
 		const body = try readAllAlloc(allocator, reader, 1024 * 1024);
@@ -489,6 +519,17 @@ pub const StdHttpTransport = struct {
 
 
 };
+
+test "HTTP failure descriptions preserve stage and underlying socket errors" {
+	inline for (@typeInfo(@FieldType(StdHttpTransport.Failure, "stage")).@"enum".fields) |field| {
+		var buf: [256]u8 = undefined;
+		const failure = StdHttpTransport.Failure{ .stage = @enumFromInt(field.value), .err = error.WriteFailed, .cause = error.BrokenPipe };
+		const description = failure.describe(&buf);
+		try std.testing.expect(std.mem.indexOf(u8, description, field.name) != null);
+		try std.testing.expect(std.mem.indexOf(u8, description, "WriteFailed") != null);
+		try std.testing.expect(std.mem.indexOf(u8, description, "BrokenPipe") != null);
+	}
+}
 
 fn parseMethod(value: []const u8) !std.http.Method {
 	if (std.mem.eql(u8, value, "POST")) return .POST;

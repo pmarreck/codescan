@@ -115,7 +115,35 @@ pub const STDERR_BUF_SIZE: usize = 4096;
 ///   var w = io_singleton.stderrWriter(&buf);
 ///   const stderr = &w.interface;
 pub fn stderrWriter(buf: []u8) std.Io.File.Writer {
-	return std.Io.File.stderr().writer(getOrInit(), buf);
+	return diagnosticWriter(std.Io.File.stderr(), buf);
+}
+
+/// Diagnostics are streams even when redirected to a regular log file.
+/// Positional writers restart at offset zero and overwrite previous messages.
+pub fn diagnosticWriter(file: std.Io.File, buf: []u8) std.Io.File.Writer {
+	return file.writerStreaming(getOrInit(), buf);
+}
+
+test "independent diagnostic writers preserve every message in a regular file" {
+	const allocator = std.testing.allocator;
+	const io = getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	{
+		const file = try tmp.dir.createFile(io, "diagnostics.log", .{});
+		defer file.close(io);
+		var first_buffer: [64]u8 = undefined;
+		var first = diagnosticWriter(file, &first_buffer);
+		try first.interface.writeAll("first diagnostic\n");
+		try first.interface.flush();
+		var second_buffer: [64]u8 = undefined;
+		var second = diagnosticWriter(file, &second_buffer);
+		try second.interface.writeAll("second diagnostic\n");
+		try second.interface.flush();
+	}
+	const contents = try tmp.dir.readFileAlloc(io, "diagnostics.log", allocator, .limited(4096));
+	defer allocator.free(contents);
+	try std.testing.expectEqualStrings("first diagnostic\nsecond diagnostic\n", contents);
 }
 
 /// Create the parent directory of `path` if it doesn't exist.

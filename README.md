@@ -716,7 +716,9 @@ New project configs do not copy provider identity. `codescan init` saves
 validated defaults in the user config unless the project already has explicit
 provider overrides. An explicitly configured provider is not replaced with a
 different host when unavailable. Restart existing MCP servers and watchers after
-changing their settings; long-lived processes retain their startup settings.
+changing their environment or upgrading older servers. Current MCP servers reload
+user and project configuration before each tool call; watchers retain their
+startup settings and need restarting after configuration changes.
 
 Create `<root>/.codescan/config.ini` for project-specific settings or intentional
 provider overrides. Legacy `.codescan/config` files remain supported. Example:

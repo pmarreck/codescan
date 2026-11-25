@@ -1241,8 +1241,11 @@ test "globalPath prefers XDG_CONFIG_HOME and falls back to HOME" {
 		try std.testing.expectEqualStrings(expected_home, path);
 	}
 	if (@import("builtin").os.tag == .windows) {
-		_ = env.remove("HOME");
-		try env.put("USERPROFILE", "C:\\Users\\someone");
+		var profile_env = std.process.Environ.Map.init(allocator);
+		defer profile_env.deinit();
+		io_singleton.setEnvMap(&profile_env);
+		defer io_singleton.setEnvMap(&env);
+		try profile_env.put("USERPROFILE", "C:\\Users\\someone");
 		const path = (try globalPath(allocator)).?;
 		defer allocator.free(path);
 		try std.testing.expectEqualStrings("C:\\Users\\someone\\.config\\codescan\\config.ini", path);

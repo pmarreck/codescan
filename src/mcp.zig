@@ -79,6 +79,12 @@ pub const Settings = struct {
 	ignore_lang: []const config.IgnoreOverride = &[_]config.IgnoreOverride{},
 	include_node_modules: bool = false,
 	search_weights: ?*const weights.Table = null,
+	source: ?SettingsSource = null,
+};
+
+pub const SettingsSource = struct {
+	ctx: *anyopaque,
+	load: *const fn (*anyopaque, std.mem.Allocator) anyerror!Settings,
 };
 
 fn updateSettings(settings: Settings) main.UpdateSettings {
@@ -167,7 +173,7 @@ fn formatId(allocator: std.mem.Allocator, id: ?std.json.Value) ![]u8 {
 	const id_val = id orelse return allocator.dupe(u8, "null");
 	return switch (id_val) {
 		.integer => |v| std.fmt.allocPrint(allocator, "{d}", .{v}),
-		.string => |s| std.fmt.allocPrint(allocator, "\"{s}\"", .{s}),
+		.string => |s| std.json.Stringify.valueAlloc(allocator, s, .{}),
 		else => allocator.dupe(u8, "null"),
 	};
 }
@@ -183,7 +189,71 @@ pub fn formatResult(allocator: std.mem.Allocator, id: ?std.json.Value, result_js
 pub fn formatError(allocator: std.mem.Allocator, id: ?std.json.Value, code: i64, message: []const u8) ![]u8 {
 	const id_str = try formatId(allocator, id);
 	defer allocator.free(id_str);
-	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":\"{s}\"}}}}", .{ id_str, code, message });
+	const escaped = try std.json.Stringify.valueAlloc(allocator, message, .{});
+	defer allocator.free(escaped);
+	return std.fmt.allocPrint(allocator, "{{\"jsonrpc\":\"2.0\",\"id\":{s},\"error\":{{\"code\":{d},\"message\":{s}}}}}", .{ id_str, code, escaped });
+}
+
+test "MCP error details preserve quotes and newlines as valid JSON" {
+	const allocator = std.testing.allocator;
+	const message = "model \"fixture\" failed\nverify settings";
+	const response = try formatError(allocator, .{ .integer = 1 }, -32603, message);
+	defer allocator.free(response);
+	var parsed = try std.json.parseFromSlice(std.json.Value, allocator, response, .{});
+	defer parsed.deinit();
+	try std.testing.expectEqualStrings(message, parsed.value.object.get("error").?.object.get("message").?.string);
+}
+
+test "MCP tool calls reload their configured settings instead of retaining the startup snapshot" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io, "startup-project/.git");
+	try tmp.dir.createDirPath(io, "startup-project/.codescan");
+	try tmp.dir.createDirPath(io, "reload-project/.git");
+	try tmp.dir.createDirPath(io, "reload-project/.codescan");
+	const startup_root = try tmp.dir.realPathFileAlloc(io, "startup-project", allocator);
+	defer allocator.free(startup_root);
+	const reloaded_root = try tmp.dir.realPathFileAlloc(io, "reload-project", allocator);
+	defer allocator.free(reloaded_root);
+	const Source = struct {
+		root: []const u8,
+		calls: usize = 0,
+		fn load(ctx: *anyopaque, _: std.mem.Allocator) !Settings {
+			const self: *@This() = @ptrCast(@alignCast(ctx));
+			self.calls += 1;
+			return .{ .root_path = self.root, .db_path = "configured-index.sqlite3" };
+		}
+	};
+	var source = Source{ .root = reloaded_root };
+	var request = try std.json.parseFromSlice(std.json.Value, allocator, "{\"name\":\"root\"}", .{});
+	defer request.deinit();
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, request.value, .{
+		.root_path = startup_root,
+		.db_path = "startup-index.sqlite3",
+		.source = .{ .ctx = &source, .load = Source.load },
+	});
+	defer allocator.free(response);
+	try std.testing.expectEqual(@as(usize, 1), source.calls);
+	try std.testing.expect(std.mem.indexOf(u8, response, "reload-project") != null);
+	try std.testing.expect(std.mem.indexOf(u8, response, "configured-index.sqlite3") != null);
+}
+
+test "MCP root reports the configured database rather than inventing a default path" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	try tmp.dir.createDirPath(io, ".git");
+	try tmp.dir.createDirPath(io, ".codescan");
+	const root = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(root);
+	var request = try std.json.parseFromSlice(std.json.Value, allocator, "{\"name\":\"root\"}", .{});
+	defer request.deinit();
+	const response = try handleToolsCall(allocator, .{ .integer = 1 }, request.value, .{ .root_path = root, .db_path = "configured-index.sqlite3" });
+	defer allocator.free(response);
+	try std.testing.expect(std.mem.indexOf(u8, response, "configured-index.sqlite3") != null);
 }
 
 /// Build the initialize response.
@@ -214,10 +284,23 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 		break :blk a.object;
 	} else null;
 
+	// Each request borrows a fresh configuration snapshot only until its tool
+	// result is rendered. The returned response uses the caller's allocator.
+	var settings_arena = std.heap.ArenaAllocator.init(allocator);
+	defer settings_arena.deinit();
+	const current = if (settings.source) |source|
+		source.load(source.ctx, settings_arena.allocator()) catch |err| {
+			const message = try std.fmt.allocPrint(allocator, "could not reload Codescan configuration: {s}; run 'codescan doctor' to inspect settings", .{@errorName(err)});
+			defer allocator.free(message);
+			return formatError(allocator, id, -32603, message);
+		}
+	else
+		settings;
+
 	// Dispatch to tool handler
 	var err_detail: ?[]u8 = null;
 	defer if (err_detail) |d| allocator.free(d);
-	const result = callTool(allocator, name, args, settings, &err_detail) catch |err| {
+	const result = callTool(allocator, name, args, current, &err_detail) catch |err| {
 		const msg: []const u8 = err_detail orelse switch (err) {
 			error.OutOfMemory => "out of memory",
 			error.ToolFailed => "tool execution failed (check stderr for details)",
@@ -511,7 +594,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 			}
 			msg_writer.print("Run 'codescan index' to rebuild.", .{}) catch {};
 			const msg = msg_writer.buffered();
-			return toolError("{s}", .{msg});
+			return toolErrorDetail(allocator, err_detail, "{s} Verify the configured provider and run 'codescan doctor' before rebuilding the index.", .{msg});
 		}
 		if (freshness_result.outcome == .watcher_active) {
 			freshness_result.semantic_index_pending_paths = main.semanticIndexPendingPathCount(
@@ -752,9 +835,7 @@ fn callTool(allocator: std.mem.Allocator, name: []const u8, args: ?std.json.Obje
 				allocator.free(info.project_root);
 				allocator.free(info.codescan_dir);
 			}
-			const db_path = std.fs.path.join(allocator, &.{ info.codescan_dir, "index.sqlite3" }) catch
-				return toolError("MCP root: db_path join failed\n", .{});
-			defer allocator.free(db_path);
+			const db_path = settings.db_path;
 
 			const pidfile_mod = @import("pidfile.zig");
 			const pid_opt = pidfile_mod.readAndCheckPid(allocator, info.codescan_dir) catch null;

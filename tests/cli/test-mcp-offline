@@ -6,9 +6,10 @@ fixture_db="${CODESCAN_TEST_DB_BIN:?prepared fixture tool required}"
 fixture="$(mktemp -d "${TMPDIR:?}/codescan-mcp-offline.XXXXXX")" || exit 1
 provider_pid=
 service_pid=
+reload_pid=
 cleanup() {
 	local status="$?" provider_status fixture_pid
-	for fixture_pid in "$service_pid" "$provider_pid"; do
+	for fixture_pid in "$service_pid" "$provider_pid" "$reload_pid"; do
 		if [ -n "$fixture_pid" ]; then
 			if kill -0 "$fixture_pid" 2>/dev/null; then
 				kill -TERM "$fixture_pid" || status=1
@@ -42,6 +43,30 @@ read_listening_port() {
 mkdir -p "$fixture/.codescan" || fail setup
 cd "$fixture" || fail 'private working directory unavailable'
 out= err= rc=
+# Keep one real MCP process alive while changing its project configuration.
+# Root must report the current database, not a hardcoded path or startup copy.
+reload_root="$fixture/.codescan/reload-session"
+mkdir -p "$reload_root/.git" "$reload_root/.codescan" || fail 'reload fixture setup'
+printf '%s\n' 'db=.codescan/startup.sqlite3' 'embedding_url=http://127.0.0.1:1' > "$reload_root/.codescan/config.ini"
+coproc RELOAD_SESSION { "$binary" mcp-serve --root "$reload_root" 2> "$reload_root/server.stderr"; }
+reload_pid=$RELOAD_SESSION_PID
+reload_input=${RELOAD_SESSION[1]}
+reload_output=${RELOAD_SESSION[0]}
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize"}' >&"$reload_input"
+IFS= read -r -t 15 reload_response <&"$reload_output" || fail 'reload session initialization'
+printf '%s\n' "$reload_response" | jq -e '.id == 1 and .error == null' >/dev/null || fail 'reload initialization response'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"root"}}' >&"$reload_input"
+IFS= read -r -t 15 reload_response <&"$reload_output" || fail 'startup root response'
+printf '%s\n' "$reload_response" | jq -e '.result.content[0].text | fromjson | .db_path | endswith("startup.sqlite3")' >/dev/null || fail 'root hid its initial configured database'
+printf '%s\n' 'db=.codescan/reloaded.sqlite3' 'embedding_url=http://127.0.0.1:1' > "$reload_root/.codescan/config.ini"
+printf '%s\n' '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"root"}}' >&"$reload_input"
+IFS= read -r -t 15 reload_response <&"$reload_output" || fail 'updated root response'
+printf '%s\n' "$reload_response" | jq -e '.result.content[0].text | fromjson | .db_path | endswith("reloaded.sqlite3")' >/dev/null || fail 'long-lived MCP retained stale project configuration'
+exec {reload_input}>&-
+wait "$reload_pid" || fail 'reload session did not finish cleanly'
+reload_pid=
+exec {reload_output}<&-
+
 capture "$fixture_db" --db .codescan/index.sqlite3 --embedding-dim 2
 [ "$rc" -eq 0 ] || fail 'could not prepare the existing index'
 printf '%s\n' 'embedding_url=http://127.0.0.1:1' 'embedding_api=ollama' 'embedding_model=test-model' 'embedding_dim=2' 'search_mode=lexical' > .codescan/config.ini

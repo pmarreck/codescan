@@ -3,6 +3,11 @@ const io_singleton = @import("io_singleton.zig");
 const builtin = @import("builtin");
 const pidfile = @import("pidfile.zig");
 
+/// A detached watcher must retain valid standard handles, even without a TTY.
+pub fn spawnDaemon(io: std.Io, argv: []const []const u8) !std.process.Child {
+	return std.process.spawn(io, .{ .argv = argv, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore, .create_no_window = builtin.os.tag == .windows });
+}
+
 pub const WatcherInfo = struct {
 	// `std.posix.pid_t` is an opaque pointer on Windows even though this
 	// Unix-only listing cannot run there. Keep the value numeric so callers

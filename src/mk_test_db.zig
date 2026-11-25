@@ -1,6 +1,7 @@
 const std = @import("std");
 const storage = @import("storage.zig");
 const model = @import("model.zig");
+const watcher_mgmt = @import("watcher_mgmt.zig");
 
 pub fn main(init: std.process.Init) !void {
 	const allocator = init.gpa;
@@ -9,6 +10,30 @@ pub fn main(init: std.process.Init) !void {
 	const args = try allocator.alloc([]const u8, args_slice.len);
 	defer allocator.free(args);
 	for (args_slice, 0..) |a, i| args[i] = a;
+	if (args.len == 2 and std.mem.eql(u8, args[1], "--check-detached-stdio")) {
+		var buffer: [16]u8 = undefined;
+		var reader = std.Io.File.stdin().reader(init.io, &buffer);
+		var byte: [1]u8 = undefined;
+		if (try reader.interface.readSliceShort(&byte) != 0) return error.UnexpectedStdinData;
+		try std.Io.File.stdout().writeStreamingAll(init.io, "detached stdout probe\n");
+		try std.Io.File.stderr().writeStreamingAll(init.io, "detached stderr probe\n");
+		return;
+	}
+	if (args.len == 3 and std.mem.eql(u8, args[1], "--spawn-detached-stdio")) {
+		const probe_argv = &.{ args[0], "--check-detached-stdio" };
+		var child = if (std.mem.eql(u8, args[2], "production"))
+			try watcher_mgmt.spawnDaemon(init.io, probe_argv)
+		else if (std.mem.eql(u8, args[2], "closed-control"))
+			try std.process.spawn(init.io, .{ .argv = probe_argv, .stdin = .close, .stdout = .close, .stderr = .close })
+		else
+			return error.UnexpectedArg;
+		const result = try child.wait(init.io);
+		switch (result) {
+			.exited => |status| if (status != 0) return error.DetachedStdioProbeFailed,
+			else => return error.DetachedStdioProbeFailed,
+		}
+		return;
+	}
 
 	var db_path: ?[]const u8 = null;
 	var embedding_dim: usize = 1024;

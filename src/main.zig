@@ -128,6 +128,61 @@ const Settings = struct {
 	}
 };
 
+fn mcpSettings(value: Settings) @import("mcp.zig").Settings {
+	return .{
+		.root_path = value.root_path,
+		.db_path = value.db_path,
+		.lsp_overrides = value.lsp_overrides,
+		.embedding_url = value.embedding_url,
+		.embedding_dialect = value.embedding_dialect,
+		.embedding_auth_header = value.embedding_auth_header,
+		.embedding_model = value.embedding_model,
+		.embedding_dim = value.embedding_dim,
+		.batch_size = value.batch_size,
+		.max_file_size = value.max_file_size,
+		.index_ext = value.index_ext,
+		.index_type = value.index_type,
+		.search_top_n = value.top_n,
+		.search_mode = value.search_mode,
+		.search_fusion = value.fusion,
+		.search_rrf_k = value.rrf_k,
+		.search_fts_mode = value.fts_mode,
+		.search_weight_vector = value.weight_vector,
+		.search_weight_lexical = value.weight_lexical,
+		.search_min_score = value.min_score,
+		.search_ext = value.search_ext,
+		.search_type = value.search_type,
+		.search_lang = value.search_lang,
+		.search_symbol_kind = value.search_symbol_kind,
+		.primary_lang = value.primary_lang,
+		.include_docs = value.include_docs,
+		.docs_only = value.docs_only,
+		.comments_only = value.comments_only,
+		.ignore_global = value.ignore_global,
+		.always_include = value.always_include,
+		.ignore_lang = value.ignore_lang,
+		.include_node_modules = value.include_node_modules,
+		.search_weights = value.search_weights,
+	};
+}
+
+const McpSettingsSource = struct {
+	parsed: cli.Parsed,
+	root: []const u8,
+
+	/// The supplied request arena owns every borrowed setting through rendering.
+	fn load(ctx: *anyopaque, allocator: std.mem.Allocator) !@import("mcp.zig").Settings {
+		const self: *McpSettingsSource = @ptrCast(@alignCast(ctx));
+		const cfg = try loadConfig(allocator, self.root);
+		const table = try allocator.create(weights.Table);
+		table.* = try loadWeights(allocator, self.root);
+		var resolved = try resolveSettings(allocator, self.parsed, cfg, self.root);
+		resolved.search_weights = table;
+		return mcpSettings(resolved);
+	}
+};
+
+
 pub fn main(init: std.process.Init) !void {
 	const allocator = init.gpa;
 	const io = init.io;
@@ -235,7 +290,7 @@ pub fn main(init: std.process.Init) !void {
 	settings.search_weights = &search_weights;
 	defer settings.deinit(allocator);
 
-	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null and parsed.command != .config) {
+	if (settings.embedding_dialect == .openai and settings.embedding_auth_header == null and parsed.command != .config and parsed.command != .mcp_serve) {
 		var stderr_buf: [4096]u8 = undefined;
 		var stderr_writer = io_singleton.stderrWriter(&stderr_buf);
 		const se = &stderr_writer.interface;
@@ -422,41 +477,10 @@ pub fn main(init: std.process.Init) !void {
 		},
 		.mcp_serve => {
 			const mcp = @import("mcp.zig");
-			try mcp.serve(allocator, .{
-				.root_path = settings.root_path,
-				.db_path = settings.db_path,
-				.lsp_overrides = settings.lsp_overrides,
-				.embedding_url = settings.embedding_url,
-				.embedding_dialect = settings.embedding_dialect,
-				.embedding_auth_header = settings.embedding_auth_header,
-				.embedding_model = settings.embedding_model,
-				.embedding_dim = settings.embedding_dim,
-				.batch_size = settings.batch_size,
-				.max_file_size = settings.max_file_size,
-				.index_ext = settings.index_ext,
-				.index_type = settings.index_type,
-				.search_top_n = settings.top_n,
-				.search_mode = settings.search_mode,
-				.search_fusion = settings.fusion,
-				.search_rrf_k = settings.rrf_k,
-				.search_fts_mode = settings.fts_mode,
-				.search_weight_vector = settings.weight_vector,
-				.search_weight_lexical = settings.weight_lexical,
-				.search_min_score = settings.min_score,
-				.search_ext = settings.search_ext,
-				.search_type = settings.search_type,
-				.search_lang = settings.search_lang,
-				.search_symbol_kind = settings.search_symbol_kind,
-				.primary_lang = settings.primary_lang,
-				.include_docs = settings.include_docs,
-				.docs_only = settings.docs_only,
-				.comments_only = settings.comments_only,
-				.ignore_global = settings.ignore_global,
-				.always_include = settings.always_include,
-				.ignore_lang = settings.ignore_lang,
-				.include_node_modules = settings.include_node_modules,
-				.search_weights = settings.search_weights,
-			});
+			var source = McpSettingsSource{ .parsed = parsed, .root = config_root };
+			var current = mcpSettings(settings);
+			current.source = .{ .ctx = &source, .load = McpSettingsSource.load };
+			try mcp.serve(allocator, current);
 		},
 		.mcp_install => {
 			try runMcpInstall(allocator, parsed, settings.root_path, stdout);
@@ -1574,12 +1598,7 @@ fn maybeStartWatcher(
 	// Spawn an internal daemon child. The marker is deliberately omitted from
 	// public help: an interactive `codescan watch` remains foreground.
 	const io_spawn = io_singleton.getOrInit();
-	const child = std.process.spawn(io_spawn, .{
-		.argv = &.{ self_exe, "watch", "--daemon", "--root", settings.root_path },
-		.stdin = .close,
-		.stdout = .close,
-		.stderr = .close,
-	}) catch |err| {
+	const child = watcher_mgmt.spawnDaemon(io_spawn, &.{ self_exe, "watch", "--daemon", "--root", settings.root_path }) catch |err| {
 		_ = stderr.print("note: failed to start watcher: {s}\n", .{@errorName(err)}) catch {};
 		_ = stderr.flush() catch {};
 		syslog.init("codescan");
@@ -3498,13 +3517,20 @@ fn runWatch(
 		.run => {
 			syslog.init("codescan");
 			defer syslog.deinit();
+			var http_client = embedding_http.StdHttpTransport.init(allocator);
+			defer http_client.deinit();
+			var embedding_error: ?anyerror = null;
 			const sql_diagnostics = try allocator.create(storage.ErrorCapture);
 			defer allocator.destroy(sql_diagnostics);
 			sql_diagnostics.* = .{};
 			var daemon_failure_buf: [512]u8 = undefined;
 			errdefer |err| {
 				var detail_buf: [2048]u8 = undefined;
-				const reason = sql_diagnostics.describe(&detail_buf, watcherDaemonFailureReason(&daemon_failure_buf, settings.embedding_url, settings.embedding_model, err), err);
+				const reason = sql_diagnostics.describe(&detail_buf, watcherStartupFailureReason(&daemon_failure_buf, settings.embedding_url, settings.embedding_model, err, .{
+					.embedding_error = embedding_error,
+					.http_failure = http_client.last_failure,
+					.http_status = http_client.last_response_status,
+				}), err);
 				recordDaemonFailure(allocator, codescan_dir, settings.root_path, reason);
 				if (!parsed.watch_daemon) {
 					var error_buf: [4096]u8 = undefined;
@@ -3516,9 +3542,8 @@ fn runWatch(
 			if (parsed.watch_daemon and comptime builtin.os.tag != .windows) {
 				if (std.c.setsid() == -1) return error.WatcherSessionDetachFailed;
 			}
-			var http_client = embedding_http.StdHttpTransport.init(allocator);
-			defer http_client.deinit();
 			try ensureModelAvailableOrExit(allocator, http_client.transport(), settings.embedding_url, settings.embedding_model, settings.embedding_dialect);
+			http_client.last_failure = null;
 			try io_singleton.ensureParentDir(settings.db_path);
 			// Open existing DB or create new one (don't destroy existing index)
 			var initialized = try openWatcherDatabase(allocator, settings.db_path, .{ .embedding_dim = settings.embedding_dim, .embedding_model = settings.embedding_model }, sql_diagnostics);
@@ -3553,6 +3578,7 @@ fn runWatch(
 				.model = settings.embedding_model,
 				.dialect = settings.embedding_dialect,
 				.auth_header = settings.embedding_auth_header,
+				.error_capture = &embedding_error,
 			};
 
 			var index_filters = try filters.buildIndexFilters(allocator, settings.index_ext, settings.index_type);
@@ -3664,6 +3690,49 @@ fn watcherDaemonFailureReason(
 		) catch "embedding request failed after retrying the connection; run 'codescan doctor'",
 		else => std.fmt.bufPrint(buf, "watcher daemon failed: {s}", .{@errorName(err)}) catch "watcher daemon failed",
 	};
+}
+
+const WatcherFailureContext = struct {
+	embedding_error: ?anyerror = null,
+	http_failure: ?embedding_http.StdHttpTransport.Failure = null,
+	http_status: ?u16 = null,
+};
+
+fn watcherStartupFailureReason(buf: []u8, url: []const u8, model_name: []const u8, err: anyerror, context: WatcherFailureContext) []const u8 {
+	if (context.http_failure) |failure| {
+		if (failure.err == err) {
+			var cause_buf: [256]u8 = undefined;
+			return std.fmt.bufPrint(buf, "watcher HTTP request to {s} for configured model '{s}' failed: {s}; run 'codescan doctor'", .{ url, model_name, failure.describe(&cause_buf) }) catch "watcher HTTP request failed; inspect transport diagnostics";
+		}
+	}
+	if (err == error.HttpStatus or err == error.Unauthorized) {
+		if (context.http_status) |status| {
+			return std.fmt.bufPrint(buf, "embedding server at {s} returned HTTP {d} for configured model '{s}'; run 'codescan doctor'", .{ url, status, model_name }) catch "embedding server rejected an HTTP request";
+		}
+	}
+	if (err == error.WriteFailed and context.embedding_error == null) {
+		return "watcher startup write failed (WriteFailed); an embedding POST failure was not confirmed. Check local output and file access as well as HTTP diagnostics";
+	}
+	return watcherDaemonFailureReason(buf, url, model_name, err);
+}
+
+test "watcher does not mislabel an unconfirmed output write failure as an embedding failure" {
+	var buf: [512]u8 = undefined;
+	const reason = watcherStartupFailureReason(&buf, "http://provider:11434", "fixture-model", error.WriteFailed, .{});
+	try std.testing.expect(std.mem.indexOf(u8, reason, "not confirmed") != null);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "retrying the connection") == null);
+}
+
+test "watcher preserves the confirmed HTTP stage socket cause and response status" {
+	var buf: [512]u8 = undefined;
+	const reason = watcherStartupFailureReason(&buf, "http://provider:11434", "fixture-model", error.WriteFailed, .{
+		.embedding_error = error.WriteFailed,
+		.http_failure = .{ .stage = .write_request, .err = error.WriteFailed, .cause = error.BrokenPipe },
+	});
+	try std.testing.expect(std.mem.indexOf(u8, reason, "write_request") != null);
+	try std.testing.expect(std.mem.indexOf(u8, reason, "BrokenPipe") != null);
+	const rejected = watcherStartupFailureReason(&buf, "http://provider:11434", "fixture-model", error.HttpStatus, .{ .embedding_error = error.HttpStatus, .http_status = 503 });
+	try std.testing.expect(std.mem.indexOf(u8, rejected, "HTTP 503") != null);
 }
 
 test "recordDaemonFailure preserves a post-fork watcher error" {

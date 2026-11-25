@@ -40,6 +40,12 @@ main() {
 	require_tool cmp
 
 	[ -x "$BIN" ] && [ -x "$MK_DB" ] || fail 'prepared test artifacts are unavailable'
+	capture timeout 15 "$MK_DB" --spawn-detached-stdio production
+	[ "$rc" -eq 0 ] || fail "the production daemon launcher left invalid standard streams: $err"
+	[ -z "$out" ] && [ -z "$err" ] || fail 'detached child output escaped its null streams'
+	capture timeout 15 "$MK_DB" --spawn-detached-stdio closed-control
+	[ "$rc" -eq 1 ] && [ -z "$out" ] || fail 'the closed-stream negative control did not fail with its expected exit status'
+	printf '%s' "$err" | rg -q 'DetachedStdioProbeFailed' || fail 'the closed-stream negative control failed for an unexpected reason'
 
 	DB_DIR="$(mktemp -d "$TMPDIR/codescan-cli.XXXXXX")"
 	DB="$DB_DIR/index.sqlite3"

@@ -38,6 +38,7 @@ jobs:
             for extension in exe pdb; do
               cp "$unit_product/bin/codescan-unit-tests.$extension" "unit-mswin-$arch/"
             done
+            cp "$unit_product/bin/mk-test-db.exe" "unit-mswin-$arch/"
             git_product="$(nix path-info ".#test-git-mswin-$arch")"
             mkdir -p "git-mswin-$arch"
             ALLOW_NIX_STORE_COPY='Export complete declared Windows CI test tools' cp -R "$git_product/." "git-mswin-$arch/"
@@ -143,6 +144,15 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/ci-test-windows.ps1 -Suite unit -Architecture "${{ matrix.arch }}" -Executable "./unit/codescan-unit-tests.exe" -GitExecutable "./git-tools/cmd/git.exe"
+      - name: Verify detached daemon standard streams and closed-handle control
+        shell: pwsh
+        run: |
+          & ./unit/mk-test-db.exe --spawn-detached-stdio production
+          if ($LASTEXITCODE -ne 0) { throw 'Production daemon launcher left invalid standard handles' }
+          $controlError = Join-Path $env:RUNNER_TEMP ("codescan-stdio-" + [guid]::NewGuid().ToString() + '.stderr')
+          $controlOutput = Join-Path $env:RUNNER_TEMP ("codescan-stdio-" + [guid]::NewGuid().ToString() + '.stdout')
+          $control = Start-Process -FilePath (Resolve-Path './unit/mk-test-db.exe') -ArgumentList @('--spawn-detached-stdio', 'closed-control') -NoNewWindow -PassThru -Wait -RedirectStandardError $controlError -RedirectStandardOutput $controlOutput
+          if ($control.ExitCode -eq 0 -or (Get-Content -Raw $controlError) -notmatch 'DetachedStdioProbeFailed' -or (Get-Item $controlOutput).Length -ne 0) { throw 'Closed-handle negative control did not fail for the expected reason' }
       - uses: actions/download-artifact@v7
         with:
           name: release-mswin-${{ matrix.arch }}
