@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -eu
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/capture.bash"
+pty_runner="$(cd "$(dirname "${BASH_SOURCE[0]}")/../lib" && pwd)/run-pty.tcl"
+binary="${CODESCAN_TEST_BIN:?prepare artifacts through ./test}"
+out= err= rc=
+fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
+fixture="$(mktemp -d "$TMPDIR/codescan-search-all.XXXXXXXX")"
+cd "$fixture"
+mkdir .codescan
+printf '%s\n' 'search_mode=lexical' 'embedding_dim=2' 'embedding_model=test-model' 'embedding_url=http://127.0.0.1:1' > .codescan/config.ini
+for ((i=0; i<27; i++)); do
+	printf 'pub fn needle_%02d() void {}\n' "$i"
+done > functions.zig
+capture "$binary" index --lexical-only --no-progress
+[ "$rc" -eq 0 ] || fail "fixture indexing failed: $err"
+expected="$(sqlite3 .codescan/index.sqlite3 "SELECT count(*) FROM symbols WHERE symbol_name LIKE 'needle%';")"
+[ "$expected" -eq 27 ] || fail 'independent fixture count differs'
+
+# These commands have neither standard stream attached to a terminal.
+capture "$binary" search needle --all --json
+[ "$rc" -eq 64 ] && [ -z "$out" ] || fail 'noninteractive --all was accepted or wrote stdout'
+printf '%s' "$err" | rg -q -- '--all requires interactive terminal input and output.*--top N' || fail 'noninteractive refusal omitted its remedy'
+capture "$binary" search needle --top 27 --json
+[ "$rc" -eq 0 ] || fail 'explicit numeric limit stopped working outside a terminal'
+printf '%s' "$out" | jq -e --argjson n "$expected" '.results | length == $n' >/dev/null || fail "explicit limit lost fixture results: $out $err"
+
+terminal_capture() {
+	capture timeout 35 expect "$pty_runner" "$@" </dev/null
+}
+for body in no yes; do
+	args=("$binary" search needle --all --json)
+	if [ "$body" = yes ]; then args+=(--include-body); fi
+	terminal_capture "${args[@]}"
+	[ "$rc" -eq 0 ] || fail "interactive --all failed: $out $err"
+	printf '%s' "$out" | jq -e --argjson n "$expected" '.results | length == $n' >/dev/null || fail 'interactive --all retained a result or body cap'
+	printf '%s' "$out" | jq -e '[.results[].name] | unique | length == 27' >/dev/null || fail 'interactive output duplicated or omitted a declaration'
+done
+terminal_capture "$binary" search --kind fn --all --json
+[ "$rc" -eq 0 ] || fail 'interactive browse --all failed'
+printf '%s' "$out" | jq -e --argjson n "$expected" '.results | length == $n' >/dev/null || fail 'browse --all retained its default cap'
+terminal_capture "$binary" search needle --all --path 'no-match/**' --json
+[ "$rc" -eq 0 ] || fail 'filtered interactive --all failed'
+# Diagnostics share the PTY; the result object is still the final output line.
+printf '%s\n' "$out" | tail -n 1 | jq -e '.results == []' >/dev/null || fail '--all discarded a path filter'
+
+# One terminal stream is insufficient. Run the redirect inside the PTY.
+printf -v command '%q search needle --all --json </dev/null' "$binary"
+terminal_capture bash -c "$command"
+[ "$rc" -eq 64 ] || fail '--all accepted nonterminal input'
+printf -v command '%q search needle --all --json >redirected.json' "$binary"
+terminal_capture bash -c "$command"
+[ "$rc" -eq 64 ] && [ ! -s redirected.json ] || fail '--all accepted redirected output'
+for args in '--all --top 27' '--top 27 --all'; do
+	printf -v command '%q search needle %s --json' "$binary" "$args"
+	terminal_capture bash -c "$command"
+	[ "$rc" -eq 64 ] || fail '--all and --top conflict depended on argument order'
+done
+
+# Regex results count matches, not indexed symbols.
+printf 'pub fn manyMatches() void {\n' > matches.zig
+for ((i=0; i<35; i++)); do printf '    // regexneedle\n' >> matches.zig; done
+printf '}\n' >> matches.zig
+capture "$binary" update --lexical-only --no-progress
+[ "$rc" -eq 0 ] || fail "regex fixture update failed: $err"
+terminal_capture "$binary" search regexneedle --regex --all --json
+[ "$rc" -eq 0 ] || fail 'interactive regex --all failed'
+printf '%s' "$out" | jq -e '.results | length == 35' >/dev/null || fail 'regex --all retained a symbol-count or default limit'
+
+requests="$(printf '%s\n' \
+	'{"jsonrpc":"2.0","id":1,"method":"initialize"}' \
+	'{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+	'{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"search","arguments":{"query":"needle","all":true}}}' \
+	'{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"query","arguments":{"query":"needle","all":false}}}' \
+	'{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"search","arguments":{"query":"needle","top":27}}}')"
+capture timeout 30 "$binary" mcp-serve <<< "$requests"
+[ "$rc" -eq 0 ] || fail 'MCP limit checks terminated the session'
+printf '%s\n' "$out" | jq -se '
+	map(.id) == [1,2,3,4,5] and
+	(.[1].result.tools | map(select(.name == "search" or .name == "query")) | length == 2 and all(.inputSchema.properties | has("all") | not)) and
+	(.[2].error.message | contains("--top") or contains("top")) and
+	(.[3].error.message | contains("--top") or contains("top")) and
+	(.[4].result.content[0].text | fromjson | .results | length == 27)
+' >/dev/null || fail 'MCP exposed unlimited results or lost explicit numeric limits'
+printf 'interactive and bounded search contracts passed\n'

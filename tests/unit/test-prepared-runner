@@ -57,6 +57,7 @@ if [ "${1:-}" = --adapter ]; then
 				[ "$ready" = architecture ] || exit 1
 			fi
 			exit "$HARNESS_CLI_RC" ;;
+		test-search-all) exit "$HARNESS_ALL_RC" ;;
 	esac
 	exit 0
 fi
@@ -66,20 +67,21 @@ trap 'rm -rf -- "$fixture"' EXIT
 fail() { printf 'FAIL prepared runner: %s\n' "$1" >&2; exit 1; }
 
 check_suite_calls() {
-	local actual expected='1 1 1 1 1 1'
-	case "$2" in copy-failure|profiled-copy-failure) expected='1 0 0 0 0 0' ;; esac
+	local actual expected='1 1 1 1 1 1 1'
+	case "$2" in copy-failure|profiled-copy-failure) expected='1 0 0 0 0 0 0' ;; esac
 	actual="$(awk '
 		{ counts[$0]++ }
 		END { print counts["test-unit"]+0, counts["test-cli"]+0,
 			counts["test-integration"]+0, counts["test-test-latency"]+0,
-			counts["test-prepared-runner"]+0, counts["test-ci-architecture"]+0 }
+			counts["test-prepared-runner"]+0, counts["test-ci-architecture"]+0,
+			counts["test-search-all"]+0 }
 	' "$1")" || return 1
 	[ "$actual" = "$expected" ]
 }
 
 # Multiplicity controls derive failures by removing or duplicating each member
 # of a known-good set, not by copying the counter implementation.
-suite_names=(test-unit test-cli test-integration test-test-latency test-prepared-runner test-ci-architecture)
+suite_names=(test-unit test-cli test-integration test-test-latency test-prepared-runner test-ci-architecture test-search-all)
 call_fixture="$fixture/call-counts"
 printf '%s\n' "${suite_names[@]}" > "$call_fixture"
 check_suite_calls "$call_fixture" normal || fail 'complete adapter set rejected'
@@ -142,7 +144,7 @@ source_root="$source_project"
 while IFS= read -r invocation; do eval "${invocation% &}"; done < <(sed -n '/^[[:space:]]*run_case /p' "$root/tests/run-prepared")
 git -C "$source_project" init -q || fail 'Git setup'
 git -C "$source_project" add . || fail 'tracked fixture'
-for scenario in reuse-architecture profiled-architecture-failure reuse-slot pass unit-failure cli-failure phase-failure both-failures copy-failure profiled profiled-reuse-slot profiled-unit-failure profiled-cli-failure profiled-phase-failure profiled-copy-failure profiled-recorder-failure; do
+for scenario in reuse-architecture profiled-architecture-failure reuse-slot pass unit-failure cli-failure all-failure phase-failure both-failures copy-failure profiled profiled-reuse-slot profiled-unit-failure profiled-cli-failure profiled-all-failure profiled-phase-failure profiled-copy-failure profiled-recorder-failure; do
 	case_root="$fixture/$scenario"
 	mkdir -p "$case_root/workspace" || fail 'scenario setup'
 	export HARNESS_EVENTS="$case_root/events" HARNESS_READY="$case_root/ready" HARNESS_RELEASE="$case_root/release"
@@ -155,11 +157,12 @@ for scenario in reuse-architecture profiled-architecture-failure reuse-slot pass
 	: > "$HARNESS_SPANS"
 	unset CODESCAN_LATENCY_JOB
 	case "$scenario" in profiled*) export CODESCAN_LATENCY_JOB=fixture-suite-job ;; esac
-	export HARNESS_UNIT_RC=0 HARNESS_CLI_RC=0 HARNESS_PHASE_RC=0 HARNESS_COPY_RC=0 HARNESS_ARCH_RC=0
+	export HARNESS_UNIT_RC=0 HARNESS_CLI_RC=0 HARNESS_ALL_RC=0 HARNESS_PHASE_RC=0 HARNESS_COPY_RC=0 HARNESS_ARCH_RC=0
 	case "$scenario" in
 		profiled-architecture-failure) HARNESS_ARCH_RC=13 ;;
 		unit-failure|profiled-unit-failure) HARNESS_UNIT_RC=7 ;;
 		cli-failure|profiled-cli-failure) HARNESS_CLI_RC=9 ;;
+		all-failure|profiled-all-failure) HARNESS_ALL_RC=17 ;;
 		phase-failure|profiled-phase-failure) HARNESS_PHASE_RC=11 ;;
 		both-failures) HARNESS_UNIT_RC=7 HARNESS_CLI_RC=9 HARNESS_PHASE_RC=11 HARNESS_ARCH_RC=13 ;;
 		copy-failure|profiled-copy-failure) HARNESS_COPY_RC=37 ;;
@@ -188,7 +191,7 @@ for scenario in reuse-architecture profiled-architecture-failure reuse-slot pass
 					'unit process hang guard' 'tracked source fixture' 'prepared runner orchestration' 'test phase recording' \
 					'five-target build contract' 'Nix-required build adapter' 'CI runner contract' 'CI architecture/publication' \
 					'no committed embedding keys' 'portable MCP configuration' 'single index entrypoint' \
-					'sequential project reindex runner' 'CLI about' 'MCP offline session' CLI 'watcher schema preservation' HTTP integration | LC_ALL=C sort)"
+					'sequential project reindex runner' 'CLI about' 'MCP offline session' CLI 'interactive search result limits' 'watcher schema preservation' HTTP integration | LC_ALL=C sort)"
 			fi
 			[ "$(LC_ALL=C sort "$HARNESS_SPANS")" = "$expected_spans" ] || fail "$scenario omitted, duplicated, or invented prepared-suite phases"
 			;;

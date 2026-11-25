@@ -336,6 +336,10 @@ codescan update --root <path>
 
 # search
 codescan search "hash functions" --root <path> --min-score 0.2
+# all relevant results, only with interactive terminal input and output
+codescan search "hash functions" --all
+# Piped/redirected output and MCP remain bounded; request an explicit count.
+codescan search "hash functions" --top 27 --json
 # default verb is search
 codescan "hash functions" --root <path>
 # show doc comments in human output

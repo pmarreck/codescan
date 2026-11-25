@@ -10,6 +10,8 @@ const weights = @import("weights.zig");
 pub const Request = struct {
 	query: []const u8,
 	top_n: usize,
+	/// Internal CLI policy, never populated by HTTP or MCP adapters.
+	all_results: bool = false,
 	mode: search.SearchMode,
 	fusion: search.FusionMode,
 	rrf_k: f32,
@@ -67,6 +69,7 @@ fn resolveOptions(
 ) search.Options {
 	return .{
 		.top_n = request.top_n,
+		.all_results = request.all_results,
 		.mode = request.mode,
 		.fusion = request.fusion,
 		.rrf_k = request.rrf_k,

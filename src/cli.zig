@@ -120,6 +120,7 @@ pub const Parsed = struct {
 	include_node_modules: bool,
 	query: ?[]const u8,
 	top_n: usize,
+	search_all: bool = false,
 	root_path: []const u8,
 	db_path: []const u8,
 	embedding_url: []const u8,
@@ -1085,7 +1086,14 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 			continue;
 		}
 		if (std.mem.eql(u8, arg, "--all")) {
-			parsed.replace_all = true;
+			if (parsed.command == .search) {
+				parsed.search_all = true;
+			} else if (parsed.command == .replace_content) {
+				parsed.replace_all = true;
+			} else {
+				last_err_context = arg;
+				return error.UnknownFlag;
+			}
 			i += 1;
 			continue;
 		}
@@ -1135,6 +1143,10 @@ pub fn parse(allocator: std.mem.Allocator, args: []const []const u8) !Parsed {
 		return error.UnexpectedArg;
 	}
 
+	if (parsed.search_all and parsed.seen.top_n) {
+		last_err_context = "--all with --top (choose one)";
+		return error.InvalidValue;
+	}
 	if (parsed.command == .search) {
 		if (!query_parts_inited or query_parts.items.len == 0) {
 			// Allow empty query when filters are present (browse mode)
@@ -1172,6 +1184,30 @@ fn joinArgs(allocator: std.mem.Allocator, parts: []const []const u8) ![]u8 {
 		}
 	}
 	return buf;
+}
+
+test "parse search all is explicit and does not change replacement or log all" {
+	for ([_][]const []const u8{
+		&.{ "codescan", "search", "needle", "--all" },
+		&.{ "codescan", "query", "needle", "--all" },
+		&.{ "codescan", "needle", "--all" },
+	}) |args| {
+		var parsed = try parse(std.testing.allocator, args);
+		defer parsed.deinit(std.testing.allocator);
+		try std.testing.expect(parsed.search_all);
+		try std.testing.expect(!parsed.replace_all and !parsed.log_all and !parsed.seen.top_n);
+	}
+	for ([_][]const []const u8{
+		&.{ "codescan", "search", "needle", "--all", "--top", "27" },
+		&.{ "codescan", "search", "needle", "--top", "27", "--all" },
+	}) |args| try std.testing.expectError(error.InvalidValue, parse(std.testing.allocator, args));
+	var replacement = try parse(std.testing.allocator, &.{ "codescan", "replace-content", "needle", "--all" });
+	defer replacement.deinit(std.testing.allocator);
+	try std.testing.expect(replacement.replace_all and !replacement.search_all);
+	var log = try parse(std.testing.allocator, &.{ "codescan", "log", "--all" });
+	defer log.deinit(std.testing.allocator);
+	try std.testing.expect(log.log_all and !log.search_all);
+	try std.testing.expectError(error.UnknownFlag, parse(std.testing.allocator, &.{ "codescan", "mcp-serve", "--all" }));
 }
 
 test "parse with no args requires query" {

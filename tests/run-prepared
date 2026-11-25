@@ -62,6 +62,7 @@ fi
 	run_case 'CLI about' ./tests/cli/test-about "$CODESCAN_TEST_BIN" "$CODESCAN_EXPECT_PF" "${CODESCAN_EXPECT_VARIANT:-}"
 	run_case 'MCP offline session' ./tests/cli/test-mcp-offline
 	run_case 'CLI' ./tests/cli/test-cli
+	run_case 'interactive search result limits' bash ./tests/cli/test-search-all
 	run_case 'watcher schema preservation' ./tests/cli/test-watcher-schema-preservation
 	run_case 'HTTP' ./tests/http/test-http
 	run_case 'integration' ./tests/integration/test-integration

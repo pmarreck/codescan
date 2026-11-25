@@ -56,6 +56,8 @@ const QueryIntent = enum {
 
 pub const Options = struct {
 	top_n: usize = 10,
+	/// Remove count caps while retaining query filters and relevance thresholds.
+	all_results: bool = false,
 	candidate_multiplier: usize = 5,
 	mode: SearchMode = .hybrid,
 	fusion: FusionMode = .weighted_sum,
@@ -250,7 +252,7 @@ fn gatherCandidates(
 	if (embeddings[0].len != try storage.embeddingDimension(db, allocator)) return error.EmbeddingDimensionMismatch;
 
 	const limit = options.top_n * options.candidate_multiplier;
-	const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only);
+	const vector_results = try vectorCandidates(allocator, db, embeddings[0], limit, options.comments_only, options.all_results);
 
 	// Build vector rank map (candidates are ordered by distance, best first).
 	for (vector_results, 0..) |res, i| {
@@ -302,8 +304,13 @@ pub fn search(
 	db: storage.Db,
 	embedder: embedding.Embedder,
 	query: []const u8,
-	options: Options,
+	requested_options: Options,
 ) !SearchResult {
+	var options = requested_options;
+	if (options.all_results) {
+		options.top_n = std.math.cast(usize, try storage.countRows(db, allocator, "symbols")) orelse return error.InvalidResultCount;
+		options.candidate_multiplier = 1;
+	}
 	if (query.len == 0) {
 		if (options.no_matching_languages) return emptyResults(allocator);
 		if (options.allowed_symbol_kinds.len == 0 and
@@ -664,7 +671,7 @@ fn browseSymbols(allocator: std.mem.Allocator, db: storage.Db, options: Options)
 	try sql_buf.appendSlice(allocator, " ORDER BY file_path, start_line");
 
 	// If we have post-query filters, over-fetch since we filter in-code
-	const fetch_limit = if (options.allowed_exts.len > 0 or options.allowed_paths.len > 0)
+	const fetch_limit = if (!options.all_results and (options.allowed_exts.len > 0 or options.allowed_paths.len > 0))
 		options.top_n * 5
 	else
 		options.top_n;
@@ -845,6 +852,7 @@ fn vectorCandidates(
 	vector: []const f32,
 	limit: usize,
 	comments_only: bool,
+	all_results: bool,
 ) ![]Result {
 	if (limit == 0) return allocator.alloc(Result, 0);
 
@@ -852,16 +860,20 @@ fn vectorCandidates(
 	defer allocator.free(json);
 
 	const table = if (comments_only) "embeddings_comment" else "embeddings";
-	// Use vec0 KNN MATCH syntax for indexed search instead of brute-force ORDER BY distance.
+	// Bounded searches use KNN. An explicit complete scan must not inherit
+	// vec0's KNN k ceiling or manufacture an enormous integer sentinel.
 	const sql = try allocPrintZ(
 		allocator,
 		"SELECT symbols.id, lang, file_path, start_line, start_hash, end_line, end_hash, symbol_name, signature, doc_comment, "
 		++ "symbol_kind, symbol_visibility, symbol_scope, symbol_arity, body, "
-		++ "knn.distance "
+		++ "{s} "
 		++ "FROM {s} AS knn JOIN symbols ON knn.rowid = symbols.id "
-		++ "WHERE knn.embedding MATCH vec_f32(?1) AND k = ?2 "
-		++ "ORDER BY knn.distance;",
-		.{table},
+		++ "{s} ORDER BY distance;",
+		.{
+			if (all_results) "vec_distance_L2(knn.embedding, vec_f32(?1)) AS distance" else "knn.distance",
+			table,
+			if (all_results) "" else "WHERE knn.embedding MATCH vec_f32(?1) AND k = ?2",
+		},
 	);
 	defer allocator.free(sql);
 
@@ -872,7 +884,7 @@ fn vectorCandidates(
 	defer _ = sqlite.sqlite3_finalize(stmt.?);
 
 	try bindText(stmt.?, 1, json);
-	_ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
+	if (!all_results) _ = sqlite.sqlite3_bind_int64(stmt.?, 2, @intCast(limit));
 
 	var results = @as(std.ArrayListUnmanaged(Result), .empty);
 	errdefer {
@@ -2167,6 +2179,41 @@ test "Roc partial signature search classifies declarations without inference" {
 	const excluded = try search(allocator, db, none, "ceil : -> Dec", .{ .allowed_langs = &.{"zig"} });
 	defer freeResults(allocator, excluded.results);
 	try std.testing.expectEqual(@as(usize, 0), excluded.total_relevant);
+}
+
+test "all results scans vectors beyond the KNN ceiling and preserves filters and numeric limits" {
+	const allocator = std.testing.allocator;
+	const db = try storage.openMemoryWithVec(allocator);
+	defer storage.close(db);
+	var schema = try storage.initSchema(allocator, db, .{ .embedding_dim = 2 });
+	defer schema.deinit(allocator);
+	// SQLite generates the independent corpus and its count, not the search.
+	try std.testing.expectEqual(@as(c_int, sqlite.SQLITE_OK), sqlite.sqlite3_exec(db,
+		"WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<4105) " ++
+		"INSERT INTO symbols(lang,file_path,start_line,end_line,symbol_name,signature) " ++
+		"SELECT 'zig',printf('%d.zig',i),1,1,'needle','fn needle() void' FROM n; " ++
+		"INSERT INTO embeddings(rowid,embedding) SELECT id,vec_f32('[1,0]') FROM symbols;",
+		null, null, null));
+	const expected = std.math.cast(usize, try storage.countRows(db, allocator, "symbols")) orelse return error.TestUnexpectedResult;
+	try std.testing.expectEqual(@as(usize, 4105), expected);
+	var fake = FakeEmbedder{ .vector = &.{ 1, 0 } };
+	const all = try search(allocator, db, fake.embedder(), "needle", .{ .top_n = 1, .all_results = true, .mode = .vector });
+	defer freeResults(allocator, all.results);
+	try std.testing.expectEqual(expected, all.results.len);
+	var ids = std.AutoHashMap(i64, void).init(allocator);
+	defer ids.deinit();
+	for (all.results) |result| try ids.put(result.id, {});
+	try std.testing.expectEqual(expected, ids.count());
+	const bounded = try search(allocator, db, fake.embedder(), "needle", .{ .top_n = 27, .mode = .vector });
+	defer freeResults(allocator, bounded.results);
+	try std.testing.expectEqual(@as(usize, 27), bounded.results.len);
+	const filtered = try search(allocator, db, fake.embedder(), "needle", .{ .all_results = true, .mode = .vector, .allowed_paths = &.{"4105.zig"} });
+	defer freeResults(allocator, filtered.results);
+	try std.testing.expectEqual(@as(usize, 1), filtered.results.len);
+	try std.testing.expectEqualStrings("4105.zig", filtered.results[0].symbol.file_path);
+	const thresholded = try search(allocator, db, fake.embedder(), "needle", .{ .all_results = true, .mode = .vector, .min_score = 2 });
+	defer freeResults(allocator, thresholded.results);
+	try std.testing.expectEqual(@as(usize, 0), thresholded.results.len);
 }
 
 test "Zig partial signature search classifies complete declaration sets without inference" {

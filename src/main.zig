@@ -251,6 +251,16 @@ pub fn main(init: std.process.Init) !void {
 		try stdout.flush();
 		return;
 	}
+	if (parsed.search_all and
+		(!(std.Io.File.stdin().isTty(io) catch false) or
+		!(std.Io.File.stdout().isTty(io) catch false)))
+	{
+		var buffer: [256]u8 = undefined;
+		var writer = io_singleton.stderrWriter(&buffer);
+		try writer.interface.writeAll("error: --all requires interactive terminal input and output; use --top N for noninteractive searches.\n");
+		try writer.interface.flush();
+		std.process.exit(64);
+	}
 
 	if (parsed.assumed_search) {
 		var stderr_buf: [256]u8 = undefined;
@@ -3118,7 +3128,7 @@ fn runSearch(
 			db,
 			query,
 			parsed.context_lines,
-			settings.top_n,
+			if (parsed.search_all) std.math.maxInt(usize) else settings.top_n,
 			path_filters_regex.items,
 			settings.search_lang,
 			parsed.ignore_case,
@@ -3185,6 +3195,7 @@ fn runSearch(
 		.{
 			.query = query,
 			.top_n = settings.top_n,
+			.all_results = parsed.search_all,
 			.mode = effective_search_mode,
 			.fusion = settings.fusion,
 			.rrf_k = settings.rrf_k,
@@ -3269,10 +3280,10 @@ fn runSearch(
 		_ = stderr.flush() catch {};
 	}
 
-	// When --include-body is set, cap results at 3 unless user explicitly set --top
+	// Explicit result choices override the default body-output cap.
 	var display_results = sr.results;
 	const body_limit: usize = 3;
-	if (parsed.include_body and !parsed.seen.top_n and sr.results.len > body_limit) {
+	if (parsed.include_body and !parsed.seen.top_n and !parsed.search_all and sr.results.len > body_limit) {
 		display_results = sr.results[0..body_limit];
 		_ = stderr.print("note: --include-body limits output to {d} results to avoid overfilling context (use --top N to override).\n", .{body_limit}) catch {};
 		_ = stderr.flush() catch {};
@@ -5980,6 +5991,8 @@ const usage_search =
     \\
     \\Common search options:
     \\  --top <n>                       Number of hits (default 5)
+	\\  --all                           All relevant hits (interactive stdin/stdout only;
+	\\                                  cannot combine with --top; unavailable in MCP)
     \\  --mode <vector|lexical|hybrid>  Search mode (default hybrid)
     \\  --lexical-only                  Alias for --mode lexical; skips embeddings
     \\  --min-score <n>                 Minimum score threshold

@@ -283,6 +283,11 @@ pub fn handleToolsCall(allocator: std.mem.Allocator, id: ?std.json.Value, params
 		if (a != .object) break :blk null;
 		break :blk a.object;
 	} else null;
+	if ((std.mem.eql(u8, name, "search") or std.mem.eql(u8, name, "query")) and
+		args != null and args.?.get("all") != null)
+	{
+		return formatError(allocator, id, -32602, "MCP search does not support 'all'; specify an integer 'top' limit instead");
+	}
 
 	// Each request borrows a fresh configuration snapshot only until its tool
 	// result is rendered. The returned response uses the caller's allocator.
