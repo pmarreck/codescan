@@ -342,8 +342,14 @@ pub fn watchLoop(
 		};
 		removeStartupReady(allocator, dir);
 	}
-	defer if (options.codescan_dir) |dir| pidfile.removePid(allocator, dir);
-	defer if (options.codescan_dir) |dir| removeStartupReady(allocator, dir);
+	defer if (options.codescan_dir) |dir| {
+		if (comptime @import("builtin").os.tag == .windows) {
+			removeStartupReady(allocator, dir);
+		} else if (pidfile.ownedByCurrentProcess(allocator, dir)) {
+			removeStartupReady(allocator, dir);
+			pidfile.removeOwnedPid(allocator, dir);
+		}
+	};
 
 	if (comptime !fs_watch.FsWatch.uses_native_events) {
 		return watchLoopPolling(allocator, db, root_path, registry, embedder, options, stop, stderr);
@@ -797,6 +803,7 @@ test "watch loop releases caller allocations after repeated reconciliation for b
 		stop: *std.atomic.Value(bool),
 		inner: embedding.Embedder,
 		calls: usize = 0,
+		replace_owner: bool = false,
 
 		fn embed(ctx: *anyopaque, alloc: std.mem.Allocator, inputs: []const []const u8) ![][]f32 {
 			const self: *@This() = @ptrCast(@alignCast(ctx));
@@ -811,6 +818,7 @@ test "watch loop releases caller allocations after repeated reconciliation for b
 				try std.testing.expect(phase <= sources.len);
 				if (phase > 1) try std.testing.expect(startupReadyExists(alloc, self.codescan_dir));
 				if (phase == sources.len) {
+					if (self.replace_owner) try self.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = ".codescan/watcher.pid", .data = "1" });
 					self.stop.store(true, .release);
 				} else {
 					try self.dir.writeFile(io_singleton.getOrInit(), .{ .sub_path = "events.zig", .data = sources[phase] });
@@ -837,7 +845,17 @@ test "watch loop releases caller allocations after repeated reconciliation for b
 	defer allocator.free(cwd);
 	const relative_root = try std.fs.path.relative(allocator, cwd, io_singleton.getEnvMap(), cwd, root);
 	defer allocator.free(relative_root);
-	for ([_][]const u8{ root, relative_root }) |root_arg| {
+	const Case = struct { root: []const u8, replace_owner: bool };
+	for ([_]Case{
+		.{ .root = root, .replace_owner = false },
+		.{ .root = relative_root, .replace_owner = false },
+		.{ .root = root, .replace_owner = true },
+		.{ .root = relative_root, .replace_owner = true },
+	}) |case| {
+		if (comptime @import("builtin").os.tag == .windows) {
+			if (case.replace_owner) continue; // Existing Windows PID adapter is unavailable.
+		}
+		const root_arg = case.root;
 		try tmp.dir.writeFile(io, .{ .sub_path = "events.zig", .data = Fixture.sources[0] });
 		const db = try storage.openMemoryWithVec(allocator);
 		defer storage.close(db);
@@ -848,7 +866,7 @@ test "watch loop releases caller allocations after repeated reconciliation for b
 			.model = "fixture-model",
 		};
 		var stop = std.atomic.Value(bool).init(false);
-		var fixture = Fixture{ .dir = tmp.dir, .codescan_dir = codescan_dir, .stop = &stop, .inner = provider.embedder() };
+		var fixture = Fixture{ .dir = tmp.dir, .codescan_dir = codescan_dir, .stop = &stop, .inner = provider.embedder(), .replace_owner = case.replace_owner };
 		var diagnostic_buffer: [4096]u8 = undefined;
 		var diagnostics = std.Io.Writer.fixed(&diagnostic_buffer);
 		var accounting = std.testing.FailingAllocator.init(allocator, .{});
@@ -885,8 +903,17 @@ test "watch loop releases caller allocations after repeated reconciliation for b
 		try std.testing.expectEqualStrings("third", std.mem.span(sqlite.sqlite3_column_text(statement, 0)));
 		try std.testing.expectEqualStrings("pub fn third() void {}\n", std.mem.span(sqlite.sqlite3_column_text(statement, 1)));
 		try std.testing.expectEqual(sqlite.SQLITE_DONE, sqlite.sqlite3_step(statement));
-		try std.testing.expect(!startupReadyExists(allocator, codescan_dir));
-		try std.testing.expect((try pidfile.readAndCheckPid(allocator, codescan_dir)) == null);
+		if (case.replace_owner) {
+			try std.testing.expect(startupReadyExists(allocator, codescan_dir));
+			try std.testing.expectEqual(@as(?pidfile.PidType, 1), try pidfile.readAndCheckPid(allocator, codescan_dir));
+			// This fixture owns the replacement record too; clear it before
+			// the next case without sending any signal to that process.
+			pidfile.removePid(allocator, codescan_dir);
+			removeStartupReady(allocator, codescan_dir);
+		} else {
+			try std.testing.expect(!startupReadyExists(allocator, codescan_dir));
+			try std.testing.expect((try pidfile.readAndCheckPid(allocator, codescan_dir)) == null);
+		}
 		const remaining_progress = progress.read(allocator, codescan_dir);
 		defer if (remaining_progress) |bytes| allocator.free(bytes);
 		try std.testing.expect(remaining_progress == null);

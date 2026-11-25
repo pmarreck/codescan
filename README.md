@@ -1009,6 +1009,11 @@ with effective settings. A mismatch fails even when SQLite integrity and the
 server probe pass. This check is read-only and does not rebuild or relabel the
 existing index.
 
+On POSIX systems, stop and restart wait up to five seconds to confirm process
+exit. If shutdown is still pending, the command reports it and does not erase
+ownership, start a replacement, or force-kill the old watcher. Retiring watchers
+only remove their own PID and readiness records.
+
 The background watcher logs its lifecycle and error events to the system log. If your watcher appears to have stopped unexpectedly, inspect recent logs with:
 
     codescan log --since 1h

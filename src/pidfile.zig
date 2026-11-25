@@ -30,6 +30,35 @@ pub fn removePid(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
 	std.Io.Dir.cwd().deleteFile(io_singleton.getOrInit(), path) catch {};
 }
 
+pub fn ownedByCurrentProcess(allocator: std.mem.Allocator, codescan_dir: []const u8) bool {
+	if (!is_posix) return false;
+	const owner = readAndCheckPid(allocator, codescan_dir) catch return false;
+	return (owner orelse return false) == std.c.getpid();
+}
+
+/// A retiring watcher must never remove a replacement watcher's record.
+pub fn removeOwnedPid(allocator: std.mem.Allocator, codescan_dir: []const u8) void {
+	if (ownedByCurrentProcess(allocator, codescan_dir)) removePid(allocator, codescan_dir);
+}
+
+/// Confirm exit with the kernel, not a missing or replaced PID file.
+pub fn waitForExit(expected: PidType, timeout_ns: u64) bool {
+	if (!is_posix or expected <= 0) return false;
+	const io = io_singleton.getOrInit();
+	const started = std.Io.Clock.awake.now(io);
+	while (true) {
+		if (std.c.kill(expected, @enumFromInt(0)) != 0) {
+			const code = std.c._errno().*;
+			if (code == @intFromEnum(std.posix.E.SRCH)) return true;
+			if (code != @intFromEnum(std.posix.E.PERM)) return false;
+		}
+		const elapsed = started.durationTo(std.Io.Clock.awake.now(io)).nanoseconds;
+		if (elapsed >= timeout_ns) return false;
+		const remaining: u64 = timeout_ns - @as(u64, @intCast(@max(elapsed, 0)));
+		io.sleep(std.Io.Duration.fromNanoseconds(@min(remaining, 50 * std.time.ns_per_ms)), .awake) catch return false;
+	}
+}
+
 /// Reads the PID from the file and checks if the process is alive.
 /// Returns the PID if alive, null if file missing, unreadable, or process dead.
 pub fn readAndCheckPid(allocator: std.mem.Allocator, codescan_dir: []const u8) !?PidType {
@@ -67,7 +96,7 @@ pub fn isWatcherRunning(allocator: std.mem.Allocator, codescan_dir: []const u8) 
 	return pid != null;
 }
 
-/// Atomically checks for an existing watcher and writes the current PID.
+/// Checks for an existing watcher and writes the current PID.
 /// Returns error.WatcherAlreadyRunning if another live watcher owns the pidfile.
 pub fn tryAcquirePid(allocator: std.mem.Allocator, codescan_dir: []const u8) !void {
 	if (!is_posix) return;
@@ -169,6 +198,44 @@ test "removePid cleans up file" {
 	// Verify file is gone
 	const result = tmp.dir.statFile(io_singleton.getOrInit(), "watcher.pid", .{});
 	try std.testing.expectError(error.FileNotFound, result);
+}
+
+test "owned PID cleanup preserves a replacement process record" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(directory);
+	// PID 1 is another process in the qualified unit runner; Windows retains
+	// its existing no-op PID adapter and must preserve this file too.
+	try tmp.dir.writeFile(io, .{ .sub_path = "watcher.pid", .data = "1" });
+	removeOwnedPid(allocator, directory);
+	const record = try tmp.dir.readFileAlloc(io, "watcher.pid", allocator, .limited(64));
+	defer allocator.free(record);
+	try std.testing.expectEqualStrings("1", record);
+}
+
+test "exit confirmation cannot confuse missing or replaced PID files with process death" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(directory);
+	if (is_posix) {
+		try std.testing.expect(!waitForExit(std.c.getpid(), 0));
+		try writePid(allocator, directory);
+		try std.testing.expect(!waitForExit(std.c.getpid(), 0));
+		removeOwnedPid(allocator, directory);
+		try std.testing.expect((try readAndCheckPid(allocator, directory)) == null);
+		try std.testing.expect(!waitForExit(std.c.getpid(), 0));
+		try tmp.dir.writeFile(io, .{ .sub_path = "watcher.pid", .data = "1" });
+		try std.testing.expect(!waitForExit(std.c.getpid(), 0));
+		try std.testing.expect(waitForExit(99999999, 0));
+	} else {
+		try std.testing.expect(!waitForExit(1, 0));
+	}
 }
 
 test "isWatcherRunning returns true for current process" {

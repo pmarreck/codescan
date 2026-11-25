@@ -356,3 +356,37 @@ pending. The earlier pushed diagnostic/MCP tip `20a0a32c` passes Mechatron, both
 native Linux suites and both native Windows qualifications, including the real
 detached-standard-stream probe and closed-handle control; Mac completion is
 still being observed. Cross-build products alone are not native qualification.
+
+The earlier diagnostic/MCP shipment `20a0a32c` subsequently passes the remaining
+native Mac qualification too. Both GitHub workflows and Mechatron are green for
+that exact commit; the later compatibility, C and ownership changes still need
+their own native qualification.
+
+Final live verification also finds a separate ownership-lifecycle defect after
+a rapid stop/start: the replacement process remains alive, but its PID record
+disappears, so status says stopped and searches reconcile instead of trusting
+the watcher. The stop parent unlinks ownership immediately after signaling,
+and a retiring watch loop unconditionally deletes both PID and readiness state.
+Restoring the verified live process's missing record restores correct status,
+watcher authority and zero pending paths without changing the database. This
+observation does not establish the original request failure's cause.
+
+The lifecycle correction guards retiring cleanup by current ownership and waits
+up to five seconds for kernel-confirmed process exit before reporting stop,
+restarting, or deleting project state. A missing or replaced PID file is not
+exit confirmation. Unconfirmed shutdown returns a visible failure, preserves
+ownership, and does not start a replacement or force-kill the old process.
+The existing unavailable Windows PID adapter is unchanged; this does not claim
+new Windows PID management or fully atomic concurrent-start acquisition.
+
+The actual watch-loop regression substitutes replacement ownership during its
+final embedding callback and requires both replacement PID and ready marker to
+survive, retaining ordinary cleanup and allocation assertions for both root
+forms. The old cleanup fails that case with 844 passes, one existing skip and
+one failure. An earlier direct-run attempt could not reach the case because its
+working directory was read-only; it is setup evidence, not the behavioral RED.
+A real stop-command fixture also rejects the old parent's deletion of a
+disposable child's record. Kernel-probe tests distinguish live, missing-record,
+replacement-record and nonexistent-process cases without sending a signal.
+The complete corrected host suite passes 845 unit cases and every required
+adapter/build check, with the same optional unit and external-provider exclusions.

@@ -569,9 +569,13 @@ pub fn main(init: std.process.Init) !void {
 			// Stop watcher if running
 			if (comptime builtin.os.tag != .windows) {
 				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-					_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+					try watcher_mgmt.stopWatcher(pid_val);
+					if (!pidfile.waitForExit(pid_val, 5 * std.time.ns_per_s)) {
+						try stdout.print("error: watcher shutdown is still pending (PID {d}); project state was not removed\n", .{pid_val});
+						try stdout.flush();
+						return error.WatcherStillStopping;
+					}
 					try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
-					pidfile.removePid(allocator, codescan_dir);
 				}
 			}
 
@@ -3341,10 +3345,15 @@ fn runWatch(
 				try stdout.flush();
 			} else {
 				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-					_ = std.c.kill(pid_val, std.posix.SIG.TERM);
-					try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+					try watcher_mgmt.stopWatcher(pid_val);
+					if (pidfile.waitForExit(pid_val, 5 * std.time.ns_per_s)) {
+						try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
+					} else {
+						try stdout.print("error: watcher shutdown is still pending (PID {d}); its ownership record was preserved\n", .{pid_val});
+						try stdout.flush();
+						return error.WatcherStillStopping;
+					}
 					try stdout.flush();
-					pidfile.removePid(allocator, codescan_dir);
 				} else {
 					try stdout.print("No watcher running\n", .{});
 					try stdout.flush();
@@ -3370,13 +3379,16 @@ fn runWatch(
 				try stdout.print("error: watch restart is not supported on Windows\n", .{});
 				try stdout.flush();
 			} else {
-				// Stop if running
+				// Confirm process exit before starting a replacement. A missing
+				// ownership record or a fixed short sleep is not that proof.
 				if (pidfile.readAndCheckPid(allocator, codescan_dir) catch null) |pid_val| {
-					_ = std.c.kill(pid_val, std.posix.SIG.TERM);
+					try watcher_mgmt.stopWatcher(pid_val);
+					if (!pidfile.waitForExit(pid_val, 5 * std.time.ns_per_s)) {
+						try stdout.print("error: watcher shutdown is still pending (PID {d}); no replacement was started. Retry after it exits\n", .{pid_val});
+						try stdout.flush();
+						return error.WatcherStillStopping;
+					}
 					try stdout.print("Stopped watcher (PID {d})\n", .{pid_val});
-					// Brief pause for process cleanup
-					io_singleton.getOrInit().sleep(std.Io.Duration.fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
-					pidfile.removePid(allocator, codescan_dir);
 				}
 				if (!maybeStartWatcher(allocator, settings, stdout, .explicit_watch_command)) {
 					std.process.exit(1);

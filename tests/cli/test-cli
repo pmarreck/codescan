@@ -49,7 +49,18 @@ main() {
 
 	DB_DIR="$(mktemp -d "$TMPDIR/codescan-cli.XXXXXX")"
 	DB="$DB_DIR/index.sqlite3"
-	trap 'rm -rf "$DB_DIR"' EXIT
+	stop_fixture_pid=
+	cleanup_cli() {
+		local status=$?
+		trap - EXIT
+		if [ -n "$stop_fixture_pid" ]; then
+			if kill -0 "$stop_fixture_pid" 2>/dev/null; then kill -TERM "$stop_fixture_pid" || status=1; fi
+			wait "$stop_fixture_pid" || status=1
+		fi
+		rm -rf "$DB_DIR"
+		exit "$status"
+	}
+	trap cleanup_cli EXIT
 
 	capture "$MK_DB" --db "$DB"
 	if [ "$rc" -ne 0 ]; then
@@ -562,6 +573,33 @@ main() {
 	printf '%s' "$out" | jq -e '.checks[] | select(.name == "Permissions" and .status == "pass")' >/dev/null || \
 		fail "doctor did not validate project-state permissions"
 	printf '%s' "$err" | rg -q "assuming 'search'" && fail "doctor fell back to search"
+
+	# Exercise the real stop command with a disposable child, not a live daemon.
+	# Its PID file deliberately survives exit: the parent must confirm death
+	# with the kernel and must not erase a record it does not own.
+	stop_root="$DB_DIR/stop-ownership"
+	mkdir -p "$stop_root/.git" "$stop_root/.codescan" || fail 'stop fixture setup'
+	coproc STOP_FIXTURE {
+		trap - EXIT
+		trap 'exit 0' TERM
+		printf '%s' "$BASHPID" > "$stop_root/.codescan/watcher.pid"
+		printf 'ready\n'
+		while IFS= read -r fixture_line; do :; done
+	}
+	stop_fixture_pid=$STOP_FIXTURE_PID
+	stop_input=${STOP_FIXTURE[1]}
+	stop_output=${STOP_FIXTURE[0]}
+	IFS= read -r -t 15 stop_ready <&"$stop_output" || fail 'stop child readiness'
+	[ "$stop_ready" = ready ] || fail 'unexpected stop child readiness'
+	[ "$(< "$stop_root/.codescan/watcher.pid")" = "$stop_fixture_pid" ] || fail 'stop child PID mismatch'
+	capture timeout 15 "$BIN" watcher stop --root "$stop_root"
+	[ "$rc" -eq 0 ] || fail "stop did not confirm the disposable child's exit: $out $err"
+	printf '%s' "$out" | rg -q "Stopped watcher .*PID $stop_fixture_pid" || fail 'stop omitted the confirmed PID'
+	wait "$stop_fixture_pid" || fail 'disposable stop child did not exit successfully'
+	[ "$(< "$stop_root/.codescan/watcher.pid")" = "$stop_fixture_pid" ] || fail 'stop parent erased another process ownership record'
+	stop_fixture_pid=
+	exec {stop_input}>&-
+	exec {stop_output}<&-
 
 	# Integrity and a usable server do not establish vector-space compatibility.
 	# Independently change only the fixture's model label, never its vector width.
