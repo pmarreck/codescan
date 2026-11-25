@@ -403,9 +403,8 @@ pub fn openFileWithVecRecreate(allocator: std.mem.Allocator, path: []const u8) !
 	return openFileWithVec(allocator, path);
 }
 
-/// Runs SQLite's built-in integrity check without changing the database.
-/// The returned message is normally "ok"; callers own it and must free it.
-pub fn checkIntegrity(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+/// Opens an existing database without schema initialization or write access.
+pub fn openFileReadOnly(allocator: std.mem.Allocator, path: []const u8) !Db {
 	const path_z = try allocator.dupeZ(u8, path);
 	defer allocator.free(path_z);
 
@@ -414,7 +413,13 @@ pub fn checkIntegrity(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
 		if (db_opt) |db| close(db);
 		return error.OpenFailed;
 	}
-	const db = db_opt orelse return error.OpenFailed;
+	return db_opt orelse error.OpenFailed;
+}
+
+/// Runs SQLite's built-in integrity check without changing the database.
+/// The returned message is normally "ok"; callers own it and must free it.
+pub fn checkIntegrity(allocator: std.mem.Allocator, path: []const u8) ![]u8 {
+	const db = try openFileReadOnly(allocator, path);
 	defer close(db);
 
 	const sql: [:0]const u8 = "PRAGMA integrity_check;\x00";
@@ -994,6 +999,48 @@ pub fn embeddingDimension(db: Db, allocator: std.mem.Allocator) !usize {
 	const dimension = std.fmt.parseInt(usize, value, 10) catch return error.InvalidEmbeddingMetadata;
 	if (dimension == 0) return error.InvalidEmbeddingMetadata;
 	return dimension;
+}
+
+/// Reads the nonempty model identity without stamping or migrating metadata.
+pub fn embeddingModel(db: Db, allocator: std.mem.Allocator) ![]u8 {
+	const value = try metaValue(db, allocator, "embedding_model") orelse return error.InvalidEmbeddingMetadata;
+	if (value.len == 0) {
+		allocator.free(value);
+		return error.InvalidEmbeddingMetadata;
+	}
+	return value;
+}
+
+test "read-only embedding metadata access cannot stamp or change the index" {
+	const allocator = std.testing.allocator;
+	const io = io_singleton.getOrInit();
+	var tmp = std.testing.tmpDir(.{});
+	defer tmp.cleanup();
+	const directory = try tmp.dir.realPathFileAlloc(io, ".", allocator);
+	defer allocator.free(directory);
+	const path = try std.fs.path.join(allocator, &.{ directory, "index.sqlite3" });
+	defer allocator.free(path);
+	{
+		const db = try openFileWithVec(allocator, path);
+		defer close(db);
+		var initialized = try initSchema(allocator, db, .{ .embedding_model = "stored-model", .embedding_dim = 2 });
+		defer initialized.deinit(allocator);
+	}
+	const before = try tmp.dir.readFileAlloc(io, "index.sqlite3", allocator, .limited(1024 * 1024));
+	defer allocator.free(before);
+	{
+		const db = try openFileReadOnly(allocator, path);
+		defer close(db);
+		try std.testing.expectEqual(@as(c_int, 1), c.sqlite3_db_readonly(db, "main"));
+		try std.testing.expectEqual(c.SQLITE_READONLY, c.sqlite3_exec(db, "DELETE FROM meta;", null, null, null));
+		try std.testing.expectEqual(@as(usize, 2), try embeddingDimension(db, allocator));
+		const name = try embeddingModel(db, allocator);
+		defer allocator.free(name);
+		try std.testing.expectEqualStrings("stored-model", name);
+	}
+	const after = try tmp.dir.readFileAlloc(io, "index.sqlite3", allocator, .limited(1024 * 1024));
+	defer allocator.free(after);
+	try std.testing.expectEqualSlices(u8, before, after);
 }
 
 test "embeddingDimension validates metadata and preserves SQLite failures" {

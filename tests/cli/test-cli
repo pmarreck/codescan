@@ -549,6 +549,28 @@ main() {
 		fail "doctor did not validate project-state permissions"
 	printf '%s' "$err" | rg -q "assuming 'search'" && fail "doctor fell back to search"
 
+	# Integrity and a usable server do not establish vector-space compatibility.
+	# Independently change only the fixture's model label, never its vector width.
+	capture sqlite3 "$doctor_root/.codescan/index.sqlite3" "INSERT OR REPLACE INTO meta(key,value) VALUES('embedding_model','stored-model');"
+	[ "$rc" -eq 0 ] || fail 'doctor metadata fixture setup failed'
+	cp "$doctor_root/.codescan/index.sqlite3" "$DB_DIR/doctor-index.before" || fail 'doctor preservation snapshot failed'
+	for index_case in stored-model:1024:pass other-model:1024:fail stored-model:1536:fail; do
+		IFS=: read -r configured_model configured_width index_status <<< "$index_case"
+		printf '%s\n' 'embedding_url=http://127.0.0.1:1' 'embedding_api=ollama' \
+			"embedding_model=$configured_model" "embedding_dim=$configured_width" > "$doctor_root/.codescan/config.ini"
+		capture "$BIN" doctor --root "$doctor_root" --json
+		[ "$rc" -ne 0 ] || fail 'offline doctor lost its inference failure'
+		printf '%s' "$out" | jq -e --arg status "$index_status" \
+			'.checks[] | select(.name == "Index" and .status == $status and (.message | contains("stored-model") and contains("1024")))' >/dev/null || \
+			fail "doctor did not independently check stored embedding identity: $index_case"
+		if [ "$index_status" = fail ]; then
+			printf '%s' "$out" | jq -e --arg model "$configured_model" --arg width "$configured_width" \
+				'.checks[] | select(.name == "Index" and (.message | contains($model) and contains($width) and contains("unchanged")))' >/dev/null || \
+				fail 'doctor mismatch omitted configured identity or preservation advice'
+		fi
+		cmp "$doctor_root/.codescan/index.sqlite3" "$DB_DIR/doctor-index.before" || fail 'doctor compatibility check modified the index'
+	done
+
 	invalid_doctor_root="$DB_DIR/doctor-invalid-settings"
 	mkdir -p "$invalid_doctor_root/.git" "$invalid_doctor_root/.codescan"
 	printf '%s\n' 'embedding_dim=not-a-number' > "$invalid_doctor_root/.codescan/config.ini"

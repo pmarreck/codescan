@@ -1541,8 +1541,8 @@ fn maybeStartWatcher(
 	watcher.removeStartupReady(allocator, codescan_dir);
 	watcher.removeFailureRecord(allocator, codescan_dir);
 
-	// Preflight checks — the daemon would otherwise die silently because its
-	// stdin/stdout/stderr are all .close, so any startup error vanishes.
+	// Daemon standard streams go to the null device. Run preflight checks in
+	// the parent so actionable failures remain visible before detachment.
 	// Run all checks in the parent so we can print actionable messages to the
 	// user's terminal AND log via syslog.
 	const dialect_name: []const u8 = switch (settings.embedding_dialect) {
@@ -7096,6 +7096,9 @@ fn runDoctor(
 		defer allocator.free(result);
 		if (std.mem.eql(u8, result, "ok")) {
 			try report.addFmt(.pass, "Database", "SQLite integrity check passed ({s})", .{db_path});
+			if (settings) |value| {
+				try doctor.checkIndex(&report, db_path, value.embedding_model, value.embedding_dim);
+			}
 		} else {
 			try report.addFmt(.fail, "Database", "SQLite integrity check reported: {s}", .{result});
 		}

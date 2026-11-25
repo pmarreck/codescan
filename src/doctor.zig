@@ -1,6 +1,29 @@
 const std = @import("std");
 const cli = @import("cli.zig");
 const embedding_http = @import("embedding_http.zig");
+const storage = @import("storage.zig");
+
+pub fn checkIndex(report: *Report, path: []const u8, model_name: []const u8, dimension: usize) !void {
+	const db = storage.openFileReadOnly(report.allocator, path) catch |err| {
+		try report.addFmt(.fail, "Index", "could not read embedding metadata: {s}; index unchanged", .{@errorName(err)});
+		return;
+	};
+	defer storage.close(db);
+	const stored_model = storage.embeddingModel(db, report.allocator) catch |err| {
+		try report.addFmt(.fail, "Index", "could not verify the indexed embedding model: {s}; index unchanged", .{@errorName(err)});
+		return;
+	};
+	defer report.allocator.free(stored_model);
+	const stored_dimension = storage.embeddingDimension(db, report.allocator) catch |err| {
+		try report.addFmt(.fail, "Index", "could not verify the indexed embedding width: {s}; index unchanged", .{@errorName(err)});
+		return;
+	};
+	if (!std.mem.eql(u8, stored_model, model_name) or stored_dimension != dimension) {
+		try report.addFmt(.fail, "Index", "stored model '{s}' ({d} dimensions) does not match configured model '{s}' ({d} dimensions); index unchanged. Restore compatible settings or rebuild after preserving the existing index", .{ stored_model, stored_dimension, model_name, dimension });
+		return;
+	}
+	try report.addFmt(.pass, "Index", "stored model '{s}' and {d}-dimensional metadata match configuration", .{ stored_model, stored_dimension });
+}
 
 pub const InferenceConfig = struct {
 	url: []const u8,

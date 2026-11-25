@@ -1004,6 +1004,11 @@ listing alone does not pass this check. Its diagnostic request has a 10-second
 deadline; a timeout reports inference as unverified, not a missing model. Normal
 indexing can still wait for a cold model to load.
 
+Doctor separately compares the index's stored embedding model and vector width
+with effective settings. A mismatch fails even when SQLite integrity and the
+server probe pass. This check is read-only and does not rebuild or relabel the
+existing index.
+
 The background watcher logs its lifecycle and error events to the system log. If your watcher appears to have stopped unexpectedly, inspect recent logs with:
 
     codescan log --since 1h

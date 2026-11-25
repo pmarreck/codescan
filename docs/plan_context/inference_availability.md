@@ -283,3 +283,51 @@ adapter/build contract, with the existing optional unit skip and two external
 provider exclusions unchanged. Both Windows test products now compile after
 the environment-map correction. Native runtime qualification and deployment
 remain pending.
+
+The diagnostic/MCP increment ships as `a55755ee`; the independent legacy-link
+publisher correction ships as `20a0a32c`. Exact-commit push checks pass and both
+commits are pushed. The installed compatibility command and PF entrypoint now
+resolve to the verified Nix product without a PATH change. Native CI is pending.
+
+The development host now has one private global configuration selecting local
+Ollama Jina at width 1536. All 123 matching project configs have exact private
+backups and retain their original modes and unrelated preferences; only duplicate
+provider fields were removed. The reporting project separately selects a newly
+built local database under a distinct filename and inherits the same provider.
+Its original and temporary remote indexes remain preserved. Real doctor,
+watcher startup, CLI semantic search and a fresh MCP semantic session pass;
+the watcher remains active with valid null-device standard streams and zero
+pending paths. The already-running old MCP executable still requires a one-time
+reconnect; session restart approval is pending.
+
+A read-only metadata audit finds 123 indexes already matching that Jina identity
+and one preexisting BGE/1024 index whose project configuration also selected
+Jina/1536 before cleanup. No other fleet index was rebuilt or changed. Preserve
+the exceptional index while a staged replacement awaits owner approval. The
+installed doctor's inventory and POST corrections still report healthy for that
+metadata mismatch, revealing another independent diagnostic omission.
+
+A real CLI regression requires a matching model/width to pass the Index check
+and either mismatched identity to fail with both stored/configured values and
+unchanged-index advice. It compares the database bytes after every invocation.
+The proposed check uses a read-only SQLite connection, never schema initialization
+or metadata stamping. A storage test checks the actual SQLite read-only flag,
+requires an attempted write to be rejected, and compares the file bytes.
+
+The compatibility correction now passes the complete confined host suite: 841
+unit passes, one existing optional skip, every required adapter/build contract,
+and the two unchanged external-provider exclusions. Its real-project diagnostic
+changes from healthy to a specific stored/configured mismatch while an independent
+checksum proves the original index unchanged. The first regression attempt
+also exposed an invalid test setup: updating an absent model row changed zero
+rows. The fixture now explicitly inserts that label, retaining all positive,
+model-mismatch, width-mismatch and preservation assertions. Deployment and native
+qualification remain separate.
+
+Fresh reconstruction of the reporting project's local index also leaves four
+vector rows without current symbols, the same count found in its original
+index. A repeatedly updated disposable copy has more. Initial C extraction
+inspection identifies struct references on the same function-header line as a
+concrete collision lead; a minimal independent reproducer and correction remain
+required. Do not attribute this separate index-hygiene issue to the original
+watcher request failure or prune the live index speculatively.
