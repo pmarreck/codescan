@@ -1,5 +1,19 @@
 const std = @import("std");
 
+/// C uses the same aggregate node for declarations and type references.
+/// Preserve standalone forward declarations as well as definitions with bodies.
+pub fn isCTypeReference(comptime ts: type, node: ts.TSNode) bool {
+	const kind = std.mem.span(ts.ts_node_type(node));
+	if (!std.mem.eql(u8, kind, "struct_specifier") and !std.mem.eql(u8, kind, "enum_specifier") and !std.mem.eql(u8, kind, "union_specifier")) return false;
+	if (!ts.ts_node_is_null(ts.ts_node_child_by_field_name(node, "body", "body".len))) return false;
+	const parent = ts.ts_node_parent(node);
+	if (ts.ts_node_is_null(parent)) return true;
+	const parent_kind = std.mem.span(ts.ts_node_type(parent));
+	if (std.mem.eql(u8, parent_kind, "translation_unit")) return false;
+	if (std.mem.eql(u8, parent_kind, "declaration") and ts.ts_node_is_null(ts.ts_node_child_by_field_name(parent, "declarator", "declarator".len))) return false;
+	return true;
+}
+
 pub const DocStyle = struct {
 	line_prefixes: []const []const u8,
 	block_start: ?[]const u8 = null,

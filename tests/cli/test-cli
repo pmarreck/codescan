@@ -246,6 +246,20 @@ main() {
 	printf '%s' "$out" | jq -e '.name_path=="add" and .start_line==2 and .end_line==4 and .body==["int add(int left, int right) {","\treturn left + right;","}"]' >/dev/null || \
 		fail "C grammar changed the exact function body: $out"
 
+	c_reference_root="$DB_DIR/c-type-references"
+	mkdir -p "$c_reference_root/.git" || fail 'C type-reference fixture setup'
+	printf '%s\n' 'struct Pair { int value; };' \
+		'struct Pair transform(struct Pair input) {' $'\treturn input;' '}' > "$c_reference_root/sample.c"
+	capture "$BIN" index --root "$c_reference_root" --lexical-only --json --no-progress
+	[ "$rc" -eq 0 ] || fail 'C type-reference indexing failed'
+	printf '%s' "$out" | jq -e '.symbols == 2' >/dev/null || fail 'C indexing counted type references as declarations'
+	capture sqlite3 -json "$c_reference_root/.codescan/index.sqlite3" 'SELECT symbol_name,start_line,end_line FROM symbols ORDER BY id;'
+	[ "$rc" -eq 0 ] || fail 'C type-reference database inspection failed'
+	printf '%s' "$out" | jq -e '. == [{symbol_name:"Pair",start_line:1,end_line:1},{symbol_name:"transform",start_line:2,end_line:4}]' >/dev/null || fail 'C indexing inserted or replaced a spurious type-reference symbol'
+	capture "$BIN" symbols --file "$c_reference_root/sample.c" --json
+	[ "$rc" -eq 0 ] || fail 'C type-reference symbol listing failed'
+	printf '%s' "$out" | jq -e '[.[].name] == ["Pair","transform"] and all(.[]; (.children // []) | length == 0)' >/dev/null || fail 'C symbol listing exposed type references as declarations'
+
 	lean_file="$DB_DIR/definitions with spaces.lean"
 	printf '%s\n' '-- Adds two values.' 'def add (a b : Nat) : Nat :=' \
 		$'\ta + b' 'def adjacent : Nat := 42' > "$lean_file"

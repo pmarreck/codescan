@@ -3,6 +3,7 @@ const symbol_tree = @import("symbol_tree.zig");
 const SymbolNode = symbol_tree.SymbolNode;
 const SymbolKind = symbol_tree.SymbolKind;
 const SymbolTree = symbol_tree.SymbolTree;
+const extract_util = @import("extract_util.zig");
 
 const ts = @cImport({
 	@cInclude("tree_sitter/api.h");
@@ -592,7 +593,8 @@ pub fn extract(allocator: std.mem.Allocator, source: []const u8, lang: Language)
 		} else if (lang == .roc) {
 			if (extractRocForm(source, node)) |sym| try flat.append(allocator, sym);
 		} else if (findMapping(lang_mappings, node_type)) |mapping| {
-			if (extractName(source, node, mapping.name_field)) |name| {
+			const name_opt = if (lang == .c and extract_util.isCTypeReference(ts, node)) null else extractName(source, node, mapping.name_field);
+			if (name_opt) |name| {
 				const parent = ts.ts_node_parent(node);
 				const span = if (lang == .python and !ts.ts_node_is_null(parent) and
 					std.mem.eql(u8, std.mem.span(ts.ts_node_type(parent)), "decorated_definition")) parent else node;
@@ -1149,6 +1151,31 @@ pub fn buildHierarchy(allocator: std.mem.Allocator, flat: []const FlatSymbol, so
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────
+
+test "c: symbol listing preserves declarations without reference children" {
+	const allocator = std.testing.allocator;
+	const source =
+		"struct Forward;\n" ++
+		"struct Pair { int value; };\n" ++
+		"enum Tag { First };\n" ++
+		"typedef struct Pair PairAlias;\n" ++
+		"struct Pair transform(struct Pair input, enum Tag tag) {\n" ++
+		"\tstruct Pair local = input;\n" ++
+		"\t(void)tag;\n" ++
+		"\treturn local;\n" ++
+		"}\n" ++
+		"struct Forward *pointer;\n";
+	var tree = try extract(allocator, source, .c);
+	defer tree.deinit(allocator);
+	const expected = [_][]const u8{ "Forward", "Pair", "Tag", "PairAlias", "transform" };
+	try std.testing.expectEqual(expected.len, tree.symbols.len);
+	for (tree.symbols, expected) |symbol, name| {
+		try std.testing.expectEqualStrings(name, symbol.name);
+		try std.testing.expectEqual(@as(usize, 0), symbol.children.len);
+	}
+	try std.testing.expectEqual(@as(usize, 5), tree.symbols[4].start_line);
+	try std.testing.expectEqual(@as(usize, 9), tree.symbols[4].end_line);
+}
 
 test "c: extracts functions" {
 	const allocator = std.testing.allocator;

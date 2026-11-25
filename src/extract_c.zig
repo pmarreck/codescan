@@ -118,6 +118,7 @@ fn extractTypeDecl(
 	node: ts.TSNode,
 ) !?model.Symbol {
 	const ty = std.mem.span(ts.ts_node_type(node));
+	if (util.isCTypeReference(ts, node)) return null;
 
 	// For type_definition (typedef struct { ... } Name;), get the name from the declarator
 	if (std.mem.eql(u8, ty, "type_definition")) {
@@ -284,6 +285,31 @@ fn nodeText(source: []const u8, node: ts.TSNode) []const u8 {
 	return source[start..end];
 }
 
+
+test "C indexing keeps declarations but excludes aggregate type references" {
+	const allocator = std.testing.allocator;
+	const source =
+		"struct Forward;\n" ++
+		"struct Pair { int value; };\n" ++
+		"enum Tag { First };\n" ++
+		"typedef struct Pair PairAlias;\n" ++
+		"struct Pair transform(struct Pair input, enum Tag tag) {\n" ++
+		"\tstruct Pair local = input;\n" ++
+		"\t(void)tag;\n" ++
+		"\treturn local;\n" ++
+		"}\n" ++
+		"struct Forward *pointer;\n";
+	const symbols = try extract(allocator, "fixture.c", source);
+	defer {
+		for (symbols) |*symbol| symbol.deinit(allocator);
+		allocator.free(symbols);
+	}
+	const expected = [_][]const u8{ "Forward", "Pair", "Tag", "PairAlias", "transform" };
+	try std.testing.expectEqual(expected.len, symbols.len);
+	for (symbols, expected) |symbol, name| try std.testing.expectEqualStrings(name, symbol.name);
+	try std.testing.expectEqual(@as(usize, 5), symbols[4].start_line);
+	try std.testing.expectEqual(@as(usize, 9), symbols[4].end_line);
+}
 
 test "extract finds C struct declarations" {
 	const allocator = std.testing.allocator;
