@@ -168,6 +168,7 @@ for mode in default debug test failure missing-nix output-symlink real-publicati
 			;;
 		real-publication)
 			[ "$rc" -eq 0 ] || fail 'real prepared product was not published'
+			[ -L "$project/zig-out/bin/codescan" ] && [ "$CODESCAN_TEST_BIN" -ef "$project/zig-out/bin/codescan" ] || fail 'legacy publication copied the Nix executable instead of retaining its product'
 			cmp "$CODESCAN_TEST_BIN" "$project/zig-out/bin/codescan" || fail 'real publication changed executable bytes'
 			"$project/zig-out/bin/codescan" --about > "$project/about" 2> "$project/about-error" || fail 'published native command did not execute'
 			[ -s "$project/about" ] && [ ! -s "$project/about-error" ] || fail 'published command did not identify itself cleanly'

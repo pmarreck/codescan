@@ -505,3 +505,22 @@ tagged release publication. Cross-built release products do not establish those
 native execution contracts. No workflows, publishing configuration, badges,
 hooks or host settings were changed by this audit; retain the active workflows
 unless replacement coverage is independently demonstrated.
+
+## Legacy command publication without store copies
+
+The current host's copy guard rejects the compatibility publisher's attempt to
+install a Nix-store executable into `zig-out/bin`. A behavioral regression now
+requires that command to be a symlink to the same executable inode as the
+verified product. Publication stages the link under the owned candidate and
+selects it only after the existing retained-root and PF-command transaction.
+No PATH settings or foreign-product scope change.
+
+An initial link through the mutable selected root fails the existing real-GC
+recovery control: a failed rollback can leave that selection on the new product
+and inadvertently retarget the old compatibility command. The corrected link
+binds to the exact immutable product instead. The targeted complete publisher
+adapter passes, including its original registration, rename, cleanup,
+serialization and private-store GC controls. The complete confined host suite
+also passes with 840 unit passes, one existing optional unit skip, and the two
+existing external-provider exclusions. Actual publication and native CI
+qualification remain separate.

@@ -137,7 +137,7 @@ restore_selections() {
 cleanup_publication() {
 	local retention_work previous_root public_stage cleanup_status=0
 	if [ "$rollback_needed" -eq 1 ]; then restore_selections; fi
-	if [ -n "$publication" ] && [ -f "$publication" ]; then unlink "$publication" || cleanup_status=1; fi
+	if [ -n "$publication" ] && { [ -e "$publication" ] || [ -L "$publication" ]; }; then unlink "$publication" || cleanup_status=1; fi
 	if [ "$keep_previous" -eq 1 ]; then
 		printf 'error: rollback incomplete; previous products remain retained for recovery in %s\n' "$candidate_root" >&2
 		return "$cleanup_status"
@@ -237,8 +237,8 @@ if [ -L zig-out ] || [ -L zig-out/bin ] || [ -d zig-out/bin/codescan ]; then
 	exit 1
 fi
 mkdir -p zig-out/bin || exit 1
-publication="$(mktemp "$root/zig-out/bin/.codescan.XXXXXX")" || exit 1
-install -m755 "$output/bin/codescan" "$publication" || exit 1
+publication="$candidate_root/legacy-entry"
+ln -s "$output/bin/codescan" "$publication" || exit 1
 if tools_output="$(nix build --out-link "$candidate_root/tools" --print-out-paths .#publication-tools)"; then :; else exit "$?"; fi
 if [ -z "$tools_output" ] || [ "$(readlink "$candidate_root/tools")" != "$tools_output" ] || [ ! -x "$tools_output/bin/flock" ]; then
 	printf 'error: Nix publication tools are missing or do not match their retained candidate\n' >&2
