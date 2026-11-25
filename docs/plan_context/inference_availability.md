@@ -331,3 +331,28 @@ inspection identifies struct references on the same function-header line as a
 concrete collision lead; a minimal independent reproducer and correction remain
 required. Do not attribute this separate index-hygiene issue to the original
 watcher request failure or prune the live index speculatively.
+
+The C issue is independently reproduced with a four-line fixture containing a
+`Pair` definition and a function taking and returning `struct Pair`. The old
+indexer emits four symbols but stores three because two header references
+collide; the old symbol-listing tree also exposes two phantom children.
+The shared classification now excludes aggregate references but preserves
+definitions, typedefs, and standalone forward declarations in both extraction
+paths. The actual CLI regression first fails on the emitted-symbol count.
+Two unit cases retain exact declaration names and function ranges, and the
+real CLI checks exact SQLite rows and a reference-free symbol tree.
+
+Commit `8792845e` passes the complete confined suite with 843 unit passes, one
+unchanged optional skip and the two existing external-provider exclusions.
+A separately built local replacement has 3,491 symbols, 3,491 code vectors,
+zero orphan vectors and passing SQLite integrity. It is selected under another
+distinct filename with every previous index preserved. The latest doctor,
+watcher, CLI semantic search and fresh MCP semantic search all pass with zero
+pending paths. No broader live reindex sweep was resumed.
+
+The stored/configured compatibility increment is committed as `40d2cffd` and
+installed. The C correction is also installed. Their latest native CI remains
+pending. The earlier pushed diagnostic/MCP tip `20a0a32c` passes Mechatron, both
+native Linux suites and both native Windows qualifications, including the real
+detached-standard-stream probe and closed-handle control; Mac completion is
+still being observed. Cross-build products alone are not native qualification.
