@@ -390,3 +390,31 @@ disposable child's record. Kernel-probe tests distinguish live, missing-record,
 replacement-record and nonexistent-process cases without sending a signal.
 The complete corrected host suite passes 845 unit cases and every required
 adapter/build check, with the same optional unit and external-provider exclusions.
+
+## Final native qualification and operational checkpoint
+
+Implementation tip `f9ef76d4eab92dec18e29a1b87e80708a8e51d4d`, build
+`r482-f9ef76`, is pushed and passes both GitHub workflows and all eight Mechatron
+targets. Both native Linux suites pass. The actual native Mac log reports 845
+passes, one existing skip and no failures; each native Windows architecture
+reports 839 passes, seven existing skips and no failures, with the real daemon
+standard-handle probe, its closed-handle control, both cancellation/reset
+campaigns and extracted-release checks passing. The artifact API independently
+confirms exactly five nonempty, unexpired canonical archives. No failed-job
+retry or new suite exclusion was used to obtain these results.
+
+The installed implementation completes an audited stop/restart by confirming
+the old process's exit before starting its replacement. The replacement retains
+its PID and ready marker across subsequent real CLI and fresh MCP semantic
+queries, each with positive vector scores, watcher authority and zero pending
+paths. Its standard streams remain valid null devices. The selected local index
+has passing integrity, compatible Jina/1536 metadata and zero orphan vectors;
+all earlier configs and indexes remain recoverable.
+
+The old reporting-agent MCP executable is still running and has not been
+interrupted. One-time client reconnect/session coordination, the exceptional
+legacy-index rebuild, and provider/infrastructure logging fix requests await
+the owner's respective decisions. The original request failure remains
+unattributed because its generic error and discarded journal do not establish
+the underlying operation or socket cause. These limits are not described as
+resolved by the successful current checks.

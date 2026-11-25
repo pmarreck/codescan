@@ -368,6 +368,14 @@ Inspection identifies a separate correctness defect in the actual publisher's `E
 
 A trap-only repair passes the first four body/cleanup combinations, but an additional first-removal-only fault still returns zero because a later successful removal masks the earlier error inside cleanup itself. This second runtime failure requires accumulating removal errors as well as explicitly propagating the final trap status. The eight-case matrix covers successful/failed bodies crossed with successful/failed cleanup at both failure positions, checks retained owned staging and selected-product contents, and independently requires every case.
 
+The pending cleanup checkbox was stale at the November 25 audit. Commit
+`e05906e8` implements accumulated cleanup failure status and preserves an original
+body error. Current controls also cover actual nonempty-directory failure.
+The complete confined host entry point and native Linux/Mac qualification at
+`20a0a32c` pass the real publisher adapter with these controls unchanged; both
+native Windows suites and Mechatron are green too. This closes correctness and
+qualification of cleanup propagation, not the separate latency investigation.
+
 The final matrix expands to 12 cases with a real OS failure: an owned blocker makes the first private staging directory nonempty, the actual directory remover fails, and later removals can still succeed. Status, final diagnostic, retained blocker, selected-product contents, and the independent case count all pass. Complete disposable-worktree and integrated Nix tests and source-closure checks pass all 821 available unit cases and every available adapter, retaining the optional unit and two live-provider exclusions, all 64 original rollback cases, and real private-store/GC checks. Independent named comparisons prove unchanged derivation identities for all five releases, the default CLI, and aggregate test product. No compiler, parser, installed command, live project output, PATH, or budget change is involved. Exact-commit native publication-suite qualification remains required; native Windows checkout publication is still outside the approved scope.
 
 Fresh confined host verification passes every available check and all 821 unit cases, with source identity unchanged, the same 847/844/3 declared/executed/skipped inventory, and zero failures. The record remains INCOMPLETE/OVER_BUDGET at 26.069 seconds execution lower bound, 25.25 seconds isolated runtime, 7.079 evaluation, 16.570 mixed work including normal artifact preparation, 3.954 setup, 3.392 instrumentation, and 60.880 admitted total. Exact queue and outer-entry intervals remain unknown. This is verification of changed error handling and added controls, not a timing retry, accepted baseline, or performance improvement. A read-only production-trap audit confirms that CI archive cleanup already propagates its status explicitly and needs no parallel change.
